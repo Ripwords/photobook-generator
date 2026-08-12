@@ -4,7 +4,9 @@ use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
+use tauri_plugin_notification::NotificationExt;
 
 const SUPPORTED: &[&str] = &[
     "jpg", "jpeg", "png", "heic", "heif", "cr2", "cr3", "nef", "arw", "dng", "raf", "orf",
@@ -107,6 +109,61 @@ pub(crate) fn finalize_photos(mut ok: Vec<serde_json::Value>) -> Vec<serde_json:
     ok
 }
 
+/// Minimum wall-clock time `analyze_folder` must take before its completion
+/// is worth surfacing as a native notification. A fully-cached re-run
+/// finishes in a couple of seconds; notifying after that is pure noise
+/// because the user never had a reason to leave the screen. Named so the
+/// threshold isn't a magic number scattered across the decision function and
+/// its tests.
+pub(crate) const NOTIFY_MIN_ELAPSED: Duration = Duration::from_secs(10);
+
+/// Decides whether a completed `analyze_folder` run deserves a native
+/// notification. Both conditions must hold: the run took long enough that
+/// the user could plausibly have switched away (`elapsed >=
+/// NOTIFY_MIN_ELAPSED`), and the window is not currently focused -- if the
+/// user is watching the screen, the result is already visible and a
+/// notification would be redundant.
+///
+/// Pure and extracted specifically so this decision is unit-testable
+/// without a live `AppHandle`/`WebviewWindow` (which the actual `.show()`
+/// call needs and which cannot be constructed in a unit test) -- the same
+/// reasoning as `finalize_photos`/`lookup_cache`/`sidecar::analyze_batches`.
+pub(crate) fn should_notify(elapsed: Duration, window_focused: bool) -> bool {
+    !window_focused && elapsed >= NOTIFY_MIN_ELAPSED
+}
+
+/// Counts how many analysed photos would survive the frontend's culling:
+/// drop utility shots (screenshots/documents), then keep only the sharpest
+/// photo from each near-duplicate cluster (ties broken by aesthetic
+/// percentile). This mirrors `keepers()` in `app/types/features.ts` exactly.
+///
+/// Duplicated rather than shared: the notification fires from Rust (inside
+/// `analyze_folder`, which already knows when the work finished), and there
+/// is no Rust/TS boundary to call the frontend's implementation through. If
+/// `keepers()` in `features.ts` ever changes, mirror the change here too.
+pub(crate) fn count_keepers(photos: &[serde_json::Value]) -> usize {
+    let mut best: std::collections::HashMap<u64, (f64, f64)> = std::collections::HashMap::new();
+
+    for photo in photos {
+        if photo["isUtility"].as_bool().unwrap_or(false) {
+            continue;
+        }
+        let cluster = photo["nearDupCluster"].as_u64().unwrap_or(0);
+        let sharpness = photo["sharpnessPct"].as_f64().unwrap_or(0.0);
+        let aesthetic = photo["aestheticPct"].as_f64().unwrap_or(0.0);
+
+        best.entry(cluster)
+            .and_modify(|incumbent| {
+                if sharpness > incumbent.0 || (sharpness == incumbent.0 && aesthetic > incumbent.1) {
+                    *incumbent = (sharpness, aesthetic);
+                }
+            })
+            .or_insert((sharpness, aesthetic));
+    }
+
+    best.len()
+}
+
 /// Result of consulting the cache for a batch of candidate paths.
 pub(crate) struct CacheLookup {
     /// Already-analysed `features` JSON, pulled straight from `Db`.
@@ -150,6 +207,8 @@ pub(crate) fn lookup_cache(db: &Db, paths: &[String]) -> Result<CacheLookup, Str
 
 #[tauri::command]
 pub async fn analyze_folder(app: AppHandle, folder: String) -> Result<AnalysisSummary, String> {
+    let started = Instant::now();
+
     let mut paths: Vec<String> = std::fs::read_dir(&folder)
         .map_err(|e| e.to_string())?
         .filter_map(|entry| match entry {
@@ -230,6 +289,25 @@ pub async fn analyze_folder(app: AppHandle, folder: String) -> Result<AnalysisSu
     }
 
     let ok = finalize_photos(ok);
+
+    // The window handle and the notification call both need a live
+    // AppHandle and cannot be unit-tested; `should_notify` (the decision of
+    // *whether* to fire) is the pure part and is covered separately. A
+    // denied permission or any other plugin error must not fail the
+    // analysis that already succeeded, so this is logged and swallowed
+    // rather than propagated with `?`.
+    let window_focused = app
+        .get_webview_window("main")
+        .and_then(|window| window.is_focused().ok())
+        .unwrap_or(true); // Can't determine focus -> assume focused, so we err toward silence rather than a spurious notification.
+
+    if should_notify(started.elapsed(), window_focused) {
+        let body = format!("{} photos analysed, {} keepers", ok.len(), count_keepers(&ok));
+        if let Err(err) = app.notification().builder().title("Analysis complete").body(body).show()
+        {
+            log::warn!("failed to show completion notification: {err}");
+        }
+    }
 
     Ok(AnalysisSummary { total: paths.len(), failed, cached, photos: ok })
 }
@@ -452,5 +530,83 @@ mod tests {
         assert_ne!(result[0]["eventCluster"], result[1]["eventCluster"]);
         assert_eq!(result[0]["eventCluster"], 0, "chronologically-first photo gets the lower id");
         assert_eq!(result[1]["eventCluster"], 1);
+    }
+
+    // --- `should_notify`: the pure decision of whether a completed
+    // `analyze_folder` run deserves a native notification. The actual
+    // `.show()` call needs a live AppHandle/WebviewWindow and is not
+    // unit-testable; this is the part that is, extracted for exactly that
+    // reason (same as `finalize_photos`/`lookup_cache`).
+
+    #[test]
+    fn does_not_notify_when_unfocused_but_under_the_threshold() {
+        assert!(!should_notify(NOTIFY_MIN_ELAPSED - Duration::from_millis(1), false));
+    }
+
+    /// The boundary itself: `should_notify` uses `elapsed >=
+    /// NOTIFY_MIN_ELAPSED`, so a run that takes EXACTLY the threshold must
+    /// notify. A value nowhere near the boundary (e.g. 60s) would still pass
+    /// under an accidental `>` instead of `>=`; only a value pinned to the
+    /// threshold itself distinguishes the two.
+    #[test]
+    fn notifies_when_unfocused_at_exactly_the_threshold() {
+        assert!(should_notify(NOTIFY_MIN_ELAPSED, false));
+    }
+
+    #[test]
+    fn notifies_when_unfocused_just_over_the_threshold() {
+        assert!(should_notify(NOTIFY_MIN_ELAPSED + Duration::from_millis(1), false));
+    }
+
+    #[test]
+    fn never_notifies_when_the_window_is_focused_no_matter_how_long_it_took() {
+        assert!(!should_notify(NOTIFY_MIN_ELAPSED * 100, true));
+    }
+
+    // --- `count_keepers`: mirrors `keepers()` in `app/types/features.ts`
+    // (drop utility shots, keep the sharpest -- tie-broken by aesthetic --
+    // photo per near-duplicate cluster), so the notification body can report
+    // a keeper count without a JS/Rust boundary to call through.
+
+    fn kept_candidate(is_utility: bool, cluster: u64, sharpness: f64, aesthetic: f64) -> serde_json::Value {
+        serde_json::json!({
+            "isUtility": is_utility,
+            "nearDupCluster": cluster,
+            "sharpnessPct": sharpness,
+            "aestheticPct": aesthetic,
+        })
+    }
+
+    #[test]
+    fn empty_input_has_no_keepers() {
+        assert_eq!(count_keepers(&[]), 0);
+    }
+
+    #[test]
+    fn utility_photos_are_never_keepers() {
+        let photos = vec![kept_candidate(true, 0, 100.0, 100.0)];
+        assert_eq!(count_keepers(&photos), 0);
+    }
+
+    #[test]
+    fn keeps_one_photo_per_near_duplicate_cluster() {
+        let photos = vec![
+            kept_candidate(false, 0, 10.0, 0.0),
+            kept_candidate(false, 0, 20.0, 0.0), // sharper, same cluster -> wins
+            kept_candidate(false, 1, 5.0, 0.0),  // different cluster -> also kept
+        ];
+        assert_eq!(count_keepers(&photos), 2);
+    }
+
+    #[test]
+    fn ties_on_sharpness_are_broken_by_aesthetic_percentile() {
+        let photos = vec![
+            kept_candidate(false, 0, 50.0, 10.0),
+            kept_candidate(false, 0, 50.0, 90.0), // same sharpness, higher aesthetic
+        ];
+        // Still one keeper per cluster regardless of which one wins; the
+        // count itself doesn't reveal the tie-break, but this at least
+        // pins that a tie doesn't produce two keepers.
+        assert_eq!(count_keepers(&photos), 1);
     }
 }
