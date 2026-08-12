@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.jiajingteoh.photobook",
   "build": {
-    "beforeDevCommand": "bun run ui:dev",
+    "beforeDevCommand": "bun run sidecar && bun run ui:dev",
     "devUrl": "http://localhost:3000",
-    "beforeBuildCommand": "bun run generate",
+    "beforeBuildCommand": "bun run sidecar && bun run generate",
     "frontendDist": "../.output/public"
   },
   "app": {
