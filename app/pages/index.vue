@@ -1,53 +1,7 @@
 <script setup lang="ts">
-import { basename, burstSizes, groupByEvent, keepers, pickHero, type AnalyzedPhoto } from "~/types/features";
+import { basename, burstSizes, groupByEvent, keepers, pickHero } from "~/types/features";
 
 const { summary, running, error, folder, pickFolderAndAnalyze, retry } = useAnalysis();
-
-// TEMP DEBUG - retheme visual QA only, reverted before commit.
-if (import.meta.client) {
-  const debug = new URLSearchParams(window.location.search).get("debug");
-  if (debug) {
-    (window as unknown as { __TAURI_INTERNALS__: { convertFileSrc: (p: string) => string } }).__TAURI_INTERNALS__ = {
-      convertFileSrc: (p: string) => p,
-    };
-    const photo = (over: Partial<AnalyzedPhoto>): AnalyzedPhoto => ({
-      status: "ok",
-      path: "/p/x.jpg",
-      hash: "h",
-      width: 4032,
-      height: 3024,
-      isUtility: false,
-      aestheticPct: 50,
-      sharpnessPct: 50,
-      faceCount: 0,
-      smileFraction: null,
-      sceneTags: [],
-      nearDupCluster: 0,
-      eventCluster: 0,
-      thumbnailPath: null,
-      ...over,
-    });
-    if (debug === "results") {
-      summary.value = {
-        total: 14,
-        cached: 4,
-        failed: 2,
-        photos: [
-          photo({ path: "/p/e1-1.jpg", eventCluster: 1, nearDupCluster: 1, aestheticPct: 82, sharpnessPct: 74, faceCount: 2, smileFraction: 0.5, thumbnailPath: "/debug-thumbs/a.jpg" }),
-          photo({ path: "/p/e1-2.jpg", eventCluster: 1, nearDupCluster: 1, aestheticPct: 60, sharpnessPct: 50, faceCount: 2, smileFraction: 0.3, thumbnailPath: "/debug-thumbs/b.jpg" }),
-          photo({ path: "/p/e1-3.jpg", eventCluster: 1, nearDupCluster: 1, aestheticPct: 55, sharpnessPct: 40, faceCount: 1, smileFraction: null, thumbnailPath: "/debug-thumbs/c.jpg" }),
-          photo({ path: "/p/e1-4.jpg", eventCluster: 1, nearDupCluster: 2, aestheticPct: 91, sharpnessPct: 88, faceCount: 0, smileFraction: null, thumbnailPath: null }),
-          photo({ path: "/p/e2-1.jpg", eventCluster: 2, nearDupCluster: 3, aestheticPct: 45, sharpnessPct: 63, faceCount: 3, smileFraction: 0, thumbnailPath: "/debug-thumbs/a.jpg" }),
-          photo({ path: "/p/e2-2.jpg", eventCluster: 2, nearDupCluster: 4, aestheticPct: 70, sharpnessPct: 70, faceCount: 1, smileFraction: 1, thumbnailPath: "/debug-thumbs/b.jpg" }),
-          photo({ path: "/p/e2-3.jpg", eventCluster: 2, nearDupCluster: 5, aestheticPct: 20, sharpnessPct: 30, faceCount: 0, smileFraction: null, thumbnailPath: "/debug-thumbs/c.jpg" }),
-          photo({ path: "/p/e2-4.jpg", eventCluster: 2, nearDupCluster: 6, aestheticPct: 99, sharpnessPct: 95, faceCount: 5, smileFraction: 0.8, thumbnailPath: "/debug-thumbs/a.jpg" }),
-          photo({ path: "/p/util.png", eventCluster: 1, nearDupCluster: 7, aestheticPct: 10, sharpnessPct: 10, isUtility: true }),
-        ],
-      };
-    }
-  }
-}
-// END TEMP DEBUG
 
 type ViewState = "entry" | "running" | "error" | "no-images" | "no-analyzed" | "results";
 
@@ -85,7 +39,7 @@ const gridClass = "grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3";
     <header class="flex shrink-0 items-center justify-between gap-4 border-b border-default px-6 py-4">
       <div class="flex items-center gap-2.5">
         <UIcon name="i-lucide-images" class="size-5 text-primary" />
-        <h1 class="text-sm font-semibold text-highlighted">Photobook Generator</h1>
+        <h1 class="text-sm font-semibold text-highlighted">PhotobookGen</h1>
       </div>
       <div class="flex items-center gap-2">
         <UButton
@@ -109,7 +63,7 @@ const gridClass = "grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3";
         v-if="state === 'entry'"
         icon="i-lucide-images"
         title="Choose a photo folder to begin"
-        description="Photobook Generator analyzes every photo in a folder on this Mac: sharpness, faces, color palette, and Apple's aesthetic model. It groups burst shots and events, then ranks each photo against the rest of the folder so you can see what's worth printing."
+        description="PhotobookGen analyzes every photo in a folder on this Mac: sharpness, faces, color palette, and Apple's aesthetic model. It groups burst shots and events, then ranks each photo against the rest of the folder so you can see what's worth printing."
         :actions="[
           {
             label: 'Choose photo folder',
