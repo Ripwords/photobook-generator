@@ -498,7 +498,7 @@ git commit -m "feat(sidecar): add NDJSON protocol loop with ping"
 **Files:**
 - Create: `scripts/build-sidecar.sh`, `src-tauri/src/protocol.rs`, `src-tauri/src/sidecar.rs`
 - Modify: `src-tauri/src/lib.rs`, `src-tauri/tauri.conf.json`, `src-tauri/capabilities/default.json`, `.gitignore`
-- Test: `src-tauri/src/sidecar.rs` (inline `#[cfg(test)]` module)
+- Test: `src-tauri/src/protocol.rs` (inline `#[cfg(test)]` module — the tests cover wire-format serialisation, so they live with the types)
 
 **Interfaces:**
 - Consumes: `Request`/`Response` JSON shape from Task 2
@@ -2868,6 +2868,14 @@ pub async fn analyze_folder(
         features["sharpnessPct"] = sharpness[i].into();
         features["faceCount"] = features["faces"].as_array().map_or(0, Vec::len).into();
         features["status"] = "ok".into();
+
+        // phash is a full 64-bit value and JavaScript numbers lose precision
+        // above 2^53. Clustering is done with it by this point, and the UI has
+        // no use for it, so drop it rather than hand the webview a value that
+        // is silently wrong for anyone who later reads it.
+        if let Some(object) = features.as_object_mut() {
+            object.remove("phash");
+        }
     }
 
     Ok(AnalysisSummary { total: paths.len(), failed, cached, photos: ok })
