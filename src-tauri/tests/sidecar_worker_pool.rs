@@ -39,7 +39,7 @@
 //! list is cleared from the config before `.build()` so this doesn't
 //! actually flash a window on screen.
 
-use app_lib::commands::{analyze_folder, AppState};
+use app_lib::commands::analyze_folder;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -77,11 +77,10 @@ fn main() {
     let mut context = tauri::generate_context!();
     context.config_mut().app.windows.clear();
 
-    let app = tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
-        .manage(AppState::default())
-        .build(context)
-        .expect("failed to build tauri app");
+    // `app_lib::builder()` is the same plugin/state chain `run()` uses in
+    // production (including `tauri-plugin-log`), so this test exercises the
+    // real startup path rather than a hand-trimmed stand-in.
+    let app = app_lib::builder().build(context).expect("failed to build tauri app");
     let handle = app.handle().clone();
 
     // Only the top-level fixture files are used (`std::fs::read_dir` is not
