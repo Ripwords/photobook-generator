@@ -22,3 +22,30 @@ import Foundation
     let data = try JSONEncoder().encode(res)
     #expect(String(decoding: data, as: UTF8.self).contains("boom"))
 }
+
+@Test func unknownKindEchoesRequestId() throws {
+    let line = #"{"id":"real-id","kind":"bogus"}"#
+    let response = handle(line: line)
+    #expect(response.id == "real-id")
+    guard case .error(let err) = response.result else {
+        Issue.record("expected an error result")
+        return
+    }
+    #expect(err.message == "malformed request")
+}
+
+@Test func invalidJsonProducesUnknownId() throws {
+    let response = handle(line: "not json at all")
+    #expect(response.id == "unknown")
+    guard case .error(let err) = response.result else {
+        Issue.record("expected an error result")
+        return
+    }
+    #expect(err.message == "malformed request")
+}
+
+@Test func envelopeDecodesGarbageKind() throws {
+    let json = #"{"id":"e1","kind":"totally-not-a-kind"}"#
+    let envelope = try JSONDecoder().decode(RequestEnvelope.self, from: Data(json.utf8))
+    #expect(envelope.id == "e1")
+}
