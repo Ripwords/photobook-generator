@@ -1,6 +1,72 @@
 @import "tailwindcss";
 @import "@nuxt/ui";
 
+/*
+ * Brand palette, derived from the app icon's 3D render.
+ * Full 50-950 ramps (not single hex values) so hover/active/disabled states
+ * derive correctly instead of being hand-picked per component.
+ *
+ * Roles, one job each (see ui-design-report.md for the full rationale):
+ *   steel     - primary. The one interactive colour: buttons, focus rings,
+ *               links, selection. Desaturated cool blue, not stock Tailwind
+ *               blue (too saturated for this palette).
+ *   charcoal  - neutral. Cool grey through soft charcoal, everywhere else,
+ *               in both modes.
+ *   lavender  - structural guide only. Chapter/group-boundary dividers.
+ *               Never a glow, never a second primary.
+ *   sunlight  - hero marker only. The single top-ranked photo per event
+ *               group. One thing per group, so it stays meaningful.
+ */
+@theme static {
+  --color-steel-50: #f6f7f9;
+  --color-steel-100: #edf0f2;
+  --color-steel-200: #dadfe4;
+  --color-steel-300: #b8c2cc;
+  --color-steel-400: #8a9baa;
+  --color-steel-500: #5d7081;
+  --color-steel-600: #4d5d6a;
+  --color-steel-700: #3f4c57;
+  --color-steel-800: #333e47;
+  --color-steel-900: #283037;
+  --color-steel-950: #1b2025;
+
+  --color-charcoal-50: #fafafa;
+  --color-charcoal-100: #f3f4f4;
+  --color-charcoal-200: #e4e6e7;
+  --color-charcoal-300: #ced1d4;
+  --color-charcoal-400: #a2a8ae;
+  --color-charcoal-500: #6b737b;
+  --color-charcoal-600: #585e65;
+  --color-charcoal-700: #474d52;
+  --color-charcoal-800: #393d41;
+  --color-charcoal-900: #2b2e31;
+  --color-charcoal-950: #1c1f21;
+
+  --color-lavender-50: #f8f7fa;
+  --color-lavender-100: #f1eff6;
+  --color-lavender-200: #e2dfec;
+  --color-lavender-300: #cec8df;
+  --color-lavender-400: #b4abce;
+  --color-lavender-500: #9a8fbd;
+  --color-lavender-600: #7d6eaa;
+  --color-lavender-700: #645591;
+  --color-lavender-800: #504474;
+  --color-lavender-900: #3c3357;
+  --color-lavender-950: #28223a;
+
+  --color-sunlight-50: #fdfbf5;
+  --color-sunlight-100: #f9f5e6;
+  --color-sunlight-200: #f2e9c9;
+  --color-sunlight-300: #ecddac;
+  --color-sunlight-400: #e4cf8b;
+  --color-sunlight-500: #dcc26a;
+  --color-sunlight-600: #d2b041;
+  --color-sunlight-700: #b6952b;
+  --color-sunlight-800: #8c7321;
+  --color-sunlight-900: #675518;
+  --color-sunlight-950: #423610;
+}
+
 /* Reduced motion: collapse animations/transitions instead of removing them,
    so layout and visibility stay correct while movement stops. */
 @media (prefers-reduced-motion: reduce) {

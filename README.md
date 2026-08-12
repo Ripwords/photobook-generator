@@ -1,4 +1,4 @@
-# Photobook Generator
+# PhotobookGen
 
 A macOS photobook layout app built with Tauri 2 (Rust) + Nuxt 4, backed by a Swift
 sidecar (`sidecar/`, SwiftPM package `PhotobookEngine`) that performs photo analysis.

@@ -2,10 +2,12 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { AnalyzedPhoto } from "~/types/features";
 
-const { photo, burstSize = 1 } = defineProps<{
+const { photo, burstSize = 1, isHero = false } = defineProps<{
   photo: AnalyzedPhoto;
   /** How many near-duplicate frames this photo was picked from. 1 means no burst. */
   burstSize?: number;
+  /** The single top-ranked photo in its event group. Marked with the hero accent. */
+  isHero?: boolean;
 }>();
 
 const src = computed(() => (photo.thumbnailPath ? convertFileSrc(photo.thumbnailPath) : null));
@@ -15,7 +17,14 @@ const smilePct = computed(() =>
 </script>
 
 <template>
-  <figure class="relative aspect-square overflow-hidden rounded-lg bg-elevated ring ring-default">
+  <figure
+    class="relative aspect-square overflow-hidden rounded-lg bg-elevated"
+    :class="
+      isHero
+        ? 'ring-2 ring-sunlight-800 dark:ring-sunlight-400'
+        : 'ring ring-default'
+    "
+  >
     <img
       v-if="src"
       :src="src"
@@ -26,7 +35,7 @@ const smilePct = computed(() =>
       class="size-full object-cover"
     />
     <div v-else class="flex size-full items-center justify-center">
-      <UIcon name="i-lucide-image-off" class="size-6 text-dimmed" />
+      <UIcon name="i-lucide-image-off" class="size-6 text-muted" />
     </div>
 
     <UBadge
@@ -38,6 +47,15 @@ const smilePct = computed(() =>
     >
       <UIcon name="i-lucide-images" class="size-3" />
       <span class="font-mono tabular-nums">{{ burstSize }}</span>
+    </UBadge>
+
+    <UBadge
+      v-if="isHero"
+      size="sm"
+      class="absolute top-2 right-2 gap-1 bg-sunlight-300 text-charcoal-900 ring-0"
+      title="Highest-ranked photo in this event"
+    >
+      <UIcon name="i-lucide-star" class="size-3" />
     </UBadge>
 
     <figcaption

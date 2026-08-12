@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Photobook Generator",
+  "productName": "PhotobookGen",
   "version": "0.1.0",
   "identifier": "com.jiajingteoh.photobook",
   "build": {
@@ -10,7 +10,7 @@
     "frontendDist": "../.output/public"
   },
   "app": {
-    "windows": [{ "title": "Photobook Generator", "width": 1400, "height": 900 }],
+    "windows": [{ "title": "PhotobookGen", "width": 1400, "height": 900 }],
     "security": {
       "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:",
       "assetProtocol": {

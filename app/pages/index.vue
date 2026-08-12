@@ -1,7 +1,53 @@
 <script setup lang="ts">
-import { basename, burstSizes, groupByEvent, keepers } from "~/types/features";
+import { basename, burstSizes, groupByEvent, keepers, pickHero, type AnalyzedPhoto } from "~/types/features";
 
 const { summary, running, error, folder, pickFolderAndAnalyze, retry } = useAnalysis();
+
+// TEMP DEBUG - retheme visual QA only, reverted before commit.
+if (import.meta.client) {
+  const debug = new URLSearchParams(window.location.search).get("debug");
+  if (debug) {
+    (window as unknown as { __TAURI_INTERNALS__: { convertFileSrc: (p: string) => string } }).__TAURI_INTERNALS__ = {
+      convertFileSrc: (p: string) => p,
+    };
+    const photo = (over: Partial<AnalyzedPhoto>): AnalyzedPhoto => ({
+      status: "ok",
+      path: "/p/x.jpg",
+      hash: "h",
+      width: 4032,
+      height: 3024,
+      isUtility: false,
+      aestheticPct: 50,
+      sharpnessPct: 50,
+      faceCount: 0,
+      smileFraction: null,
+      sceneTags: [],
+      nearDupCluster: 0,
+      eventCluster: 0,
+      thumbnailPath: null,
+      ...over,
+    });
+    if (debug === "results") {
+      summary.value = {
+        total: 14,
+        cached: 4,
+        failed: 2,
+        photos: [
+          photo({ path: "/p/e1-1.jpg", eventCluster: 1, nearDupCluster: 1, aestheticPct: 82, sharpnessPct: 74, faceCount: 2, smileFraction: 0.5, thumbnailPath: "/debug-thumbs/a.jpg" }),
+          photo({ path: "/p/e1-2.jpg", eventCluster: 1, nearDupCluster: 1, aestheticPct: 60, sharpnessPct: 50, faceCount: 2, smileFraction: 0.3, thumbnailPath: "/debug-thumbs/b.jpg" }),
+          photo({ path: "/p/e1-3.jpg", eventCluster: 1, nearDupCluster: 1, aestheticPct: 55, sharpnessPct: 40, faceCount: 1, smileFraction: null, thumbnailPath: "/debug-thumbs/c.jpg" }),
+          photo({ path: "/p/e1-4.jpg", eventCluster: 1, nearDupCluster: 2, aestheticPct: 91, sharpnessPct: 88, faceCount: 0, smileFraction: null, thumbnailPath: null }),
+          photo({ path: "/p/e2-1.jpg", eventCluster: 2, nearDupCluster: 3, aestheticPct: 45, sharpnessPct: 63, faceCount: 3, smileFraction: 0, thumbnailPath: "/debug-thumbs/a.jpg" }),
+          photo({ path: "/p/e2-2.jpg", eventCluster: 2, nearDupCluster: 4, aestheticPct: 70, sharpnessPct: 70, faceCount: 1, smileFraction: 1, thumbnailPath: "/debug-thumbs/b.jpg" }),
+          photo({ path: "/p/e2-3.jpg", eventCluster: 2, nearDupCluster: 5, aestheticPct: 20, sharpnessPct: 30, faceCount: 0, smileFraction: null, thumbnailPath: "/debug-thumbs/c.jpg" }),
+          photo({ path: "/p/e2-4.jpg", eventCluster: 2, nearDupCluster: 6, aestheticPct: 99, sharpnessPct: 95, faceCount: 5, smileFraction: 0.8, thumbnailPath: "/debug-thumbs/a.jpg" }),
+          photo({ path: "/p/util.png", eventCluster: 1, nearDupCluster: 7, aestheticPct: 10, sharpnessPct: 10, isUtility: true }),
+        ],
+      };
+    }
+  }
+}
+// END TEMP DEBUG
 
 type ViewState = "entry" | "running" | "error" | "no-images" | "no-analyzed" | "results";
 
@@ -18,6 +64,16 @@ const kept = computed(() => (summary.value ? keepers(summary.value.photos) : [])
 const eventGroups = computed(() => groupByEvent(kept.value));
 const burstMap = computed<Map<number, number>>(() =>
   summary.value ? burstSizes(summary.value.photos) : new Map(),
+);
+// One hero per event group - the pastel-yellow accent marks exactly this
+// photo, so it stays meaningful instead of becoming decoration.
+const heroPaths = computed<Set<string>>(
+  () =>
+    new Set(
+      eventGroups.value
+        .map((group) => pickHero(group.photos)?.path)
+        .filter((path): path is string => path !== undefined),
+    ),
 );
 const folderLabel = computed(() => (folder.value ? basename(folder.value) : "the selected folder"));
 
@@ -155,7 +211,7 @@ const gridClass = "grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3";
               ><span class="font-mono tabular-nums">{{ kept.length }}</span> keepers</span
             >
           </div>
-          <p class="text-xs text-dimmed">
+          <p class="text-xs text-muted">
             Percentiles are ranked within this folder. Sparkle is aesthetic, focus is sharpness.
           </p>
         </div>
@@ -179,11 +235,11 @@ const gridClass = "grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3";
         <section
           v-for="(group, index) in eventGroups"
           :key="group.eventCluster"
-          class="space-y-3"
+          class="space-y-3 border-t border-lavender-600 pt-6 first:border-t-0 first:pt-0 dark:border-lavender-300"
         >
           <h2 class="text-sm font-medium text-toned">
             Event {{ index + 1 }}
-            <span class="text-dimmed"
+            <span class="text-muted"
               >&middot; {{ group.photos.length }}
               {{ group.photos.length === 1 ? "photo" : "photos" }}</span
             >
@@ -194,6 +250,7 @@ const gridClass = "grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3";
               :key="photo.path"
               :photo="photo"
               :burst-size="burstMap.get(photo.nearDupCluster) ?? 1"
+              :is-hero="heroPaths.has(photo.path)"
             />
           </div>
         </section>

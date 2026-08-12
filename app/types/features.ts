@@ -108,3 +108,25 @@ export function basename(path: string): string {
   const segments = trimmed.split("/");
   return segments[segments.length - 1] || path;
 }
+
+/**
+ * Picks the single top-ranked photo from a group (an event chapter's kept
+ * photos), by aesthetic percentile, tie-broken by sharpness percentile.
+ * This is the one "hero" per group: the pastel-yellow accent marks exactly
+ * this photo and nothing else, so the marking stays meaningful.
+ */
+export function pickHero(photos: AnalyzedPhoto[]): AnalyzedPhoto | undefined {
+  let best: AnalyzedPhoto | undefined;
+
+  for (const photo of photos) {
+    if (
+      !best ||
+      photo.aestheticPct > best.aestheticPct ||
+      (photo.aestheticPct === best.aestheticPct && photo.sharpnessPct > best.sharpnessPct)
+    ) {
+      best = photo;
+    }
+  }
+
+  return best;
+}

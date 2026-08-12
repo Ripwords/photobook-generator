@@ -5,6 +5,7 @@ import {
   groupByEvent,
   isFailed,
   keepers,
+  pickHero,
   type AnalyzedPhoto,
 } from "../app/types/features";
 
@@ -152,5 +153,33 @@ describe("basename", () => {
 
   it("returns the input unchanged when there is no separator", () => {
     expect(basename("Pictures")).toBe("Pictures");
+  });
+});
+
+describe("pickHero", () => {
+  it("returns undefined for no input", () => {
+    expect(pickHero([])).toBeUndefined();
+  });
+
+  it("returns the only photo for a group of one", () => {
+    const solo = photo({ path: "/p/solo.jpg" });
+    expect(pickHero([solo])).toBe(solo);
+  });
+
+  it("picks the highest aesthetic percentile", () => {
+    const result = pickHero([
+      photo({ path: "/p/low.jpg", aestheticPct: 40 }),
+      photo({ path: "/p/high.jpg", aestheticPct: 90 }),
+      photo({ path: "/p/mid.jpg", aestheticPct: 60 }),
+    ]);
+    expect(result?.path).toBe("/p/high.jpg");
+  });
+
+  it("breaks an aesthetic tie using sharpness percentile", () => {
+    const result = pickHero([
+      photo({ path: "/p/soft.jpg", aestheticPct: 70, sharpnessPct: 30 }),
+      photo({ path: "/p/sharp.jpg", aestheticPct: 70, sharpnessPct: 85 }),
+    ]);
+    expect(result?.path).toBe("/p/sharp.jpg");
   });
 });
