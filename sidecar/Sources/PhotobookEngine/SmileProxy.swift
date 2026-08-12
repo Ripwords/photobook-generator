@@ -32,10 +32,23 @@ enum SmileProxy {
     static let maxYawRadians = 0.52
     static let maxPitchRadians = 0.52
 
-    /// Vision's `outerLips` region reliably reports roughly 8-12 points; this
-    /// is a floor well below that reliable range, just high enough to reject
-    /// a degenerate or malformed contour (e.g. a handful of stray points)
-    /// without rejecting anything Vision would actually produce.
+    /// Vision does not publish a per-region landmark count anywhere in its
+    /// headers or documentation -- only the *total* face-mesh constellation
+    /// size (65 or 76 points, across ALL regions combined) is documented.
+    /// "Vision's `outerLips` region reliably reports roughly 8-12 points" is
+    /// therefore an ASSUMPTION, carried over from informal observation, not
+    /// a measured or verified fact -- see the "NOT verified" list in
+    /// docs/PROJECT-STATUS.md. `minOuterLipPoints` is set as a floor meant
+    /// to sit below that assumed range: just high enough to reject a
+    /// degenerate or malformed contour (e.g. a handful of stray points)
+    /// without rejecting anything Vision would actually produce -- but this
+    /// has never been checked against real photos. If Vision's real
+    /// per-region count for `outerLips` turns out to be lower than assumed
+    /// here, this floor silently disables smile detection library-wide.
+    /// `confidence(for:)` below writes a one-line stderr warning whenever
+    /// `outerLips` is present but under this floor, specifically so that
+    /// failure mode is distinguishable from "pose was unusable" on the
+    /// first real run -- check the real count first thing.
     static let minOuterLipPoints = 6
 
     /// Returns a 0...1 smile-likelihood proxy for a single face, or `nil`
@@ -48,7 +61,20 @@ enum SmileProxy {
     /// (occlusion, extreme angle), so scoring it as if frontal would feed a
     /// wrong signal into culling.
     static func confidence(for face: FaceObservation) -> Double? {
-        guard let points = face.outerLips, points.count >= minOuterLipPoints else { return nil }
+        guard let points = face.outerLips else { return nil }
+        guard points.count >= minOuterLipPoints else {
+            // Distinguishes "Vision reported a lip contour, but with fewer
+            // points than `minOuterLipPoints` assumes it always has" from
+            // "pose was unusable" or "no lip contour at all" -- all three
+            // collapse to the same `nil` return below, but only this one
+            // means the unverified assumption in `minOuterLipPoints`'s doc
+            // comment might be miscalibrated against Vision's real
+            // per-region count. Grep stderr for this on the first real run.
+            FileHandle.standardError.write(Data(
+                "PhotobookEngine: outerLips has \(points.count) points, below minOuterLipPoints (\(minOuterLipPoints))\n".utf8
+            ))
+            return nil
+        }
         guard let yaw = face.yaw, abs(yaw) <= maxYawRadians else { return nil }
         guard let pitch = face.pitch, abs(pitch) <= maxPitchRadians else { return nil }
 
