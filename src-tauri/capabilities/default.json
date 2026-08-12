@@ -2,5 +2,13 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default", "fs:default"]
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "fs:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [{ "name": "binaries/photobook-engine", "sidecar": true }]
+    }
+  ]
 }

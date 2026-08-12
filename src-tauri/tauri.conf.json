@@ -16,6 +16,7 @@
   "bundle": {
     "active": true,
     "targets": "app",
-    "macOS": { "minimumSystemVersion": "15.0" }
+    "macOS": { "minimumSystemVersion": "15.0" },
+    "externalBin": ["binaries/photobook-engine"]
   }
 }
