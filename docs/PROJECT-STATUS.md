@@ -54,7 +54,7 @@ thumbnails, chapter dividers and burst-size badges.
 | Nuxt UI | `app/` | `pages/index.vue`, `components/PhotoTile.vue`, `composables/useAnalysis.ts`, `types/features.ts` |
 | Template library | `templates/` | 40 spread templates + validator at `tests/templates.test.ts` |
 
-**Test counts at last run:** 425 TypeScript, ~66 Rust, 71+ Swift. All green.
+**Test counts at last run:** 425 TypeScript, 74 Rust, 71 Swift. All green, lint clean.
 **Release build works:** `bun tauri build --bundles app` produces `PhotobookGen.app`.
 
 ### Unplanned additions beyond the plan
@@ -67,7 +67,10 @@ thumbnails, chapter dividers and burst-size badges.
   Palette derives from the app icon render.
 - **App icon.** `app-icon.png` is masked to Apple's macOS squircle (superellipse n=5,
   824px inside a 1024px canvas). Regenerate the set with `bun tauri icon app-icon.png`.
-- **Completion notification** for long analysis runs.
+- **Completion notification** for long analysis runs, posted from Rust so no JS is
+  involved. Gated on two conditions: elapsed ≥ `NOTIFY_MIN_ELAPSED` (10s) **and** the
+  window is unfocused. Failure is non-fatal — a user who declines notifications still
+  gets their analysis.
 
 ---
 
@@ -161,6 +164,11 @@ Be precise about this. Several things look verified and are not.
    is 5 mm either way and the practical rule is identical, so this is cosmetic — but it is
    unresolved.
 6. **CSP and asset protocol in a packaged bundle.** Verified in `tauri dev` only.
+7. **The notification banner actually rendering.** macOS showed its genuine first-run
+   permission prompt for `PhotobookGen`, but nobody could click Allow (no Accessibility
+   access, and blind-clicking a live desktop was correctly refused). The gating logic and
+   non-fatal failure path are unit-tested; the banner itself has never been seen. Grant
+   permission on first run and confirm.
 
 ---
 
@@ -248,6 +256,11 @@ beside it. The design calls for the OS keychain, read from Rust.
 - `AnalysisSummary.photos` is `Vec<serde_json::Value>` with no compile-time link to the
   TypeScript `AnalyzedPhoto`. A field rename on either side is a silent `undefined`.
   Consider generated types before Phase 2 widens this boundary.
+- **`count_keepers` in Rust duplicates `keepers()` in TypeScript.** Both decide which
+  photo survives a near-duplicate cluster, in two languages, with no shared definition.
+  The Rust copy exists only to put a number in the completion notification. If the culling
+  rule changes in one and not the other, the notification quietly disagrees with the
+  screen. Worth collapsing to one authority when Phase 2 touches culling.
 - `.oxlintrc.json` enables only `correctness` and `suspicious`, so `no-explicit-any` is
   off and the "never use `any`" convention rests on discipline.
 - No `typecheck` script; `nuxi typecheck` and `vue-tsc` both fail on environment issues.
