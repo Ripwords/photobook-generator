@@ -22,10 +22,6 @@ impl Db {
         Ok(db)
     }
 
-    pub fn analyzer_version() -> u32 {
-        ANALYZER_VERSION
-    }
-
     fn migrate(&self) -> rusqlite::Result<()> {
         self.conn.execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -120,5 +116,18 @@ mod tests {
             .hashes_needing_analysis(&["cached".to_string(), "fresh".to_string()])
             .unwrap();
         assert_eq!(need, vec!["fresh".to_string()]);
+    }
+
+    #[test]
+    fn reports_hash_cached_at_older_analyzer_version_as_needing_analysis() {
+        let db = Db::open_in_memory().unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO features (hash, path, json, analyzer_version) VALUES (?1,?2,?3,?4)",
+                rusqlite::params!["old", "/tmp/o.jpg", "{}", ANALYZER_VERSION - 1],
+            )
+            .unwrap();
+        let need = db.hashes_needing_analysis(&["old".to_string()]).unwrap();
+        assert_eq!(need, vec!["old".to_string()]);
     }
 }
