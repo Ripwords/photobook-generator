@@ -27,46 +27,48 @@ private func fixture(_ name: String) -> String {
 // returns control to let the task group observe cancellation -- so the
 // exact regression this test exists to catch would hang instead of timing
 // out, silently defeating the point of having a watchdog at all (verified
-// empirically, see task-10-report.md). Instead: run the analysis on a
-// background queue and wait on a plain DispatchSemaphore with an explicit
-// timeout on the test thread.
+// empirically, see task-10-report.md).
 //
-// KNOWN LIMITATION, found while verifying this watchdog against a
-// deliberately reintroduced deadlock (visionConcurrencyLimit set absurdly
-// high, HostileInputTests' @Suite(.serialized) removed, full unfiltered
-// suite run): the watchdog did NOT fire. `sample` on the hung process
-// showed dozens of threads legitimately stuck inside Vision's
-// VNControlledCapacityTasksQueue (the deadlock working as sabotaged), but
-// this test's own `done.wait(timeout:)` call never appeared in any sample
-// -- its synchronous body was never scheduled onto an OS thread at all in
-// 3+ minutes of wall time. `DispatchQueue.global().async` and the thread
-// running this test's own body both draw from the same shared libdispatch
-// global concurrent queue that the deadlocked Vision calls were exhausting;
-// under total pool exhaustion the watchdog's own code can starve alongside
-// the work it's meant to bound, rather than observing it from outside.
-// `done.wait(timeout:)` genuinely is a self-contained kernel deadline once
-// its calling thread is actually running -- the gap is entirely in getting
-// that thread scheduled in the first place.
+// NOT using `DispatchQueue.global().async` either, even though it looks
+// like the obvious "run it in the background" answer -- that was tried
+// first and *failed verification*. DispatchQueue.global() schedules onto
+// libdispatch's shared cooperative worker pool, which is the exact same
+// pool concurrentPerform and VNImageRequestHandler's internal queue draw
+// from. Under a real deadlock that pool can be fully exhausted, and a
+// newly-submitted `.async` block then never gets a thread to run on at
+// all -- confirmed via `sample` on a deliberately-induced hang: dozens of
+// threads were legitimately stuck inside Vision's
+// VNControlledCapacityTasksQueue, but this test's watchdog closure never
+// appeared running anywhere, because it was queued behind the same
+// exhausted pool it was supposed to be watching from outside. A watchdog
+// built on DispatchQueue.global() is not out-of-band; it's in the same
+// band as the thing it watches, and can starve right alongside it.
 //
-// This specific total-exhaustion state should not occur in the shipped
-// configuration: it requires BOTH the production semaphore's cap disabled
-// AND `.serialized` removed from HostileInputTests, and the latter is kept
-// specifically because it prevents the local suite from ever reaching this
-// state. A single Analyzer.analyze(paths:) call in isolation (no other
-// tests competing for the pool) did not deadlock even with the cap
-// disabled (see task-10-report.md) -- so the true production shape (one
-// process, one batch, nothing else drawing on the shared pool) was never
-// observed to defeat this watchdog; only the compound, already-mitigated
-// test-suite scenario was. Recorded here rather than silently assumed to
-// work, per explicit request during review.
+// Using a raw `Thread` instead: Thread is scheduled directly by the
+// kernel, not through libdispatch's cooperative pool, so it stays
+// runnable no matter how thoroughly that pool is starved. The test thread
+// blocks on `done.wait(timeout:)`, which is also a kernel-level wait, not
+// a pool-scheduled one -- so both the worker and the observer are
+// independent of whatever `Analyzer.analyze` does to the shared pool
+// internally (concurrentPerform legitimately using that pool is fine and
+// expected; only the watchdog's ability to observe and report must not
+// depend on it). Verified this against the same reintroduced-deadlock
+// scenario that defeated the DispatchQueue.global() version (cap disabled,
+// HostileInputTests' @Suite(.serialized) removed, full suite run): this
+// version reported the expected failure in ~120s and the run continued,
+// instead of hanging (see task-10-report.md for the transcript). If it
+// ever deadlocks for real, the worker Thread leaks for the rest of the
+// process's life, but the test reports a failure rather than hanging CI.
 @Test func analyzerHandlesA300PhotoBatchWithoutDeadlockingOnVisionConcurrency() {
     let paths = Array(repeating: fixture("landscape.jpg"), count: 300)
     let done = DispatchSemaphore(value: 0)
     var records: [PhotoRecord] = []
-    DispatchQueue.global().async {
+    let worker = Thread {
         records = Analyzer.analyze(paths: paths)
         done.signal()
     }
+    worker.stackSize = 1 << 20
+    worker.start()
     let outcome = done.wait(timeout: .now() + 120)
     #expect(outcome == .success, "analyze deadlocked: did not complete within 120s")
     guard outcome == .success else { return }
