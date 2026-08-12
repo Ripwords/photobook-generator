@@ -62,11 +62,19 @@ disagree.
 - `aspect_pref`: `[min, max]`, the real-world (inches) width/height ratio this slot suits.
   Because the canvas itself is 2.518:1 (wide), a slot's *normalised* w/h ratio is not its
   real aspect — multiply by 2.518 (canvas width ÷ height) to convert. A tall portrait slot
-  reads as roughly `[0.6, 0.95]`; a wide panorama slot as `[2.5, 5.0]`.
+  reads as roughly `[0.6, 0.95]`; a wide panorama slot as `[2.5, 5.0]`. This is enforced by
+  `tests/templates.test.ts`: every slot's own real-world aspect ratio must fall inside its
+  declared `aspect_pref`, so an accidentally-normalised range fails the build instead of
+  silently mis-scoring Phase 2's template selection.
 - `density`: `"sparse" | "medium" | "dense"`.
 - `energy`: `"calm" | "neutral" | "lively"`.
-- `text_zones` may be empty. `min_photos`/`max_photos` should match the slot count for
-  every template in this library — none of them have optional slots.
+- `text_zones` may be empty.
+- **`min_photos == max_photos == slots.length` for every template in this library.** Each
+  template accepts an exact photo count, not a range — none of the 40 have optional slots.
+  This is a design choice, not a schema requirement: the format supports `min_photos <
+  max_photos` for a template with optional slots, but no template here uses it. If you add
+  one, the Phase 2 packer will need to handle a template whose slot count varies by photo
+  count, which no existing template exercises.
 
 ## Adding a template
 

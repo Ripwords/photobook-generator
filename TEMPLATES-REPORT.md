@@ -1,23 +1,25 @@
 # Spread template library — report
 
 40 templates in `templates/`, validated by `tests/templates.test.ts` (run via
-`bun run test`). All 364 assertions pass; `bun run lint` is clean.
+`bun run test`). All 404 assertions pass; `bun run lint` is clean.
 
 ## Validator result
 
 ```
 $ bun run test
  Test Files  2 passed (2)
-      Tests  364 passed (364)
+      Tests  404 passed (404)
 ```
 
 The suite (`tests/templates.test.ts`) loads every `templates/*.json` file, narrows it
 through a hand-written type guard (no `any`), and asserts per template: well-formed rects
 (width/height > 0), text zones entirely within the safe area, no text zone overlapping the
 gutter dead band, every declared `bleed` edge reaching the canvas boundary, every
-undeclared edge staying inside the canvas, `min_photos <= max_photos` with a consistent
-slot count, allowed `density`/`energy` enums, a unique `id` matching the filename slug, and
-no meaningful overlap between a template's own slots. Failures name the offending file and
+undeclared edge staying inside the canvas, that every slot's `aspect_pref` is a valid
+positive range and matches the slot's own real-world (inches) aspect ratio,
+`min_photos <= max_photos` with a consistent slot count, allowed `density`/`energy` enums,
+a unique `id` matching the filename slug, and no meaningful overlap between a template's
+own slots. Failures name the offending file and
 rect.
 
 ## Templates by category
@@ -103,9 +105,20 @@ rect.
   2.518:1, a slot's raw normalised width/height ratio reads as far more "landscape" than
   the photo it should actually hold. I converted every `aspect_pref` by the canvas ratio
   (matching the design doc's own worked example: `rect` w/h of 0.52 → real aspect ≈1.31,
-  inside the doc's stated `[1.2, 1.6]`). This isn't validated by the test suite (not in
-  the required checklist) but keeps the library internally consistent and usable once the
-  scoring engine reads it.
+  inside the doc's stated `[1.2, 1.6]`). This is now enforced, not just documented:
+  `tests/templates.test.ts` computes each slot's real-world aspect ratio as
+  `(w * 22.394) / (h * 8.894)` and asserts it falls inside that slot's own `aspect_pref`,
+  with a comment explaining why the canvas dimensions appear in that formula — so a future
+  reader doesn't "simplify" it back to the normalised ratio and silently break Phase 2's
+  scoring.
+  - **Outlier found and fixed:** `12-two-up-uneven-l-shape`'s second slot (`rect
+    [0.52, 0.55, 0.45, 0.4]`, real aspect ≈2.83) had been given `aspect_pref: [1.3, 2.0]`
+    — a plausible-looking landscape range that didn't actually describe this slot's own
+    (fairly wide) shape. This was a plain authoring mistake, not a deliberate offset: the
+    slot's geometry is intentional (the L-shaped composition), but the preference should
+    describe the slot as drawn. Corrected to `[2.3, 3.3]`, matching the same
+    natural-ratio × [0.82, 1.17] style used for every other wide support slot in the
+    library (e.g. `13`/`14`'s stacked supports at `[2.0, 2.8]` for real aspect ≈2.4).
 - **"Full-bleed background + inset" is built by adjacency, not z-order overlap.** The
   validator requires slots not to overlap, but a literal inset "on top of" a background
   photo is, geometrically, an overlapping rect. I resolved this by having the background

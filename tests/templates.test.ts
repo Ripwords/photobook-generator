@@ -110,6 +110,19 @@ const SAFE_Y1 = 0.97785;
 const GUTTER_X0 = 0.491203;
 const GUTTER_X1 = 0.508797;
 
+// The spread canvas in inches (section 3 of the design doc): 22.394 x 8.894, a
+// 2.518:1 ratio. `rect` is normalised to the canvas ([0,1] on each axis), but
+// `aspect_pref` is a real-world (inches) width/height ratio — the thing a photo's
+// own aspect ratio is measured in. Converting a slot's normalised w/h into a real
+// aspect requires multiplying by (CANVAS_WIDTH_IN / CANVAS_HEIGHT_IN), because the
+// canvas itself is wide, not square: a slot that is "half as tall as it is wide" in
+// normalised units is not 2:1 in real inches, it's 2.518x that. Do not "simplify"
+// this away by comparing aspect_pref against the raw normalised rect ratio — that
+// silently mis-scores every slot once Phase 2's scoring engine compares aspect_pref
+// against a photo's real aspect ratio.
+const CANVAS_WIDTH_IN = 22.394;
+const CANVAS_HEIGHT_IN = 8.894;
+
 /** Tolerance for float rounding in authored JSON. Not a design allowance. */
 const EPS = 0.0005;
 
@@ -150,6 +163,13 @@ function rectOverlapsGutterBand(rect: Rect): boolean {
   // x-range intersects [GUTTER_X0, GUTTER_X1] overlaps the band, regardless
   // of its y-range.
   return x1 > GUTTER_X0 + EPS && x < GUTTER_X1 - EPS;
+}
+
+/** A slot's real-world (inches) width/height ratio — see the comment on
+ * CANVAS_WIDTH_IN/CANVAS_HEIGHT_IN above for why this isn't just `w / h`. */
+function realAspectRatio(rect: Rect): number {
+  const [, , w, h] = rect;
+  return (w * CANVAS_WIDTH_IN) / (h * CANVAS_HEIGHT_IN);
 }
 
 const loaded = loadTemplates();
@@ -260,6 +280,27 @@ describe("template library", () => {
               1 + EPS,
             );
           }
+        });
+      });
+
+      it("aspect_pref is a valid, positive range describing the slot's own real-world shape", () => {
+        template.slots.forEach((slot, i) => {
+          const label = rectLabel(filename, "slots", i, slot.rect);
+          const [lo, hi] = slot.aspect_pref;
+          expect(lo, `${label}: aspect_pref[0] must be > 0`).toBeGreaterThan(0);
+          expect(hi, `${label}: aspect_pref[1] must be > 0`).toBeGreaterThan(0);
+          expect(lo, `${label}: aspect_pref[0] must be < aspect_pref[1]`).toBeLessThan(hi);
+
+          const real = realAspectRatio(slot.rect);
+          expect(
+            real,
+            `${label}: real-world aspect ratio ${real.toFixed(3)} falls outside its own ` +
+              `declared aspect_pref [${lo}, ${hi}] (aspect_pref is real-world w/h, not the ` +
+              `rect's normalised ratio — see CANVAS_WIDTH_IN comment above)`,
+          ).toBeGreaterThanOrEqual(lo - EPS);
+          expect(real, `${label}: real-world aspect ratio above aspect_pref[1]`).toBeLessThanOrEqual(
+            hi + EPS,
+          );
         });
       });
 
