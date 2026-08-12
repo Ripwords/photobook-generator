@@ -48,3 +48,48 @@ private func fixture(_ name: String) -> String {
     #expect(abs(box[2] - 0.3) < 1e-9)
     #expect(abs(box[3] - 0.2) < 1e-9)
 }
+
+// Mutation checks for `imageNormalizedTopLeft`, which offsets and scales a
+// face-landmark point (normalised relative to the face's own bounding box, per
+// VNFaceLandmarkRegion2D.normalizedPoints) into image-normalised, top-left
+// coordinates matching `box`. No fixture contains a face, so this can only be
+// tested in isolation. Expected values below are hand-computed independently
+// of the implementation, not derived from it.
+
+// Face box off-centre in the frame; point at the box's own centre.
+// Vision-space box: origin (0.5, 0.3), size (0.2, 0.4).
+// x_img = 0.5 + 0.5*0.2 = 0.6
+// y_img_bottomleft = 0.3 + 0.5*0.4 = 0.5
+// y_img_topleft = 1 - 0.5 = 0.5
+@Test func visionLandmarkPointAtFaceBoxCentreMapsIntoImageSpace() {
+    let box = CGRect(x: 0.5, y: 0.3, width: 0.2, height: 0.4)
+    let result = VisionAnalyzer.imageNormalizedTopLeft(CGPoint(x: 0.5, y: 0.5), faceBoxInVisionSpace: box)
+    #expect(result.count == 2)
+    #expect(abs(result[0] - 0.6) < 1e-9)
+    #expect(abs(result[1] - 0.5) < 1e-9)
+}
+
+// Same face box; point at the box's bottom-left corner (0,0) in Vision-space,
+// i.e. face-relative, coordinates, and at the top-right corner (1,1).
+// Corner (0,0): x_img = 0.5 + 0*0.2 = 0.5; y_bl = 0.3 + 0*0.4 = 0.3; y_tl = 0.7
+// Corner (1,1): x_img = 0.5 + 1*0.2 = 0.7; y_bl = 0.3 + 1*0.4 = 0.7; y_tl = 0.3
+@Test func visionLandmarkPointAtFaceBoxCornersMapsIntoImageSpace() {
+    let box = CGRect(x: 0.5, y: 0.3, width: 0.2, height: 0.4)
+    let bottomLeft = VisionAnalyzer.imageNormalizedTopLeft(CGPoint(x: 0.0, y: 0.0), faceBoxInVisionSpace: box)
+    #expect(abs(bottomLeft[0] - 0.5) < 1e-9)
+    #expect(abs(bottomLeft[1] - 0.7) < 1e-9)
+
+    let topRight = VisionAnalyzer.imageNormalizedTopLeft(CGPoint(x: 1.0, y: 1.0), faceBoxInVisionSpace: box)
+    #expect(abs(topRight[0] - 0.7) < 1e-9)
+    #expect(abs(topRight[1] - 0.3) < 1e-9)
+}
+
+// A face box occupying the full frame reduces the offset-and-scale to the
+// identity plus a plain flip: x_img = point.x, y_img_topleft = 1 - point.y.
+// Point (0.3, 0.8): x_img = 0.3; y_bl = 0.8; y_tl = 1 - 0.8 = 0.2.
+@Test func visionLandmarkConversionReducesToSimpleFlipForFullFrameFaceBox() {
+    let box = CGRect(x: 0.0, y: 0.0, width: 1.0, height: 1.0)
+    let result = VisionAnalyzer.imageNormalizedTopLeft(CGPoint(x: 0.3, y: 0.8), faceBoxInVisionSpace: box)
+    #expect(abs(result[0] - 0.3) < 1e-9)
+    #expect(abs(result[1] - 0.2) < 1e-9)
+}

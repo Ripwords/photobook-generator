@@ -2,6 +2,15 @@ import Foundation
 import Vision
 import CoreGraphics
 
+/// `box` and `landmarks` are both normalised to `0...1` in **image** space with a
+/// **top-left** origin. `landmarks` points are NOT face-bounding-box-relative:
+/// Vision's `VNFaceLandmarkRegion2D.normalizedPoints` are relative to the face's
+/// own bounding box, so they are offset and scaled into image space (via the
+/// Vision-space, i.e. bottom-left-origin, face bounding box) before being
+/// flipped to top-left — see `VisionAnalyzer.imageNormalizedTopLeft`. Keeping
+/// `box` and `landmarks` in the same coordinate space is deliberate: overlaying,
+/// cropping to, or rendering landmarks against the image only works if both
+/// fields agree on what "normalised" means.
 struct FaceObservation: Codable {
     let box: [Double]
     let yaw: Double?
@@ -27,6 +36,25 @@ enum VisionAnalyzer {
     static func topLeft(_ r: CGRect) -> [Double] {
         [Double(r.origin.x), Double(1.0 - r.origin.y - r.height),
          Double(r.width), Double(r.height)]
+    }
+
+    /// Converts a face-landmark point — normalised relative to the **face's own
+    /// bounding box** in `VNFaceLandmarkRegion2D.normalizedPoints` — into
+    /// **image**-normalised, top-left-origin coordinates matching `box`.
+    ///
+    /// `faceBoxInVisionSpace` must be the raw Vision-space (bottom-left-origin)
+    /// face bounding box, i.e. `VNFaceObservation.boundingBox` — NOT the
+    /// already-flipped output of `topLeft(_:)`. Mixing the two silently produces
+    /// a wrong offset because `topLeft` has already re-based `y` to top-left.
+    ///
+    /// Not `private` so the offset-and-scale mutation-check tests can call it
+    /// directly (no fixture contains a face, so this can only be tested in
+    /// isolation with hand-computed values).
+    static func imageNormalizedTopLeft(_ point: CGPoint, faceBoxInVisionSpace box: CGRect) -> [Double] {
+        let xImage = box.origin.x + point.x * box.width
+        let yImageBottomLeft = box.origin.y + point.y * box.height
+        let yImageTopLeft = 1.0 - yImageBottomLeft
+        return [Double(xImage), Double(yImageTopLeft)]
     }
 
     static func analyze(_ image: CGImage) -> VisionResult {
@@ -69,9 +97,12 @@ enum VisionAnalyzer {
         let landmarkResults = landmarks.results ?? []
 
         result.faces = detected.enumerated().map { index, face in
+            // face.boundingBox is the raw Vision-space (bottom-left-origin) box;
+            // it — not the flipped `topLeft(face.boundingBox)` below — is what
+            // normalizedPoints are relative to.
             let points: [[Double]]? = index < landmarkResults.count
                 ? landmarkResults[index].landmarks?.allPoints?.normalizedPoints
-                    .map { [Double($0.x), Double(1.0 - $0.y)] }
+                    .map { imageNormalizedTopLeft($0, faceBoxInVisionSpace: face.boundingBox) }
                 : nil
             let q: Double? = index < qualityResults.count
                 ? qualityResults[index].faceCaptureQuality.map(Double.init)
