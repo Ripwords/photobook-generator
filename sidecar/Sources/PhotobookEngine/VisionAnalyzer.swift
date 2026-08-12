@@ -2,22 +2,28 @@ import Foundation
 import Vision
 import CoreGraphics
 
-/// `box` and `landmarks` are both normalised to `0...1` in **image** space with a
-/// **top-left** origin. `landmarks` points are NOT face-bounding-box-relative:
+/// `box` and `outerLips` are both normalised to `0...1` in **image** space with a
+/// **top-left** origin. `outerLips` points are NOT face-bounding-box-relative:
 /// Vision's `VNFaceLandmarkRegion2D.normalizedPoints` are relative to the face's
 /// own bounding box, so they are offset and scaled into image space (via the
 /// Vision-space, i.e. bottom-left-origin, face bounding box) before being
 /// flipped to top-left — see `VisionAnalyzer.imageNormalizedTopLeft`. Keeping
-/// `box` and `landmarks` in the same coordinate space is deliberate: overlaying,
+/// `box` and `outerLips` in the same coordinate space is deliberate: overlaying,
 /// cropping to, or rendering landmarks against the image only works if both
 /// fields agree on what "normalised" means.
+///
+/// Only the outer lip contour (`VNFaceLandmarks2D.outerLips`, typically 8-12
+/// points) is carried, not Vision's full ~65-76 point `allPoints` set. The
+/// only consumer, `SmileProxy`, only ever needed the mouth contour, and
+/// carrying every landmark would mean serialising and storing dozens of
+/// unused points per face for nothing downstream to read.
 struct FaceObservation: Codable {
     let box: [Double]
     let yaw: Double?
     let pitch: Double?
     let roll: Double?
     let captureQuality: Double?
-    let landmarks: [[Double]]?
+    let outerLips: [[Double]]?
 }
 
 struct VisionResult: Codable {
@@ -99,9 +105,11 @@ enum VisionAnalyzer {
         result.faces = detected.enumerated().map { index, face in
             // face.boundingBox is the raw Vision-space (bottom-left-origin) box;
             // it — not the flipped `topLeft(face.boundingBox)` below — is what
-            // normalizedPoints are relative to.
-            let points: [[Double]]? = index < landmarkResults.count
-                ? landmarkResults[index].landmarks?.allPoints?.normalizedPoints
+            // normalizedPoints are relative to. Only outerLips is kept: it's
+            // the mouth contour SmileProxy needs, not Vision's full ~65-76
+            // point face mesh (jaw, eyebrows, eyes, nose, etc.).
+            let outerLips: [[Double]]? = index < landmarkResults.count
+                ? landmarkResults[index].landmarks?.outerLips?.normalizedPoints
                     .map { imageNormalizedTopLeft($0, faceBoxInVisionSpace: face.boundingBox) }
                 : nil
             let q: Double? = index < qualityResults.count
@@ -113,7 +121,7 @@ enum VisionAnalyzer {
                 pitch: face.pitch.map { Double(truncating: $0) },
                 roll: face.roll.map { Double(truncating: $0) },
                 captureQuality: q,
-                landmarks: points
+                outerLips: outerLips
             )
         }
 
