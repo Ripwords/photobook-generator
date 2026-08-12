@@ -1,0 +1,56 @@
+{
+  "id": "13-three-up-hero-left-stack-right",
+  "slots": [
+    {
+      "rect": [
+        0,
+        0,
+        0.491203,
+        1
+      ],
+      "role": "hero",
+      "bleed": [
+        "left",
+        "top",
+        "bottom"
+      ],
+      "aspect_pref": [
+        1.1,
+        1.5
+      ]
+    },
+    {
+      "rect": [
+        0.56,
+        0.06,
+        0.4,
+        0.42
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2,
+        2.8
+      ]
+    },
+    {
+      "rect": [
+        0.56,
+        0.52,
+        0.4,
+        0.42
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2,
+        2.8
+      ]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 3,
+  "max_photos": 3,
+  "density": "medium",
+  "energy": "neutral"
+}

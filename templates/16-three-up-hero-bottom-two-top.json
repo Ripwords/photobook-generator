@@ -1,0 +1,56 @@
+{
+  "id": "16-three-up-hero-bottom-two-top",
+  "slots": [
+    {
+      "rect": [
+        0,
+        0.45,
+        1,
+        0.55
+      ],
+      "role": "hero",
+      "bleed": [
+        "left",
+        "right",
+        "bottom"
+      ],
+      "aspect_pref": [
+        3.5,
+        5
+      ]
+    },
+    {
+      "rect": [
+        0.03,
+        0.04,
+        0.44,
+        0.36
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2.4,
+        3.4
+      ]
+    },
+    {
+      "rect": [
+        0.53,
+        0.04,
+        0.44,
+        0.36
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2.4,
+        3.4
+      ]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 3,
+  "max_photos": 3,
+  "density": "medium",
+  "energy": "neutral"
+}

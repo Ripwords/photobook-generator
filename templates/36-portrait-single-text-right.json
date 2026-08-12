@@ -1,0 +1,34 @@
+{
+  "id": "36-portrait-single-text-right",
+  "slots": [
+    {
+      "rect": [
+        0.08,
+        0.08,
+        0.28,
+        0.84
+      ],
+      "role": "hero",
+      "bleed": [],
+      "aspect_pref": [
+        0.65,
+        0.95
+      ]
+    }
+  ],
+  "text_zones": [
+    {
+      "rect": [
+        0.58,
+        0.4,
+        0.34,
+        0.2
+      ],
+      "align": "left"
+    }
+  ],
+  "min_photos": 1,
+  "max_photos": 1,
+  "density": "sparse",
+  "energy": "calm"
+}

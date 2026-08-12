@@ -1,0 +1,46 @@
+{
+  "id": "08-two-up-symmetric-bleed-outer",
+  "slots": [
+    {
+      "rect": [
+        0,
+        0,
+        0.491203,
+        1
+      ],
+      "role": "support",
+      "bleed": [
+        "left",
+        "top",
+        "bottom"
+      ],
+      "aspect_pref": [
+        1.1,
+        1.5
+      ]
+    },
+    {
+      "rect": [
+        0.508797,
+        0,
+        0.491203,
+        1
+      ],
+      "role": "support",
+      "bleed": [
+        "right",
+        "top",
+        "bottom"
+      ],
+      "aspect_pref": [
+        1.1,
+        1.5
+      ]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 2,
+  "max_photos": 2,
+  "density": "medium",
+  "energy": "lively"
+}

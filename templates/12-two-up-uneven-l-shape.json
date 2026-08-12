@@ -1,0 +1,38 @@
+{
+  "id": "12-two-up-uneven-l-shape",
+  "slots": [
+    {
+      "rect": [
+        0.03,
+        0.03,
+        0.45,
+        0.55
+      ],
+      "role": "hero",
+      "bleed": [],
+      "aspect_pref": [
+        1.7,
+        2.4
+      ]
+    },
+    {
+      "rect": [
+        0.52,
+        0.55,
+        0.45,
+        0.4
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2.3,
+        3.3
+      ]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 2,
+  "max_photos": 2,
+  "density": "medium",
+  "energy": "lively"
+}
