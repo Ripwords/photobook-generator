@@ -17,6 +17,8 @@ enum ExifReader {
 
     private static let formatter: DateFormatter = {
         let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.calendar = Calendar(identifier: .gregorian)
         f.dateFormat = "yyyy:MM:dd HH:mm:ss"
         f.timeZone = TimeZone(secondsFromGMT: 0)
         return f
