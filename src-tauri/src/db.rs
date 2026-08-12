@@ -60,15 +60,6 @@ impl Db {
         Ok(())
     }
 
-    pub fn hashes_needing_analysis(&self, hashes: &[String]) -> rusqlite::Result<Vec<String>> {
-        let mut needed = Vec::new();
-        for hash in hashes {
-            if self.get_features(hash)?.is_none() {
-                needed.push(hash.clone());
-            }
-        }
-        Ok(needed)
-    }
 }
 
 #[cfg(test)]
@@ -108,26 +99,4 @@ mod tests {
         assert!(db.get_features("old").unwrap().is_none());
     }
 
-    #[test]
-    fn reports_only_uncached_hashes_as_needing_analysis() {
-        let db = Db::open_in_memory().unwrap();
-        db.put_features("cached", "/tmp/c.jpg", "{}").unwrap();
-        let need = db
-            .hashes_needing_analysis(&["cached".to_string(), "fresh".to_string()])
-            .unwrap();
-        assert_eq!(need, vec!["fresh".to_string()]);
-    }
-
-    #[test]
-    fn reports_hash_cached_at_older_analyzer_version_as_needing_analysis() {
-        let db = Db::open_in_memory().unwrap();
-        db.conn
-            .execute(
-                "INSERT INTO features (hash, path, json, analyzer_version) VALUES (?1,?2,?3,?4)",
-                rusqlite::params!["old", "/tmp/o.jpg", "{}", ANALYZER_VERSION - 1],
-            )
-            .unwrap();
-        let need = db.hashes_needing_analysis(&["old".to_string()]).unwrap();
-        assert_eq!(need, vec!["old".to_string()]);
-    }
 }

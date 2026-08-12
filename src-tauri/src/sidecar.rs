@@ -86,14 +86,6 @@ impl Sidecar {
         }
     }
 
-    pub fn ping(&mut self) -> Result<String, SidecarError> {
-        match self.request(RequestKind::Ping, None, None, Duration::from_secs(5))? {
-            ResponseResult::Pong { version } => Ok(version),
-            ResponseResult::Error { message } => Err(SidecarError::Engine(message)),
-            ResponseResult::Analyzed(_) => Err(SidecarError::Malformed("expected pong".into())),
-        }
-    }
-
     pub fn analyze(
         &mut self,
         paths: Vec<String>,
