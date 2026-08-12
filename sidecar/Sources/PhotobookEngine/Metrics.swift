@@ -119,7 +119,23 @@ enum Metrics {
     /// straight from a ~1536px source lets a handful of source pixels decide
     /// each bit, so a one-pixel camera-shake shift on fine detail can flip
     /// many bits; averaging a 4x4 block per output cell makes the hash
-    /// robust to that. 64 bits, Hamming-comparable.
+    /// robust to that for the coarse structure real photos are made of
+    /// (broad tonal shape, large soft forms — roughly 24px-and-up detail at
+    /// this resolution). 64 bits, Hamming-comparable.
+    ///
+    /// Known, accepted limitation: this does NOT make the hash robust to a
+    /// one-pixel shift of content at or near the Nyquist frequency of the
+    /// 32x32 intermediate (e.g. a single-pixel-period checkerboard) — a
+    /// one-pixel shift of the finest possible alternating pattern is a full
+    /// phase inversion of the highest frequency present, so it scrambles
+    /// under any downsampling perceptual hash. That's inherent to average
+    /// hashing at near-Nyquist detail, not a defect in this implementation;
+    /// don't "fix" it by chasing that case. Measured: Hamming distance for a
+    /// 1px shift on a 2px checkerboard at 1536px is 28-32 of 64 bits even
+    /// with this box-averaging in place, while the same shift on realistic
+    /// multi-scale photographic content (smooth gradients, soft large-scale
+    /// forms, moderate texture — see
+    /// metricsHashHammingDistanceModelsRealisticBurstVariation) stays low.
     static func perceptualHash(_ image: CGImage) -> UInt64 {
         let side = 32
         let bytes = rgbaBuffer(image, width: side, height: side)

@@ -181,6 +181,85 @@ private func hamming(_ a: UInt64, _ b: UInt64) -> Int {
     #expect(Metrics.perceptualHash(a) != Metrics.perceptualHash(b))
 }
 
+@Test func metricsHashHammingDistanceModelsRealisticBurstVariation() {
+    // Real near-duplicates (consecutive burst frames) differ by small camera
+    // shake, a slight exposure change, and minor subject movement, over an
+    // image with structure at many scales — not a single pathological
+    // spatial frequency (see the doc comment on Metrics.perceptualHash for
+    // why a single-frequency near-Nyquist checkerboard is the wrong model).
+    // Build a scene with a smooth diagonal luminance gradient, four soft
+    // gaussian "blobs" (~120-200px radius i.e. ~200-400px across at 1536px
+    // scale), and a low-amplitude fine texture layer.
+    let width = 1536, height = 1536
+    let w = Double(width - 1), h = Double(height - 1)
+
+    func scene(_ x: Int, _ y: Int, gradientReversed: Bool, blobs: [(cx: Double, cy: Double, sigma: Double, amp: Double)]) -> UInt8 {
+        let fx = Double(x), fy = Double(y)
+        let t = gradientReversed ? ((w - fx) + fy) / (w + h) : (fx + fy) / (w + h)
+        var v = 50.0 + t * 140.0 // smooth diagonal gradient, ~50...190
+        for blob in blobs {
+            let dx = fx - blob.cx, dy = fy - blob.cy
+            v += blob.amp * exp(-(dx * dx + dy * dy) / (2 * blob.sigma * blob.sigma)) // soft falloff, no hard edges
+        }
+        v += 10.0 * sin(fx * 0.5) * cos(fy * 0.5) // low-amplitude fine texture
+        return UInt8(v.clamped(0, 255))
+    }
+
+    let baseBlobs: [(cx: Double, cy: Double, sigma: Double, amp: Double)] = [
+        (cx: 0.25 * w, cy: 0.30 * h, sigma: 90, amp: 45),
+        (cx: 0.70 * w, cy: 0.25 * h, sigma: 70, amp: 40),
+        (cx: 0.40 * w, cy: 0.75 * h, sigma: 100, amp: 35),
+        (cx: 0.80 * w, cy: 0.80 * h, sigma: 60, amp: 30),
+    ]
+    // Structurally unrelated: reversed gradient direction, blobs relocated.
+    let unrelatedBlobs: [(cx: Double, cy: Double, sigma: Double, amp: Double)] = [
+        (cx: 0.75 * w, cy: 0.70 * h, sigma: 80, amp: 45),
+        (cx: 0.30 * w, cy: 0.80 * h, sigma: 65, amp: 40),
+        (cx: 0.60 * w, cy: 0.20 * h, sigma: 95, amp: 35),
+        (cx: 0.15 * w, cy: 0.15 * h, sigma: 55, amp: 30),
+    ]
+
+    let shiftPixels = width / 100 // ~1% of width: the camera-shake case
+
+    let base = makeImage(width: width, height: height) { x, y in
+        scene(x, y, gradientReversed: false, blobs: baseBlobs)
+    }
+    let shifted = makeImage(width: width, height: height) { x, y in
+        scene(x - shiftPixels, y, gradientReversed: false, blobs: baseBlobs)
+    }
+    let exposed = makeImage(width: width, height: height) { x, y in
+        let v = scene(x, y, gradientReversed: false, blobs: baseBlobs)
+        return UInt8((Double(v) * 1.1).clamped(0, 255)) // ~10% brighter, clamped
+    }
+    let unrelated = makeImage(width: width, height: height) { x, y in
+        scene(x, y, gradientReversed: true, blobs: unrelatedBlobs)
+    }
+
+    let hBase = Metrics.perceptualHash(base)
+    let hShift = Metrics.perceptualHash(shifted)
+    let hExposed = Metrics.perceptualHash(exposed)
+    let hUnrelated = Metrics.perceptualHash(unrelated)
+
+    let distShift = hamming(hBase, hShift)
+    let distExposed = hamming(hBase, hExposed)
+    let distUnrelated = hamming(hBase, hUnrelated)
+
+    // Bound set just above what was actually measured on this scene
+    // (distShift=0, distExposed=0, distUnrelated=30 of 64) — see task-6-report.md
+    // for the measurement this was calibrated against.
+    let shiftDescription = "hamming(base, shifted)=\(distShift) of 64 bits was not small for a ~1%-width camera-shake shift"
+    #expect(distShift < 5, "\(shiftDescription)")
+
+    let exposedDescription = "hamming(base, exposed)=\(distExposed) of 64 bits was not small for a ~10% exposure change"
+    #expect(distExposed < 5, "\(exposedDescription)")
+
+    let shiftOrderingDescription = "hamming(base, shifted)=\(distShift) was not clearly smaller than hamming(base, unrelated)=\(distUnrelated)"
+    #expect(distShift < distUnrelated, "\(shiftOrderingDescription)")
+
+    let exposedOrderingDescription = "hamming(base, exposed)=\(distExposed) was not clearly smaller than hamming(base, unrelated)=\(distUnrelated)"
+    #expect(distExposed < distUnrelated, "\(exposedOrderingDescription)")
+}
+
 @Test func metricsHashHammingDistanceIsSmallForNearDuplicatesAndLargeForUnrelated() {
     // Base: a structured, non-trivial pattern (like a real photo, not a flat field).
     let base = makeImage(width: 64, height: 64) { x, y in UInt8((x ^ y) & 0xFF) }
