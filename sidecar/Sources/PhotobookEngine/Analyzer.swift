@@ -101,7 +101,15 @@ enum Analyzer {
     /// bottleneck.
     static let thumbnailMaxPixel = 400
 
-    private static func contentHash(path: String) throws -> String {
+    // Not private so the cross-language hash-agreement test
+    // (`analyzerHashMatchesThePinnedRustLiteral` in AnalyzerTests.swift) can
+    // call it directly instead of going through `analyzeOne`/`analyze`,
+    // which would invoke Vision unnecessarily -- and, more importantly,
+    // would add another independent Vision-calling `@Test` function racing
+    // concurrently against the 300-photo deadlock stress test below (see
+    // that test's doc comment on why `analyzerThumbnailWriting` deliberately
+    // avoids exactly this).
+    static func contentHash(path: String) throws -> String {
         let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
         defer { try? handle.close() }
         var hasher = SHA256()

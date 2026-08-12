@@ -108,6 +108,31 @@ private func fixture(_ name: String) -> String {
     #expect(f.smileFraction == nil)
 }
 
+// MARK: - Cross-language hash agreement (I4)
+//
+// Rust's `hash_file` (src-tauri/src/commands.rs) is the cache lookup key;
+// Swift's `contentHash` here is the write-back key AND the thumbnail
+// filename. A divergence in hex case, chunk size, or algorithm makes every
+// run a 100% cache miss and orphans every thumbnail written previously --
+// silently, with every existing test in both languages green, because
+// nothing anywhere compared the two literal outputs against each other.
+// Pinned against the same fixture and the same literal string as
+// commands.rs's `hash_matches_the_literal_pinned_against_swifts_content_hash`
+// -- the two tests can only both pass if the implementations genuinely
+// agree.
+//
+// Calls `Analyzer.contentHash` directly rather than going through
+// `Analyzer.analyze` -- that would invoke Vision for no reason this test
+// needs, and would add another independent Vision-calling `@Test` function
+// racing concurrently against `analyzerHandlesA300PhotoBatchWithoutDeadlockingOnVisionConcurrency`
+// below (swift-testing schedules `@Test` functions concurrently by
+// default). See that test's doc comment and `analyzerThumbnailWriting`'s for
+// the same reasoning already applied elsewhere in this file.
+@Test func analyzerHashMatchesThePinnedRustLiteral() throws {
+    let hash = try Analyzer.contentHash(path: fixture("landscape.jpg"))
+    #expect(hash == "08c8f73e189ba397ff2097fe192831e8f266f98538233e9b12b5790e65720159")
+}
+
 @Test func analyzerReportsFailureForMissingFileWithoutCrashing() {
     let records = Analyzer.analyze(paths: ["/nonexistent/nope.jpg"])
     #expect(records.count == 1)
@@ -256,6 +281,85 @@ private func sampleFeatures() -> PhotoFeatures {
 
 private func decodedJSONObject(_ data: Data) throws -> [String: Any] {
     try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+}
+
+// MARK: - I5: complete top-level key set of PhotoFeatures
+//
+// `photoRecordEncodesOkEnvelope` below pins only three fields (`path`,
+// `width`, `phash`). Rust reads `aestheticScore`, `sharpness`,
+// `exif.captureDate`, `faces`, and `isUtility` off this exact JSON; the
+// webview reads `hash`, `height`, `sceneTags`, `smileFraction`, and
+// `thumbnailPath`. None of those are pinned anywhere -- rename
+// `aestheticScore` on the Swift side and every existing test (including
+// `photoRecordRoundTripsOkThroughJSON`, which decodes through PhotoFeatures'
+// OWN `Codable`) still passes, while Rust's `unwrap_or(0.0)` in
+// `finalize_photos` silently gives every photo the same aesthetic
+// percentile. This test asserts the complete top-level key set via
+// `JSONSerialization`, deliberately NOT via PhotoFeatures' own
+// `Decodable` -- a shared rename applied identically to both the encode and
+// decode side of the same struct would pass unchanged and prove nothing.
+@Test func photoFeaturesEncodesExactlyThePinnedTopLevelKeySet() throws {
+    // Every optional field is populated (non-nil) here, specifically so
+    // `encodeIfPresent` does not drop it from the output -- this test's
+    // whole point is pinning the COMPLETE key set including the optional
+    // fields, so the fixture must not accidentally exercise a shape with
+    // some of them silently absent (that is `sampleFeatures()`'s job,
+    // reused by the envelope tests below).
+    let full = PhotoFeatures(
+        path: "/photos/sample.jpg",
+        hash: "deadbeef",
+        width: 10,
+        height: 20,
+        exif: ExifData(
+            captureDate: Date(timeIntervalSince1970: 0),
+            latitude: 1.0,
+            longitude: 2.0,
+            pixelWidth: 10,
+            pixelHeight: 20,
+            make: "Apple",
+            model: "iPhone",
+            flashFired: false
+        ),
+        isUtility: false,
+        aestheticScore: 0.5,
+        sharpness: 1.5,
+        faces: [
+            FaceObservation(
+                box: [0, 0, 1, 1], yaw: 0, pitch: 0, roll: 0,
+                captureQuality: 0.5, outerLips: [[0, 0]]
+            ),
+        ],
+        faceAreaFraction: 0.1,
+        smileFraction: 0.5,
+        saliencyBox: [0, 0, 1, 1],
+        horizonTiltDeg: 1.0,
+        sceneTags: ["outdoor"],
+        hasText: false,
+        palette: [],
+        warmth: 0.5,
+        contrast: 0.5,
+        phash: 42,
+        thumbnailPath: "/tmp/abc.jpg"
+    )
+
+    let data = try JSONEncoder().encode(full)
+    let obj = try decodedJSONObject(data)
+    let keys = Set(obj.keys)
+
+    let pinned: Set<String> = [
+        "path", "hash", "width", "height", "exif", "isUtility",
+        "aestheticScore", "sharpness", "faces", "faceAreaFraction",
+        "smileFraction", "saliencyBox", "horizonTiltDeg", "sceneTags",
+        "hasText", "palette", "warmth", "contrast", "phash", "thumbnailPath",
+    ]
+
+    let missing = pinned.subtracting(keys)
+    let unexpected = keys.subtracting(pinned)
+    #expect(missing.isEmpty, "PhotoFeatures is missing pinned keys: \(missing)")
+    #expect(
+        unexpected.isEmpty,
+        "PhotoFeatures encoded unpinned keys -- update this test's `pinned` set deliberately: \(unexpected)"
+    )
 }
 
 @Test func photoRecordEncodesOkEnvelope() throws {
