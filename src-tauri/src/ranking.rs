@@ -1,20 +1,32 @@
 /// Converts raw scores to 0-100 percentile ranks within this population.
 /// Equal values receive equal ranks. Order matches the input, not sorted order.
+///
+/// NaN inputs receive a percentile of 0 (an absence of rank, not a rank of
+/// their own) and do not perturb the percentiles of the other values in the
+/// call — those are computed as if the NaN entries were not present at all.
 pub fn percentiles(values: &[f64]) -> Vec<u8> {
     let n = values.len();
     if n == 0 {
         return Vec::new();
     }
 
-    let mut sorted: Vec<f64> = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    // Only non-NaN values participate in the sort and in the population
+    // count. NaN compares unordered against everything, so including it
+    // would make the sort order incoherent and corrupt `partition_point`'s
+    // binary search for every other value, not just the NaN entry.
+    let mut sorted: Vec<f64> = values.iter().copied().filter(|v| !v.is_nan()).collect();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n_valid = sorted.len();
 
     values
         .iter()
         .map(|v| {
+            if v.is_nan() || n_valid == 0 {
+                return 0;
+            }
             // Count of values <= v, so the maximum always lands on 100.
             let count = sorted.partition_point(|s| s <= v);
-            ((count as f64 / n as f64) * 100.0).round() as u8
+            ((count as f64 / n_valid as f64) * 100.0).round() as u8
         })
         .collect()
 }
@@ -110,17 +122,30 @@ mod tests {
         assert_eq!(p[2], 33);
     }
 
-    /// NaN cannot satisfy `<=` against anything, which breaks the
-    /// monotonicity `partition_point` relies on for its binary search. This
-    /// does not panic, but it silently corrupts percentiles for *other*
-    /// values in the same call, not just the NaN entry — e.g.
-    /// percentiles(&[5.0, f64::NAN, 1.0]) ranks 5.0 (the true max) at 25,
-    /// not 100. This is a known gap: callers must filter NaN out before
-    /// calling `percentiles`, same as the existing None-filtering contract.
-    /// This test only pins the no-panic guarantee, not correctness.
+    /// NaN entries themselves receive percentile 0 — an absence of rank,
+    /// not a rank of their own.
     #[test]
-    fn nan_does_not_panic_though_it_is_not_meaningfully_ranked() {
+    fn nan_entries_receive_zero() {
         let p = percentiles(&[5.0, f64::NAN, 1.0]);
-        assert_eq!(p.len(), 3);
+        assert_eq!(p[1], 0);
+
+        let all_nan = percentiles(&[f64::NAN, f64::NAN]);
+        assert_eq!(all_nan, vec![0, 0]);
+    }
+
+    /// The property that actually matters: a NaN mixed into the input must
+    /// not perturb the percentiles of the *other* values. Each non-NaN value
+    /// must get exactly the percentile it would have received had the NaN
+    /// simply been absent from the call. A test asserting only "NaN gets 0"
+    /// would pass even if this property were still broken.
+    #[test]
+    fn nan_does_not_perturb_the_percentiles_of_other_values() {
+        let with_nan = percentiles(&[5.0, f64::NAN, 1.0, 3.0]);
+        let without_nan = percentiles(&[5.0, 1.0, 3.0]);
+
+        assert_eq!(with_nan[0], without_nan[0], "5.0 (max)");
+        assert_eq!(with_nan[1], 0, "the NaN entry itself");
+        assert_eq!(with_nan[2], without_nan[1], "1.0 (min)");
+        assert_eq!(with_nan[3], without_nan[2], "3.0 (middle)");
     }
 }
