@@ -20,6 +20,7 @@ pub struct Request {
 pub enum ResponseResult {
     Pong { version: String },
     Error { message: String },
+    Analyzed(Vec<serde_json::Value>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -35,6 +35,18 @@ fn sidecar_binary_responds_to_ping_with_matching_id_and_version() {
 
     let mut stdin = child.stdin.take().expect("child stdin was piped");
     let stdout = child.stdout.take().expect("child stdout was piped");
+    let stderr = child.stderr.take().expect("child stderr was piped");
+
+    // Drain stderr on its own thread so a chatty sidecar can't fill the pipe
+    // buffer and block the child on write, which would otherwise stall it
+    // before it ever gets to read stdin or write a response.
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut line = String::new();
+        while reader.read_line(&mut line).unwrap_or(0) > 0 {
+            line.clear();
+        }
+    });
 
     let req = Request { id: "integration-1".into(), kind: RequestKind::Ping, paths: None };
     let mut line = serde_json::to_string(&req).expect("serialize request");
