@@ -19,7 +19,6 @@ tauri-build = { version = "2.6.3", features = [] }
 tauri = { version = "2.11.3", features = ["protocol-asset"] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
-tauri-plugin-fs = "2"
 tauri-plugin-notification = "2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -27,6 +26,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
 thiserror = "2"
 log = "0.4"
+tauri-plugin-log = "2"
 
 [dev-dependencies]
 # Needed directly (not just via tauri's re-export) to build a
@@ -48,4 +48,11 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 # `fn main()` run directly by cargo test on the real main thread instead.
 [[test]]
 name = "sidecar_worker_pool"
+harness = false
+
+# Same reasoning as `sidecar_worker_pool` above: `analyze_folder` needs a
+# real `Wry` `AppHandle`, which must be built on the process's actual main
+# thread -- the default `#[test]` harness runs on a worker thread instead.
+[[test]]
+name = "cache_hit"
 harness = false
