@@ -11,7 +11,13 @@
   },
   "app": {
     "windows": [{ "title": "Photobook Generator", "width": 1400, "height": 900 }],
-    "security": { "csp": null }
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/thumbnails/*"]
+      }
+    }
   },
   "bundle": {
     "active": true,

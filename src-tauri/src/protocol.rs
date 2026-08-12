@@ -13,6 +13,15 @@ pub struct Request {
     pub kind: RequestKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub paths: Option<Vec<String>>,
+    /// Directory the sidecar should write contact-sheet thumbnails into for
+    /// `.analyze` requests. Rust owns `app_data_dir`, so this is computed and
+    /// passed in here rather than hardcoded on the Swift side. Renamed to
+    /// match `Request.thumbnailDir` in Swift's `Protocol.swift` exactly --
+    /// the struct has no blanket `rename_all` the way `RequestKind` does, so
+    /// this must be spelled out per-field or the two sides silently
+    /// disagree on the wire.
+    #[serde(rename = "thumbnailDir", skip_serializing_if = "Option::is_none")]
+    pub thumbnail_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,10 +44,35 @@ mod tests {
 
     #[test]
     fn serializes_ping_request_as_single_line() {
-        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None };
+        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None };
         let line = serde_json::to_string(&req).unwrap();
         assert!(!line.contains('\n'));
         assert!(line.contains("\"kind\":\"ping\""));
+    }
+
+    /// Pins the wire spelling of `thumbnail_dir` as `thumbnailDir` -- it must
+    /// match `Request.thumbnailDir` in Swift's `Protocol.swift` exactly, and
+    /// there is no blanket `rename_all` on this struct to fall back on.
+    #[test]
+    fn serializes_thumbnail_dir_as_camel_case() {
+        let req = Request {
+            id: "a".into(),
+            kind: RequestKind::Analyze,
+            paths: Some(vec!["/p.jpg".into()]),
+            thumbnail_dir: Some("/cache/thumbnails".into()),
+        };
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(line.contains(r#""thumbnailDir":"/cache/thumbnails""#));
+        assert!(!line.contains("thumbnail_dir"));
+    }
+
+    /// When absent, `thumbnailDir` must not appear on the wire at all --
+    /// matching how `paths` is already omitted for ping requests.
+    #[test]
+    fn omits_thumbnail_dir_when_absent() {
+        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None };
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(!line.contains("thumbnailDir"));
     }
 
     #[test]

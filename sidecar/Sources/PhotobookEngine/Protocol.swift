@@ -9,6 +9,11 @@ struct Request: Codable {
     let id: String
     let kind: RequestKind
     var paths: [String]?
+    /// Directory to write contact-sheet thumbnails into for `.analyze`
+    /// requests. Rust owns `app_data_dir` and passes it in rather than Swift
+    /// hardcoding a location. Nil (or omitted) disables thumbnail writing --
+    /// used by ping and by callers/tests that don't care about thumbnails.
+    var thumbnailDir: String?
 }
 
 struct PongResult: Codable { let version: String }

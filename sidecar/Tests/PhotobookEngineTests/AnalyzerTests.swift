@@ -145,6 +145,75 @@ private func fixture(_ name: String) -> String {
     }
 }
 
+// MARK: - Thumbnail writing
+//
+// Analyzer.analyzeOne reuses the CGImage it already decoded for analysis to
+// write a small contact-sheet JPEG. Writing must never fail the photo record
+// itself -- a missing thumbnail is a degraded grid tile, not a lost photo.
+
+private func thumbnailScratchDirectory() -> String {
+    NSTemporaryDirectory() + "analyzer-thumbnail-tests-\(UUID().uuidString)"
+}
+
+// The three cases below are deliberately combined into ONE @Test function
+// with three sequential Analyzer.analyze calls, rather than three separate
+// @Test functions. Every case here drives a real, un-mocked Vision pass
+// (Analyzer.analyzeOne always calls VisionAnalyzer.analyze regardless of
+// thumbnailDir), and swift-testing schedules @Test functions concurrently
+// by default -- three separate functions would add three more independent
+// Vision-calling tasks racing against everything else in this module
+// (including the 300-photo stress test above, which is already using its
+// full slice of Analyzer's visionSemaphore, and VisionAnalyzerTests.swift's
+// direct, un-gated calls to VisionAnalyzer.analyze which bypass that
+// semaphore entirely). That combination reproducibly starved Vision's
+// internal VNControlledCapacityTasksQueue during development of this file
+// (confirmed via `sample`, same failure mode documented on the 300-photo
+// test above) even though each individual call here is semaphore-gated.
+// Sequential calls within one task avoid adding concurrent pressure.
+@Test func analyzerThumbnailWriting() throws {
+    // Case 1: thumbnailDir provided -> thumbnailPath is written and keyed by
+    // content hash, not source path.
+    let dir = thumbnailScratchDirectory()
+    let written = Analyzer.analyze(paths: [fixture("landscape.jpg")], thumbnailDir: dir)
+    guard case .ok(let f1) = written[0] else {
+        Issue.record("expected ok record"); return
+    }
+    let path = f1.thumbnailPath
+    #expect(path != nil)
+    if let path {
+        #expect(FileManager.default.fileExists(atPath: path))
+        #expect(path == dir + "/" + f1.hash + ".jpg")
+    }
+
+    // Case 2: no thumbnailDir -> thumbnailPath stays nil. Regression guard
+    // against a mutant that writes a thumbnail unconditionally regardless of
+    // whether a directory was requested.
+    let withoutDir = Analyzer.analyze(paths: [fixture("landscape.jpg")])
+    guard case .ok(let f2) = withoutDir[0] else {
+        Issue.record("expected ok record"); return
+    }
+    #expect(f2.thumbnailPath == nil)
+
+    // Case 3: thumbnail write fails -> record stays .ok with thumbnailPath
+    // nil, not .failed. A regular file sitting where the thumbnail directory
+    // needs to be created forces ThumbnailWriter.write to throw -- a
+    // portable way to exercise the failure path without relying on real
+    // filesystem permissions.
+    let blockerPath = thumbnailScratchDirectory()
+    try Data().write(to: URL(fileURLWithPath: blockerPath))
+    defer { try? FileManager.default.removeItem(atPath: blockerPath) }
+
+    let degraded = Analyzer.analyze(paths: [fixture("landscape.jpg")], thumbnailDir: blockerPath)
+    guard case .ok(let f3) = degraded[0] else {
+        Issue.record("a thumbnail write failure must not turn the record into .failed"); return
+    }
+    #expect(f3.thumbnailPath == nil)
+    // The rest of the record must be intact -- a thumbnail failure is
+    // isolated, not contagious to the rest of the analysis.
+    #expect(f3.width == 1200)
+    #expect(f3.height == 800)
+}
+
 // MARK: - JSON contract with Rust
 //
 // Rust reads `record["status"]` and `record["features"]` (or `["path"]` /
@@ -180,7 +249,8 @@ private func sampleFeatures() -> PhotoFeatures {
         palette: [],
         warmth: 0.5,
         contrast: 0.5,
-        phash: 42
+        phash: 42,
+        thumbnailPath: nil
     )
 }
 

@@ -21,6 +21,11 @@ struct PhotoFeatures: Codable {
     let warmth: Double
     let contrast: Double
     let phash: UInt64
+    /// Path to a small JPEG contact-sheet thumbnail, or nil if none was
+    /// requested (`thumbnailDir` was nil) or writing it failed. A missing
+    /// thumbnail degrades to a blank grid tile in the UI -- it must never
+    /// fail the whole photo record.
+    let thumbnailPath: String?
 }
 
 enum PhotoRecord: Codable {
@@ -89,6 +94,13 @@ enum Analyzer {
     private static let visionConcurrencyLimit = 4
     private static let visionSemaphore = DispatchSemaphore(value: visionConcurrencyLimit)
 
+    /// Long edge, in pixels, of the contact-sheet thumbnail written alongside
+    /// each analysed photo. Sized for a grid tile on a Retina display at
+    /// typical tile sizes -- large enough to look sharp, small enough that
+    /// writing hundreds of them during a batch import is not itself a
+    /// bottleneck.
+    static let thumbnailMaxPixel = 400
+
     private static func contentHash(path: String) throws -> String {
         let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
         defer { try? handle.close() }
@@ -99,7 +111,7 @@ enum Analyzer {
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
-    static func analyzeOne(path: String) throws -> PhotoFeatures {
+    static func analyzeOne(path: String, thumbnailDir: String? = nil) throws -> PhotoFeatures {
         let exif = try ExifReader.read(path: path)
         let hash = try contentHash(path: path)
 
@@ -133,6 +145,22 @@ enum Analyzer {
             let palette = Metrics.palette(image, count: 6)
             let faceArea = vision.faces.reduce(0.0) { $0 + $1.box[2] * $1.box[3] }
 
+            // Reuses the CGImage already decoded above -- never decodes the
+            // source file a second time just to make a thumbnail. A failed
+            // write (bad permissions, full disk, whatever) degrades to a nil
+            // path rather than failing this photo's whole record: a missing
+            // thumbnail is a blank grid tile, not a lost photo.
+            let thumbnailPath: String? = thumbnailDir.flatMap { dir in
+                do {
+                    return try ThumbnailWriter.write(image: image, hash: hash, directory: dir, maxPixel: thumbnailMaxPixel)
+                } catch {
+                    FileHandle.standardError.write(Data(
+                        "PhotobookEngine: thumbnail write failed for \(path): \(error)\n".utf8
+                    ))
+                    return nil
+                }
+            }
+
             return PhotoFeatures(
                 path: path,
                 hash: hash,
@@ -152,7 +180,8 @@ enum Analyzer {
                 palette: palette,
                 warmth: Metrics.warmth(palette),
                 contrast: Metrics.contrast(image),
-                phash: Metrics.perceptualHash(image)
+                phash: Metrics.perceptualHash(image),
+                thumbnailPath: thumbnailPath
             )
         }
     }
@@ -163,7 +192,7 @@ enum Analyzer {
     /// mismatch would silently attribute one photo's analysis to another.
     /// Every path yields exactly one record, `.ok` or `.failed`; a failure on
     /// one photo never aborts the batch and never throws out of this function.
-    static func analyze(paths: [String]) -> [PhotoRecord] {
+    static func analyze(paths: [String], thumbnailDir: String? = nil) -> [PhotoRecord] {
         var results = [PhotoRecord?](repeating: nil, count: paths.count)
         let lock = NSLock()
 
@@ -181,7 +210,7 @@ enum Analyzer {
             let path = paths[index]
             let record: PhotoRecord
             do {
-                record = .ok(try analyzeOne(path: path))
+                record = .ok(try analyzeOne(path: path, thumbnailDir: thumbnailDir))
             } catch {
                 record = .failed(path: path, message: String(describing: error))
             }

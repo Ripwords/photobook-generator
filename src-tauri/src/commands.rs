@@ -116,13 +116,20 @@ pub async fn analyze_folder(
         .collect();
     paths.sort();
 
-    let db_path = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("photobook.sqlite");
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+
+    let db_path = app_data_dir.join("photobook.sqlite");
     std::fs::create_dir_all(db_path.parent().expect("has parent")).map_err(|e| e.to_string())?;
     let db = Db::open(&db_path).map_err(|e| e.to_string())?;
+
+    // The webview cannot decode RAW/HEIC originals at all and loading
+    // hundreds of full-size decoded images is not viable, so the sidecar
+    // writes small JPEG thumbnails here during analysis. Rust owns
+    // `app_data_dir`, so the directory is computed and created here rather
+    // than hardcoded on the Swift side.
+    let thumbnail_dir = app_data_dir.join("thumbnails");
+    std::fs::create_dir_all(&thumbnail_dir).map_err(|e| e.to_string())?;
+    let thumbnail_dir = thumbnail_dir.to_string_lossy().into_owned();
 
     // Hash everything first (cheap, no decode), then send only cache misses to
     // the sidecar. Re-running on the same folder should do almost no work.
@@ -154,7 +161,7 @@ pub async fn analyze_folder(
 
     let records = {
         let mut pool = state.pool.lock().map_err(|e| e.to_string())?;
-        pool.analyze_all(&app, &misses)
+        pool.analyze_all(&app, &misses, &thumbnail_dir)
     };
 
     for record in records {

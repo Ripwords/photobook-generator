@@ -68,7 +68,9 @@ func handle(line: String) -> Response {
             return Response(id: request.id, result: .pong(PongResult(version: Engine.version)))
         case .analyze:
             let paths = request.paths ?? []
-            return Response(id: request.id, result: .analyzed(Analyzer.analyze(paths: paths)))
+            return Response(id: request.id, result: .analyzed(
+                Analyzer.analyze(paths: paths, thumbnailDir: request.thumbnailDir)
+            ))
         }
     }
     let id = (try? decoder.decode(RequestEnvelope.self, from: Data(line.utf8)))?.id ?? "unknown"

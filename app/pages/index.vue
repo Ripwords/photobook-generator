@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { keepers } from "~/types/features";
 
 const { summary, running, error, pickFolderAndAnalyze } = useAnalysis();
@@ -26,15 +27,26 @@ const kept = computed(() => (summary.value ? keepers(summary.value.photos) : [])
       </div>
 
       <UTable
-        :rows="kept"
+        :data="kept"
         :columns="[
-          { key: 'path', label: 'Photo' },
-          { key: 'aestheticPct', label: 'Aesthetic' },
-          { key: 'sharpnessPct', label: 'Sharpness' },
-          { key: 'faceCount', label: 'Faces' },
-          { key: 'eventCluster', label: 'Event' },
+          { id: 'thumbnail', header: '' },
+          { accessorKey: 'path', header: 'Photo' },
+          { accessorKey: 'aestheticPct', header: 'Aesthetic' },
+          { accessorKey: 'sharpnessPct', header: 'Sharpness' },
+          { accessorKey: 'faceCount', header: 'Faces' },
+          { accessorKey: 'eventCluster', header: 'Event' },
         ]"
-      />
+      >
+        <template #thumbnail-cell="{ row }">
+          <img
+            v-if="row.original.thumbnailPath"
+            :src="convertFileSrc(row.original.thumbnailPath)"
+            alt=""
+            width="60"
+            height="60"
+          />
+        </template>
+      </UTable>
     </div>
   </main>
 </template>

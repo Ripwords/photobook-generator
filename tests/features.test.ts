@@ -15,6 +15,7 @@ const photo = (over: Partial<AnalyzedPhoto> = {}): AnalyzedPhoto => ({
   sceneTags: [],
   nearDupCluster: 0,
   eventCluster: 0,
+  thumbnailPath: null,
   ...over,
 });
 

@@ -58,11 +58,15 @@ impl Sidecar {
         self.counter.to_string()
     }
 
-    pub fn request(&mut self, kind: RequestKind, paths: Option<Vec<String>>, timeout: Duration)
-        -> Result<ResponseResult, SidecarError>
-    {
+    pub fn request(
+        &mut self,
+        kind: RequestKind,
+        paths: Option<Vec<String>>,
+        thumbnail_dir: Option<String>,
+        timeout: Duration,
+    ) -> Result<ResponseResult, SidecarError> {
         let id = self.next_id();
-        let req = Request { id: id.clone(), kind, paths };
+        let req = Request { id: id.clone(), kind, paths, thumbnail_dir };
         let mut line = serde_json::to_string(&req).map_err(|e| SidecarError::Malformed(e.to_string()))?;
         line.push('\n');
         self.child
@@ -83,16 +87,26 @@ impl Sidecar {
     }
 
     pub fn ping(&mut self) -> Result<String, SidecarError> {
-        match self.request(RequestKind::Ping, None, Duration::from_secs(5))? {
+        match self.request(RequestKind::Ping, None, None, Duration::from_secs(5))? {
             ResponseResult::Pong { version } => Ok(version),
             ResponseResult::Error { message } => Err(SidecarError::Engine(message)),
             ResponseResult::Analyzed(_) => Err(SidecarError::Malformed("expected pong".into())),
         }
     }
 
-    pub fn analyze(&mut self, paths: Vec<String>) -> Result<Vec<serde_json::Value>, SidecarError> {
+    pub fn analyze(
+        &mut self,
+        paths: Vec<String>,
+        thumbnail_dir: &str,
+    ) -> Result<Vec<serde_json::Value>, SidecarError> {
         let timeout = timeout_for(paths.len());
-        match self.request(RequestKind::Analyze, Some(paths), timeout)? {
+        let request_result = self.request(
+            RequestKind::Analyze,
+            Some(paths),
+            Some(thumbnail_dir.to_string()),
+            timeout,
+        )?;
+        match request_result {
             ResponseResult::Analyzed(records) => Ok(records),
             ResponseResult::Error { message } => Err(SidecarError::Engine(message)),
             ResponseResult::Pong { .. } => Err(SidecarError::Malformed("expected analyzed".into())),
@@ -198,9 +212,16 @@ impl SidecarPool {
     /// Thin wrapper around `analyze_batches`: owns the one side effect that
     /// needs a real `AppHandle` (spawning/respawning the child), which is why
     /// this method itself is not unit tested — see task-14-report.md.
-    pub fn analyze_all(&mut self, app: &AppHandle, paths: &[String]) -> Vec<serde_json::Value> {
+    pub fn analyze_all(
+        &mut self,
+        app: &AppHandle,
+        paths: &[String],
+        thumbnail_dir: &str,
+    ) -> Vec<serde_json::Value> {
         analyze_batches(paths, BATCH_SIZE, |batch| {
-            let result = self.ensure(app).and_then(|sidecar| sidecar.analyze(batch.to_vec()));
+            let result = self
+                .ensure(app)
+                .and_then(|sidecar| sidecar.analyze(batch.to_vec(), thumbnail_dir));
             if result.is_err() {
                 // Drop the child so the next ensure() respawns it.
                 self.inner = None;

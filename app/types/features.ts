@@ -12,6 +12,8 @@ export interface AnalyzedPhoto {
   sceneTags: string[];
   nearDupCluster: number;
   eventCluster: number;
+  /** Small JPEG contact-sheet thumbnail path, or null if writing it failed. */
+  thumbnailPath: string | null;
 }
 
 export interface FailedPhoto {
