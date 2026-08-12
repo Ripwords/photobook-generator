@@ -29,13 +29,26 @@ private func makeImage(width: Int, height: Int, _ pixel: (Int, Int) -> UInt8) ->
     #expect(Metrics.sharpness(checker) > Metrics.sharpness(flat))
 }
 
-@Test func sharpSubjectOnBlankBackgroundIsNotScoredBlurry() {
-    // Detail confined to one tile; whole-image variance would wash this out.
-    let flat = makeImage(width: 128, height: 128) { _, _ in 200 }
-    let localDetail = makeImage(width: 128, height: 128) { x, y in
-        (x < 32 && y < 32) ? (((x + y) % 2 == 0) ? 0 : 255) : 200
+@Test func metricsTileMaxIgnoresEmptyAreaAroundASharpSubject() {
+    // Detail everywhere.
+    let fullyDetailed = makeImage(width: 128, height: 128) { x, y in
+        ((x / 4) + (y / 4)) % 2 == 0 ? 0 : 255
     }
-    #expect(Metrics.sharpness(localDetail) > Metrics.sharpness(flat) * 5)
+    // The same detail confined to the top-left quarter-width square — one tile
+    // of the 4x4 grid — with the remaining fifteen sixteenths uniform.
+    let localDetail = makeImage(width: 128, height: 128) { x, y in
+        (x < 32 && y < 32) ? (((x / 4) + (y / 4)) % 2 == 0 ? 0 : 255) : 200
+    }
+
+    let full = Metrics.sharpness(fullyDetailed)
+    let local = Metrics.sharpness(localDetail)
+
+    // Tile-max: the best tile is equally detailed in both, so these are close.
+    // Whole-image variance: local would be roughly full/16.
+    let message = "confined detail scored \(local) against \(full) for full-frame detail; "
+        + "a ratio near 1/16 means sharpness is averaging over the whole frame "
+        + "instead of taking the best tile"
+    #expect(local > full * 0.5, "\(message)")
 }
 
 @Test func paletteReturnsRequestedCountAndWeightsSumToOne() {
