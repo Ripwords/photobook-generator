@@ -128,6 +128,54 @@ pub fn failure_record(path: &str, message: &str) -> serde_json::Value {
     serde_json::json!({ "status": "failed", "path": path, "message": message })
 }
 
+/// The pure retry-and-backfill core of `SidecarPool::analyze_all`, factored
+/// out so it can be tested with a fake `call` instead of a real `AppHandle`.
+///
+/// Chunks `paths`, invokes `call` up to twice per batch, and guarantees the
+/// output has exactly one record per input path in input order: a batch that
+/// errors twice, or that returns the wrong number of records even on
+/// success, is entirely replaced with synthetic `failed` records rather than
+/// partially trusted. Task 15 zips this output positionally against `paths`,
+/// so a short or misordered result would silently attribute one photo's
+/// analysis to another.
+pub(crate) fn analyze_batches<F>(
+    paths: &[String],
+    batch_size: usize,
+    mut call: F,
+) -> Vec<serde_json::Value>
+where
+    F: FnMut(&[String]) -> Result<Vec<serde_json::Value>, SidecarError>,
+{
+    let mut out = Vec::with_capacity(paths.len());
+
+    for batch in chunk_paths(paths, batch_size) {
+        let mut records = None;
+
+        for attempt in 0..2 {
+            match call(&batch) {
+                Ok(r) => {
+                    records = Some(r);
+                    break;
+                }
+                Err(err) => {
+                    log::warn!("sidecar batch failed (attempt {attempt}): {err}");
+                }
+            }
+        }
+
+        match records {
+            Some(r) if r.len() == batch.len() => out.extend(r),
+            Some(r) => {
+                log::warn!("sidecar returned {} records for {} paths", r.len(), batch.len());
+                out.extend(batch.iter().map(|p| failure_record(p, "record count mismatch")));
+            }
+            None => out.extend(batch.iter().map(|p| failure_record(p, "sidecar failed twice"))),
+        }
+    }
+
+    out
+}
+
 pub struct SidecarPool {
     inner: Option<Sidecar>,
 }
@@ -146,39 +194,19 @@ impl SidecarPool {
 
     /// Always returns one record per input path. A batch that fails twice is
     /// converted to synthetic failure records so the caller can proceed.
+    ///
+    /// Thin wrapper around `analyze_batches`: owns the one side effect that
+    /// needs a real `AppHandle` (spawning/respawning the child), which is why
+    /// this method itself is not unit tested — see task-14-report.md.
     pub fn analyze_all(&mut self, app: &AppHandle, paths: &[String]) -> Vec<serde_json::Value> {
-        let mut out = Vec::with_capacity(paths.len());
-
-        for batch in chunk_paths(paths, BATCH_SIZE) {
-            let mut records = None;
-
-            for attempt in 0..2 {
-                let result = self.ensure(app).and_then(|sidecar| sidecar.analyze(batch.clone()));
-
-                match result {
-                    Ok(r) => {
-                        records = Some(r);
-                        break;
-                    }
-                    Err(err) => {
-                        log::warn!("sidecar batch failed (attempt {attempt}): {err}");
-                        // Drop the child so the next ensure() respawns it.
-                        self.inner = None;
-                    }
-                }
+        analyze_batches(paths, BATCH_SIZE, |batch| {
+            let result = self.ensure(app).and_then(|sidecar| sidecar.analyze(batch.to_vec()));
+            if result.is_err() {
+                // Drop the child so the next ensure() respawns it.
+                self.inner = None;
             }
-
-            match records {
-                Some(r) if r.len() == batch.len() => out.extend(r),
-                Some(r) => {
-                    log::warn!("sidecar returned {} records for {} paths", r.len(), batch.len());
-                    out.extend(batch.iter().map(|p| failure_record(p, "record count mismatch")));
-                }
-                None => out.extend(batch.iter().map(|p| failure_record(p, "sidecar failed twice"))),
-            }
-        }
-
-        out
+            result
+        })
     }
 }
 
@@ -257,5 +285,105 @@ mod tests {
         let batches = chunk_paths(&paths(3), 0);
         assert_eq!(batches.len(), 3);
         assert!(batches.iter().all(|b| b.len() == 1));
+    }
+
+    // --- analyze_batches: the one-record-per-path guarantee, tested with
+    // fake `call` closures instead of a real AppHandle/Sidecar. Records are
+    // tagged with their own path so offsets, not just counts, can be
+    // checked.
+
+    fn ok_record(path: &str) -> serde_json::Value {
+        serde_json::json!({ "path": path, "status": "ok" })
+    }
+
+    #[test]
+    fn analyze_batches_passes_through_records_unchanged_on_success() {
+        let ps = paths(5);
+        let out = analyze_batches(&ps, 2, |batch| {
+            Ok(batch.iter().map(|p| ok_record(p)).collect())
+        });
+
+        assert_eq!(out.len(), ps.len());
+        for (i, p) in ps.iter().enumerate() {
+            assert_eq!(out[i], ok_record(p), "record at offset {i} does not match input path {p}");
+        }
+    }
+
+    #[test]
+    fn analyze_batches_retries_once_then_succeeds() {
+        let ps = paths(3);
+        let mut invocations = 0;
+
+        let out = analyze_batches(&ps, 10, |batch| {
+            invocations += 1;
+            if invocations == 1 {
+                Err(SidecarError::Closed)
+            } else {
+                Ok(batch.iter().map(|p| ok_record(p)).collect())
+            }
+        });
+
+        assert_eq!(invocations, 2, "expected exactly one retry after the first failure");
+        assert_eq!(out.len(), 3);
+        for (i, p) in ps.iter().enumerate() {
+            assert_eq!(out[i], ok_record(p));
+        }
+    }
+
+    #[test]
+    fn analyze_batches_synthesizes_one_failure_record_per_path_when_call_always_errors() {
+        let ps = paths(3);
+        let mut invocations = 0;
+
+        let out = analyze_batches(&ps, 10, |_batch| {
+            invocations += 1;
+            Err(SidecarError::Closed)
+        });
+
+        assert_eq!(invocations, 2, "expected exactly two attempts, no more");
+        assert_eq!(out.len(), 3);
+        for (i, p) in ps.iter().enumerate() {
+            assert_eq!(out[i]["status"], "failed");
+            assert_eq!(out[i]["path"], *p);
+        }
+    }
+
+    /// The subtle case: `call` succeeds but returns the wrong number of
+    /// records (2 for a 3-path batch). The result must still be exactly 3
+    /// records, one per input path — not the short array extended verbatim.
+    /// A short array here is precisely the silent misattribution Task 15's
+    /// positional zip depends on this guarantee to prevent.
+    #[test]
+    fn analyze_batches_backfills_when_call_returns_too_few_records() {
+        let ps = paths(3);
+
+        let out = analyze_batches(&ps, 10, |batch| {
+            Ok(batch.iter().take(batch.len() - 1).map(|p| ok_record(p)).collect())
+        });
+
+        assert_eq!(out.len(), 3, "must still be one record per input path");
+        for (i, p) in ps.iter().enumerate() {
+            assert_eq!(out[i]["status"], "failed");
+            assert_eq!(out[i]["path"], *p);
+        }
+    }
+
+    #[test]
+    fn analyze_batches_keeps_successful_batches_at_correct_offsets_around_a_failed_one() {
+        let ps = paths(7); // batches of 3: [0,1,2] [3,4,5] [6], middle one always fails
+        let out = analyze_batches(&ps, 3, |batch| {
+            if batch.iter().any(|p| p == "/photos/3.jpg") {
+                Err(SidecarError::Closed)
+            } else {
+                Ok(batch.iter().map(|p| ok_record(p)).collect())
+            }
+        });
+
+        assert_eq!(out.len(), ps.len());
+        for (i, p) in ps.iter().enumerate() {
+            assert_eq!(out[i]["path"], *p, "record at offset {i} does not sit opposite its own input path");
+            let expected_status = if (3..=5).contains(&i) { "failed" } else { "ok" };
+            assert_eq!(out[i]["status"], expected_status, "wrong status at offset {i}");
+        }
     }
 }
