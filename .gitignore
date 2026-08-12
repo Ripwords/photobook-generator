@@ -8,3 +8,4 @@ src-tauri/gen
 .DS_Store
 *.log
 sidecar/.build
+.claude/worktrees
