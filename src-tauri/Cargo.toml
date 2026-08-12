@@ -26,3 +26,25 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
 thiserror = "2"
 log = "0.4"
+
+[dev-dependencies]
+# Needed directly (not just via tauri's re-export) to build a
+# worker-thread-constrained runtime with `tokio::runtime::Builder`, to
+# reproduce the worker-pool starvation deadlock from a low-core machine.
+# Left unpinned beyond "1" so it unifies with whatever version tauri's own
+# tokio dependency already resolves to (required: `tauri::async_runtime::set`
+# takes tauri's re-exported `tokio::runtime::Handle` type, which must be the
+# exact same version for the types to match).
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+# `analyze_folder` (and everything it calls: `Sidecar::spawn`, `ShellExt`,
+# etc.) is typed against the concrete default `AppHandle` (= `AppHandle<Wry>`),
+# not generic over `tauri::Runtime` -- so `tauri::test::mock_builder`'s
+# `MockRuntime` AppHandle doesn't type-check against it, and building a real
+# `Wry` app requires calling into AppKit/tao on the actual process main
+# thread, which the default `#[test]` harness does not guarantee (it runs
+# tests on worker threads). `harness = false` makes this binary a plain
+# `fn main()` run directly by cargo test on the real main thread instead.
+[[test]]
+name = "sidecar_worker_pool"
+harness = false

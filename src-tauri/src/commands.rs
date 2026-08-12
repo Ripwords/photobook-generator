@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::Path;
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 
 const SUPPORTED: &[&str] = &[
     "jpg", "jpeg", "png", "heic", "heif", "cr2", "cr3", "nef", "arw", "dng", "raf", "orf",
@@ -37,6 +37,13 @@ pub struct AppState {
     pub pool: Mutex<SidecarPool>,
 }
 
+/// Wire-compatible counterpart of `AnalyzedPhoto`/`AnalysisSummary` in
+/// `app/types/features.ts`. `photos` is untyped `serde_json::Value` on
+/// purpose (Phase 2 adds fields here), so there is no compiler check linking
+/// the two sides: a field rename on either side is a silent `undefined` at
+/// runtime, not a build error. If you rename, add, or remove a field the
+/// webview reads off `photos[i]`, update `AnalyzedPhoto` in
+/// `app/types/features.ts` in the same change, and vice versa.
 #[derive(Serialize)]
 pub struct AnalysisSummary {
     pub total: usize,
@@ -100,15 +107,58 @@ pub(crate) fn finalize_photos(mut ok: Vec<serde_json::Value>) -> Vec<serde_json:
     ok
 }
 
+/// Result of consulting the cache for a batch of candidate paths.
+pub(crate) struct CacheLookup {
+    /// Already-analysed `features` JSON, pulled straight from `Db`.
+    pub hits: Vec<serde_json::Value>,
+    /// Paths with no usable cache entry; still need the sidecar.
+    pub misses: Vec<String>,
+    /// Files that could not even be hashed (e.g. unreadable). Counted
+    /// separately so they land in the caller's `failed` count rather than
+    /// silently vanishing from `total`.
+    pub hash_failures: usize,
+}
+
+/// Hashes every path, consults `db`, and splits the input into cache hits and
+/// misses. This is the hash -> cache-lookup -> miss-list -> count block that
+/// regressed once before (a design that wrote to the cache and never read
+/// it), extracted so it is unit-testable without a live `AppHandle`/sidecar
+/// -- the same reasoning as `finalize_photos`/`sidecar::analyze_batches`.
+pub(crate) fn lookup_cache(db: &Db, paths: &[String]) -> Result<CacheLookup, String> {
+    let mut hits = Vec::new();
+    let mut misses = Vec::new();
+    let mut hash_failures = 0usize;
+
+    for path in paths {
+        match hash_file(Path::new(path)) {
+            Ok(hash) => match db.get_features(&hash).map_err(|e| e.to_string())? {
+                Some(json) => match serde_json::from_str(&json) {
+                    Ok(features) => hits.push(features),
+                    Err(_) => misses.push(path.clone()),
+                },
+                None => misses.push(path.clone()),
+            },
+            Err(err) => {
+                log::warn!("cannot hash {path}: {err}");
+                hash_failures += 1;
+            }
+        }
+    }
+
+    Ok(CacheLookup { hits, misses, hash_failures })
+}
+
 #[tauri::command]
-pub async fn analyze_folder(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    folder: String,
-) -> Result<AnalysisSummary, String> {
+pub async fn analyze_folder(app: AppHandle, folder: String) -> Result<AnalysisSummary, String> {
     let mut paths: Vec<String> = std::fs::read_dir(&folder)
         .map_err(|e| e.to_string())?
-        .filter_map(Result::ok)
+        .filter_map(|entry| match entry {
+            Ok(e) => Some(e),
+            Err(err) => {
+                log::warn!("skipping unreadable directory entry in {folder}: {err}");
+                None
+            }
+        })
         .map(|entry| entry.path())
         .filter(|p| p.is_file())
         .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(supported_extension))
@@ -135,33 +185,34 @@ pub async fn analyze_folder(
     // the sidecar. Re-running on the same folder should do almost no work.
     // This ordering -- hash, then consult the cache, THEN call the sidecar --
     // is the entire point of having a cache at all.
-    let mut ok: Vec<serde_json::Value> = Vec::new();
-    let mut failed = 0usize;
-    let mut cached = 0usize;
-    let mut misses: Vec<String> = Vec::new();
+    let CacheLookup { hits, misses, hash_failures } = lookup_cache(&db, &paths)?;
+    let mut ok: Vec<serde_json::Value> = hits;
+    let cached = ok.len();
+    let mut failed = hash_failures;
 
-    for path in &paths {
-        match hash_file(Path::new(path)) {
-            Ok(hash) => match db.get_features(&hash).map_err(|e| e.to_string())? {
-                Some(json) => match serde_json::from_str(&json) {
-                    Ok(features) => {
-                        cached += 1;
-                        ok.push(features);
-                    }
-                    Err(_) => misses.push(path.clone()),
-                },
-                None => misses.push(path.clone()),
-            },
-            Err(err) => {
-                log::warn!("cannot hash {path}: {err}");
-                failed += 1;
-            }
-        }
-    }
-
+    // `Sidecar::request` (called inside `analyze_all`) does a *blocking*
+    // `std::sync::mpsc::Receiver::recv_timeout` while it waits for the
+    // sidecar's stdout-drain task -- a tokio task spawned in `Sidecar::spawn`
+    // -- to hand it the response line. Both that blocking wait and the drain
+    // task need to run on the tauri/tokio async worker pool. Calling it
+    // inline here (this fn runs as a task on that same pool, since it's an
+    // async `#[tauri::command]`) can starve the drain task of a thread to
+    // run on: on a machine with few worker threads, the request then
+    // resolves only once its OWN timeout elapses, even though the sidecar
+    // already responded. See
+    // `.superpowers/sdd/2026-08-12-phase-1-analysis-pipeline/thumbnails-report.md`
+    // for the traced root cause. `spawn_blocking` moves the blocking wait
+    // onto tokio's separate blocking-thread pool, leaving the async worker
+    // pool free for the drain task.
     let records = {
-        let mut pool = state.pool.lock().map_err(|e| e.to_string())?;
-        pool.analyze_all(&app, &misses, &thumbnail_dir)
+        let app_for_pool = app.clone();
+        tauri::async_runtime::spawn_blocking(move || -> Result<Vec<serde_json::Value>, String> {
+            let state = app_for_pool.state::<AppState>();
+            let mut pool = state.pool.lock().map_err(|e| e.to_string())?;
+            Ok(pool.analyze_all(&app_for_pool, &misses, &thumbnail_dir))
+        })
+        .await
+        .map_err(|e| e.to_string())??
     };
 
     for record in records {
@@ -226,6 +277,85 @@ mod tests {
     #[test]
     fn hashing_a_missing_file_is_an_error_not_a_panic() {
         assert!(hash_file(std::path::Path::new("/nonexistent/nope.bin")).is_err());
+    }
+
+    // --- `lookup_cache`: the hash -> cache-lookup -> miss-list -> count
+    // block, extracted specifically because this is the exact logic that
+    // regressed once before (a design that wrote to the cache and never read
+    // it). `Db::open_in_memory` (already used by db.rs's own tests) makes
+    // this testable without a live `AppHandle`/sidecar.
+
+    fn write_temp_file(name: &str, bytes: &[u8]) -> String {
+        let dir = std::env::temp_dir().join("pbg-cache-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_cached_hash_is_a_hit_not_a_miss() {
+        let db = Db::open_in_memory().unwrap();
+        let path = write_temp_file("cached.jpg", b"cached bytes");
+        let hash = hash_file(Path::new(&path)).unwrap();
+        db.put_features(&hash, &path, r#"{"path":"cached.jpg","status":"ok"}"#).unwrap();
+
+        let result = lookup_cache(&db, &[path]).unwrap();
+
+        assert_eq!(result.hits.len(), 1, "a cached hash must be returned as a hit");
+        assert!(result.misses.is_empty(), "a cached hash must not appear in the miss list");
+        assert_eq!(result.hash_failures, 0);
+    }
+
+    #[test]
+    fn an_uncached_hash_is_a_miss() {
+        let db = Db::open_in_memory().unwrap();
+        let path = write_temp_file("uncached.jpg", b"uncached bytes");
+
+        let result = lookup_cache(&db, std::slice::from_ref(&path)).unwrap();
+
+        assert!(result.hits.is_empty(), "an uncached hash must not be reported as a hit");
+        assert_eq!(result.misses, vec![path]);
+        assert_eq!(result.hash_failures, 0);
+    }
+
+    #[test]
+    fn a_hash_failure_is_counted_and_does_not_silently_vanish() {
+        let db = Db::open_in_memory().unwrap();
+        let missing = "/nonexistent/pbg-cache-test/gone.jpg".to_string();
+
+        let result = lookup_cache(&db, &[missing]).unwrap();
+
+        assert!(result.hits.is_empty());
+        assert!(
+            result.misses.is_empty(),
+            "a hash failure must be counted as a failure, not silently retried as a miss"
+        );
+        assert_eq!(result.hash_failures, 1);
+    }
+
+    #[test]
+    fn every_input_path_is_accounted_for_exactly_once() {
+        let db = Db::open_in_memory().unwrap();
+
+        let cached_path = write_temp_file("counted-cached.jpg", b"counted cached bytes");
+        let hash = hash_file(Path::new(&cached_path)).unwrap();
+        db.put_features(&hash, &cached_path, r#"{"path":"x","status":"ok"}"#).unwrap();
+
+        let miss_path = write_temp_file("counted-miss.jpg", b"counted miss bytes");
+        let missing_path = "/nonexistent/pbg-cache-test/gone-too.jpg".to_string();
+
+        let input = vec![cached_path, miss_path, missing_path];
+        let result = lookup_cache(&db, &input).unwrap();
+
+        assert_eq!(
+            result.hits.len() + result.misses.len() + result.hash_failures,
+            input.len(),
+            "hits + misses + hash_failures must equal the input count"
+        );
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.misses.len(), 1);
+        assert_eq!(result.hash_failures, 1);
     }
 
     // --- Additional tests beyond the brief: `finalize_photos`, which the
