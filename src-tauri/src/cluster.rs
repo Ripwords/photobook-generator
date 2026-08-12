@@ -56,8 +56,10 @@ pub fn event_clusters(timestamps: &[Option<i64>], gap_seconds: i64) -> Vec<usize
     let mut ids = vec![usize::MAX; timestamps.len()];
     let mut current = 0usize;
     let mut previous: Option<i64> = None;
+    let mut any_dated = false;
 
     for (index, time) in dated {
+        any_dated = true;
         if let Some(prev) = previous {
             if time - prev > gap_seconds {
                 current += 1;
@@ -67,7 +69,11 @@ pub fn event_clusters(timestamps: &[Option<i64>], gap_seconds: i64) -> Vec<usize
         previous = Some(time);
     }
 
-    let undated = current + 1;
+    // Only reserve a distinct id for the undated group when dated groups
+    // actually consumed ids 0..=current. With no dated entries at all,
+    // `current` never advanced past its initial 0, so the undated group
+    // takes id 0 rather than the unused id 1.
+    let undated = if any_dated { current + 1 } else { 0 };
     for id in ids.iter_mut() {
         if *id == usize::MAX {
             *id = undated;
@@ -149,5 +155,36 @@ mod tests {
     fn empty_input_returns_empty() {
         assert!(near_duplicate_clusters(&[], 4).is_empty());
         assert!(event_clusters(&[], 86_400).is_empty());
+    }
+
+    #[test]
+    fn all_nil_timestamps_still_get_dense_ids_starting_at_zero() {
+        // With no dated entries at all, `current` never advances, so the
+        // undated group must take id 0 rather than a phantom id 1 with an
+        // unused id 0 sitting below it.
+        let ids = event_clusters(&[None, None, None], 86_400);
+        assert_eq!(ids[0], ids[1]);
+        assert_eq!(ids[1], ids[2]);
+        assert_eq!(ids[0], 0); // not 1 — asserting equality alone would pass under the bug
+    }
+
+    #[test]
+    fn single_dated_element_yields_one_id() {
+        let ids = event_clusters(&[Some(1_000)], 86_400);
+        assert_eq!(ids, vec![0]);
+    }
+
+    #[test]
+    fn single_undated_element_yields_one_id() {
+        let ids = event_clusters(&[None], 86_400);
+        assert_eq!(ids, vec![0]);
+    }
+
+    #[test]
+    fn tied_timestamps_do_not_split() {
+        // gap is exactly 0, and the split condition is a strict `>`, so two
+        // photos at the identical instant must land in the same cluster.
+        let ids = event_clusters(&[Some(5), Some(5)], 86_400);
+        assert_eq!(ids[0], ids[1]);
     }
 }
