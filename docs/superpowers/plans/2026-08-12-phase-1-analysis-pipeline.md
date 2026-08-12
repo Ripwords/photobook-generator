@@ -787,14 +787,57 @@ private func fixture(_ name: String) -> String {
 }
 ```
 
-Create the fixtures with ImageMagick or `sips`:
+Create the fixtures with a Swift script. **ImageMagick and exiftool are not installed on
+this machine**, and requiring them would make the test suite unreproducible. ImageIO can
+write both the pixels and the EXIF orientation tag, with no external dependency.
+
+Create `scripts/make-fixtures.swift`:
+
+```swift
+import Foundation
+import ImageIO
+import CoreGraphics
+import UniformTypeIdentifiers
+
+let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+let dir = root.appendingPathComponent("sidecar/Fixtures")
+try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+/// Writes a solid-colour JPEG of the given stored pixel size, tagging it with
+/// `orientation` (1 = normal, 6 = rotate 90 CW on display).
+func write(_ name: String, width: Int, height: Int,
+           rgb: (Double, Double, Double), orientation: Int) {
+    let ctx = CGContext(
+        data: nil, width: width, height: height,
+        bitsPerComponent: 8, bytesPerRow: 0,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    ctx.setFillColor(red: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
+    ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    let image = ctx.makeImage()!
+
+    let url = dir.appendingPathComponent(name) as CFURL
+    let dest = CGImageDestinationCreateWithURL(url, UTType.jpeg.identifier as CFString, 1, nil)!
+    let props: [CFString: Any] = [kCGImagePropertyOrientation: orientation]
+    CGImageDestinationAddImage(dest, image, props as CFDictionary)
+    precondition(CGImageDestinationFinalize(dest), "failed to write \(name)")
+    print("wrote \(name) (\(width)x\(height), orientation \(orientation))")
+}
+
+write("landscape.jpg", width: 1200, height: 800, rgb: (0.1, 0.1, 0.5), orientation: 1)
+write("portrait-rot90.jpg", width: 1200, height: 800, rgb: (0.1, 0.4, 0.1), orientation: 6)
+```
+
+Run it from the repo root:
 
 ```bash
-mkdir -p sidecar/Fixtures
-magick -size 1200x800 xc:navy sidecar/Fixtures/landscape.jpg
-magick -size 1200x800 xc:darkgreen sidecar/Fixtures/portrait-rot90.jpg
-exiftool -Orientation=6 -n -overwrite_original sidecar/Fixtures/portrait-rot90.jpg
+swift scripts/make-fixtures.swift
 ```
+
+`portrait-rot90.jpg` stores 1200×800 pixels but is tagged orientation 6, so a correct
+reader displays it as 800×1200. That is exactly what the second test checks — and it fails
+if `kCGImageSourceCreateThumbnailWithTransform` is omitted, which is the point.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1841,6 +1884,47 @@ This is the task that makes the crash-isolation argument real. If any of these c
 
 `scripts/make-hostile-fixtures.sh`:
 
+ImageMagick is not installed, so the three fixtures that need real image data are produced
+by extending `scripts/make-fixtures.swift` from Task 4 rather than shelling out.
+
+Add to `scripts/make-fixtures.swift`, after the two existing `write` calls:
+
+```swift
+let hostile = dir.appendingPathComponent("hostile")
+try? FileManager.default.createDirectory(at: hostile, withIntermediateDirectories: true)
+
+/// Writes a solid-colour image into the hostile directory, optionally in a
+/// colour space or with a filename that downstream code may not expect.
+func writeHostile(_ name: String, width: Int, height: Int, cmyk: Bool) {
+    let space = cmyk ? CGColorSpaceCreateDeviceCMYK() : CGColorSpaceCreateDeviceRGB()
+    let info = cmyk
+        ? CGImageAlphaInfo.none.rawValue
+        : CGImageAlphaInfo.premultipliedLast.rawValue
+    let ctx = CGContext(
+        data: nil, width: width, height: height,
+        bitsPerComponent: 8, bytesPerRow: 0,
+        space: space, bitmapInfo: info
+    )!
+    ctx.setFillColor(CGColor(colorSpace: space,
+                             components: cmyk ? [0, 1, 1, 0, 1] : [1, 0, 0, 1])!)
+    ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    let image = ctx.makeImage()!
+
+    let url = hostile.appendingPathComponent(name) as CFURL
+    let dest = CGImageDestinationCreateWithURL(url, UTType.jpeg.identifier as CFString, 1, nil)!
+    CGImageDestinationAddImage(dest, image, nil)
+    precondition(CGImageDestinationFinalize(dest), "failed to write \(name)")
+    print("wrote hostile/\(name)")
+}
+
+writeHostile("one-pixel.jpg", width: 1, height: 1, cmyk: false)
+writeHostile("cmyk.jpg", width: 64, height: 64, cmyk: true)
+writeHostile("no-extension", width: 64, height: 64, cmyk: false)
+```
+
+Then `scripts/make-hostile-fixtures.sh` covers only the four that are pure byte
+manipulation and need no image library:
+
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1851,11 +1935,14 @@ mkdir -p "$DIR"
 head -c 400 sidecar/Fixtures/landscape.jpg > "$DIR/truncated.jpg"
 printf 'not an image at all, just text' > "$DIR/text.jpg"
 head -c 2000 /dev/urandom > "$DIR/random.jpg"
-magick -size 1x1 xc:white "$DIR/one-pixel.jpg"
-magick -size 64x64 xc:red -colorspace CMYK "$DIR/cmyk.jpg"
-magick -size 64x64 xc:blue "$DIR/no-extension"
-echo "created hostile fixtures in $DIR"
+echo "created byte-level hostile fixtures in $DIR"
+echo "run 'swift scripts/make-fixtures.swift' for the image-based ones"
 ```
+
+If `CGColorSpaceCreateDeviceCMYK` refuses the JPEG destination on this macOS version,
+substitute any other awkward-but-writable colour space and note the substitution — the
+point of the fixture is that the analyser meets a colour space it did not expect, not CMYK
+specifically.
 
 `sidecar/Tests/PhotobookEngineTests/HostileInputTests.swift`:
 
