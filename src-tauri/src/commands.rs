@@ -18,6 +18,17 @@ pub fn supported_extension(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// macOS writes a hidden `._<name>` "AppleDouble" sidecar next to a real
+/// file on any volume that can't natively store a resource fork / extended
+/// attributes (FAT-formatted cards, many network shares, some external
+/// drives) -- so a folder of real photos routinely contains `._IMG_1234.JPG`
+/// beside `IMG_1234.JPG`. These pass `supported_extension` (they end in a
+/// real image extension) but are not images: ImageIO fails to decode them,
+/// which surfaces as a spurious failure with no explanation to the user.
+pub fn is_apple_double(name: &str) -> bool {
+    name.starts_with("._")
+}
+
 /// SHA-256 over raw file bytes. No image decoding, so this is safe to run on
 /// every file before deciding what needs analysis.
 pub fn hash_file(path: &Path) -> std::io::Result<String> {
@@ -189,8 +200,20 @@ pub(crate) fn lookup_cache(db: &Db, paths: &[String]) -> Result<CacheLookup, Str
     for path in paths {
         match hash_file(Path::new(path)) {
             Ok(hash) => match db.get_features(&hash).map_err(|e| e.to_string())? {
-                Some(json) => match serde_json::from_str(&json) {
-                    Ok(features) => hits.push(features),
+                Some(json) => match serde_json::from_str::<serde_json::Value>(&json) {
+                    // The cache is keyed by content hash, but the stored
+                    // `path` is whatever it was when the file was FIRST
+                    // analysed. Two byte-identical files (e.g. "IMG_1234.jpg"
+                    // and "IMG_1234 copy.jpg") both hash the same and must
+                    // not both come back with the same stale path -- that
+                    // produces duplicate `:key="photo.path"` entries in the
+                    // UI grid. A renamed folder hits the same bug for every
+                    // cached photo at once. Overwrite with the CURRENT path
+                    // on every hit, never trust the cached one.
+                    Ok(mut features) => {
+                        features["path"] = path.clone().into();
+                        hits.push(features);
+                    }
                     Err(_) => misses.push(path.clone()),
                 },
                 None => misses.push(path.clone()),
@@ -220,7 +243,11 @@ pub async fn analyze_folder(app: AppHandle, folder: String) -> Result<AnalysisSu
         })
         .map(|entry| entry.path())
         .filter(|p| p.is_file())
-        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(supported_extension))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| !is_apple_double(n) && supported_extension(n))
+        })
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
     paths.sort();
@@ -237,7 +264,16 @@ pub async fn analyze_folder(app: AppHandle, folder: String) -> Result<AnalysisSu
     // `app_data_dir`, so the directory is computed and created here rather
     // than hardcoded on the Swift side.
     let thumbnail_dir = app_data_dir.join("thumbnails");
-    std::fs::create_dir_all(&thumbnail_dir).map_err(|e| e.to_string())?;
+    // A missing thumbnail is a blank grid tile, not a lost photo (see the
+    // doc comment on `PhotoFeatures.thumbnailPath` in Analyzer.swift) -- so
+    // failing to even create the directory must not abort a potentially
+    // multi-minute analysis that would otherwise succeed. Logged and
+    // swallowed rather than propagated with `?`; the sidecar's own
+    // `ThumbnailWriter.write` makes an independent attempt per photo and
+    // degrades each one to a nil `thumbnailPath` on failure.
+    if let Err(err) = std::fs::create_dir_all(&thumbnail_dir) {
+        log::warn!("failed to create thumbnail directory {thumbnail_dir:?}: {err}");
+    }
     let thumbnail_dir = thumbnail_dir.to_string_lossy().into_owned();
 
     // Hash everything first (cheap, no decode), then send only cache misses to
@@ -279,8 +315,14 @@ pub async fn analyze_folder(app: AppHandle, folder: String) -> Result<AnalysisSu
             let features = record["features"].clone();
             if let (Some(hash), Some(path)) = (features["hash"].as_str(), features["path"].as_str())
             {
-                db.put_features(hash, path, &features.to_string())
-                    .map_err(|e| e.to_string())?;
+                // A failed cache write must not discard a photo that the
+                // sidecar already spent potentially multi-minute analysis
+                // producing -- it just means this photo won't be a cache hit
+                // next run. Logged and swallowed, matching the notification
+                // failure path below.
+                if let Err(err) = db.put_features(hash, path, &features.to_string()) {
+                    log::warn!("failed to write cache entry for {path}: {err}");
+                }
             }
             ok.push(features);
         } else {
@@ -331,6 +373,20 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_apple_double_sidecar_files() {
+        for name in ["._IMG_1234.JPG", "._photo.heic", "._.DS_Store"] {
+            assert!(is_apple_double(name), "{name} should be recognized as an AppleDouble sidecar");
+        }
+    }
+
+    #[test]
+    fn does_not_flag_ordinary_photos_as_apple_double() {
+        for name in ["IMG_1234.JPG", "a._weird.jpg", "photo.heic"] {
+            assert!(!is_apple_double(name), "{name} should not be flagged as an AppleDouble sidecar");
+        }
+    }
+
+    #[test]
     fn hashes_identical_bytes_identically() {
         let dir = std::env::temp_dir().join("pbg-hash-test");
         std::fs::create_dir_all(&dir).unwrap();
@@ -355,6 +411,31 @@ mod tests {
     #[test]
     fn hashing_a_missing_file_is_an_error_not_a_panic() {
         assert!(hash_file(std::path::Path::new("/nonexistent/nope.bin")).is_err());
+    }
+
+    /// Regression guard for I4: `hash_file` here and Swift's `contentHash`
+    /// (`sidecar/Sources/PhotobookEngine/Analyzer.swift`) must produce
+    /// byte-identical hex strings over the same file -- Rust's hash is the
+    /// cache lookup key, Swift's is the write-back key AND the thumbnail
+    /// filename. A divergence (hex case, chunk size, algorithm) makes every
+    /// run a 100% cache miss and orphans every thumbnail, silently: no
+    /// error, every existing test in both languages stays green, because
+    /// nothing compared the two literal outputs against each other. Pinned
+    /// against a fixture committed to the repo and the SAME literal string
+    /// as `AnalyzerTests.swift`'s
+    /// `analyzerHashMatchesThePinnedRustLiteral` -- the two tests can only
+    /// both pass if the implementations genuinely agree.
+    #[test]
+    fn hash_matches_the_literal_pinned_against_swifts_content_hash() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../sidecar/Fixtures/landscape.jpg");
+        let hash = hash_file(&fixture).unwrap();
+        assert_eq!(
+            hash,
+            "08c8f73e189ba397ff2097fe192831e8f266f98538233e9b12b5790e65720159",
+            "hash_file's output for sidecar/Fixtures/landscape.jpg must match Swift's \
+             contentHash over the same bytes -- see analyzerHashMatchesThePinnedRustLiteral"
+        );
     }
 
     // --- `lookup_cache`: the hash -> cache-lookup -> miss-list -> count
@@ -410,6 +491,37 @@ mod tests {
             "a hash failure must be counted as a failure, not silently retried as a miss"
         );
         assert_eq!(result.hash_failures, 1);
+    }
+
+    /// Regression test for C2: the cache is keyed by content hash, but the
+    /// JSON blob stored under that hash carries whatever `path` the file had
+    /// when it was FIRST analysed. `path_a` here simulates that original
+    /// analysis; `path_b` is a byte-identical file at a different path (a
+    /// duplicate filename, or the same file after a folder rename) that
+    /// hashes identically and therefore hits the cache. The returned
+    /// record's `path` must be `path_b` -- the path THIS call was asked
+    /// about -- never the stale `path_a` baked into the cached row.
+    #[test]
+    fn a_cache_hit_carries_the_current_path_not_the_stale_cached_one() {
+        let db = Db::open_in_memory().unwrap();
+        let path_a = write_temp_file("stale-path-original.jpg", b"byte-identical content");
+        let hash = hash_file(Path::new(&path_a)).unwrap();
+        db.put_features(
+            &hash,
+            &path_a,
+            &serde_json::json!({"path": path_a, "status": "ok"}).to_string(),
+        )
+        .unwrap();
+
+        let path_b = write_temp_file("stale-path-duplicate.jpg", b"byte-identical content");
+        let result = lookup_cache(&db, std::slice::from_ref(&path_b)).unwrap();
+
+        assert_eq!(result.hits.len(), 1, "byte-identical content must be a cache hit");
+        assert_eq!(
+            result.hits[0]["path"].as_str().unwrap(),
+            path_b,
+            "a cache hit must carry the path passed in THIS call, not the stale path baked into the cached row"
+        );
     }
 
     #[test]
