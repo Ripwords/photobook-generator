@@ -21,6 +21,33 @@ private func makeImage(width: Int, height: Int, _ pixel: (Int, Int) -> UInt8) ->
     return ctx.makeImage()!
 }
 
+/// Builds an RGBA image from a per-pixel colour generator (unlike `makeImage`,
+/// channels are independent rather than a single replicated grey value).
+private func makeColorImage(width: Int, height: Int, _ pixel: (Int, Int) -> (r: UInt8, g: UInt8, b: UInt8)) -> CGImage {
+    var bytes = [UInt8](repeating: 255, count: width * height * 4)
+    for y in 0..<height {
+        for x in 0..<width {
+            let (r, g, b) = pixel(x, y)
+            let i = (y * width + x) * 4
+            bytes[i] = r; bytes[i + 1] = g; bytes[i + 2] = b; bytes[i + 3] = 255
+        }
+    }
+    let ctx = CGContext(
+        data: &bytes, width: width, height: height,
+        bitsPerComponent: 8, bytesPerRow: width * 4,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    return ctx.makeImage()!
+}
+
+/// Hamming distance between two 64-bit hashes. Task 12 implements the real
+/// one in Rust; this is just enough to make the clustering-relevant property
+/// testable here.
+private func hamming(_ a: UInt64, _ b: UInt64) -> Int {
+    (a ^ b).nonzeroBitCount
+}
+
 @Test func sharpEdgesScoreHigherThanFlatField() {
     let flat = makeImage(width: 128, height: 128) { _, _ in 128 }
     let checker = makeImage(width: 128, height: 128) { x, y in
@@ -60,6 +87,41 @@ private func makeImage(width: Int, height: Int, _ pixel: (Int, Int) -> UInt8) ->
     #expect(abs(total - 1.0) < 0.001)
 }
 
+@Test func metricsPaletteReflectsActualImageComposition() {
+    // Left three quarters solid blue, right quarter solid orange: a 3:1 area split.
+    let blue = (r: 30.0, g: 60.0, b: 200.0)
+    let orange = (r: 230.0, g: 120.0, b: 20.0)
+    let img = makeColorImage(width: 128, height: 128) { x, _ in
+        x < 96 ? (UInt8(blue.r), UInt8(blue.g), UInt8(blue.b)) : (UInt8(orange.r), UInt8(orange.g), UInt8(orange.b))
+    }
+    let palette = Metrics.palette(img, count: 4)
+
+    #expect(palette.count <= 4)
+    #expect(palette.count >= 1)
+    let total = palette.reduce(0.0) { $0 + $1.weight }
+    #expect(abs(total - 1.0) < 0.001)
+
+    let tolerance = 0.1
+    func isClose(_ c: PaletteColor, to target: (r: Double, g: Double, b: Double)) -> Bool {
+        abs(c.r - target.r / 255.0) < tolerance
+            && abs(c.g - target.g / 255.0) < tolerance
+            && abs(c.b - target.b / 255.0) < tolerance
+    }
+
+    let heaviest = palette.max { $0.weight < $1.weight }!
+    let heaviestDescription = "heaviest entry was r=\(heaviest.r) g=\(heaviest.g) b=\(heaviest.b) weight=\(heaviest.weight), expected close to blue \(blue)"
+    #expect(isClose(heaviest, to: blue), "\(heaviestDescription)")
+
+    let orangeEntry = palette.first { isClose($0, to: orange) }
+    let orangeDescription = "no palette entry close to orange \(orange) found among \(palette)"
+    #expect(orangeEntry != nil, "\(orangeDescription)")
+
+    if let orangeEntry {
+        let ratioDescription = "heaviest weight \(heaviest.weight) not meaningfully larger than orange weight \(orangeEntry.weight) for a 3:1 area split"
+        #expect(heaviest.weight > orangeEntry.weight * 2, "\(ratioDescription)")
+    }
+}
+
 @Test func identicalImagesHaveIdenticalHash() {
     let a = makeImage(width: 64, height: 64) { x, y in UInt8((x ^ y) & 0xFF) }
     let b = makeImage(width: 64, height: 64) { x, y in UInt8((x ^ y) & 0xFF) }
@@ -70,4 +132,31 @@ private func makeImage(width: Int, height: Int, _ pixel: (Int, Int) -> UInt8) ->
     let a = makeImage(width: 64, height: 64) { x, _ in x < 32 ? 0 : 255 }
     let b = makeImage(width: 64, height: 64) { _, y in y < 32 ? 0 : 255 }
     #expect(Metrics.perceptualHash(a) != Metrics.perceptualHash(b))
+}
+
+@Test func metricsHashHammingDistanceIsSmallForNearDuplicatesAndLargeForUnrelated() {
+    // Base: a structured, non-trivial pattern (like a real photo, not a flat field).
+    let base = makeImage(width: 64, height: 64) { x, y in UInt8((x ^ y) & 0xFF) }
+    // Near-duplicate: the same structure with a uniform brightness shift, the way
+    // consecutive burst frames or slightly different exposures differ.
+    let nearDuplicate = makeImage(width: 64, height: 64) { x, y in
+        UInt8(min(255, Int((x ^ y) & 0xFF) + 12))
+    }
+    // Structurally unrelated: a coarse quadrant pattern sharing no structure with base.
+    let unrelated = makeImage(width: 64, height: 64) { x, y in
+        ((x < 32) != (y < 32)) ? 0 : 255
+    }
+
+    let hBase = Metrics.perceptualHash(base)
+    let hNear = Metrics.perceptualHash(nearDuplicate)
+    let hUnrelated = Metrics.perceptualHash(unrelated)
+
+    let distNear = hamming(hBase, hNear)
+    let distUnrelated = hamming(hBase, hUnrelated)
+
+    let orderingDescription = "hamming(base, nearDuplicate)=\(distNear) was not < hamming(base, unrelated)=\(distUnrelated)"
+    #expect(distNear < distUnrelated, "\(orderingDescription)")
+
+    let absoluteDescription = "hamming(base, nearDuplicate)=\(distNear) of 64 bits was not small enough for a brightness-shifted near-duplicate"
+    #expect(distNear < 10, "\(absoluteDescription)")
 }
