@@ -10,6 +10,9 @@ struct PaletteColor: Codable {
 
 enum Metrics {
     /// Draws `image` into a tightly-packed RGBA8 buffer of the given size.
+    /// High interpolation quality so large downscales (e.g. ~1536px source to
+    /// a much smaller buffer) average source pixels instead of point-sampling
+    /// them, which would otherwise alias on fine detail.
     private static func rgbaBuffer(_ image: CGImage, width: Int, height: Int) -> [UInt8] {
         var bytes = [UInt8](repeating: 0, count: width * height * 4)
         bytes.withUnsafeMutableBytes { raw in
@@ -19,6 +22,7 @@ enum Metrics {
                 space: CGColorSpaceCreateDeviceRGB(),
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
             ) else { return }
+            ctx.interpolationQuality = .high
             ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         }
         return bytes
@@ -86,10 +90,20 @@ enum Metrics {
         }
 
         let total = Double(side * side)
-        return buckets.values
-            .sorted { $0.n > $1.n }
+        // Sort by count descending, then by bucket key ascending. Dictionary
+        // iteration order (and hence a bare `buckets.values.sorted`) varies
+        // per process launch under Swift's randomised hash seeding, so a
+        // count-only sort is non-deterministic across runs whenever two
+        // buckets tie at the `prefix` cutoff. The layout engine downstream
+        // depends on the whole pipeline being deterministic (same photos in,
+        // same book out), so ties need an explicit, stable tie-break.
+        return buckets
+            .sorted { lhs, rhs in
+                if lhs.value.n != rhs.value.n { return lhs.value.n > rhs.value.n }
+                return lhs.key < rhs.key
+            }
             .prefix(count)
-            .map { e in
+            .map { _, e in
                 PaletteColor(
                     r: e.r / Double(e.n) / 255.0,
                     g: e.g / Double(e.n) / 255.0,
@@ -100,16 +114,38 @@ enum Metrics {
             .normalisedWeights()
     }
 
-    /// Average hash over a 8x8 grey downscale. 64 bits, Hamming-comparable.
+    /// Average hash over an 8x8 grid, box-averaged from a 32x32 grey
+    /// downscale rather than point-sampled directly to 8x8. Point-sampling
+    /// straight from a ~1536px source lets a handful of source pixels decide
+    /// each bit, so a one-pixel camera-shake shift on fine detail can flip
+    /// many bits; averaging a 4x4 block per output cell makes the hash
+    /// robust to that. 64 bits, Hamming-comparable.
     static func perceptualHash(_ image: CGImage) -> UInt64 {
-        let side = 8
+        let side = 32
         let bytes = rgbaBuffer(image, width: side, height: side)
         var grey = [Double](repeating: 0, count: side * side)
         for p in 0..<(side * side) { grey[p] = luma(bytes, p * 4) }
-        let mean = grey.reduce(0, +) / Double(grey.count)
+
+        let gridSide = 8
+        let block = side / gridSide
+        var small = [Double](repeating: 0, count: gridSide * gridSide)
+        for gy in 0..<gridSide {
+            for gx in 0..<gridSide {
+                var sum = 0.0
+                for by in 0..<block {
+                    for bx in 0..<block {
+                        let y = gy * block + by
+                        let x = gx * block + bx
+                        sum += grey[y * side + x]
+                    }
+                }
+                small[gy * gridSide + gx] = sum / Double(block * block)
+            }
+        }
+        let mean = small.reduce(0, +) / Double(small.count)
 
         var hash: UInt64 = 0
-        for (i, v) in grey.enumerated() where v > mean {
+        for (i, v) in small.enumerated() where v > mean {
             hash |= (1 << UInt64(i))
         }
         return hash

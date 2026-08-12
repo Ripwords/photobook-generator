@@ -122,6 +122,53 @@ private func hamming(_ a: UInt64, _ b: UInt64) -> Int {
     }
 }
 
+@Test func metricsPaletteIsStableAcrossRepeatedCalls() {
+    let img = makeColorImage(width: 128, height: 128) { x, _ in
+        x < 96 ? (30, 60, 200) : (230, 120, 20)
+    }
+    let first = Metrics.palette(img, count: 4)
+    let second = Metrics.palette(img, count: 4)
+    #expect(first.count == second.count)
+    for (a, b) in zip(first, second) {
+        #expect(a.r == b.r && a.g == b.g && a.b == b.b && a.weight == b.weight)
+    }
+}
+
+@Test func metricsPaletteBreaksTiesDeterministicallyByBucketKey() {
+    // Three solid-colour bands: a clear majority (64/128 columns), and two
+    // minority bands (32 columns each) tied exactly on pixel count, forcing
+    // the tie to land right at the `count: 2` cutoff.
+    //   majority (10,10,10)   -> bucket key (0,0,0)  = 0
+    //   bandB    (200,10,10)  -> bucket key (3,0,0)  = 48
+    //   bandC    (10,200,10)  -> bucket key (0,3,0)  = 12
+    // key(bandC) < key(bandB), so the documented ascending-key tie-break
+    // means bandC must win the second slot over bandB, deterministically.
+    let img = makeColorImage(width: 128, height: 128) { x, _ in
+        if x < 64 { return (10, 10, 10) }
+        else if x < 96 { return (200, 10, 10) }
+        else { return (10, 200, 10) }
+    }
+    let palette = Metrics.palette(img, count: 2)
+    #expect(palette.count == 2)
+
+    let majorityDescription = "expected slot 0 to be the majority grey (10,10,10), got \(palette.first as Any)"
+    #expect(
+        abs(palette[0].r - 10.0 / 255.0) < 0.05
+            && abs(palette[0].g - 10.0 / 255.0) < 0.05
+            && abs(palette[0].b - 10.0 / 255.0) < 0.05,
+        "\(majorityDescription)"
+    )
+
+    let tieBreakDescription = "expected slot 1 to be bandC (10,200,10) — the smaller bucket key — under the documented tie-break, got \(palette.count > 1 ? "\(palette[1])" : "nothing")"
+    #expect(
+        palette.count > 1
+            && abs(palette[1].r - 10.0 / 255.0) < 0.05
+            && abs(palette[1].g - 200.0 / 255.0) < 0.05
+            && abs(palette[1].b - 10.0 / 255.0) < 0.05,
+        "\(tieBreakDescription)"
+    )
+}
+
 @Test func identicalImagesHaveIdenticalHash() {
     let a = makeImage(width: 64, height: 64) { x, y in UInt8((x ^ y) & 0xFF) }
     let b = makeImage(width: 64, height: 64) { x, y in UInt8((x ^ y) & 0xFF) }
