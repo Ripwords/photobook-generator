@@ -182,9 +182,21 @@ mod tests {
 
     #[test]
     fn tied_timestamps_do_not_split() {
-        // gap is exactly 0, and the split condition is a strict `>`, so two
-        // photos at the identical instant must land in the same cluster.
+        // Two photos at the identical instant must land in the same cluster.
+        // Note: a gap of 0 is nowhere near `gap_seconds`, so this does not
+        // exercise the strict `>` vs `>=` boundary — see
+        // `gap_exactly_at_threshold_does_not_split` for that.
         let ids = event_clusters(&[Some(5), Some(5)], 86_400);
+        assert_eq!(ids[0], ids[1]);
+    }
+
+    #[test]
+    fn gap_exactly_at_threshold_does_not_split() {
+        // The split condition is `time - prev > gap_seconds`. A gap exactly
+        // equal to the threshold must NOT split (false under `>`), which
+        // distinguishes the strict `>` from an off-by-one `>=` regression
+        // (true under `>=`, which would incorrectly split this pair).
+        let ids = event_clusters(&[Some(0), Some(86_400)], 86_400);
         assert_eq!(ids[0], ids[1]);
     }
 }
