@@ -1,0 +1,8 @@
+node_modules
+.nuxt
+.output
+dist
+src-tauri/target
+src-tauri/binaries
+.DS_Store
+*.log
