@@ -5,6 +5,7 @@ export default defineNuxtConfig({
   ssr: false,
   devtools: { enabled: true },
   compatibilityDate: "2026-08-12",
+  css: ["~/assets/css/main.css"],
   vite: {
     clearScreen: false,
     envPrefix: ["VITE_", "TAURI_"],
