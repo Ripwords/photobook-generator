@@ -1,6 +1,7 @@
 pub mod cluster;
 pub mod db;
 pub mod protocol;
+pub mod ranking;
 pub mod sidecar;
 
 pub fn run() {
