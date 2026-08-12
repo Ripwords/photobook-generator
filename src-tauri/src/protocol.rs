@@ -61,4 +61,33 @@ mod tests {
             _ => panic!("expected error"),
         }
     }
+
+    /// Pins the actual Swift wire format for `analyze`: a single-field tuple
+    /// variant decoding a JSON array under `data`. This is asserted by
+    /// `#[serde(tag = "type", content = "data")]` semantics, not tested,
+    /// anywhere else — if `Analyzed` ever became a struct variant, or the
+    /// `content` key changed, this would still compile and only fail at
+    /// runtime against the real sidecar, degrading into `Malformed` errors
+    /// that `analyze_batches` then turns into failure records for every
+    /// photo in the batch with no clear cause.
+    #[test]
+    fn deserializes_analyzed_response() {
+        let line = r#"{"id":"a","result":{"type":"analyzed","data":[
+            {"status":"ok","features":{"phash":"abc123","aestheticScore":0.8,"sharpness":42.0}},
+            {"status":"failed","path":"/photos/bad.raw","message":"decode error"}
+        ]}}"#;
+        let res: Response = serde_json::from_str(line).unwrap();
+        assert_eq!(res.id, "a");
+        match res.result {
+            ResponseResult::Analyzed(records) => {
+                assert_eq!(records.len(), 2);
+                assert_eq!(records[0]["status"], "ok");
+                assert_eq!(records[0]["features"]["phash"], "abc123");
+                assert_eq!(records[1]["status"], "failed");
+                assert_eq!(records[1]["path"], "/photos/bad.raw");
+                assert_eq!(records[1]["message"], "decode error");
+            }
+            other => panic!("expected analyzed, got {other:?}"),
+        }
+    }
 }
