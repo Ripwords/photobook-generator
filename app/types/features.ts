@@ -8,12 +8,25 @@ export interface AnalyzedPhoto {
   aestheticPct: number;
   sharpnessPct: number;
   faceCount: number;
-  smileFraction: number | null;
+  /**
+   * Swift's synthesized `Codable` uses `encodeIfPresent` for optional
+   * properties, so a `nil` `smileFraction` is OMITTED from the wire JSON
+   * entirely rather than encoded as `null`. `JSON.parse` then leaves this
+   * `undefined`, not `null`, on the deserialized object -- hence `?:` here,
+   * not just `| null`. Always read this through `smilePercent()` below
+   * rather than comparing directly against `null`.
+   */
+  smileFraction?: number | null;
   sceneTags: string[];
   nearDupCluster: number;
   eventCluster: number;
-  /** Small JPEG contact-sheet thumbnail path, or null if writing it failed. */
-  thumbnailPath: string | null;
+  /**
+   * Small JPEG contact-sheet thumbnail path, or absent/null if writing it
+   * failed -- same `encodeIfPresent` omission as `smileFraction` above.
+   * Currently safe to read with a plain truthy check (`undefined`, `null`
+   * and `""` are all falsy), but typed accurately here regardless.
+   */
+  thumbnailPath?: string | null;
 }
 
 export interface FailedPhoto {
@@ -64,11 +77,23 @@ export interface EventGroup {
 }
 
 /**
- * Groups photos into event chapters by `eventCluster`, preserving the order
- * in which each cluster first appears in the input.
+ * Groups photos into event chapters by `eventCluster`, ordered
+ * chronologically by cluster id.
+ *
+ * The input array's own order is NOT chronological: it comes from
+ * `finalize_photos` in Rust, which sorts by `path` for UI stability, while
+ * `eventCluster` ids are assigned chronologically by capture time
+ * (`cluster::event_clusters`). Filename order only matches capture order by
+ * coincidence -- multiple cameras, re-exported files, or mixed prefixes all
+ * break it. Grouping by first-appearance-in-input (the previous behaviour
+ * here) rendered chapters under sequential "Event N" labels in whatever
+ * order their earliest photo happened to sort alphabetically, not the order
+ * they actually happened. Sorting by `eventCluster` numerically fixes this;
+ * the undated bucket (always the highest id -- see `event_clusters`) sorts
+ * last as a result, which is the desired place for it regardless of where
+ * its members' filenames happen to fall.
  */
 export function groupByEvent(photos: AnalyzedPhoto[]): EventGroup[] {
-  const order: number[] = [];
   const byCluster = new Map<number, AnalyzedPhoto[]>();
 
   for (const photo of photos) {
@@ -76,15 +101,13 @@ export function groupByEvent(photos: AnalyzedPhoto[]): EventGroup[] {
     if (!bucket) {
       bucket = [];
       byCluster.set(photo.eventCluster, bucket);
-      order.push(photo.eventCluster);
     }
     bucket.push(photo);
   }
 
-  return order.map((eventCluster) => ({
-    eventCluster,
-    photos: byCluster.get(eventCluster) ?? [],
-  }));
+  return [...byCluster.entries()]
+    .toSorted(([a], [b]) => a - b)
+    .map(([eventCluster, groupPhotos]) => ({ eventCluster, photos: groupPhotos }));
 }
 
 /**
@@ -100,6 +123,25 @@ export function burstSizes(photos: AnalyzedPhoto[]): Map<number, number> {
   }
 
   return sizes;
+}
+
+/**
+ * Converts a smile-likelihood fraction (0...1) into a whole-number percent
+ * for display, or `null` when no usable signal exists.
+ *
+ * Must use `== null` (loose equality), which is true for both `null` and
+ * `undefined`. Swift's synthesized `Codable` uses `encodeIfPresent` for
+ * optional properties, so a `nil` `smileFraction` never reaches the wire as
+ * `smileFraction: null` -- the key is omitted entirely, and `JSON.parse`
+ * leaves it `undefined`. A strict `=== null` check here lets `undefined`
+ * through to `Math.round(undefined * 100)`, which is `NaN` -- and `NaN`
+ * happily fails a `!== null` render guard too, so it reaches the DOM as the
+ * literal string "NaN%". This fires whenever a face has unusable pose
+ * (|yaw| or |pitch| > 30 degrees) or too few lip landmark points, which is
+ * routine on real photos.
+ */
+export function smilePercent(fraction: number | null | undefined): number | null {
+  return fraction == null ? null : Math.round(fraction * 100);
 }
 
 /** Returns the last path segment, for showing a folder name instead of a full path. */

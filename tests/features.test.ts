@@ -6,6 +6,7 @@ import {
   isFailed,
   keepers,
   pickHero,
+  smilePercent,
   type AnalyzedPhoto,
 } from "../app/types/features";
 
@@ -109,12 +110,33 @@ describe("groupByEvent", () => {
     ]);
   });
 
-  it("orders groups by first appearance, not by cluster id", () => {
+  it("orders groups chronologically by eventCluster id, not by first appearance in the input", () => {
     const result = groupByEvent([
       photo({ path: "/p/1.jpg", eventCluster: 5 }),
       photo({ path: "/p/2.jpg", eventCluster: 1 }),
     ]);
-    expect(result.map((g) => g.eventCluster)).toEqual([5, 1]);
+    expect(result.map((g) => g.eventCluster)).toEqual([1, 5]);
+  });
+
+  // Regression test for the real bug: filename (path) order does not match
+  // capture-time order, e.g. two cameras writing different filename
+  // prefixes. `finalize_photos` in Rust sorts the input array by path, so
+  // a later event's photo can appear EARLIER in the input array than an
+  // earlier event's photo. Grouping by first-appearance-in-input (the
+  // previous behaviour) would render the later event first, under the
+  // label "Event 1" -- chronologically backwards.
+  it("orders groups chronologically when path order and capture order disagree", () => {
+    const result = groupByEvent([
+      // Appears FIRST in the (path-sorted) input, but is chronologically the
+      // LATER event.
+      photo({ path: "/p/a-camera-two-later.jpg", eventCluster: 5 }),
+      // Appears SECOND in the input, but is chronologically the EARLIER
+      // event.
+      photo({ path: "/p/b-camera-one-earlier.jpg", eventCluster: 1 }),
+    ]);
+    expect(result.map((g) => g.eventCluster)).toEqual([1, 5]);
+    expect(result[0]?.photos[0]?.path).toBe("/p/b-camera-one-earlier.jpg");
+    expect(result[1]?.photos[0]?.path).toBe("/p/a-camera-two-later.jpg");
   });
 });
 
@@ -153,6 +175,35 @@ describe("basename", () => {
 
   it("returns the input unchanged when there is no separator", () => {
     expect(basename("Pictures")).toBe("Pictures");
+  });
+});
+
+describe("smilePercent", () => {
+  // Swift's synthesized `Codable` uses `encodeIfPresent` for optional
+  // properties: a `nil` `smileFraction` is OMITTED from the wire JSON
+  // entirely, never encoded as `smileFraction: null`. This is the actual
+  // shape the backend produces whenever a face has unusable pose (|yaw| or
+  // |pitch| > 30 degrees) or too few lip landmark points -- routine on real
+  // photos. Simulate it with a raw JSON string missing the key entirely
+  // (NOT `{ smileFraction: null }`, which is a shape the backend never
+  // sends) so this test exercises the real contract, not a convenient
+  // stand-in for it.
+  it("returns null when the backend omits smileFraction entirely (undefined, not null)", () => {
+    const decoded = JSON.parse('{"path":"/p/a.jpg","aestheticPct":50}') as {
+      smileFraction?: number | null;
+    };
+    expect(decoded.smileFraction).toBeUndefined(); // sanity: this is the real shape
+    expect(smilePercent(decoded.smileFraction)).toBeNull();
+  });
+
+  it("returns null for an explicit null", () => {
+    expect(smilePercent(null)).toBeNull();
+  });
+
+  it("converts a fraction to a rounded whole-number percent", () => {
+    expect(smilePercent(0.5)).toBe(50);
+    expect(smilePercent(0.876)).toBe(88);
+    expect(smilePercent(0)).toBe(0);
   });
 });
 

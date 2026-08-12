@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { AnalyzedPhoto } from "~/types/features";
+import { smilePercent, type AnalyzedPhoto } from "~/types/features";
 
 const { photo, burstSize = 1, isHero = false } = defineProps<{
   photo: AnalyzedPhoto;
@@ -11,9 +11,7 @@ const { photo, burstSize = 1, isHero = false } = defineProps<{
 }>();
 
 const src = computed(() => (photo.thumbnailPath ? convertFileSrc(photo.thumbnailPath) : null));
-const smilePct = computed(() =>
-  photo.smileFraction === null ? null : Math.round(photo.smileFraction * 100),
-);
+const smilePct = computed(() => smilePercent(photo.smileFraction));
 </script>
 
 <template>
