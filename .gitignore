@@ -9,3 +9,6 @@ src-tauri/gen
 *.log
 sidecar/.build
 .claude/worktrees
+.env
+.env.*
+!.env.example
