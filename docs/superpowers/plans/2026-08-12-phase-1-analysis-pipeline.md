@@ -1298,9 +1298,22 @@ git commit -m "feat(sidecar): add sharpness, palette, and perceptual hash metric
 - Create: `sidecar/Sources/PhotobookEngine/VisionAnalyzer.swift`
 - Test: `sidecar/Tests/PhotobookEngineTests/VisionAnalyzerTests.swift`
 
+> **⚠️ SUPERSEDED IN TWO WAYS BY THE SHIPPED IMPLEMENTATION — read before reusing this text.**
+>
+> 1. `FaceObservation` carries **`outerLips`, not `landmarks`**. Vision's `allPoints` is the
+>    full 65–76 point constellation (jaw contour, brows, eyes, nose, lips). The smile proxy
+>    reads mouth-corner geometry, and on a real face the x-extremes of `allPoints` are jaw
+>    or ear contour points — the resulting signal is not a smile signal and in testing it
+>    actually *inverted*. Populate from `VNFaceLandmarks2D.outerLips`.
+> 2. `normalizedPoints` are normalised to the **face's own bounding box**, not the image.
+>    They must be offset and scaled by the Vision-space (bottom-left) box before the
+>    top-left flip. Both `box` and `outerLips` are image-normalised, top-left.
+>
+> Neither defect was catchable by the tests below: no fixture contains a face.
+
 **Interfaces:**
 - Consumes: `CGImage` from `ImageLoader`
-- Produces: `struct VisionResult: Codable { isUtility: Bool; aestheticScore: Double; faces: [FaceObservation]; saliencyBox: [Double]?; horizonTiltDeg: Double?; sceneTags: [String]; hasText: Bool }` and `struct FaceObservation: Codable { box: [Double]; yaw: Double?; pitch: Double?; roll: Double?; captureQuality: Double?; landmarks: [[Double]]? }`; `VisionAnalyzer.analyze(_ image: CGImage) -> VisionResult`.
+- Produces: `struct VisionResult: Codable { isUtility: Bool; aestheticScore: Double; faces: [FaceObservation]; saliencyBox: [Double]?; horizonTiltDeg: Double?; sceneTags: [String]; hasText: Bool }` and `struct FaceObservation: Codable { box: [Double]; yaw: Double?; pitch: Double?; roll: Double?; captureQuality: Double?; outerLips: [[Double]]? }`; `VisionAnalyzer.analyze(_ image: CGImage) -> VisionResult`.
 
 All boxes are `[x, y, w, h]` normalised to `0...1` in **top-left origin** coordinates — Vision returns bottom-left origin, so this converts.
 
@@ -1492,6 +1505,19 @@ git commit -m "feat(sidecar): add batched Vision analysis on a single request ha
 - Produces: `SmileProxy.confidence(for face: FaceObservation) -> Double?` (nil when head pose is unusable) and `SmileProxy.fraction(faces: [FaceObservation], threshold: Double) -> Double?` (nil when no face has usable pose).
 
 Vision has no expression classifier at any macOS version, so this is geometric. It returns **nil, never 0**, when it cannot tell — "nobody smiling" and "couldn't tell" must not collapse.
+
+> **⚠️ SUPERSEDED IN THREE WAYS BY THE SHIPPED IMPLEMENTATION.**
+>
+> 1. Reads **`face.outerLips`**, not `face.landmarks` — see the warning on Task 7.
+> 2. Landmark points arrive **image-normalised**, so they must be mapped back into
+>    face-box-relative space (`(p - box.origin) / box.size`) before any lift/width ratio.
+>    Otherwise the ratio is distorted by `box.height / box.width`, differently per face,
+>    and the constants below are meaningless. Guard zero/negative box dimensions.
+> 3. A **nil** yaw or pitch gates to nil confidence. Unreported pose is a cannot-tell case;
+>    scoring a possibly-profile face as frontal feeds culling a wrong signal.
+>
+> Test fixtures must be realistic 8–12 point lip contours. Four idealised corners are how
+> defect 1 survived eleven passing tests.
 
 - [ ] **Step 1: Write the failing test**
 
