@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { isFailed, keepers, type AnalyzedPhoto } from "../app/types/features";
+import {
+  basename,
+  burstSizes,
+  groupByEvent,
+  isFailed,
+  keepers,
+  type AnalyzedPhoto,
+} from "../app/types/features";
 
 const photo = (over: Partial<AnalyzedPhoto> = {}): AnalyzedPhoto => ({
   status: "ok",
@@ -77,5 +84,73 @@ describe("feature helpers", () => {
     ]);
     expect(result).toHaveLength(1);
     expect(result[0]?.path).toBe("/p/pretty.jpg");
+  });
+});
+
+describe("groupByEvent", () => {
+  it("returns an empty array for no input", () => {
+    expect(groupByEvent([])).toEqual([]);
+  });
+
+  it("groups photos sharing an eventCluster together", () => {
+    const result = groupByEvent([
+      photo({ path: "/p/1.jpg", eventCluster: 1 }),
+      photo({ path: "/p/2.jpg", eventCluster: 2 }),
+      photo({ path: "/p/3.jpg", eventCluster: 1 }),
+    ]);
+    expect(result).toHaveLength(2);
+    expect(result.find((g) => g.eventCluster === 1)?.photos.map((p) => p.path)).toEqual([
+      "/p/1.jpg",
+      "/p/3.jpg",
+    ]);
+    expect(result.find((g) => g.eventCluster === 2)?.photos.map((p) => p.path)).toEqual([
+      "/p/2.jpg",
+    ]);
+  });
+
+  it("orders groups by first appearance, not by cluster id", () => {
+    const result = groupByEvent([
+      photo({ path: "/p/1.jpg", eventCluster: 5 }),
+      photo({ path: "/p/2.jpg", eventCluster: 1 }),
+    ]);
+    expect(result.map((g) => g.eventCluster)).toEqual([5, 1]);
+  });
+});
+
+describe("burstSizes", () => {
+  it("returns an empty map for no input", () => {
+    expect(burstSizes([])).toEqual(new Map());
+  });
+
+  it("counts non-utility photos per near-duplicate cluster", () => {
+    const result = burstSizes([
+      photo({ path: "/p/1.jpg", nearDupCluster: 7 }),
+      photo({ path: "/p/2.jpg", nearDupCluster: 7 }),
+      photo({ path: "/p/3.jpg", nearDupCluster: 8 }),
+    ]);
+    expect(result.get(7)).toBe(2);
+    expect(result.get(8)).toBe(1);
+  });
+
+  it("excludes utility photos from burst counts", () => {
+    const result = burstSizes([
+      photo({ path: "/p/1.jpg", nearDupCluster: 7 }),
+      photo({ path: "/p/2.jpg", nearDupCluster: 7, isUtility: true }),
+    ]);
+    expect(result.get(7)).toBe(1);
+  });
+});
+
+describe("basename", () => {
+  it("returns the last path segment", () => {
+    expect(basename("/Users/jj/Pictures/Family Trip")).toBe("Family Trip");
+  });
+
+  it("strips a trailing slash before taking the last segment", () => {
+    expect(basename("/Users/jj/Pictures/Family Trip/")).toBe("Family Trip");
+  });
+
+  it("returns the input unchanged when there is no separator", () => {
+    expect(basename("Pictures")).toBe("Pictures");
   });
 });

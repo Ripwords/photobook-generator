@@ -57,3 +57,54 @@ export function keepers(photos: AnalyzedPhoto[]): AnalyzedPhoto[] {
 
   return [...best.values()];
 }
+
+export interface EventGroup {
+  eventCluster: number;
+  photos: AnalyzedPhoto[];
+}
+
+/**
+ * Groups photos into event chapters by `eventCluster`, preserving the order
+ * in which each cluster first appears in the input.
+ */
+export function groupByEvent(photos: AnalyzedPhoto[]): EventGroup[] {
+  const order: number[] = [];
+  const byCluster = new Map<number, AnalyzedPhoto[]>();
+
+  for (const photo of photos) {
+    let bucket = byCluster.get(photo.eventCluster);
+    if (!bucket) {
+      bucket = [];
+      byCluster.set(photo.eventCluster, bucket);
+      order.push(photo.eventCluster);
+    }
+    bucket.push(photo);
+  }
+
+  return order.map((eventCluster) => ({
+    eventCluster,
+    photos: byCluster.get(eventCluster) ?? [],
+  }));
+}
+
+/**
+ * Counts how many non-utility photos share each near-duplicate cluster, so a
+ * surviving photo can be labelled with the size of the burst it came from.
+ */
+export function burstSizes(photos: AnalyzedPhoto[]): Map<number, number> {
+  const sizes = new Map<number, number>();
+
+  for (const photo of photos) {
+    if (photo.isUtility) continue;
+    sizes.set(photo.nearDupCluster, (sizes.get(photo.nearDupCluster) ?? 0) + 1);
+  }
+
+  return sizes;
+}
+
+/** Returns the last path segment, for showing a folder name instead of a full path. */
+export function basename(path: string): string {
+  const trimmed = path.replace(/\/+$/, "");
+  const segments = trimmed.split("/");
+  return segments[segments.length - 1] || path;
+}
