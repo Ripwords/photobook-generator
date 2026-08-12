@@ -1,0 +1,70 @@
+{
+  "id": "21-four-up-hero-plus-three-left",
+  "slots": [
+    {
+      "rect": [
+        0,
+        0,
+        0.491203,
+        1
+      ],
+      "role": "hero",
+      "bleed": [
+        "left",
+        "top",
+        "bottom"
+      ],
+      "aspect_pref": [
+        1.1,
+        1.5
+      ]
+    },
+    {
+      "rect": [
+        0.56,
+        0.03,
+        0.4,
+        0.295
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2.7,
+        3.9
+      ]
+    },
+    {
+      "rect": [
+        0.56,
+        0.35,
+        0.4,
+        0.295
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2.7,
+        3.9
+      ]
+    },
+    {
+      "rect": [
+        0.56,
+        0.67,
+        0.4,
+        0.295
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2.7,
+        3.9
+      ]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 4,
+  "max_photos": 4,
+  "density": "medium",
+  "energy": "neutral"
+}

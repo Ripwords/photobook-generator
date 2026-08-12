@@ -1,0 +1,66 @@
+{
+  "id": "20-four-up-windowpane",
+  "slots": [
+    {
+      "rect": [
+        0.04,
+        0.04,
+        0.42,
+        0.58
+      ],
+      "role": "hero",
+      "bleed": [],
+      "aspect_pref": [
+        1.5,
+        2.1
+      ]
+    },
+    {
+      "rect": [
+        0.04,
+        0.66,
+        0.42,
+        0.29
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2.9,
+        4.1
+      ]
+    },
+    {
+      "rect": [
+        0.54,
+        0.04,
+        0.42,
+        0.29
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2.9,
+        4.1
+      ]
+    },
+    {
+      "rect": [
+        0.54,
+        0.37,
+        0.42,
+        0.58
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        1.5,
+        2.1
+      ]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 4,
+  "max_photos": 4,
+  "density": "medium",
+  "energy": "lively"
+}

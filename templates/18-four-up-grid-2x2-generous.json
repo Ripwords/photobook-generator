@@ -1,0 +1,66 @@
+{
+  "id": "18-four-up-grid-2x2-generous",
+  "slots": [
+    {
+      "rect": [
+        0.05,
+        0.06,
+        0.4,
+        0.4
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2.1,
+        2.9
+      ]
+    },
+    {
+      "rect": [
+        0.55,
+        0.06,
+        0.4,
+        0.4
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2.1,
+        2.9
+      ]
+    },
+    {
+      "rect": [
+        0.05,
+        0.52,
+        0.4,
+        0.4
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2.1,
+        2.9
+      ]
+    },
+    {
+      "rect": [
+        0.55,
+        0.52,
+        0.4,
+        0.4
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2.1,
+        2.9
+      ]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 4,
+  "max_photos": 4,
+  "density": "medium",
+  "energy": "calm"
+}

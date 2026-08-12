@@ -1,0 +1,44 @@
+{
+  "id": "34-portrait-diptych",
+  "slots": [
+    {
+      "rect": [
+        0.1,
+        0,
+        0.3,
+        1
+      ],
+      "role": "support",
+      "bleed": [
+        "top",
+        "bottom"
+      ],
+      "aspect_pref": [
+        0.6,
+        0.9
+      ]
+    },
+    {
+      "rect": [
+        0.6,
+        0,
+        0.3,
+        1
+      ],
+      "role": "support",
+      "bleed": [
+        "top",
+        "bottom"
+      ],
+      "aspect_pref": [
+        0.6,
+        0.9
+      ]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 2,
+  "max_photos": 2,
+  "density": "medium",
+  "energy": "calm"
+}

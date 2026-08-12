@@ -1,0 +1,52 @@
+{
+  "id": "38-three-up-portrait-trio",
+  "slots": [
+    {
+      "rect": [
+        0.1,
+        0.06,
+        0.3,
+        0.88
+      ],
+      "role": "hero",
+      "bleed": [],
+      "aspect_pref": [
+        0.7,
+        1
+      ]
+    },
+    {
+      "rect": [
+        0.55,
+        0.1,
+        0.2,
+        0.78
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        0.5,
+        0.8
+      ]
+    },
+    {
+      "rect": [
+        0.77,
+        0.1,
+        0.2,
+        0.78
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        0.5,
+        0.8
+      ]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 3,
+  "max_photos": 3,
+  "density": "medium",
+  "energy": "calm"
+}
