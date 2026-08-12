@@ -17,6 +17,7 @@ struct ErrorResult: Codable { let message: String }
 enum ResponseResult: Codable {
     case pong(PongResult)
     case error(ErrorResult)
+    case analyzed([PhotoRecord])
 
     private enum CodingKeys: String, CodingKey { case type, data }
 
@@ -29,6 +30,9 @@ enum ResponseResult: Codable {
         case .error(let v):
             try c.encode("error", forKey: .type)
             try c.encode(v, forKey: .data)
+        case .analyzed(let v):
+            try c.encode("analyzed", forKey: .type)
+            try c.encode(v, forKey: .data)
         }
     }
 
@@ -36,6 +40,7 @@ enum ResponseResult: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         switch try c.decode(String.self, forKey: .type) {
         case "pong": self = .pong(try c.decode(PongResult.self, forKey: .data))
+        case "analyzed": self = .analyzed(try c.decode([PhotoRecord].self, forKey: .data))
         default: self = .error(try c.decode(ErrorResult.self, forKey: .data))
         }
     }
