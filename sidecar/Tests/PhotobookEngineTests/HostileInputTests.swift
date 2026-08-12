@@ -10,18 +10,26 @@ import Foundation
 // process trap. If any of these ever crash the test runner, that is a bug in
 // ImageLoader/ExifReader/Analyzer to fix, not a fixture to remove.
 //
-// `.serialized`: several tests here call into Vision (VNImageRequestHandler)
-// on multiple images at once, on top of the pre-existing suite's own
-// Vision-heavy tests. swift-testing runs @Test functions concurrently by
-// default, and piling this many simultaneous VNImageRequestHandler instances
-// onto Vision's internal VNControlledCapacityTasksQueue can exhaust the
-// shared libdispatch global concurrent queue -- observed as a genuine
-// zero-CPU-progress deadlock (not a slow-but-running fixture) when the full
-// suite runs unconstrained. That deadlock reproduces with the pre-existing
-// Vision tests alone at high enough concurrency and is unrelated to any
-// hostile byte content, so serializing just this file's tests is a targeted
-// mitigation for the concurrency ceiling this file adds, not a fix to a
-// fixture-specific bug.
+// `.serialized`: this mitigates a DIFFERENT problem than Analyzer's
+// visionSemaphore does, and both are needed. visionSemaphore bounds
+// concurrent Vision work *within a single Analyzer.analyze(paths:) call* --
+// that's the production fix, and it is sufficient for Task 15's real usage
+// (one process, one batch of paths, no other work competing for threads).
+// It is NOT sufficient for this local test suite: swift-testing runs @Test
+// functions themselves concurrently, so dozens of tests each triggering
+// Analyzer.analyze independently (some via concurrentPerform fan-out as
+// large as 300, see AnalyzerTests.analyzerHandlesA300PhotoBatchWithout...)
+// all end up with threads blocked on visionSemaphore.wait() at once, on
+// the same shared libdispatch global concurrent queue Vision's own async
+// work needs -- that's still enough blocked-thread pressure to exhaust the
+// pool and deadlock, confirmed empirically: restoring the semaphore to 4
+// but removing this trait still hung the full suite for 3+ minutes at zero
+// CPU progress before it was killed; restoring this trait alongside the
+// semaphore fix passed reliably. So: visionSemaphore fixes the real
+// production risk; `.serialized` here keeps the *test suite itself* from
+// re-creating a version of the same problem through test-level parallelism
+// that production code never exercises. Do not remove either independently
+// without re-running the full unfiltered `swift test` suite several times.
 @Suite(.serialized)
 struct HostileInputTests {
 

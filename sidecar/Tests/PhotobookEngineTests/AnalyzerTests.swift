@@ -8,6 +8,29 @@ private func fixture(_ name: String) -> String {
         .appendingPathComponent("Fixtures/\(name)").path
 }
 
+// Regression test for a real deadlock found while adding Task 10's hostile
+// fixtures: VisionAnalyzer.analyze makes synchronously-blocking
+// VNImageRequestHandler.perform() calls, and DispatchQueue.concurrentPerform's
+// full core-count fan-out of those piling onto Vision's internal capacity
+// queue at once starved the queue Vision needed to service them --
+// confirmed via `sample` as a genuine zero-CPU-progress deadlock, not slow
+// computation (see task-10-report.md). Analyzer's private visionSemaphore
+// bounds that fan-out; this is the regression guard for it. 300 repeats of
+// the same fixture is enough to exercise the concurrency -- the content
+// doesn't matter, only the count in flight at once. The time limit turns a
+// reintroduced deadlock into a fast, clear test failure instead of a hung
+// CI job.
+@Test(.timeLimit(.minutes(2)))
+func analyzerHandlesA300PhotoBatchWithoutDeadlockingOnVisionConcurrency() {
+    let paths = Array(repeating: fixture("landscape.jpg"), count: 300)
+    let records = Analyzer.analyze(paths: paths)
+    #expect(records.count == 300)
+    #expect(records.allSatisfy {
+        if case .ok = $0 { return true }
+        return false
+    })
+}
+
 @Test func analyzerAnalysesAGoodPhoto() {
     let records = Analyzer.analyze(paths: [fixture("landscape.jpg")])
     #expect(records.count == 1)

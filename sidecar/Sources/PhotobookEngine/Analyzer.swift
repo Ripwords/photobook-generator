@@ -59,6 +59,26 @@ enum Analyzer {
     // downscaling, which distorts the Laplacian-based sharpness metric.
     static let analysisMaxPixel = 1536
 
+    // Caps the number of VisionAnalyzer.analyze calls in flight at once.
+    //
+    // DispatchQueue.concurrentPerform below sizes its fan-out to the CPU core
+    // count, and each iteration's VisionAnalyzer.analyze makes synchronously-
+    // blocking VNImageRequestHandler.perform() calls, which internally wait
+    // on Vision's own VNControlledCapacityTasksQueue via the shared libdispatch
+    // global concurrent queue. Letting core-count-many of those block at once
+    // can starve the very queue Vision needs to service them: this is a real,
+    // reproduced deadlock (zero CPU progress, confirmed via `sample`), not a
+    // hypothetical one -- see sidecar/Tests/PhotobookEngineTests/HostileInputTests.swift
+    // and task-10-report.md. Decode (ImageLoader) and metrics (Metrics.swift)
+    // are CPU-bound and stay at full concurrentPerform width; only the Vision
+    // portion is gated. DO NOT remove this as a "pessimisation" on a many-core
+    // machine -- removing it reintroduces the deadlock. 4 was chosen after
+    // comparing throughput against 2 with no measurable stability difference
+    // (see task-10-report.md); if you need to change it, re-run that
+    // comparison and the stress test in AnalyzerTests.swift first.
+    private static let visionConcurrencyLimit = 4
+    private static let visionSemaphore = DispatchSemaphore(value: visionConcurrencyLimit)
+
     private static func contentHash(path: String) throws -> String {
         let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
         defer { try? handle.close() }
@@ -86,7 +106,15 @@ enum Analyzer {
         // rethrows, so `try` moves inside with it.
         return try autoreleasepool {
             let image = try ImageLoader.loadThumbnail(path: path, maxPixel: analysisMaxPixel)
+
+            // Signalled on every exit from this scope, including a future
+            // throwing change to VisionAnalyzer.analyze -- a leaked permit
+            // here would starve the semaphore down to zero and turn this
+            // fix into a guaranteed hang instead of a bounded one.
+            visionSemaphore.wait()
+            defer { visionSemaphore.signal() }
             let vision = VisionAnalyzer.analyze(image)
+
             let palette = Metrics.palette(image, count: 6)
             let faceArea = vision.faces.reduce(0.0) { $0 + $1.box[2] * $1.box[3] }
 
