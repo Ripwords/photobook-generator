@@ -17,13 +17,60 @@ private func fixture(_ name: String) -> String {
 // computation (see task-10-report.md). Analyzer's private visionSemaphore
 // bounds that fan-out; this is the regression guard for it. 300 repeats of
 // the same fixture is enough to exercise the concurrency -- the content
-// doesn't matter, only the count in flight at once. The time limit turns a
-// reintroduced deadlock into a fast, clear test failure instead of a hung
-// CI job.
-@Test(.timeLimit(.minutes(2)))
-func analyzerHandlesA300PhotoBatchWithoutDeadlockingOnVisionConcurrency() {
+// doesn't matter, only the count in flight at once.
+//
+// NOT using `@Test(.timeLimit(...))` here: swift-testing enforces that trait
+// through cooperative task cancellation, which only takes effect at a
+// suspension point. This test body is fully synchronous all the way down
+// (Analyzer.analyze -> concurrentPerform -> DispatchSemaphore.wait()) with
+// no suspension points, and a thread genuinely stuck in wait() never
+// returns control to let the task group observe cancellation -- so the
+// exact regression this test exists to catch would hang instead of timing
+// out, silently defeating the point of having a watchdog at all (verified
+// empirically, see task-10-report.md). Instead: run the analysis on a
+// background queue and wait on a plain DispatchSemaphore with an explicit
+// timeout on the test thread.
+//
+// KNOWN LIMITATION, found while verifying this watchdog against a
+// deliberately reintroduced deadlock (visionConcurrencyLimit set absurdly
+// high, HostileInputTests' @Suite(.serialized) removed, full unfiltered
+// suite run): the watchdog did NOT fire. `sample` on the hung process
+// showed dozens of threads legitimately stuck inside Vision's
+// VNControlledCapacityTasksQueue (the deadlock working as sabotaged), but
+// this test's own `done.wait(timeout:)` call never appeared in any sample
+// -- its synchronous body was never scheduled onto an OS thread at all in
+// 3+ minutes of wall time. `DispatchQueue.global().async` and the thread
+// running this test's own body both draw from the same shared libdispatch
+// global concurrent queue that the deadlocked Vision calls were exhausting;
+// under total pool exhaustion the watchdog's own code can starve alongside
+// the work it's meant to bound, rather than observing it from outside.
+// `done.wait(timeout:)` genuinely is a self-contained kernel deadline once
+// its calling thread is actually running -- the gap is entirely in getting
+// that thread scheduled in the first place.
+//
+// This specific total-exhaustion state should not occur in the shipped
+// configuration: it requires BOTH the production semaphore's cap disabled
+// AND `.serialized` removed from HostileInputTests, and the latter is kept
+// specifically because it prevents the local suite from ever reaching this
+// state. A single Analyzer.analyze(paths:) call in isolation (no other
+// tests competing for the pool) did not deadlock even with the cap
+// disabled (see task-10-report.md) -- so the true production shape (one
+// process, one batch, nothing else drawing on the shared pool) was never
+// observed to defeat this watchdog; only the compound, already-mitigated
+// test-suite scenario was. Recorded here rather than silently assumed to
+// work, per explicit request during review.
+@Test func analyzerHandlesA300PhotoBatchWithoutDeadlockingOnVisionConcurrency() {
     let paths = Array(repeating: fixture("landscape.jpg"), count: 300)
-    let records = Analyzer.analyze(paths: paths)
+    let done = DispatchSemaphore(value: 0)
+    var records: [PhotoRecord] = []
+    DispatchQueue.global().async {
+        records = Analyzer.analyze(paths: paths)
+        done.signal()
+    }
+    let outcome = done.wait(timeout: .now() + 120)
+    #expect(outcome == .success, "analyze deadlocked: did not complete within 120s")
+    guard outcome == .success else { return }
+
     #expect(records.count == 300)
     #expect(records.allSatisfy {
         if case .ok = $0 { return true }
