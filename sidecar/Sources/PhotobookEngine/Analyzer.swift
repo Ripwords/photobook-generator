@@ -72,12 +72,20 @@ enum Analyzer {
     static func analyzeOne(path: String) throws -> PhotoFeatures {
         let exif = try ExifReader.read(path: path)
         let hash = try contentHash(path: path)
-        let image = try ImageLoader.loadThumbnail(path: path, maxPixel: analysisMaxPixel)
 
-        // autoreleasepool matters: CGImage/CIImage allocations do not get an
-        // autorelease pool on threads spawned by concurrentPerform, so
-        // without this memory grows unbounded across a large batch.
-        return autoreleasepool {
+        // The pool must enclose the decode itself, not just what runs after
+        // it. loadThumbnail's kCGImageSourceShouldCacheImmediately option
+        // forces the full JPEG/HEIC decompression, colour management, and
+        // downsample to happen synchronously right there — it is the
+        // largest allocation site in this whole per-photo pipeline, larger
+        // than the Vision pass or metrics that follow. concurrentPerform
+        // worker threads have no autorelease pool of their own, so if the
+        // decode happened outside this block those allocations would
+        // accumulate unbounded across a large batch — precisely the failure
+        // mode autoreleasepool exists here to prevent. autoreleasepool
+        // rethrows, so `try` moves inside with it.
+        return try autoreleasepool {
+            let image = try ImageLoader.loadThumbnail(path: path, maxPixel: analysisMaxPixel)
             let vision = VisionAnalyzer.analyze(image)
             let palette = Metrics.palette(image, count: 6)
             let faceArea = vision.faces.reduce(0.0) { $0 + $1.box[2] * $1.box[3] }
@@ -116,6 +124,16 @@ enum Analyzer {
         var results = [PhotoRecord?](repeating: nil, count: paths.count)
         let lock = NSLock()
 
+        // The compiler warns about mutating a captured `var` from concurrent
+        // closures (#SendableClosureCaptures) here; it is a false positive
+        // in practice, not a real data race. Every write to `results` is
+        // serialized by `lock`, and `concurrentPerform` blocks the calling
+        // thread until *all* iterations have returned before this function
+        // reads `results` below — that combination gives a real
+        // happens-before edge from every write to the final read. If this
+        // package is ever opted into full Swift 6 language mode, this
+        // pattern becomes a hard error and would need `Mutex` (or wrapping
+        // `results` in an `@unchecked Sendable` box) to satisfy the checker.
         DispatchQueue.concurrentPerform(iterations: paths.count) { index in
             let path = paths[index]
             let record: PhotoRecord
