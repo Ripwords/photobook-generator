@@ -110,6 +110,9 @@ const SAFE_Y1 = 0.97785;
 const GUTTER_X0 = 0.491203;
 const GUTTER_X1 = 0.508797;
 
+/** The fold, normalised on the spread canvas: 11.197" of 22.394". */
+const FOLD_X = 0.5;
+
 // The spread canvas in inches (section 3 of the design doc): 22.394 x 8.894, a
 // 2.518:1 ratio. `rect` is normalised to the canvas ([0,1] on each axis), but
 // `aspect_pref` is a real-world (inches) width/height ratio — the thing a photo's
@@ -175,9 +178,12 @@ function realAspectRatio(rect: Rect): number {
 const loaded = loadTemplates();
 
 describe("template library", () => {
-  it("contains between 35 and 50 templates", () => {
-    expect(loaded.length).toBeGreaterThanOrEqual(35);
-    expect(loaded.length).toBeLessThanOrEqual(50);
+  it("contains at least 19 templates", () => {
+    // 40 authored, minus 15 fold-spanning and 6 whose slots fit no common
+    // camera aspect (spec 2026-08-13 sections 1 and 6.1). The upper bound is
+    // deliberately gone: Task 13 authors 15-20 more, and a ceiling here would
+    // fail on the authoring commit for no design reason.
+    expect(loaded.length).toBeGreaterThanOrEqual(19);
   });
 
   it("has unique ids across the library", () => {
@@ -233,6 +239,19 @@ describe("template library", () => {
           expect(
             rectOverlapsGutterBand(tz.rect),
             `${label}: overlaps the gutter dead band [${GUTTER_X0}, ${GUTTER_X1}]`,
+          ).toBe(false);
+        });
+      });
+
+      it("no slot spans the fold", () => {
+        template.slots.forEach((slot, i) => {
+          const [x, , w] = slot.rect;
+          const label = rectLabel(filename, "slots", i, slot.rect);
+          expect(
+            x < FOLD_X - EPS && x + w > FOLD_X + EPS,
+            `${label}: spans the fold at x=${FOLD_X}. Pixajoy picture boxes are ` +
+              `page-local and cannot cross the fold, so this template cannot be built. ` +
+              `Running flush TO the fold is legal; crossing it is not.`,
           ).toBe(false);
         });
       });
@@ -301,6 +320,20 @@ describe("template library", () => {
           expect(real, `${label}: real-world aspect ratio above aspect_pref[1]`).toBeLessThanOrEqual(
             hi + EPS,
           );
+        });
+      });
+
+      it("every slot decomposes into a valid page-local rect", () => {
+        template.slots.forEach((slot, i) => {
+          const [x, y, w, h] = slot.rect;
+          const label = rectLabel(filename, "slots", i, slot.rect);
+          const onLeft = x + w <= FOLD_X + EPS;
+          const u = onLeft ? x / FOLD_X : (x - FOLD_X) / FOLD_X;
+          const uw = w / FOLD_X;
+          expect(u, `${label}: page-local x must be >= 0`).toBeGreaterThanOrEqual(-EPS);
+          expect(u + uw, `${label}: page-local x+w must be <= 1`).toBeLessThanOrEqual(1 + EPS);
+          expect(y, `${label}: page-local y must be >= 0`).toBeGreaterThanOrEqual(-EPS);
+          expect(y + h, `${label}: page-local y+h must be <= 1`).toBeLessThanOrEqual(1 + EPS);
         });
       });
 
