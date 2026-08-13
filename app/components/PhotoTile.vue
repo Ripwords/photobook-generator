@@ -1,11 +1,6 @@
 <script setup lang="ts">
 import { convertFileSrc } from "@tauri-apps/api/core";
-import {
-  isRanked,
-  smilePercent,
-  type AnalyzedPhoto,
-  type PartialAnalyzedPhoto,
-} from "~/types/features";
+import { isRanked, type AnalyzedPhoto, type PartialAnalyzedPhoto } from "~/types/features";
 
 const {
   photo,
@@ -20,7 +15,6 @@ const {
 }>();
 
 const src = computed(() => (photo.thumbnailPath ? convertFileSrc(photo.thumbnailPath) : null));
-const smilePct = computed(() => smilePercent(photo.smileFraction));
 // While a photo is still streaming in, it has no aesthetic/sharpness
 // percentile yet -- those are whole-set derivations that only exist once
 // every photo in the folder has been analyzed (see `AnalysisEvent` in
@@ -104,14 +98,19 @@ const sharpnessPct = computed(() => (isRanked(photo) ? photo.sharpnessPct : null
           <UIcon name="i-lucide-user-round" class="size-3" />
           <span class="font-mono tabular-nums">{{ photo.faceCount }}</span>
         </span>
-        <span
-          v-if="smilePct !== null"
-          class="flex items-center gap-1"
-          title="Share of faces smiling"
-        >
-          <UIcon name="i-lucide-smile" class="size-3" />
-          <span class="font-mono tabular-nums">{{ smilePct }}%</span>
-        </span>
+        <!--
+          Smile badge intentionally removed. `smileFraction` is still
+          computed by the sidecar and carried on `photo` end to end -- only
+          rendering it is suppressed here. Real calibration data (15 faces,
+          all confirmed smiling by a human) shows the threshold has a 100%
+          false-negative rate: the strongest measured lift was 0.072, but
+          `confidence > 0.5` requires lift > 0.10, so no genuine smile can
+          ever cross it. A confidently wrong percentage is worse than no
+          signal. See docs/PROJECT-STATUS.md, "Deferred: smile detection
+          calibration" under What is NOT built, for the full measurement,
+          the disqualification of `midpointLift`, and what is needed to
+          finish this (or drop `smile_fraction` entirely).
+        -->
       </span>
     </figcaption>
   </figure>

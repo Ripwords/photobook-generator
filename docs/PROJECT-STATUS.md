@@ -126,6 +126,57 @@ Also explicitly deferred:
 - **The cover.** Different geometry from the interior (~0.75" wrap band plus a spine whose
   width depends on page count and paper stock). Own spec.
 
+### Deferred: smile detection calibration
+
+`SmileProxy`'s threshold is miscalibrated, proven with real measured data, and finishing
+it is being deferred so Phase 2 can start. The UI display is already suppressed (see
+`app/components/PhotoTile.vue` — the smile badge is commented out at the suppression
+point with a pointer back to this section); the pipeline still computes and stores
+`smileFraction` end to end, so no data is lost and no work here needs redoing.
+
+**Measured data**, via `scripts/calibrate-smile.sh`, 15 faces across 10 real photos,
+**every face confirmed smiling by the user**:
+
+```
+lift          n=15  min=0.005  median=0.018  max=0.072
+midpointLift  n=15  min=-0.081 median=0.063  max=0.089
+```
+
+Confidences ranged 0.31–0.44. `outerLips` returned 14 points on every face (see
+"Genuinely verified" above — that part of the old unknown is closed).
+
+**Three conclusions:**
+
+1. `minOuterLipPoints = 6` is correct and needs no change — Vision reliably returns 14.
+2. **The threshold produces a 100% false-negative rate.** `confidence > 0.5` requires
+   `lift > 0.10`; the maximum lift observed on a genuine smile was 0.072. No real smile
+   can pass the current threshold.
+3. **`midpointLift` is disqualified — do not revisit it.** It had looked ~25% more
+   sensitive than `lift` on synthetic fixtures, which is why `SmileGeometry` still emits
+   it as a candidate. Real data killed that: the objectively strongest smile in the set
+   (open mouth, teeth visible) scored the *most negative* midpointLift (-0.081), because
+   an open mouth drags the lip contour's midpoint down. It is not a usable signal.
+
+**What is still missing:** neutral-expression faces. Every sample above is one class
+(confirmed smiling), so a threshold fit to this data alone would classify nearly
+everything as smiling. A subtle genuine smile measured lift `0.005` — if neutral faces
+cluster in the 0.00–0.01 range, the two classes overlap and lip-corner geometry may
+simply not discriminate smiling from neutral at this landmark resolution.
+
+**Exactly what finishes this:**
+
+1. Run `scripts/calibrate-smile.sh` over 15-20 clearly **neutral**-expression faces (same
+   script, same real-photo requirement — no synthetic fixtures).
+2. Compare the neutral `lift` distribution against the smiling one above.
+   - If they separate cleanly, set `confidence(for:)`'s threshold (currently the
+     `[-0.15, 0.35]` map onto 0...1 in `SmileProxy.swift`, gated at `> 0.5`) at the point
+     where the two distributions separate, and re-enable the badge in `PhotoTile.vue`.
+   - If they do not separate — e.g. neutral faces also cluster near 0.00-0.01 — the
+     correct outcome is to **drop `smile_fraction` entirely** (sidecar, wire format, and
+     types) rather than ship a number that looks meaningful but isn't. Do not just lower
+     the threshold to force separation; that produces a different wrong number, not a
+     right one.
+
 ---
 
 ## Print geometry (settled, and hard-won)
@@ -193,27 +244,29 @@ Be precise about this. Several things look verified and are not.
 - The tokio starvation fix, via an integration test on a **1-worker-thread runtime**
   against the real sidecar binary, mutation-verified.
 - Contrast ratios for every accent-bearing element in both light and dark mode.
+- **Vision's `outerLips` point count.** Measured via `scripts/calibrate-smile.sh` on 15
+  faces across 10 real photos: `outerLips` returned **14 points on every single face**.
+  `SmileProxy.minOuterLipPoints = 6` is comfortably below that and is correct as-is. This
+  closes the "per-region point count" unknown that used to sit in the NOT-verified list
+  below — do not re-open it. (The threshold `SmileProxy` uses on top of that point count
+  is a separate, still-open problem — see "Deferred: smile detection calibration" under
+  What is NOT built.)
 
 ### NOT verified — do these first when you have real photos
 1. **RAW and HEIC throughput.** Never measured. The design's §14 flags it. Timeouts are
    deliberately generous (`10s + 3s/photo`) precisely because nobody knows.
-2. **🚨 Vision's `outerLips` point count.** `SmileProxy` requires **at least 6** points.
-   Apple's headers document only the *total* constellation (65 or 76 across all regions);
-   no per-region count is published anywhere. **If Vision returns fewer than 6,
-   `smile_fraction` is `nil` for every photo in the library — silently, with every test
-   still green.** Check the real count first thing.
-3. **The whole face code path.** No fixture contains a face, so landmark seeding,
+2. **The whole face code path.** No fixture contains a face, so landmark seeding,
    `FaceObservation` construction and the landmark coordinate conversion are never
    executed by any test. A synthetic drawn face will not reliably trip Vision's detector,
    so this needs real photos.
-4. **Pixajoy's page-count semantics.** Does "20 pages" mean 10 spreads or 20? Open the
+3. **Pixajoy's page-count semantics.** Does "20 pages" mean 10 spreads or 20? Open the
    editor and count thumbnails in the Pages panel. It lives in a product profile so it is
    a one-value change, but the capacity math doubles or halves on it.
-5. **Whether the red editor guide is the trim line or a safe-text margin.** The distance
+4. **Whether the red editor guide is the trim line or a safe-text margin.** The distance
    is 5 mm either way and the practical rule is identical, so this is cosmetic — but it is
    unresolved.
-6. **CSP and asset protocol in a packaged bundle.** Verified in `tauri dev` only.
-7. **The notification banner actually rendering.** macOS showed its genuine first-run
+5. **CSP and asset protocol in a packaged bundle.** Verified in `tauri dev` only.
+6. **The notification banner actually rendering.** macOS showed its genuine first-run
    permission prompt for `PhotobookGen`, but nobody could click Allow (no Accessibility
    access, and blind-clicking a live desktop was correctly refused). The gating logic and
    non-fatal failure path are unit-tested; the banner itself has never been seen. Grant
