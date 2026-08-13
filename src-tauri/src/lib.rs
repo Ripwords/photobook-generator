@@ -3,6 +3,7 @@ pub mod cluster;
 pub mod commands;
 pub mod db;
 pub mod geometry;
+pub mod project;
 pub mod protocol;
 pub mod ranking;
 pub mod sidecar;

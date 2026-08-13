@@ -1,3 +1,5 @@
+use crate::book::pace::Book;
+use crate::project::{self, ExportRecord, Project, ProjectSummary};
 use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 
@@ -42,7 +44,29 @@ impl Db {
                  created_at       INTEGER NOT NULL DEFAULT (unixepoch())
              );
              CREATE INDEX IF NOT EXISTS idx_features_version
-                 ON features (analyzer_version);",
+                 ON features (analyzer_version);
+             CREATE TABLE IF NOT EXISTS projects (
+                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                 name          TEXT NOT NULL,
+                 source_folder TEXT NOT NULL,
+                 page_count    INTEGER NOT NULL,
+                 photo_count   INTEGER NOT NULL,
+                 book_json     TEXT NOT NULL,
+                 created_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+                 updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE INDEX IF NOT EXISTS idx_projects_updated_at
+                 ON projects (updated_at);
+             CREATE TABLE IF NOT EXISTS project_exports (
+                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                 project_id  INTEGER NOT NULL REFERENCES projects(id),
+                 output_dir  TEXT NOT NULL,
+                 format      TEXT NOT NULL,
+                 file_count  INTEGER NOT NULL,
+                 exported_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE INDEX IF NOT EXISTS idx_project_exports_project_id
+                 ON project_exports (project_id);",
         )
     }
 
@@ -69,11 +93,292 @@ impl Db {
         Ok(())
     }
 
+    /// Persists a new project. `book` is serialised whole into `book_json`
+    /// (see `project.rs` for why); `page_count`/`photo_count` are
+    /// denormalised alongside it so `list_projects` never has to parse
+    /// JSON. Returns the new row's id.
+    pub fn save_project(&self, name: &str, source_folder: &str, book: &Book) -> rusqlite::Result<i64> {
+        let book_json = serde_json::to_string(book)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let (page_count, photo_count) = project::book_counts(book);
+        self.conn.execute(
+            "INSERT INTO projects (name, source_folder, page_count, photo_count, book_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![name, source_folder, page_count, photo_count, book_json],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Loads a project and its export history. `None` if `id` does not
+    /// exist.
+    pub fn load_project(&self, id: i64) -> rusqlite::Result<Option<Project>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT name, source_folder, book_json, created_at, updated_at
+                 FROM projects WHERE id = ?1",
+                rusqlite::params![id],
+                |row| {
+                    let name: String = row.get(0)?;
+                    let source_folder: String = row.get(1)?;
+                    let book_json: String = row.get(2)?;
+                    let created_at: i64 = row.get(3)?;
+                    let updated_at: i64 = row.get(4)?;
+                    Ok((name, source_folder, book_json, created_at, updated_at))
+                },
+            )
+            .optional()?;
+
+        let Some((name, source_folder, book_json, created_at, updated_at)) = row else {
+            return Ok(None);
+        };
+
+        let book: Book = serde_json::from_str(&book_json).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+
+        let mut stmt = self.conn.prepare(
+            "SELECT output_dir, format, file_count, exported_at
+             FROM project_exports WHERE project_id = ?1 ORDER BY exported_at ASC, id ASC",
+        )?;
+        let exports = stmt
+            .query_map(rusqlite::params![id], |row| {
+                let output_dir: String = row.get(0)?;
+                let format: String = row.get(1)?;
+                let file_count: i64 = row.get(2)?;
+                let at: i64 = row.get(3)?;
+                Ok(ExportRecord { at, output_dir, format, file_count: file_count as usize })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        Ok(Some(Project { id, name, source_folder, created_at, updated_at, book, exports }))
+    }
+
+    /// Summaries for every saved project, newest-updated first.
+    pub fn list_projects(&self) -> rusqlite::Result<Vec<ProjectSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, source_folder, page_count, photo_count, created_at, updated_at
+             FROM projects ORDER BY updated_at DESC",
+        )?;
+        let summaries = stmt
+            .query_map([], |row| {
+                Ok(ProjectSummary {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    source_folder: row.get(2)?,
+                    page_count: row.get(3)?,
+                    photo_count: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(summaries)
+    }
+
+    /// Appends an export to a project's history. The persisted timestamp
+    /// always comes from SQLite's `unixepoch()`, not `rec.at` -- see the
+    /// doc comment on `ExportRecord`.
+    pub fn record_export(&self, project_id: i64, rec: &ExportRecord) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO project_exports (project_id, output_dir, format, file_count)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![project_id, rec.output_dir, rec.format, rec.file_count as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Removes a project and every export row recorded against it. Both
+    /// deletes are explicit rather than relying on a foreign-key cascade
+    /// (`project_exports.project_id` has no `ON DELETE CASCADE`) -- the
+    /// export rows must go first, since this bundled SQLite enforces
+    /// `PRAGMA foreign_keys` by default and would otherwise reject the
+    /// delete of a `projects` row with export rows still referencing it.
+    pub fn delete_project(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn.execute("DELETE FROM project_exports WHERE project_id = ?1", rusqlite::params![id])?;
+        self.conn.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::book::pace::{Book, Page, Placement};
+    use crate::geometry::{Rect, Side};
+    use crate::project::ExportRecord;
+
+    /// Two pages, two placements per page, distinct non-round `z` values,
+    /// and `slot_rect`/`crop` rects that differ from each other AND carry
+    /// enough decimal precision to catch rounding. A one-page,
+    /// one-placement, round-numbers fixture cannot detect most of the
+    /// round-trip mutations this file pins.
+    fn fixture_book() -> Book {
+        Book {
+            seed: 424_242,
+            dropped: 3,
+            pages: vec![
+                Page {
+                    number: 1,
+                    side: Side::Right,
+                    template_id: "spread-a:right".into(),
+                    placements: vec![
+                        Placement {
+                            photo_index: 0,
+                            slot_rect: Rect::new(0.0123, 0.0456, 0.4321, 0.2109),
+                            crop: Rect::new(0.1111, 0.2222, 0.3333, 0.4444),
+                            z: 1,
+                        },
+                        Placement {
+                            photo_index: 1,
+                            slot_rect: Rect::new(0.5555, 0.1234, 0.4321, 0.2109),
+                            crop: Rect::new(0.0987, 0.0654, 0.3210, 0.1987),
+                            z: 2,
+                        },
+                    ],
+                },
+                Page {
+                    number: 2,
+                    side: Side::Left,
+                    template_id: "spread-b:left".into(),
+                    placements: vec![
+                        Placement {
+                            photo_index: 2,
+                            slot_rect: Rect::new(0.0789, 0.0912, 0.4567, 0.2345),
+                            crop: Rect::new(0.2468, 0.1357, 0.3691, 0.2580),
+                            z: 3,
+                        },
+                        Placement {
+                            photo_index: 3,
+                            slot_rect: Rect::new(0.6013, 0.0456, 0.3579, 0.2864),
+                            crop: Rect::new(0.0135, 0.0246, 0.4680, 0.3579),
+                            z: 4,
+                        },
+                    ],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn migration_is_additive_and_preserves_the_features_cache() {
+        let db = Db::open_in_memory().unwrap();
+        db.put_features("abc", "/tmp/a.jpg", r#"{"v":1}"#).unwrap();
+
+        // Re-running the migration against a live connection must be a
+        // no-op for existing data -- `CREATE TABLE IF NOT EXISTS` is what
+        // makes this safe, and this test is what proves it stays safe.
+        db.migrate().unwrap();
+
+        assert_eq!(db.get_features("abc").unwrap().unwrap(), r#"{"v":1}"#);
+    }
+
+    #[test]
+    fn round_trips_a_saved_project_through_load() {
+        let db = Db::open_in_memory().unwrap();
+        let book = fixture_book();
+
+        let id = db.save_project("Kyoto Trip", "/Users/j/Photos/kyoto", &book).unwrap();
+        let loaded = db.load_project(id).unwrap().expect("project should exist");
+
+        assert_eq!(loaded.book, book);
+        assert_eq!(loaded.name, "Kyoto Trip");
+        assert_eq!(loaded.source_folder, "/Users/j/Photos/kyoto");
+        assert!(loaded.exports.is_empty());
+    }
+
+    #[test]
+    fn load_project_returns_none_for_unknown_id() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(db.load_project(999).unwrap().is_none());
+    }
+
+    #[test]
+    fn save_project_denormalises_page_and_photo_counts_for_listing() {
+        let db = Db::open_in_memory().unwrap();
+        let id = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book()).unwrap();
+
+        let summaries = db.list_projects().unwrap();
+        let summary = summaries.iter().find(|s| s.id == id).unwrap();
+
+        assert_eq!(summary.page_count, 2);
+        assert_eq!(summary.photo_count, 4);
+    }
+
+    #[test]
+    fn list_projects_orders_newest_updated_first() {
+        let db = Db::open_in_memory().unwrap();
+        let older = db.save_project("Older", "/tmp/older", &fixture_book()).unwrap();
+        let newer = db.save_project("Newer", "/tmp/newer", &fixture_book()).unwrap();
+
+        // `unixepoch()` has one-second granularity, so two saves in the
+        // same test can easily tie -- force a deterministic ordering
+        // directly rather than depending on wall-clock timing.
+        db.conn
+            .execute("UPDATE projects SET updated_at = 100 WHERE id = ?1", rusqlite::params![older])
+            .unwrap();
+        db.conn
+            .execute("UPDATE projects SET updated_at = 200 WHERE id = ?1", rusqlite::params![newer])
+            .unwrap();
+
+        let ids: Vec<i64> = db.list_projects().unwrap().iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec![newer, older]);
+    }
+
+    #[test]
+    fn record_export_appends_and_load_project_returns_them_in_order() {
+        let db = Db::open_in_memory().unwrap();
+        let id = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book()).unwrap();
+
+        db.record_export(
+            id,
+            &ExportRecord { at: 0, output_dir: "/tmp/out1".into(), format: "jpeg".into(), file_count: 12 },
+        )
+        .unwrap();
+        db.record_export(
+            id,
+            &ExportRecord { at: 0, output_dir: "/tmp/out2".into(), format: "png".into(), file_count: 7 },
+        )
+        .unwrap();
+
+        let project = db.load_project(id).unwrap().unwrap();
+        assert_eq!(project.exports.len(), 2);
+        assert_eq!(project.exports[0].output_dir, "/tmp/out1");
+        assert_eq!(project.exports[0].format, "jpeg");
+        assert_eq!(project.exports[0].file_count, 12);
+        assert_eq!(project.exports[1].output_dir, "/tmp/out2");
+        assert_eq!(project.exports[1].file_count, 7);
+    }
+
+    #[test]
+    fn delete_project_removes_the_project_and_its_export_rows_only() {
+        let db = Db::open_in_memory().unwrap();
+        let keep = db.save_project("Keep", "/tmp/keep", &fixture_book()).unwrap();
+        let gone = db.save_project("Gone", "/tmp/gone", &fixture_book()).unwrap();
+        db.record_export(
+            gone,
+            &ExportRecord { at: 0, output_dir: "/tmp/gone-out".into(), format: "jpeg".into(), file_count: 3 },
+        )
+        .unwrap();
+        db.record_export(
+            keep,
+            &ExportRecord { at: 0, output_dir: "/tmp/keep-out".into(), format: "jpeg".into(), file_count: 5 },
+        )
+        .unwrap();
+
+        let count = |table: &str| -> i64 {
+            db.conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(count("projects"), 2, "sanity: both projects present before delete");
+        assert_eq!(count("project_exports"), 2, "sanity: both export rows present before delete");
+
+        db.delete_project(gone).unwrap();
+
+        assert_eq!(count("projects"), 1, "only the deleted project should be gone");
+        assert_eq!(count("project_exports"), 1, "only the deleted project's export row should be gone");
+        assert!(db.load_project(gone).unwrap().is_none());
+        assert!(db.load_project(keep).unwrap().is_some());
+    }
 
     #[test]
     fn returns_none_for_unknown_hash() {
