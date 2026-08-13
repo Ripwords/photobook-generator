@@ -1,0 +1,38 @@
+{
+  "id": "07-two-up-symmetric-margin",
+  "slots": [
+    {
+      "rect": [
+        0.04,
+        0.08,
+        0.42,
+        0.84
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        1.05,
+        1.5
+      ]
+    },
+    {
+      "rect": [
+        0.54,
+        0.08,
+        0.42,
+        0.84
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        1.05,
+        1.5
+      ]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 2,
+  "max_photos": 2,
+  "density": "medium",
+  "energy": "calm"
+}
