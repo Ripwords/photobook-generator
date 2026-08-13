@@ -289,6 +289,21 @@ describe("applyAnalysisEvent", () => {
     expect(state.summary).toBe(summary);
   });
 
+  // Since useAnalysis.ts now applies `done` from BOTH the `invoke` return
+  // value (authoritative) and the `Done` channel event (optimisation, may
+  // arrive before or after, or not at all on a swallowed send failure), a
+  // `done` event routinely gets applied twice for the same run. Applying it
+  // a second time must be a no-op, not accumulate or corrupt state --
+  // whichever of the two arrives second must leave the state exactly as the
+  // first left it.
+  it("applying done twice is idempotent", () => {
+    const summary = { total: 1, failed: 0, cached: 0, photos: [photo()] };
+    const once = applyAnalysisEvent(initialStreamState, { kind: "done", summary });
+    const twice = applyAnalysisEvent(once, { kind: "done", summary });
+    expect(twice).toEqual(once);
+    expect(twice.summary).toBe(summary);
+  });
+
   // The property the task brief asks for explicitly: partial records
   // accumulate in the order their batches arrived in, which (per Rust's
   // `analyze_batches_with_progress`) is input/path order -- not sorted,
@@ -351,9 +366,16 @@ describe("applyAnalysisEvent", () => {
     expect(state.failed).toBe(2);
   });
 
+  // `before === initialStreamState` (same reference) would make
+  // `expect(before).toEqual(initialStreamState)` compare the object to
+  // itself, passing even if `applyAnalysisEvent` mutated its argument in
+  // place. Snapshot with `structuredClone` first so this actually pins the
+  // guarantee: `useAnalysis.ts` assigns the shared module-level
+  // `initialStreamState` straight into its ref on every `analyze()` call, so
+  // an in-place mutation here would leak state between analysis runs.
   it("does not mutate the state object passed in (each call returns a new state)", () => {
-    const before = initialStreamState;
-    applyAnalysisEvent(before, { kind: "scanned", total: 5 });
-    expect(before).toEqual(initialStreamState);
+    const before = structuredClone(initialStreamState);
+    applyAnalysisEvent(initialStreamState, { kind: "scanned", total: 5 });
+    expect(initialStreamState).toEqual(before);
   });
 });

@@ -51,7 +51,20 @@ export function useAnalysis() {
     };
 
     try {
-      await invoke<AnalysisSummary>("analyze_folder", { folder: path, onEvent });
+      // The `invoke` return value, not the `Done` event, is the
+      // authoritative delivery of the final summary. `analyze_folder` also
+      // sends a `Done` event carrying the same summary, but that send is
+      // logged-and-swallowed on failure on the Rust side (webview reload
+      // mid-run, callback torn down, serialization failure), which would
+      // otherwise leave `stream.value.summary` stuck at `null` even though
+      // the command itself returned success. There is also a benign race: a
+      // `Done` payload for a few hundred photos can exceed Tauri's 8 KiB
+      // direct-eval threshold and take an async fetch round-trip, landing
+      // *after* this `invoke` promise resolves. So both paths call
+      // `applyAnalysisEvent` with a `done` event, and that reducer case
+      // must be idempotent -- see the test in `tests/features.test.ts`.
+      const finalSummary = await invoke<AnalysisSummary>("analyze_folder", { folder: path, onEvent });
+      stream.value = applyAnalysisEvent(stream.value, { kind: "done", summary: finalSummary });
     } catch (e) {
       error.value = String(e);
     } finally {

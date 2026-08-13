@@ -123,14 +123,20 @@ export interface StreamState {
   summary: AnalysisSummary | null;
 }
 
-export const initialStreamState: StreamState = {
+// `useAnalysis.ts` assigns this shared, module-level object straight into
+// its ref on every `analyze()` call, so it must never be mutated in place --
+// doing so would leak state between analysis runs permanently. `Object.freeze`
+// makes that guarantee structural: a future reducer branch that mutates
+// `state` instead of spreading it throws immediately in dev/test rather than
+// silently corrupting state that looks fine until the second run.
+export const initialStreamState: StreamState = Object.freeze({
   scannedTotal: 0,
   partialPhotos: [],
   analysed: 0,
   cached: 0,
   failed: 0,
   summary: null,
-};
+});
 
 /**
  * Pure reducer over `AnalysisEvent`s: the entire client-side "batching
