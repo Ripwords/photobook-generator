@@ -129,10 +129,13 @@ pub fn from_features(v: &serde_json::Value) -> Option<Photo> {
 /// 100% false-negative rate (see `PROJECT-STATUS.md`), so including it adds
 /// noise rather than signal.
 ///
-/// This function replaces BOTH the old Rust `count_keepers` and the
-/// TypeScript `keepers()`. Two implementations of one rule in two languages
-/// disagreed silently; Phase 2 makes that disagreement visible in printed
-/// output, so there is now exactly one.
+/// This function replaces the old Rust `count_keepers`, which reimplemented
+/// this same rule by hand; `count_keepers` now delegates here, so the two
+/// can no longer disagree. TypeScript's `keepers()` in
+/// `app/types/features.ts` is a SEPARATE, still-unreconciled implementation
+/// of the same rule -- unifying it with this one is a later task. Until
+/// that happens, the screen (driven by `keepers()`) and the printed book
+/// (driven by this function) can still disagree.
 pub fn cull(photos: &[Photo]) -> Vec<Photo> {
     use std::collections::BTreeMap;
 
@@ -239,12 +242,26 @@ mod tests {
     /// smile_fraction is NOT in the ranking (spec 3.1): it is miscalibrated
     /// with a proven 100% false-negative rate. This test exists so that
     /// re-adding it fails loudly rather than silently reordering books.
+    ///
+    /// Sharpness AND capture quality are BOTH tied here -- a fixture where
+    /// either already decides the winner (as an earlier version of this test
+    /// did, with sharpness 90 vs 10) never reaches the third key at all, so
+    /// it cannot detect a smile comparison reinserted at position 2 or 3;
+    /// only one placed *before* sharpness, the least likely spot. Tying the
+    /// first two keys forces the decision down to aesthetic, so any
+    /// additional key spliced in ahead of it -- a reinstated smile
+    /// comparison included -- changes this test's outcome. See the mutation
+    /// check recorded in task-4-report.md for the proof.
     #[test]
     fn cull_ignores_smile_fraction_entirely() {
         // Photo has no smile field at all; if the ranking ever reads one,
         // deserialisation or ordering would have to change to accommodate it.
-        let kept = cull(&[photo("/a.jpg", 7, 90, 10), photo("/b.jpg", 7, 10, 90)]);
-        assert_eq!(kept[0].path, "/a.jpg");
+        let mut a = photo("/a.jpg", 7, 50, 10);
+        a.capture_quality = Some(0.5);
+        let mut b = photo("/b.jpg", 7, 50, 90);
+        b.capture_quality = Some(0.5);
+        let kept = cull(&[a, b]);
+        assert_eq!(kept[0].path, "/b.jpg", "aesthetic is the only key left that can decide it");
     }
 
     /// Input is deliberately UNSORTED -- a sorted fixture cannot detect an
