@@ -9,4 +9,5 @@ pub mod crop;
 pub mod cull;
 pub mod pace;
 pub mod pack;
+pub mod preflight;
 pub mod score;

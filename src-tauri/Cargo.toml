@@ -28,6 +28,12 @@ thiserror = "2"
 log = "0.4"
 tauri-plugin-log = "2"
 
+# Free-disk-space check in pre-flight (`book::preflight::available_bytes`),
+# via `statfs`. Already present transitively (tauri/tao pull it in); pinned
+# directly because the crate must be `use`-able from our own code, which
+# requires a direct dependency edge, not just a transitive one.
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
 
