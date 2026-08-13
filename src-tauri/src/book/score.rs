@@ -1,0 +1,688 @@
+//! Scoring a template plus a photo-to-slot assignment.
+//!
+//! Hard constraints REJECT a candidate; soft terms weight it. The split is
+//! deliberate: a face cut in half is not a slightly worse layout, it is a
+//! ruined photo, and no weighting scheme should ever be able to outvote it.
+
+use crate::book::crop::choose_crop;
+use crate::book::cull::Photo;
+use crate::geometry::{clear_of_gutter, Rect, Side, PAGE_H_IN, PAGE_W_IN};
+use crate::templates::{Role, Slot, SpreadTemplate, Weights};
+
+/// Below this, print is visibly soft and no downstream step can fix it.
+/// The design's 300 DPI target is a WARNING; this is the hard floor.
+pub const MIN_DPI: f64 = 150.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rejection {
+    FaceClipped,
+    FaceInGutter,
+    TooLowResolution,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Candidate {
+    pub template_id: String,
+    /// `assignment[i]` is the index into the photo slice for slot `i`, in
+    /// left-page-then-right-page slot order.
+    pub assignment: Vec<usize>,
+    pub score: f64,
+}
+
+/// A slot's real-world aspect ratio on the PAGE canvas.
+///
+/// The trap: `rect` is normalised to the page (11.197" x 8.894" = 1.259:1),
+/// so `w / h` is NOT the ratio `aspect_pref` is expressed in. Comparing
+/// against the normalised ratio mis-scores every slot.
+pub fn slot_aspect(slot: &Slot) -> f64 {
+    slot.rect.aspect_in(PAGE_W_IN, PAGE_H_IN)
+}
+
+/// Pixels per inch the photo actually resolves at, once cropped, when placed
+/// in this slot.
+pub fn effective_dpi(photo: &Photo, crop: &Rect, slot: &Slot) -> f64 {
+    let cropped_px = photo.width as f64 * crop.w;
+    let slot_in = slot.rect.w * PAGE_W_IN;
+    if slot_in <= 0.0 {
+        return 0.0;
+    }
+    cropped_px / slot_in
+}
+
+/// Maps a face box from photo coordinates into the slot's page coordinates,
+/// given the crop window. Returns `None` when the crop window is degenerate.
+fn face_in_page(face: &Rect, crop: &Rect, slot: &Slot) -> Option<Rect> {
+    if crop.w <= 0.0 || crop.h <= 0.0 {
+        return None;
+    }
+    let u = (face.x - crop.x) / crop.w;
+    let v = (face.y - crop.y) / crop.h;
+    let uw = face.w / crop.w;
+    let vh = face.h / crop.h;
+    Some(Rect::new(
+        slot.rect.x + u * slot.rect.w,
+        slot.rect.y + v * slot.rect.h,
+        uw * slot.rect.w,
+        vh * slot.rect.h,
+    ))
+}
+
+/// The three hard constraints. Returns the first violation, or `None` when
+/// the placement is acceptable.
+pub fn rejects(photo: &Photo, crop: &Rect, slot: &Slot, side: Side) -> Option<Rejection> {
+    if effective_dpi(photo, crop, slot) < MIN_DPI {
+        return Some(Rejection::TooLowResolution);
+    }
+
+    for face in &photo.faces {
+        // Clipped: the crop window does not fully contain the face box.
+        let contained = face.box_.x >= crop.x - 1e-9
+            && face.box_.y >= crop.y - 1e-9
+            && face.box_.right() <= crop.right() + 1e-9
+            && face.box_.bottom() <= crop.bottom() + 1e-9;
+        if !contained {
+            // A face wholly outside the crop is not "clipped" -- it is
+            // simply not in the picture, which is fine. Only a PARTIAL
+            // overlap is a half-face.
+            if face.box_.intersect(crop).is_some() {
+                return Some(Rejection::FaceClipped);
+            }
+            continue;
+        }
+
+        if let Some(page_rect) = face_in_page(&face.box_, crop, slot) {
+            if !clear_of_gutter(&page_rect, side) {
+                return Some(Rejection::FaceInGutter);
+            }
+        }
+    }
+
+    None
+}
+
+/// How well a photo's aspect matches a slot, in [0,1]. 1.0 when the photo
+/// needs no crop at all; falls off with the fraction of the frame discarded.
+fn aspect_fit(photo: &Photo, slot: &Slot) -> f64 {
+    let target = slot_aspect(slot);
+    let actual = photo.aspect();
+    let ratio = if target > actual { actual / target } else { target / actual };
+    ratio.clamp(0.0, 1.0)
+}
+
+/// Fraction of the saliency box surviving the crop, in [0,1]. A photo with
+/// no saliency box scores neutrally rather than zero -- absence of a signal
+/// is not evidence of a bad crop.
+fn saliency_retention(photo: &Photo, crop: &Rect) -> f64 {
+    match photo.saliency_box {
+        None => 0.5,
+        Some(s) => {
+            let area = s.area();
+            if area <= 0.0 {
+                return 0.5;
+            }
+            s.intersect(crop).map_or(0.0, |i| i.area()) / area
+        }
+    }
+}
+
+/// Fraction of total face area surviving the crop. Neutral when faceless.
+fn face_area_retention(photo: &Photo, crop: &Rect) -> f64 {
+    let total: f64 = photo.faces.iter().map(|f| f.box_.area()).sum();
+    if total <= 0.0 {
+        return 0.5;
+    }
+    let kept: f64 = photo
+        .faces
+        .iter()
+        .map(|f| f.box_.intersect(crop).map_or(0.0, |i| i.area()))
+        .sum();
+    kept / total
+}
+
+/// Rewards the highest-aesthetic photo landing in a `hero` slot.
+fn hero_match(photo: &Photo, slot: &Slot, best_aesthetic: u8) -> f64 {
+    match slot.role {
+        Role::Hero => {
+            if best_aesthetic == 0 {
+                0.5
+            } else {
+                photo.aesthetic_pct as f64 / best_aesthetic as f64
+            }
+        }
+        Role::Support => 0.5,
+    }
+}
+
+/// Headroom above the hard floor, saturating at the 300 DPI target.
+fn resolution_headroom(photo: &Photo, crop: &Rect, slot: &Slot) -> f64 {
+    let dpi = effective_dpi(photo, crop, slot);
+    ((dpi - MIN_DPI) / (300.0 - MIN_DPI)).clamp(0.0, 1.0)
+}
+
+/// Rewards a spread whose photos share a coherent dominant hue. Uses the
+/// Oklab-ish palette Phase 1 already computes; a spread whose photos scatter
+/// across the hue circle reads as noisy.
+///
+/// Deliberately low-weighted by default: it is the fuzziest term in the
+/// scorer and zeroing its weight must leave a usable book.
+fn palette_harmony(photos: &[&Photo]) -> f64 {
+    let hues: Vec<f64> = photos
+        .iter()
+        .filter_map(|p| p.palette.first())
+        .map(|c| c.b.atan2(c.r))
+        .collect();
+    if hues.len() < 2 {
+        return 0.5;
+    }
+    // Circular variance: 1.0 when all hues agree, 0.0 when uniformly spread.
+    let (sx, sy) = hues.iter().fold((0.0, 0.0), |(x, y), h| (x + h.cos(), y + h.sin()));
+    let n = hues.len() as f64;
+    ((sx / n).hypot(sy / n)).clamp(0.0, 1.0)
+}
+
+/// Penalises repeating the immediately preceding template.
+fn variety(template_id: &str, previous: Option<&str>) -> f64 {
+    match previous {
+        Some(prev) if prev == template_id => 0.0,
+        _ => 1.0,
+    }
+}
+
+fn ordered_slots(t: &SpreadTemplate) -> Vec<(&Slot, Side)> {
+    t.left
+        .slots
+        .iter()
+        .map(|s| (s, Side::Left))
+        .chain(t.right.slots.iter().map(|s| (s, Side::Right)))
+        .collect()
+}
+
+/// Scores one candidate. Returns `None` when any hard constraint rejects it.
+pub fn score_spread(
+    t: &SpreadTemplate,
+    photos: &[&Photo],
+    assignment: &[usize],
+    previous: Option<&str>,
+    w: &Weights,
+) -> Option<f64> {
+    let slots = ordered_slots(t);
+    if slots.len() != assignment.len() || assignment.len() != photos.len() {
+        return None;
+    }
+
+    let best_aesthetic = photos.iter().map(|p| p.aesthetic_pct).max().unwrap_or(0);
+    let mut total = 0.0;
+
+    for (i, (slot, side)) in slots.iter().enumerate() {
+        let photo = photos[assignment[i]];
+        let crop = choose_crop(photo, slot_aspect(slot));
+        if rejects(photo, &crop, slot, *side).is_some() {
+            return None;
+        }
+        total += w.aspect_fit * aspect_fit(photo, slot)
+            + w.saliency_retention * saliency_retention(photo, &crop)
+            + w.face_area_retention * face_area_retention(photo, &crop)
+            + w.hero_match * hero_match(photo, slot, best_aesthetic)
+            + w.resolution_headroom * resolution_headroom(photo, &crop, slot);
+    }
+
+    // Spread-global terms, added once rather than per slot.
+    total += w.palette_harmony * palette_harmony(photos);
+    total += w.variety * variety(&t.id, previous);
+
+    Some(total)
+}
+
+/// Enumerates every eligible template and every assignment, returning the
+/// best. Brute force: at most 6! = 720 assignments over box arithmetic with
+/// no pixels touched.
+pub fn best_spread<'a>(
+    templates: &[&'a SpreadTemplate],
+    photos: &[&Photo],
+    previous: Option<&str>,
+    w: &Weights,
+) -> Option<(&'a SpreadTemplate, Vec<usize>, f64)> {
+    let mut best: Option<(&SpreadTemplate, Vec<usize>, f64)> = None;
+
+    for t in templates {
+        if t.photo_count() != photos.len() {
+            continue;
+        }
+        for assignment in permutations(photos.len()) {
+            let Some(score) = score_spread(t, photos, &assignment, previous, w) else {
+                continue;
+            };
+            let better = match &best {
+                None => true,
+                // Ties break on template id so the result is stable across
+                // runs and machines, never on iteration order.
+                Some((bt, _, bs)) => score > *bs || (score == *bs && t.id < bt.id),
+            };
+            if better {
+                best = Some((t, assignment, score));
+            }
+        }
+    }
+    best
+}
+
+/// All permutations of `0..n`, in lexicographic order so enumeration is
+/// deterministic.
+fn permutations(n: usize) -> Vec<Vec<usize>> {
+    let mut out = Vec::new();
+    let mut used = vec![false; n];
+    let mut buf = Vec::with_capacity(n);
+    fn go(n: usize, used: &mut Vec<bool>, buf: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+        if buf.len() == n {
+            out.push(buf.clone());
+            return;
+        }
+        for i in 0..n {
+            if used[i] {
+                continue;
+            }
+            used[i] = true;
+            buf.push(i);
+            go(n, used, buf, out);
+            buf.pop();
+            used[i] = false;
+        }
+    }
+    go(n, &mut used, &mut buf, &mut out);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::book::cull::{Face, PaletteColor};
+    use crate::geometry::BleedEdge;
+    use crate::templates::{Density, EdgeTreatment, Energy, PageLayout};
+
+    fn photo(w: u32, h: u32) -> Photo {
+        Photo {
+            path: "/p.jpg".into(), hash: "h".into(), width: w, height: h,
+            is_utility: false, aesthetic_pct: 50, sharpness_pct: 50,
+            near_dup_cluster: 0, event_cluster: 0,
+            faces: Vec::new(), face_area_fraction: 0.0, saliency_box: None,
+            palette: Vec::<PaletteColor>::new(), capture_quality: None,
+        }
+    }
+
+    /// A slot whose normalised ratio and inch ratio are DIFFERENT numbers.
+    /// A fixture where they coincide passes under the aspect_pref trap.
+    fn wide_slot() -> Slot {
+        Slot {
+            // On an 11.197 x 8.894 page: 0.5 x 0.5 normalised is
+            // 5.5985" x 4.447" = 1.259 real, not 1.0.
+            rect: Rect::new(0.2, 0.2, 0.5, 0.5),
+            role: Role::Hero,
+            bleed: Vec::<BleedEdge>::new(),
+            aspect_pref: (1.2, 1.35),
+        }
+    }
+
+    #[test]
+    fn score_slot_aspect_uses_page_inches_not_the_normalised_ratio() {
+        let s = wide_slot();
+        let normalised = s.rect.w / s.rect.h;
+        let real = slot_aspect(&s);
+        assert!((normalised - 1.0).abs() < 1e-9, "sanity: normalised is 1:1");
+        assert!((real - 1.259).abs() < 0.002, "real was {real}");
+    }
+
+    #[test]
+    fn score_effective_dpi_accounts_for_the_crop() {
+        let p = photo(4000, 3000);
+        let s = wide_slot(); // 5.5985" wide
+        let full = Rect::new(0.0, 0.0, 1.0, 1.0);
+        let half = Rect::new(0.25, 0.0, 0.5, 1.0);
+        let d_full = effective_dpi(&p, &full, &s);
+        let d_half = effective_dpi(&p, &half, &s);
+        assert!((d_full - 4000.0 / 5.5985).abs() < 1.0, "was {d_full}");
+        assert!((d_half - d_full / 2.0).abs() < 1.0, "cropping halves the DPI");
+    }
+
+    #[test]
+    fn score_rejects_a_photo_below_the_dpi_floor() {
+        let p = photo(400, 300);
+        let s = wide_slot();
+        let crop = Rect::new(0.0, 0.0, 1.0, 1.0);
+        assert!(matches!(
+            rejects(&p, &crop, &s, Side::Left),
+            Some(Rejection::TooLowResolution)
+        ));
+    }
+
+    /// Boundary test AT the boundary: exactly MIN_DPI must pass.
+    #[test]
+    fn score_dpi_floor_is_inclusive_at_exactly_min_dpi() {
+        let s = wide_slot();
+        let slot_w_in = s.rect.w * PAGE_W_IN;
+        let px = (MIN_DPI * slot_w_in).round() as u32;
+        let p = photo(px, (px as f64 / 1.259) as u32);
+        let crop = Rect::new(0.0, 0.0, 1.0, 1.0);
+        assert!(rejects(&p, &crop, &s, Side::Left).is_none(), "exactly at the floor must pass");
+    }
+
+    /// The face must STRADDLE the crop edge. The brief's fixture put it at
+    /// x 0.85..0.97 against a crop ending at 0.70 -- wholly outside, which
+    /// is explicitly not a clip, so that fixture asserted the opposite of
+    /// the rule it was written to guard. Here the box spans 0.65..0.77 and
+    /// the crop edge at 0.70 cuts it in half.
+    #[test]
+    fn score_rejects_a_crop_that_clips_a_face() {
+        let mut p = photo(4000, 3000);
+        p.faces = vec![Face { box_: Rect::new(0.65, 0.4, 0.12, 0.2), capture_quality: Some(0.8) }];
+        let crop = Rect::new(0.0, 0.0, 0.7, 1.0);
+        assert!(matches!(
+            rejects(&p, &crop, &wide_slot(), Side::Left),
+            Some(Rejection::FaceClipped)
+        ));
+    }
+
+    /// The other half of the same rule: a face the crop misses entirely is
+    /// simply not in the picture, which is fine. Rejecting it would forbid
+    /// every crop that tightens onto a subject with bystanders in frame.
+    #[test]
+    fn score_does_not_reject_a_face_wholly_outside_the_crop() {
+        let mut p = photo(4000, 3000);
+        p.faces = vec![Face { box_: Rect::new(0.85, 0.4, 0.12, 0.2), capture_quality: Some(0.8) }];
+        let crop = Rect::new(0.0, 0.0, 0.7, 1.0);
+        assert!(rejects(&p, &crop, &wide_slot(), Side::Left).is_none());
+    }
+
+    #[test]
+    fn score_accepts_a_crop_that_fully_contains_the_face() {
+        let mut p = photo(4000, 3000);
+        p.faces = vec![Face { box_: Rect::new(0.30, 0.4, 0.12, 0.2), capture_quality: Some(0.8) }];
+        let crop = Rect::new(0.0, 0.0, 0.7, 1.0);
+        assert!(rejects(&p, &crop, &wide_slot(), Side::Left).is_none());
+    }
+
+    #[test]
+    fn score_rejects_a_face_landing_in_the_gutter_strip() {
+        let mut p = photo(4000, 3000);
+        p.faces = vec![Face { box_: Rect::new(0.90, 0.4, 0.08, 0.2), capture_quality: Some(0.8) }];
+        // A slot running flush to the fold on a LEFT page.
+        let s = Slot {
+            rect: Rect::new(0.5, 0.2, 0.5, 0.5),
+            role: Role::Hero,
+            bleed: Vec::<BleedEdge>::new(),
+            aspect_pref: (1.2, 1.35),
+        };
+        let crop = Rect::new(0.0, 0.0, 1.0, 1.0);
+        assert!(matches!(
+            rejects(&p, &crop, &s, Side::Left),
+            Some(Rejection::FaceInGutter)
+        ));
+    }
+
+    /// Generic salient content in the dead strip is only a PENALTY, never a
+    /// rejection -- otherwise no slot could ever run to the fold, which is
+    /// the layout the user explicitly asked to keep available.
+    #[test]
+    fn score_does_not_reject_generic_saliency_in_the_gutter_strip() {
+        let mut p = photo(4000, 3000);
+        p.saliency_box = Some(Rect::new(0.90, 0.4, 0.08, 0.2));
+        let s = Slot {
+            rect: Rect::new(0.5, 0.2, 0.5, 0.5),
+            role: Role::Hero,
+            bleed: Vec::<BleedEdge>::new(),
+            aspect_pref: (1.2, 1.35),
+        };
+        let crop = Rect::new(0.0, 0.0, 1.0, 1.0);
+        assert!(rejects(&p, &crop, &s, Side::Left).is_none());
+    }
+
+    /// The pixel dimensions are load-bearing, not incidental. The brief's
+    /// fixture used 4000x2000 and 2000x4000: the tall photo in the wide hero
+    /// slot then resolves at 223 DPI, so `resolution_headroom` ALSO ranks
+    /// the matched assignment above the swapped one, and the test kept
+    /// passing with `aspect_fit`'s weight zeroed -- verified, not assumed.
+    /// At 6000x3000 and 3000x6000 every photo/slot pairing clears 300 DPI
+    /// and that term clamps to 1.0 everywhere, so `aspect_fit` is the only
+    /// term that differs between the two assignments.
+    #[test]
+    fn score_prefers_the_assignment_matching_slot_aspects() {
+        let lib = fixture_library();
+        let t = &lib[0]; // hero slot is wide, support slot is narrow
+        let wide = photo(6000, 3000);
+        let tall = photo(3000, 6000);
+        let photos = vec![&wide, &tall];
+
+        let matched = score_spread(t, &photos, &[0, 1], None, &Weights::default());
+        let swapped = score_spread(t, &photos, &[1, 0], None, &Weights::default());
+        assert!(matched.unwrap() > swapped.unwrap(), "aspect fit must drive the choice");
+    }
+
+    #[test]
+    fn score_puts_the_highest_aesthetic_photo_in_the_hero_slot() {
+        let lib = fixture_library();
+        let t = &lib[0];
+        let mut a = photo(3000, 2000);
+        a.aesthetic_pct = 95;
+        let mut b = photo(3000, 2000);
+        b.aesthetic_pct = 10;
+        let photos = vec![&a, &b];
+        let hero_first = score_spread(t, &photos, &[0, 1], None, &Weights::default()).unwrap();
+        let hero_last = score_spread(t, &photos, &[1, 0], None, &Weights::default()).unwrap();
+        assert!(hero_first > hero_last);
+    }
+
+    #[test]
+    fn score_penalises_reusing_the_previous_template() {
+        let lib = fixture_library();
+        let t = &lib[0];
+        let p = photo(3000, 2000);
+        let photos = vec![&p, &p];
+        let fresh = score_spread(t, &photos, &[0, 1], None, &Weights::default()).unwrap();
+        let repeat =
+            score_spread(t, &photos, &[0, 1], Some(&t.id), &Weights::default()).unwrap();
+        assert!(fresh > repeat, "variety must penalise an immediate repeat");
+    }
+
+    // --- the four soft terms the brief left with no behavioural test.
+    //
+    // Each pairs two candidates that differ in exactly ONE term, so zeroing
+    // that term's weight collapses the two scores to the same number and the
+    // strict `>` fails. Anything that merely *correlates* with the term
+    // would keep these passing under the mutation, which is how the brief's
+    // `aspect_fit` fixture slipped through.
+
+    /// `saliency_retention`. Both saliency boxes are centred on (0.5, 0.5),
+    /// so `choose_crop` -- which positions on the focus centroid -- returns
+    /// the IDENTICAL window for both photos. That is what makes the pair a
+    /// clean isolation: every other term reads the same crop, the same
+    /// pixels and the same aspect. Only the box's extent differs, and the
+    /// tall one cannot survive a crop band 0.463 high.
+    #[test]
+    fn score_rewards_a_crop_that_keeps_the_salient_region() {
+        let t = single_hero_template();
+        let target = slot_aspect(&t.left.slots[0]);
+
+        let mut kept = photo(4000, 3000);
+        kept.saliency_box = Some(Rect::new(0.4, 0.4, 0.2, 0.2));
+        let mut cut = photo(4000, 3000);
+        cut.saliency_box = Some(Rect::new(0.4, 0.0, 0.2, 1.0));
+
+        assert_eq!(
+            choose_crop(&kept, target),
+            choose_crop(&cut, target),
+            "the fixture only isolates saliency_retention if the crops match"
+        );
+
+        let a = score_spread(&t, &[&kept], &[0], None, &Weights::default()).unwrap();
+        let b = score_spread(&t, &[&cut], &[0], None, &Weights::default()).unwrap();
+        assert!(a > b, "keeping the salient region must score higher: {a} vs {b}");
+    }
+
+    /// `face_area_retention`. A face PARTIALLY out of the crop is a hard
+    /// rejection, so the only way this term can legitimately vary is a face
+    /// the crop misses entirely -- it contributes to the denominator and
+    /// nothing to the numerator. The second face is deliberately tiny and
+    /// low-quality so it barely shifts the crop centroid and stays wholly
+    /// clear of the band; if it crept into the band the candidate would be
+    /// rejected outright and the test would fail loudly rather than
+    /// silently degrade. Crop WIDTH is 1.0 for both, so
+    /// `resolution_headroom` cannot move; there is no saliency box, so that
+    /// term sits at its neutral 0.5 for both.
+    #[test]
+    fn score_rewards_a_crop_that_keeps_the_faces() {
+        let t = single_hero_template();
+
+        let mut kept = photo(4000, 3000);
+        kept.faces =
+            vec![Face { box_: Rect::new(0.4, 0.45, 0.1, 0.1), capture_quality: Some(0.8) }];
+
+        let mut lost = photo(4000, 3000);
+        lost.faces = vec![
+            Face { box_: Rect::new(0.4, 0.45, 0.1, 0.1), capture_quality: Some(0.8) },
+            Face { box_: Rect::new(0.4, 0.95, 0.04, 0.04), capture_quality: Some(0.1) },
+        ];
+
+        let a = score_spread(&t, &[&kept], &[0], None, &Weights::default()).unwrap();
+        let b = score_spread(&t, &[&lost], &[0], None, &Weights::default()).unwrap();
+        assert!(a > b, "dropping a face out of frame must cost: {a} vs {b}");
+    }
+
+    /// `resolution_headroom`. Same aspect, same everything, different pixel
+    /// counts: 6000 px clears the 300 DPI target in this slot and saturates
+    /// the term, 2000 px resolves at 223 DPI -- above the hard floor, so it
+    /// is not rejected, merely worse.
+    #[test]
+    fn score_prefers_the_photo_with_more_pixels_for_the_same_slot() {
+        let t = single_hero_template();
+        let big = photo(6000, 4500);
+        let small = photo(2000, 1500);
+        assert_eq!(big.aspect(), small.aspect(), "aspect_fit must not move");
+
+        let a = score_spread(&t, &[&big], &[0], None, &Weights::default()).unwrap();
+        let b = score_spread(&t, &[&small], &[0], None, &Weights::default()).unwrap();
+        assert!(a > b, "resolution headroom must break the tie: {a} vs {b}");
+    }
+
+    /// `palette_harmony` -- spread-global, added once rather than per slot,
+    /// so it needs two photos to say anything at all. Identical geometry and
+    /// identical aesthetics in both candidates; only the dominant colours
+    /// move, from agreeing exactly to a quarter-turn apart on the hue
+    /// circle.
+    #[test]
+    fn score_prefers_a_spread_whose_photos_share_a_dominant_hue() {
+        let lib = fixture_library();
+        let t = &lib[0];
+
+        let warm = PaletteColor { r: 1.0, g: 0.5, b: 0.0, weight: 1.0 };
+        let cool = PaletteColor { r: 0.0, g: 0.5, b: 1.0, weight: 1.0 };
+
+        let mut a_wide = photo(6000, 3000);
+        a_wide.palette = vec![warm.clone()];
+        let mut a_tall = photo(3000, 6000);
+        a_tall.palette = vec![warm.clone()];
+
+        let mut b_wide = photo(6000, 3000);
+        b_wide.palette = vec![warm];
+        let mut b_tall = photo(3000, 6000);
+        b_tall.palette = vec![cool];
+
+        let coherent =
+            score_spread(t, &[&a_wide, &a_tall], &[0, 1], None, &Weights::default()).unwrap();
+        let clashing =
+            score_spread(t, &[&b_wide, &b_tall], &[0, 1], None, &Weights::default()).unwrap();
+        assert!(coherent > clashing, "a coherent palette must score higher: {coherent} vs {clashing}");
+    }
+
+    #[test]
+    fn score_best_spread_returns_none_when_every_candidate_is_rejected() {
+        let lib = fixture_library();
+        let tiny = photo(60, 40);
+        let refs: Vec<&SpreadTemplate> = lib.iter().collect();
+        let photos = vec![&tiny, &tiny];
+        assert!(best_spread(&refs, &photos, None, &Weights::default()).is_none());
+    }
+
+    /// The tie-break has to be REACHED to be tested. Two templates with
+    /// identical geometry score identically on the same photos, so only the
+    /// id rule can decide. Asserting BOTH presentation orders is what makes
+    /// this load-bearing: "keep the first" passes one order, "keep the last"
+    /// passes the other, and only a tie-break on the id passes both.
+    #[test]
+    fn score_best_spread_breaks_ties_on_template_id_not_iteration_order() {
+        let mut early = fixture_library().remove(0);
+        early.id = "aaa-first".into();
+        let mut late = fixture_library().remove(0);
+        late.id = "zzz-last".into();
+
+        let wide = photo(6000, 3000);
+        let tall = photo(3000, 6000);
+        let photos = vec![&wide, &tall];
+
+        let forward: Vec<&SpreadTemplate> = vec![&early, &late];
+        let backward: Vec<&SpreadTemplate> = vec![&late, &early];
+        let (a, a_assign, a_score) =
+            best_spread(&forward, &photos, None, &Weights::default()).unwrap();
+        let (b, _, b_score) = best_spread(&backward, &photos, None, &Weights::default()).unwrap();
+
+        assert_eq!(a_score, b_score, "the fixture must actually reach a tie");
+        assert_eq!(a.id, "aaa-first");
+        assert_eq!(b.id, "aaa-first", "iteration order must not decide the winner");
+        assert_eq!(a_assign, vec![0, 1], "and the winner is still the best assignment");
+    }
+
+    /// One slot on the left page and none on the right, so a per-slot term
+    /// can be varied without a second slot's terms moving alongside it. A
+    /// legal template: `photo_count()` is 1 and `ordered_slots` handles an
+    /// empty page.
+    fn single_hero_template() -> SpreadTemplate {
+        SpreadTemplate {
+            id: "fx-single-hero".into(),
+            left: PageLayout {
+                side: Side::Left,
+                edge_treatment: EdgeTreatment::Margin,
+                slots: vec![Slot {
+                    rect: Rect::new(0.1, 0.2, 0.8, 0.35),
+                    role: Role::Hero,
+                    bleed: Vec::<BleedEdge>::new(),
+                    aspect_pref: (2.5, 3.0),
+                }],
+            },
+            right: PageLayout {
+                side: Side::Right,
+                edge_treatment: EdgeTreatment::Margin,
+                slots: Vec::new(),
+            },
+            density: Density::Sparse,
+            energy: Energy::Calm,
+        }
+    }
+
+    /// Two photos, two slots, ASYMMETRIC on purpose -- a symmetric fixture
+    /// cannot detect an assignment that is silently reversed.
+    fn fixture_library() -> Vec<SpreadTemplate> {
+        vec![SpreadTemplate {
+            id: "fx-hero-support".into(),
+            left: PageLayout {
+                side: Side::Left,
+                edge_treatment: EdgeTreatment::Margin,
+                slots: vec![Slot {
+                    rect: Rect::new(0.1, 0.2, 0.8, 0.35), // wide
+                    role: Role::Hero,
+                    bleed: Vec::<BleedEdge>::new(),
+                    aspect_pref: (2.5, 3.0),
+                }],
+            },
+            right: PageLayout {
+                side: Side::Right,
+                edge_treatment: EdgeTreatment::Margin,
+                slots: vec![Slot {
+                    rect: Rect::new(0.3, 0.1, 0.3, 0.75), // tall
+                    role: Role::Support,
+                    bleed: Vec::<BleedEdge>::new(),
+                    aspect_pref: (0.4, 0.6),
+                }],
+            },
+            density: Density::Medium,
+            energy: Energy::Calm,
+        }]
+    }
+}
