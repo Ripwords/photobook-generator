@@ -38,6 +38,11 @@ tauri-plugin-log = "2"
 # exact same version for the types to match).
 tokio = { version = "1", features = ["rt-multi-thread"] }
 
+# Property tests on the geometry predicates. The design doc (section 12)
+# calls for these by name: the interesting failures are the ones no
+# hand-written fixture thinks to try.
+proptest = "1"
+
 # `analyze_folder` (and everything it calls: `Sidecar::spawn`, `ShellExt`,
 # etc.) is typed against the concrete default `AppHandle` (= `AppHandle<Wry>`),
 # not generic over `tauri::Runtime` -- so `tauri::test::mock_builder`'s

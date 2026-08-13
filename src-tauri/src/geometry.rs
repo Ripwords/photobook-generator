@@ -306,4 +306,92 @@ mod tests {
         let b = Rect::new(0.0, 0.0, 0.4, 0.6);
         assert!(a.intersect(&b).is_none());
     }
+
+    use proptest::prelude::*;
+
+    prop_compose! {
+        /// Rects with strictly positive extent, sized so they can sit on one
+        /// page. Deliberately excludes squares in normalised space being the
+        /// ONLY case: w and h vary independently.
+        fn any_page_rect()(
+            x in 0.0f64..0.9,
+            y in 0.0f64..0.9,
+            w in 0.01f64..0.5,
+            h in 0.01f64..0.5,
+        ) -> Rect {
+            Rect::new(x, y, w.min(1.0 - x), h.min(1.0 - y))
+        }
+    }
+
+    proptest! {
+        /// `in_trim` and `clear_of_gutter` are independent predicates: trim
+        /// runs all the way to the fold (no inset there), while the gutter
+        /// strip is measured inward FROM the fold -- so all four
+        /// combinations of the two booleans are reachable on a real page.
+        ///
+        /// The brief's original version of this property always built a
+        /// rect flush to the fold (`right() == 1.0`), which made the
+        /// "beyond the gutter threshold" side of its `if`-guard constant
+        /// (1.0 is always past `1.0 - GUTTER_U`) and its assertion a
+        /// restatement of `clear_of_gutter`'s own Left-side branch on that
+        /// fixed input -- it would pass for any implementation that agrees
+        /// with itself, including a `clear_of_gutter` disconnected from
+        /// `in_trim` entirely. This version pins the expected
+        /// `(in_trim, clear_of_gutter)` pair for all four reachable
+        /// quadrants, so a `clear_of_gutter` that always returns `true` (or
+        /// one wired to the wrong edge) fails on quadrant 1 or 3, and an
+        /// `in_trim` that always returns `true` fails on quadrant 2 or 3.
+        #[test]
+        fn geometry_prop_in_trim_and_clear_of_gutter_are_independent(
+            quadrant in 0u8..4,
+            jx in 0.0f64..0.01,
+            jy in 0.0f64..0.01,
+        ) {
+            let (rect, expect_in_trim, expect_clear) = match quadrant {
+                // Comfortably inside both the trim rect and clear of the
+                // gutter.
+                0 => (Rect::new(0.3 + jx, 0.3 + jy, 0.1, 0.1), true, true),
+                // Flush to the fold (legal for trim -- there is no inset
+                // there) but inside the gutter strip measured from the
+                // fold: in_trim without clear_of_gutter.
+                1 => (Rect::new(0.9 - jx, 0.3 + jy, 0.1 + jx, 0.1), true, false),
+                // Over the outer-edge bleed (fails trim) but nowhere near
+                // the fold: clear_of_gutter without in_trim.
+                2 => (Rect::new(0.0, 0.3 + jy, 0.05 + jx, 0.1), false, true),
+                // Over the top bleed AND inside the gutter strip: neither
+                // predicate holds.
+                _ => (Rect::new(0.95 - jx, 0.0, 0.05 + jx, 0.05), false, false),
+            };
+            prop_assert_eq!(in_trim(&rect, Side::Left), expect_in_trim);
+            prop_assert_eq!(clear_of_gutter(&rect, Side::Left), expect_clear);
+        }
+
+        /// Round-tripping through the decomposition preserves width in
+        /// inches: a page is exactly half the spread's width, so a rect's
+        /// real-world width must be identical before and after.
+        #[test]
+        fn geometry_prop_decomposition_preserves_real_width(r in any_page_rect()) {
+            let on_left = Rect::new(r.x * 0.5, r.y, r.w * 0.5, r.h);
+            if let Some((side, page)) = spread_to_page(&on_left) {
+                prop_assert_eq!(side, Side::Left);
+                let before_in = on_left.w * SPREAD_W_IN;
+                let after_in = page.w * PAGE_W_IN;
+                prop_assert!((before_in - after_in).abs() < 1e-9,
+                    "{} vs {}", before_in, after_in);
+            }
+        }
+
+        /// `intersect` is commutative and never yields more area than either
+        /// input -- the two ways a naive min/max implementation goes wrong.
+        #[test]
+        fn geometry_prop_intersect_is_commutative_and_bounded(
+            a in any_page_rect(), b in any_page_rect()
+        ) {
+            prop_assert_eq!(a.intersect(&b), b.intersect(&a));
+            if let Some(i) = a.intersect(&b) {
+                prop_assert!(i.area() <= a.area() + 1e-9);
+                prop_assert!(i.area() <= b.area() + 1e-9);
+            }
+        }
+    }
 }
