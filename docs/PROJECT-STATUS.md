@@ -276,6 +276,14 @@ beside it. The design calls for the OS keychain, read from Rust.
 - `contrast` and the per-tile sharpness normalisation use raw min/max luma, which one hot
   pixel or specular highlight can saturate. Real degradation on real photos, invisible to
   synthetic fixtures. **Measure at the real-photo run before choosing a fix.**
+- `ImageLoader` pays two full decodes for any source whose long edge is under
+  `analysisMaxPixel` (no embedded thumbnail, so pass 1 decodes fully, fails the floor
+  check, and pass 2 decodes again). Hits PNGs, web-sized JPEGs and scans. Performance
+  only, not correctness. Suggested guard: skip pass 2 when
+  `min(sourceLongEdge, maxPixel) <= returnedLongEdge`.
+- `Sidecar::benchmark` and `ResponseResult::Benchmarked` (Rust) are dead code —
+  `scripts/benchmark.sh` drives the sidecar binary directly over stdin/stdout and never
+  goes through Rust.
 
 ---
 
