@@ -1,0 +1,38 @@
+{
+  "id": "29-text-forward-title-spread",
+  "slots": [
+    {
+      "rect": [
+        0,
+        0.55,
+        1,
+        0.45
+      ],
+      "role": "hero",
+      "bleed": [
+        "left",
+        "right",
+        "bottom"
+      ],
+      "aspect_pref": [
+        4.5,
+        6.5
+      ]
+    }
+  ],
+  "text_zones": [
+    {
+      "rect": [
+        0.56,
+        0.08,
+        0.36,
+        0.28
+      ],
+      "align": "left"
+    }
+  ],
+  "min_photos": 1,
+  "max_photos": 1,
+  "density": "sparse",
+  "energy": "calm"
+}

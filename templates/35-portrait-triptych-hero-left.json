@@ -1,0 +1,52 @@
+{
+  "id": "35-portrait-triptych-hero-left",
+  "slots": [
+    {
+      "rect": [
+        0.05,
+        0.04,
+        0.3,
+        0.92
+      ],
+      "role": "hero",
+      "bleed": [],
+      "aspect_pref": [
+        0.65,
+        0.95
+      ]
+    },
+    {
+      "rect": [
+        0.58,
+        0.05,
+        0.32,
+        0.42
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        1.6,
+        2.3
+      ]
+    },
+    {
+      "rect": [
+        0.58,
+        0.51,
+        0.32,
+        0.42
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        1.6,
+        2.3
+      ]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 3,
+  "max_photos": 3,
+  "density": "medium",
+  "energy": "calm"
+}

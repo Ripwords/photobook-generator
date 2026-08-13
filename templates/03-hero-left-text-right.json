@@ -1,0 +1,38 @@
+{
+  "id": "03-hero-left-text-right",
+  "slots": [
+    {
+      "rect": [
+        0,
+        0,
+        0.491203,
+        1
+      ],
+      "role": "hero",
+      "bleed": [
+        "left",
+        "top",
+        "bottom"
+      ],
+      "aspect_pref": [
+        1.1,
+        1.5
+      ]
+    }
+  ],
+  "text_zones": [
+    {
+      "rect": [
+        0.58,
+        0.4,
+        0.34,
+        0.2
+      ],
+      "align": "left"
+    }
+  ],
+  "min_photos": 1,
+  "max_photos": 1,
+  "density": "sparse",
+  "energy": "calm"
+}

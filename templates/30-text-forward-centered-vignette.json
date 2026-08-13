@@ -1,0 +1,34 @@
+{
+  "id": "30-text-forward-centered-vignette",
+  "slots": [
+    {
+      "rect": [
+        0.62,
+        0.12,
+        0.22,
+        0.38
+      ],
+      "role": "hero",
+      "bleed": [],
+      "aspect_pref": [
+        1.2,
+        1.7
+      ]
+    }
+  ],
+  "text_zones": [
+    {
+      "rect": [
+        0.58,
+        0.56,
+        0.3,
+        0.12
+      ],
+      "align": "left"
+    }
+  ],
+  "min_photos": 1,
+  "max_photos": 1,
+  "density": "sparse",
+  "energy": "calm"
+}

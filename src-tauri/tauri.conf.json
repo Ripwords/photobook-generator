@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PhotobookGen",
+  "version": "0.1.0",
+  "identifier": "com.jiajingteoh.photobook",
+  "build": {
+    "beforeDevCommand": "bun run sidecar && bun run ui:dev",
+    "devUrl": "http://localhost:3000",
+    "beforeBuildCommand": "bun run sidecar && bun run generate",
+    "frontendDist": "../.output/public"
+  },
+  "app": {
+    "windows": [{ "title": "PhotobookGen", "width": 1400, "height": 900 }],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; base-uri 'self'; form-action 'none'",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/thumbnails/*"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "app",
+    "macOS": { "minimumSystemVersion": "15.0" },
+    "externalBin": ["binaries/photobook-engine"]
+  }
+}

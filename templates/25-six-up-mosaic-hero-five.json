@@ -1,0 +1,94 @@
+{
+  "id": "25-six-up-mosaic-hero-five",
+  "slots": [
+    {
+      "rect": [
+        0.03,
+        0.05,
+        0.44,
+        0.6
+      ],
+      "role": "hero",
+      "bleed": [],
+      "aspect_pref": [
+        1.5,
+        2.2
+      ]
+    },
+    {
+      "rect": [
+        0.03,
+        0.68,
+        0.21,
+        0.27
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        1.6,
+        2.3
+      ]
+    },
+    {
+      "rect": [
+        0.26,
+        0.68,
+        0.21,
+        0.27
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        1.6,
+        2.3
+      ]
+    },
+    {
+      "rect": [
+        0.55,
+        0.05,
+        0.4,
+        0.28
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2.9,
+        4.1
+      ]
+    },
+    {
+      "rect": [
+        0.55,
+        0.36,
+        0.4,
+        0.28
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2.9,
+        4.1
+      ]
+    },
+    {
+      "rect": [
+        0.55,
+        0.67,
+        0.4,
+        0.28
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2.9,
+        4.1
+      ]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 6,
+  "max_photos": 6,
+  "density": "dense",
+  "energy": "lively"
+}

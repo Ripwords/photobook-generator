@@ -1,0 +1,38 @@
+{
+  "id": "40-panorama-with-single-support",
+  "slots": [
+    {
+      "rect": [
+        0.14,
+        0.1,
+        0.72,
+        0.55
+      ],
+      "role": "hero",
+      "bleed": [],
+      "aspect_pref": [
+        2.6,
+        3.9
+      ]
+    },
+    {
+      "rect": [
+        0.6,
+        0.72,
+        0.32,
+        0.22
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        2.9,
+        4.3
+      ]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 2,
+  "max_photos": 2,
+  "density": "sparse",
+  "energy": "calm"
+}

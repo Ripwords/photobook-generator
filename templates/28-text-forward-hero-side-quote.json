@@ -1,0 +1,34 @@
+{
+  "id": "28-text-forward-hero-side-quote",
+  "slots": [
+    {
+      "rect": [
+        0.05,
+        0.2,
+        0.28,
+        0.58
+      ],
+      "role": "hero",
+      "bleed": [],
+      "aspect_pref": [
+        1,
+        1.5
+      ]
+    }
+  ],
+  "text_zones": [
+    {
+      "rect": [
+        0.58,
+        0.3,
+        0.34,
+        0.4
+      ],
+      "align": "left"
+    }
+  ],
+  "min_photos": 1,
+  "max_photos": 1,
+  "density": "sparse",
+  "energy": "calm"
+}

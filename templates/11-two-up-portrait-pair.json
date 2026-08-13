@@ -1,0 +1,38 @@
+{
+  "id": "11-two-up-portrait-pair",
+  "slots": [
+    {
+      "rect": [
+        0.09,
+        0.08,
+        0.28,
+        0.84
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        0.65,
+        0.95
+      ]
+    },
+    {
+      "rect": [
+        0.63,
+        0.08,
+        0.28,
+        0.84
+      ],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [
+        0.65,
+        0.95
+      ]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 2,
+  "max_photos": 2,
+  "density": "medium",
+  "energy": "calm"
+}

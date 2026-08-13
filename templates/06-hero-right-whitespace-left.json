@@ -1,0 +1,24 @@
+{
+  "id": "06-hero-right-whitespace-left",
+  "slots": [
+    {
+      "rect": [
+        0.56,
+        0.15,
+        0.38,
+        0.7
+      ],
+      "role": "hero",
+      "bleed": [],
+      "aspect_pref": [
+        1.1,
+        1.6
+      ]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 1,
+  "max_photos": 1,
+  "density": "sparse",
+  "energy": "calm"
+}

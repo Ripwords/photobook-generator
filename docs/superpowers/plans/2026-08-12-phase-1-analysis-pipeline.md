@@ -498,7 +498,7 @@ git commit -m "feat(sidecar): add NDJSON protocol loop with ping"
 **Files:**
 - Create: `scripts/build-sidecar.sh`, `src-tauri/src/protocol.rs`, `src-tauri/src/sidecar.rs`
 - Modify: `src-tauri/src/lib.rs`, `src-tauri/tauri.conf.json`, `src-tauri/capabilities/default.json`, `.gitignore`
-- Test: `src-tauri/src/sidecar.rs` (inline `#[cfg(test)]` module)
+- Test: `src-tauri/src/protocol.rs` (inline `#[cfg(test)]` module — the tests cover wire-format serialisation, so they live with the types)
 
 **Interfaces:**
 - Consumes: `Request`/`Response` JSON shape from Task 2
@@ -787,14 +787,57 @@ private func fixture(_ name: String) -> String {
 }
 ```
 
-Create the fixtures with ImageMagick or `sips`:
+Create the fixtures with a Swift script. **ImageMagick and exiftool are not installed on
+this machine**, and requiring them would make the test suite unreproducible. ImageIO can
+write both the pixels and the EXIF orientation tag, with no external dependency.
+
+Create `scripts/make-fixtures.swift`:
+
+```swift
+import Foundation
+import ImageIO
+import CoreGraphics
+import UniformTypeIdentifiers
+
+let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+let dir = root.appendingPathComponent("sidecar/Fixtures")
+try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+/// Writes a solid-colour JPEG of the given stored pixel size, tagging it with
+/// `orientation` (1 = normal, 6 = rotate 90 CW on display).
+func write(_ name: String, width: Int, height: Int,
+           rgb: (Double, Double, Double), orientation: Int) {
+    let ctx = CGContext(
+        data: nil, width: width, height: height,
+        bitsPerComponent: 8, bytesPerRow: 0,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    ctx.setFillColor(red: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
+    ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    let image = ctx.makeImage()!
+
+    let url = dir.appendingPathComponent(name) as CFURL
+    let dest = CGImageDestinationCreateWithURL(url, UTType.jpeg.identifier as CFString, 1, nil)!
+    let props: [CFString: Any] = [kCGImagePropertyOrientation: orientation]
+    CGImageDestinationAddImage(dest, image, props as CFDictionary)
+    precondition(CGImageDestinationFinalize(dest), "failed to write \(name)")
+    print("wrote \(name) (\(width)x\(height), orientation \(orientation))")
+}
+
+write("landscape.jpg", width: 1200, height: 800, rgb: (0.1, 0.1, 0.5), orientation: 1)
+write("portrait-rot90.jpg", width: 1200, height: 800, rgb: (0.1, 0.4, 0.1), orientation: 6)
+```
+
+Run it from the repo root:
 
 ```bash
-mkdir -p sidecar/Fixtures
-magick -size 1200x800 xc:navy sidecar/Fixtures/landscape.jpg
-magick -size 1200x800 xc:darkgreen sidecar/Fixtures/portrait-rot90.jpg
-exiftool -Orientation=6 -n -overwrite_original sidecar/Fixtures/portrait-rot90.jpg
+swift scripts/make-fixtures.swift
 ```
+
+`portrait-rot90.jpg` stores 1200×800 pixels but is tagged orientation 6, so a correct
+reader displays it as 800×1200. That is exactly what the second test checks — and it fails
+if `kCGImageSourceCreateThumbnailWithTransform` is omitted, which is the point.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1255,9 +1298,22 @@ git commit -m "feat(sidecar): add sharpness, palette, and perceptual hash metric
 - Create: `sidecar/Sources/PhotobookEngine/VisionAnalyzer.swift`
 - Test: `sidecar/Tests/PhotobookEngineTests/VisionAnalyzerTests.swift`
 
+> **⚠️ SUPERSEDED IN TWO WAYS BY THE SHIPPED IMPLEMENTATION — read before reusing this text.**
+>
+> 1. `FaceObservation` carries **`outerLips`, not `landmarks`**. Vision's `allPoints` is the
+>    full 65–76 point constellation (jaw contour, brows, eyes, nose, lips). The smile proxy
+>    reads mouth-corner geometry, and on a real face the x-extremes of `allPoints` are jaw
+>    or ear contour points — the resulting signal is not a smile signal and in testing it
+>    actually *inverted*. Populate from `VNFaceLandmarks2D.outerLips`.
+> 2. `normalizedPoints` are normalised to the **face's own bounding box**, not the image.
+>    They must be offset and scaled by the Vision-space (bottom-left) box before the
+>    top-left flip. Both `box` and `outerLips` are image-normalised, top-left.
+>
+> Neither defect was catchable by the tests below: no fixture contains a face.
+
 **Interfaces:**
 - Consumes: `CGImage` from `ImageLoader`
-- Produces: `struct VisionResult: Codable { isUtility: Bool; aestheticScore: Double; faces: [FaceObservation]; saliencyBox: [Double]?; horizonTiltDeg: Double?; sceneTags: [String]; hasText: Bool }` and `struct FaceObservation: Codable { box: [Double]; yaw: Double?; pitch: Double?; roll: Double?; captureQuality: Double?; landmarks: [[Double]]? }`; `VisionAnalyzer.analyze(_ image: CGImage) -> VisionResult`.
+- Produces: `struct VisionResult: Codable { isUtility: Bool; aestheticScore: Double; faces: [FaceObservation]; saliencyBox: [Double]?; horizonTiltDeg: Double?; sceneTags: [String]; hasText: Bool }` and `struct FaceObservation: Codable { box: [Double]; yaw: Double?; pitch: Double?; roll: Double?; captureQuality: Double?; outerLips: [[Double]]? }`; `VisionAnalyzer.analyze(_ image: CGImage) -> VisionResult`.
 
 All boxes are `[x, y, w, h]` normalised to `0...1` in **top-left origin** coordinates — Vision returns bottom-left origin, so this converts.
 
@@ -1449,6 +1505,19 @@ git commit -m "feat(sidecar): add batched Vision analysis on a single request ha
 - Produces: `SmileProxy.confidence(for face: FaceObservation) -> Double?` (nil when head pose is unusable) and `SmileProxy.fraction(faces: [FaceObservation], threshold: Double) -> Double?` (nil when no face has usable pose).
 
 Vision has no expression classifier at any macOS version, so this is geometric. It returns **nil, never 0**, when it cannot tell — "nobody smiling" and "couldn't tell" must not collapse.
+
+> **⚠️ SUPERSEDED IN THREE WAYS BY THE SHIPPED IMPLEMENTATION.**
+>
+> 1. Reads **`face.outerLips`**, not `face.landmarks` — see the warning on Task 7.
+> 2. Landmark points arrive **image-normalised**, so they must be mapped back into
+>    face-box-relative space (`(p - box.origin) / box.size`) before any lift/width ratio.
+>    Otherwise the ratio is distorted by `box.height / box.width`, differently per face,
+>    and the constants below are meaningless. Guard zero/negative box dimensions.
+> 3. A **nil** yaw or pitch gates to nil confidence. Unreported pose is a cannot-tell case;
+>    scoring a possibly-profile face as frontal feeds culling a wrong signal.
+>
+> Test fixtures must be realistic 8–12 point lip contours. Four idealised corners are how
+> defect 1 survived eleven passing tests.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1841,6 +1910,47 @@ This is the task that makes the crash-isolation argument real. If any of these c
 
 `scripts/make-hostile-fixtures.sh`:
 
+ImageMagick is not installed, so the three fixtures that need real image data are produced
+by extending `scripts/make-fixtures.swift` from Task 4 rather than shelling out.
+
+Add to `scripts/make-fixtures.swift`, after the two existing `write` calls:
+
+```swift
+let hostile = dir.appendingPathComponent("hostile")
+try? FileManager.default.createDirectory(at: hostile, withIntermediateDirectories: true)
+
+/// Writes a solid-colour image into the hostile directory, optionally in a
+/// colour space or with a filename that downstream code may not expect.
+func writeHostile(_ name: String, width: Int, height: Int, cmyk: Bool) {
+    let space = cmyk ? CGColorSpaceCreateDeviceCMYK() : CGColorSpaceCreateDeviceRGB()
+    let info = cmyk
+        ? CGImageAlphaInfo.none.rawValue
+        : CGImageAlphaInfo.premultipliedLast.rawValue
+    let ctx = CGContext(
+        data: nil, width: width, height: height,
+        bitsPerComponent: 8, bytesPerRow: 0,
+        space: space, bitmapInfo: info
+    )!
+    ctx.setFillColor(CGColor(colorSpace: space,
+                             components: cmyk ? [0, 1, 1, 0, 1] : [1, 0, 0, 1])!)
+    ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    let image = ctx.makeImage()!
+
+    let url = hostile.appendingPathComponent(name) as CFURL
+    let dest = CGImageDestinationCreateWithURL(url, UTType.jpeg.identifier as CFString, 1, nil)!
+    CGImageDestinationAddImage(dest, image, nil)
+    precondition(CGImageDestinationFinalize(dest), "failed to write \(name)")
+    print("wrote hostile/\(name)")
+}
+
+writeHostile("one-pixel.jpg", width: 1, height: 1, cmyk: false)
+writeHostile("cmyk.jpg", width: 64, height: 64, cmyk: true)
+writeHostile("no-extension", width: 64, height: 64, cmyk: false)
+```
+
+Then `scripts/make-hostile-fixtures.sh` covers only the four that are pure byte
+manipulation and need no image library:
+
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1851,11 +1961,14 @@ mkdir -p "$DIR"
 head -c 400 sidecar/Fixtures/landscape.jpg > "$DIR/truncated.jpg"
 printf 'not an image at all, just text' > "$DIR/text.jpg"
 head -c 2000 /dev/urandom > "$DIR/random.jpg"
-magick -size 1x1 xc:white "$DIR/one-pixel.jpg"
-magick -size 64x64 xc:red -colorspace CMYK "$DIR/cmyk.jpg"
-magick -size 64x64 xc:blue "$DIR/no-extension"
-echo "created hostile fixtures in $DIR"
+echo "created byte-level hostile fixtures in $DIR"
+echo "run 'swift scripts/make-fixtures.swift' for the image-based ones"
 ```
+
+If `CGColorSpaceCreateDeviceCMYK` refuses the JPEG destination on this macOS version,
+substitute any other awkward-but-writable colour space and note the substitution — the
+point of the fixture is that the analyser meets a colour space it did not expect, not CMYK
+specifically.
 
 `sidecar/Tests/PhotobookEngineTests/HostileInputTests.swift`:
 
@@ -2868,6 +2981,14 @@ pub async fn analyze_folder(
         features["sharpnessPct"] = sharpness[i].into();
         features["faceCount"] = features["faces"].as_array().map_or(0, Vec::len).into();
         features["status"] = "ok".into();
+
+        // phash is a full 64-bit value and JavaScript numbers lose precision
+        // above 2^53. Clustering is done with it by this point, and the UI has
+        // no use for it, so drop it rather than hand the webview a value that
+        // is silently wrong for anyone who later reads it.
+        if let Some(object) = features.as_object_mut() {
+            object.remove("phash");
+        }
     }
 
     Ok(AnalysisSummary { total: paths.len(), failed, cached, photos: ok })
