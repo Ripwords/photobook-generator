@@ -159,12 +159,21 @@ fn resolution_headroom(photo: &Photo, crop: &Rect, slot: &Slot) -> f64 {
     ((dpi - MIN_DPI) / (300.0 - MIN_DPI)).clamp(0.0, 1.0)
 }
 
-/// Rewards a spread whose photos share a coherent dominant hue. Uses the
-/// Oklab-ish palette Phase 1 already computes; a spread whose photos scatter
-/// across the hue circle reads as noisy.
+/// Rewards a spread whose photos share a coherent dominant hue: a spread
+/// whose photos scatter across the hue circle reads as noisy.
 ///
-/// Deliberately low-weighted by default: it is the fuzziest term in the
-/// scorer and zeroing its weight must leave a usable book.
+/// This is a CRUDE hue proxy, not a perceptual one. Phase 1's palette is
+/// plain sRGB in [0,1] -- `Metrics.palette` in the sidecar averages 8-bit
+/// channels and divides by 255, it is not Oklab -- so `atan2(b, r)` ignores
+/// `g` entirely, maps every neutral grey from near-black to near-white onto
+/// the same angle, and, because `r` and `b` are both non-negative, spans
+/// only a quarter turn. Two photos therefore cannot score below
+/// `cos(pi/4) ~= 0.707`, so the term's whole reachable range is about 0.29
+/// wide, not 1.0.
+///
+/// Hence the deliberately low default weight: it is the fuzziest term in
+/// the scorer, it is uncalibrated, and zeroing its weight must leave a
+/// usable book. Recalibrating it in a real hue space is deferred.
 fn palette_harmony(photos: &[&Photo]) -> f64 {
     let hues: Vec<f64> = photos
         .iter()
@@ -322,6 +331,19 @@ mod tests {
         }
     }
 
+    /// A slot exactly 6.0" wide. `6.0 / PAGE_W_IN` round-trips back through
+    /// `* PAGE_W_IN` to exactly 6.0 in IEEE doubles, so `effective_dpi` can
+    /// return exactly 150.0 for an integer pixel count -- the only way to
+    /// test the floor's inclusivity at all.
+    fn six_inch_slot() -> Slot {
+        Slot {
+            rect: Rect::new(0.1, 0.2, 6.0 / PAGE_W_IN, 0.5),
+            role: Role::Hero,
+            bleed: Vec::<BleedEdge>::new(),
+            aspect_pref: (1.2, 1.6),
+        }
+    }
+
     #[test]
     fn score_slot_aspect_uses_page_inches_not_the_normalised_ratio() {
         let s = wide_slot();
@@ -354,15 +376,33 @@ mod tests {
         ));
     }
 
-    /// Boundary test AT the boundary: exactly MIN_DPI must pass.
+    /// The floor pinned on BOTH sides, on a slot that can express it exactly.
+    ///
+    /// `wide_slot` cannot: 5.5985" needs 839.775 px for 150 DPI, and the
+    /// brief's fixture rounded that to 840 px = 150.0402 DPI -- never on the
+    /// boundary it was named for, so `< MIN_DPI` could be flipped to
+    /// `<= MIN_DPI` with the whole suite still green. A slot exactly 6.0"
+    /// wide has an integer answer: 900 px is exactly 150.0 DPI (verified in
+    /// the first assertion, since only exact IEEE equality distinguishes the
+    /// two comparisons), and one pixel less is 149.83.
     #[test]
-    fn score_dpi_floor_is_inclusive_at_exactly_min_dpi() {
-        let s = wide_slot();
-        let slot_w_in = s.rect.w * PAGE_W_IN;
-        let px = (MIN_DPI * slot_w_in).round() as u32;
-        let p = photo(px, (px as f64 / 1.259) as u32);
+    fn score_dpi_floor_admits_exactly_min_dpi_and_rejects_one_pixel_below() {
+        let s = six_inch_slot();
         let crop = Rect::new(0.0, 0.0, 1.0, 1.0);
-        assert!(rejects(&p, &crop, &s, Side::Left).is_none(), "exactly at the floor must pass");
+
+        let at = photo(900, 675);
+        assert_eq!(
+            effective_dpi(&at, &crop, &s),
+            MIN_DPI,
+            "the fixture must land ON the floor, not merely near it"
+        );
+        assert!(rejects(&at, &crop, &s, Side::Left).is_none(), "the floor itself must pass");
+
+        let below = photo(899, 674);
+        assert!(matches!(
+            rejects(&below, &crop, &s, Side::Left),
+            Some(Rejection::TooLowResolution)
+        ));
     }
 
     /// The face must STRADDLE the crop edge. The brief's fixture put it at
