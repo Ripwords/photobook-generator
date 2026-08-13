@@ -1,0 +1,27 @@
+{
+  "id": "43-two-up-bleed-left-inset-right",
+  "slots": [
+    {
+      "rect": [0, 0, 0.5, 1],
+      "role": "hero",
+      "bleed": ["left", "top", "bottom"],
+      "aspect_pref": [1.083, 1.435]
+    },
+    {
+      "rect": [0.6, 0.28, 0.26, 0.44],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [1.28, 1.696]
+    }
+  ],
+  "text_zones": [
+    {
+      "rect": [0.6, 0.78, 0.26, 0.1],
+      "align": "left"
+    }
+  ],
+  "min_photos": 2,
+  "max_photos": 2,
+  "density": "sparse",
+  "energy": "neutral"
+}

@@ -387,4 +387,63 @@ mod tests {
             "every spread contributes two halves"
         );
     }
+
+    /// The packer can only emit a group of size N if the library holds a
+    /// spread with exactly N slots -- `pack` refuses to fabricate a size it
+    /// cannot build. A hole at 5 does not degrade the book, it makes a run of
+    /// five keepers unplaceable, so the covered range is a library-level
+    /// invariant rather than a nice-to-have.
+    #[test]
+    #[ignore = "reads the real templates/ directory"]
+    fn templates_real_library_covers_every_group_size_from_one_to_six() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../templates");
+        let lib = Library::load(&dir).expect("the real library must decompose");
+
+        let mut sizes: Vec<usize> =
+            lib.spreads.iter().map(|t| t.photo_count()).collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+        sizes.sort_unstable();
+
+        for n in 1..=6 {
+            assert!(
+                sizes.contains(&n),
+                "no template builds a {n}-photo spread; buildable sizes are {sizes:?}"
+            );
+        }
+        // Gapless, not merely covering 1..=6: a hole above 6 is the same bug
+        // one size up, and the packer walks the whole list.
+        for pair in sizes.windows(2) {
+            assert_eq!(
+                pair[1],
+                pair[0] + 1,
+                "gap in buildable sizes between {} and {}: {sizes:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    /// Edge treatment is the third pacing axis, and pacing can only alternate
+    /// between looks that both exist in quantity. The library was 86% matted
+    /// before Task 13; this pins the floor so a later edit cannot quietly
+    /// starve `pace` of bleed pages again.
+    #[test]
+    #[ignore = "reads the real templates/ directory"]
+    fn templates_real_library_offers_both_edge_treatments() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../templates");
+        let lib = Library::load(&dir).expect("the real library must decompose");
+
+        let halves = lib.page_half_pool();
+        let bleed =
+            halves.iter().filter(|p| p.edge_treatment == EdgeTreatment::Bleed).count();
+        let margin = halves.len() - bleed;
+
+        assert!(
+            bleed * 4 >= halves.len(),
+            "only {bleed} of {} page halves bleed; at least a quarter must",
+            halves.len()
+        );
+        assert!(margin > 0, "the library must still offer matted pages");
+    }
 }

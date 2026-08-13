@@ -2,88 +2,40 @@
   "id": "25-six-up-mosaic-hero-five",
   "slots": [
     {
-      "rect": [
-        0.03,
-        0.05,
-        0.44,
-        0.6
-      ],
+      "rect": [0, 0, 0.5, 1],
       "role": "hero",
-      "bleed": [],
-      "aspect_pref": [
-        1.5,
-        2.2
-      ]
+      "bleed": ["left", "top", "bottom"],
+      "aspect_pref": [1.083, 1.435]
     },
     {
-      "rect": [
-        0.03,
-        0.68,
-        0.21,
-        0.27
-      ],
+      "rect": [0.5, 0, 0.166667, 0.559528],
       "role": "support",
-      "bleed": [],
-      "aspect_pref": [
-        1.6,
-        2.3
-      ]
+      "bleed": ["top"],
+      "aspect_pref": [0.645, 0.855]
     },
     {
-      "rect": [
-        0.26,
-        0.68,
-        0.21,
-        0.27
-      ],
+      "rect": [0.666667, 0, 0.166667, 0.559528],
       "role": "support",
-      "bleed": [],
-      "aspect_pref": [
-        1.6,
-        2.3
-      ]
+      "bleed": ["top"],
+      "aspect_pref": [0.645, 0.855]
     },
     {
-      "rect": [
-        0.55,
-        0.05,
-        0.4,
-        0.28
-      ],
+      "rect": [0.833333, 0, 0.166667, 0.559528],
       "role": "support",
-      "bleed": [],
-      "aspect_pref": [
-        2.9,
-        4.1
-      ]
+      "bleed": ["top", "right"],
+      "aspect_pref": [0.645, 0.855]
     },
     {
-      "rect": [
-        0.55,
-        0.36,
-        0.4,
-        0.28
-      ],
+      "rect": [0.5, 0.559528, 0.25, 0.440472],
       "role": "support",
-      "bleed": [],
-      "aspect_pref": [
-        2.9,
-        4.1
-      ]
+      "bleed": ["bottom"],
+      "aspect_pref": [1.229, 1.629]
     },
     {
-      "rect": [
-        0.55,
-        0.67,
-        0.4,
-        0.28
-      ],
+      "rect": [0.75, 0.559528, 0.25, 0.440472],
       "role": "support",
-      "bleed": [],
-      "aspect_pref": [
-        2.9,
-        4.1
-      ]
+      "bleed": ["bottom", "right"],
+      "aspect_pref": [1.229, 1.629]
     }
   ],
   "text_zones": [],

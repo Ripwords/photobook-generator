@@ -1,0 +1,22 @@
+{
+  "id": "42-two-up-fold-flush-bleed",
+  "slots": [
+    {
+      "rect": [0, 0, 0.5, 1],
+      "role": "support",
+      "bleed": ["left", "top", "bottom"],
+      "aspect_pref": [1.083, 1.435]
+    },
+    {
+      "rect": [0.5, 0, 0.5, 1],
+      "role": "support",
+      "bleed": ["right", "top", "bottom"],
+      "aspect_pref": [1.083, 1.435]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 2,
+  "max_photos": 2,
+  "density": "sparse",
+  "energy": "lively"
+}

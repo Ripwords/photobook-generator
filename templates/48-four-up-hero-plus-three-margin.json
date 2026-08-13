@@ -1,0 +1,34 @@
+{
+  "id": "48-four-up-hero-plus-three-margin",
+  "slots": [
+    {
+      "rect": [0.035724, 0.089948, 0.428552, 0.820103],
+      "role": "hero",
+      "bleed": [],
+      "aspect_pref": [1.132, 1.5]
+    },
+    {
+      "rect": [0.736278, 0.089948, 0.227999, 0.820103],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [0.602, 0.798]
+    },
+    {
+      "rect": [0.535724, 0.089948, 0.191623, 0.398808],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [1.04, 1.379]
+    },
+    {
+      "rect": [0.535724, 0.511244, 0.191623, 0.398808],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [1.04, 1.379]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 4,
+  "max_photos": 4,
+  "density": "medium",
+  "energy": "neutral"
+}

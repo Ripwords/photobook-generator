@@ -1,5 +1,5 @@
 {
-  "id": "22-four-up-hero-plus-three-right",
+  "id": "44-three-up-pair-plus-full-page-bleed",
   "slots": [
     {
       "rect": [0, 0, 0.25, 1],
@@ -8,16 +8,10 @@
       "aspect_pref": [0.541, 0.718]
     },
     {
-      "rect": [0.25, 0, 0.25, 0.5],
+      "rect": [0.25, 0, 0.25, 1],
       "role": "support",
-      "bleed": ["top"],
-      "aspect_pref": [1.083, 1.435]
-    },
-    {
-      "rect": [0.25, 0.5, 0.25, 0.5],
-      "role": "support",
-      "bleed": ["bottom"],
-      "aspect_pref": [1.083, 1.435]
+      "bleed": ["top", "bottom"],
+      "aspect_pref": [0.541, 0.718]
     },
     {
       "rect": [0.5, 0, 0.5, 1],
@@ -27,8 +21,8 @@
     }
   ],
   "text_zones": [],
-  "min_photos": 4,
-  "max_photos": 4,
-  "density": "dense",
+  "min_photos": 3,
+  "max_photos": 3,
+  "density": "medium",
   "energy": "lively"
 }

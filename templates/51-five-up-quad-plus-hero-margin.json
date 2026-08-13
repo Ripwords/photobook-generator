@@ -1,5 +1,5 @@
 {
-  "id": "20-four-up-windowpane",
+  "id": "51-five-up-quad-plus-hero-margin",
   "slots": [
     {
       "rect": [0.039854, 0.100349, 0.20568, 0.388408],
@@ -24,16 +24,17 @@
       "role": "support",
       "bleed": [],
       "aspect_pref": [1.147, 1.52]
-    }
-  ],
-  "text_zones": [
+    },
     {
-      "rect": [0.6, 0.44, 0.3, 0.12],
-      "align": "left"
+      "rect": [0.535724, 0.089948, 0.428552, 0.820103],
+      "role": "hero",
+      "bleed": [],
+      "aspect_pref": [1.132, 1.5]
     }
   ],
-  "min_photos": 4,
-  "max_photos": 4,
+  "text_zones": [],
+  "min_photos": 5,
+  "max_photos": 5,
   "density": "medium",
   "energy": "calm"
 }

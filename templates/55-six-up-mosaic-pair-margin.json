@@ -1,0 +1,46 @@
+{
+  "id": "55-six-up-mosaic-pair-margin",
+  "slots": [
+    {
+      "rect": [0.035724, 0.089948, 0.227999, 0.820103],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [0.602, 0.798]
+    },
+    {
+      "rect": [0.272653, 0.089948, 0.191623, 0.398808],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [1.04, 1.379]
+    },
+    {
+      "rect": [0.272653, 0.511244, 0.191623, 0.398808],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [1.04, 1.379]
+    },
+    {
+      "rect": [0.736278, 0.089948, 0.227999, 0.820103],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [0.602, 0.798]
+    },
+    {
+      "rect": [0.535724, 0.089948, 0.191623, 0.398808],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [1.04, 1.379]
+    },
+    {
+      "rect": [0.535724, 0.511244, 0.191623, 0.398808],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [1.04, 1.379]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 6,
+  "max_photos": 6,
+  "density": "dense",
+  "energy": "calm"
+}

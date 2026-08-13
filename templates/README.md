@@ -39,6 +39,56 @@ disagree.
    `bleed` array must actually reach the canvas boundary on that side; every edge *not*
    named must stay inside `[0, 1]` on that side.
 
+## Subdivide the PAGE, never the spread
+
+This is the rule that decides whether a template is usable or inert, and it is invisible in
+the JSON. The spread canvas is **2.518:1** — very wide and very short. A "2 × 3 grid"
+authored as two columns by three rows of the *spread* yields cells of 8.96" × 2.49", i.e.
+**3.6:1 letterbox bands**. A 4:3 photo loses about 65% of its frame in one, and because a
+clipped face is a *hard rejection* in the scorer, any such candidate containing a person is
+thrown out entirely. Six of the original 40 templates were deleted for exactly this, and
+seven more had to be recut.
+
+A **page**, though, is 11.197" × 8.894" = **1.259:1** — close to 4:3. Cells that match real
+photographs come from subdividing a page. Subdividing a page into `m` columns and `n` rows
+gives cells of real aspect `1.259 × n / m`:
+
+| Page subdivision | Cell aspect | Suits |
+|---|---|---|
+| 1 × 1 (whole page) | 1.259 | 4:3 (94%), 3:2 (84%) |
+| 2 × 2 | 1.259 | 4:3 — the workhorse dense cell |
+| 3 × 3 | 1.259 | 4:3, very dense |
+| 2 cols × 1 row (side by side) | 0.630 | 2:3 (94%), 3:4 (84%) |
+| 3 cols × 2 rows | 0.839 | 3:4 (89%) |
+| half-page portrait + 2 stacked | 0.630 / 1.259 | the 3-up mosaic; both halves fit |
+| 1 col × 2 rows (stacked) | 2.518 | genuinely panoramic photos only |
+| 2 cols × 3 rows | 1.889 | **nothing** — 3:2 at 79%. Do not author this. |
+
+Rule of thumb: a slot is usable when its real aspect retains **at least 80%** of the frame
+of its nearest common camera aspect (4:3, 3:2, 3:4, 2:3). Below that the slot cannot hold a
+picture of a person at all.
+
+Two consequences worth internalising:
+
+- **Two full-width photos stacked on one page can never both fit.** Each would need ~79% of
+  the page height to be 4:3. If you want two landscapes on one page they must be a narrower
+  centred column, which leaves wide side margins — that is the geometry, not sloppiness.
+- **Running flush TO the fold is legal and wanted**; crossing it is not. A slot ending at
+  exactly `x = 0.5`, or starting at exactly `0.5`, is how fold-flush and full-bleed spreads
+  are built. Keep the *subject* out of the innermost 0.197", which curls into the binding —
+  the scorer enforces that for faces, but composition is the author's job.
+
+## Look at it before you trust it
+
+```sh
+bun scripts/template-sheet.ts > /tmp/templates.html && open /tmp/templates.html
+```
+
+Draws every file in this directory to scale with the fold, the gutter dead band, the trim /
+safe area, every bleed edge, and each slot's real aspect next to the nearest camera aspect
+and the fraction of the frame that survives. Slots that fit nothing are drawn in red. The
+letterbox failure above is obvious on the sheet and invisible in the rect arrays.
+
 ## Template format
 
 ```jsonc

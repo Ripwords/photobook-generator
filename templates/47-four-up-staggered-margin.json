@@ -1,0 +1,34 @@
+{
+  "id": "47-four-up-staggered-margin",
+  "slots": [
+    {
+      "rect": [0.045, 0.06, 0.185, 0.72],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [0.556, 0.738]
+    },
+    {
+      "rect": [0.255, 0.22, 0.185, 0.72],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [0.556, 0.738]
+    },
+    {
+      "rect": [0.56, 0.22, 0.185, 0.72],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [0.556, 0.738]
+    },
+    {
+      "rect": [0.77, 0.06, 0.185, 0.72],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [0.556, 0.738]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 4,
+  "max_photos": 4,
+  "density": "medium",
+  "energy": "lively"
+}

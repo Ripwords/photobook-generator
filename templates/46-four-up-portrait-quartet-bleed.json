@@ -1,5 +1,5 @@
 {
-  "id": "22-four-up-hero-plus-three-right",
+  "id": "46-four-up-portrait-quartet-bleed",
   "slots": [
     {
       "rect": [0, 0, 0.25, 1],
@@ -8,22 +8,22 @@
       "aspect_pref": [0.541, 0.718]
     },
     {
-      "rect": [0.25, 0, 0.25, 0.5],
+      "rect": [0.25, 0, 0.25, 1],
       "role": "support",
-      "bleed": ["top"],
-      "aspect_pref": [1.083, 1.435]
+      "bleed": ["top", "bottom"],
+      "aspect_pref": [0.541, 0.718]
     },
     {
-      "rect": [0.25, 0.5, 0.25, 0.5],
+      "rect": [0.5, 0, 0.25, 1],
       "role": "support",
-      "bleed": ["bottom"],
-      "aspect_pref": [1.083, 1.435]
+      "bleed": ["top", "bottom"],
+      "aspect_pref": [0.541, 0.718]
     },
     {
-      "rect": [0.5, 0, 0.5, 1],
-      "role": "hero",
+      "rect": [0.75, 0, 0.25, 1],
+      "role": "support",
       "bleed": ["right", "top", "bottom"],
-      "aspect_pref": [1.083, 1.435]
+      "aspect_pref": [0.541, 0.718]
     }
   ],
   "text_zones": [],

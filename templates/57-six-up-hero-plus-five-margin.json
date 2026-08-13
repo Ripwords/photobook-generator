@@ -1,0 +1,46 @@
+{
+  "id": "57-six-up-hero-plus-five-margin",
+  "slots": [
+    {
+      "rect": [0.035724, 0.089948, 0.428552, 0.820103],
+      "role": "hero",
+      "bleed": [],
+      "aspect_pref": [1.132, 1.5]
+    },
+    {
+      "rect": [0.535724, 0.089948, 0.136897, 0.459586],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [0.645, 0.855]
+    },
+    {
+      "rect": [0.681552, 0.089948, 0.136897, 0.459586],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [0.645, 0.855]
+    },
+    {
+      "rect": [0.827379, 0.089948, 0.136897, 0.459586],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [0.645, 0.855]
+    },
+    {
+      "rect": [0.535724, 0.572021, 0.209811, 0.338031],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [1.344, 1.782]
+    },
+    {
+      "rect": [0.754465, 0.572021, 0.209811, 0.338031],
+      "role": "support",
+      "bleed": [],
+      "aspect_pref": [1.344, 1.782]
+    }
+  ],
+  "text_zones": [],
+  "min_photos": 6,
+  "max_photos": 6,
+  "density": "dense",
+  "energy": "neutral"
+}
