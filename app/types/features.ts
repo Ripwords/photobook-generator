@@ -1,12 +1,25 @@
-export interface AnalyzedPhoto {
+/**
+ * Everything intrinsic to a single photo: derivable the instant that ONE
+ * photo has been analyzed, with no knowledge of the rest of the folder.
+ * Rust's `partial_photo` (`src-tauri/src/commands.rs`) produces exactly this
+ * shape and streams it in `AnalysisEvent.Batch` as each batch of photos
+ * finishes, so the UI can render a tile long before the whole folder is
+ * done.
+ *
+ * Deliberately does NOT include `aestheticPct`, `sharpnessPct`,
+ * `nearDupCluster`, or `eventCluster` -- those are whole-set derivations
+ * (percentile rank, near-duplicate/event clustering) that don't exist, even
+ * provisionally, until every photo in the folder has been seen. A tile
+ * typed against `PartialAnalyzedPhoto` structurally cannot render a
+ * percentile that will later change out from under the viewer.
+ */
+export interface PartialAnalyzedPhoto {
   status: "ok";
   path: string;
   hash: string;
   width: number;
   height: number;
   isUtility: boolean;
-  aestheticPct: number;
-  sharpnessPct: number;
   faceCount: number;
   /**
    * Swift's synthesized `Codable` uses `encodeIfPresent` for optional
@@ -18,8 +31,6 @@ export interface AnalyzedPhoto {
    */
   smileFraction?: number | null;
   sceneTags: string[];
-  nearDupCluster: number;
-  eventCluster: number;
   /**
    * Small JPEG contact-sheet thumbnail path, or absent/null if writing it
    * failed -- same `encodeIfPresent` omission as `smileFraction` above.
@@ -27,6 +38,23 @@ export interface AnalyzedPhoto {
    * and `""` are all falsy), but typed accurately here regardless.
    */
   thumbnailPath?: string | null;
+}
+
+/**
+ * A fully-ranked photo: `PartialAnalyzedPhoto` plus the whole-set
+ * derivations that only exist once `analyze_folder` has seen every photo in
+ * the folder (Rust's `finalize_photos`, delivered in `AnalysisEvent.Done`).
+ */
+export interface AnalyzedPhoto extends PartialAnalyzedPhoto {
+  aestheticPct: number;
+  sharpnessPct: number;
+  nearDupCluster: number;
+  eventCluster: number;
+}
+
+/** Type guard distinguishing a still-streaming tile from a fully-ranked one. */
+export function isRanked(photo: PartialAnalyzedPhoto | AnalyzedPhoto): photo is AnalyzedPhoto {
+  return "aestheticPct" in photo;
 }
 
 export interface FailedPhoto {
@@ -48,6 +76,88 @@ export function isFailed(record: PhotoRecord): record is FailedPhoto {
   return record.status === "failed";
 }
 
+// --- Streaming: mirrors Rust's `AnalysisEvent` (`src-tauri/src/commands.rs`)
+// exactly, field for field. Sent over a `tauri::ipc::Channel`, not Tauri's
+// event system -- events are JSON-string-only and explicitly not designed
+// for high-throughput/low-latency streaming per Tauri's own docs, which a
+// folder of hundreds of photos with thumbnails very much is.
+
+export interface ScannedEvent {
+  kind: "scanned";
+  total: number;
+}
+
+export interface BatchEvent {
+  kind: "batch";
+  photos: PartialAnalyzedPhoto[];
+  /** Cumulative running totals as of this event, not per-batch deltas. */
+  analysed: number;
+  cached: number;
+  failed: number;
+}
+
+export interface DoneEvent {
+  kind: "done";
+  summary: AnalysisSummary;
+}
+
+export type AnalysisEvent = ScannedEvent | BatchEvent | DoneEvent;
+
+/**
+ * Accumulated state built up from a stream of `AnalysisEvent`s over the
+ * course of one `analyze_folder` run.
+ */
+export interface StreamState {
+  scannedTotal: number;
+  /** Partial photos in arrival order -- the order batches resolved in, which is input (path) order; see `applyAnalysisEvent`. */
+  partialPhotos: PartialAnalyzedPhoto[];
+  analysed: number;
+  cached: number;
+  failed: number;
+  summary: AnalysisSummary | null;
+}
+
+export const initialStreamState: StreamState = {
+  scannedTotal: 0,
+  partialPhotos: [],
+  analysed: 0,
+  cached: 0,
+  failed: 0,
+  summary: null,
+};
+
+/**
+ * Pure reducer over `AnalysisEvent`s: the entire client-side "batching
+ * accumulation" logic, extracted so it is unit-testable without a live
+ * Tauri `Channel`/`invoke` -- the same reasoning `finalize_photos` and
+ * `lookup_cache` document on the Rust side.
+ *
+ * `Batch` events are guaranteed by the Rust side (`analyze_batches_with_progress`,
+ * `SidecarPool::analyze_all`) to arrive in the same order their photos were
+ * submitted in, one event per resolved batch (including a failed batch,
+ * which streams zero photos but still advances `failed`) -- so appending
+ * `event.photos` here, in event-arrival order, reconstructs exactly the same
+ * order `finalize_photos` sees before it re-sorts by path. A failed batch
+ * contributes no photos and therefore cannot shift a later batch's photos to
+ * the wrong position in this array.
+ */
+export function applyAnalysisEvent(state: StreamState, event: AnalysisEvent): StreamState {
+  switch (event.kind) {
+    case "scanned":
+      return { ...state, scannedTotal: event.total };
+    case "batch":
+      return {
+        ...state,
+        partialPhotos: [...state.partialPhotos, ...event.photos],
+        analysed: event.analysed,
+        cached: event.cached,
+        failed: event.failed,
+      };
+    case "done":
+      return { ...state, summary: event.summary };
+  }
+}
+
 /**
  * Drops utility images, then keeps the best photo from each near-duplicate
  * cluster, ranked by sharpness then aesthetic percentile.
@@ -61,8 +171,7 @@ export function keepers(photos: AnalyzedPhoto[]): AnalyzedPhoto[] {
     if (
       !incumbent ||
       photo.sharpnessPct > incumbent.sharpnessPct ||
-      (photo.sharpnessPct === incumbent.sharpnessPct &&
-        photo.aestheticPct > incumbent.aestheticPct)
+      (photo.sharpnessPct === incumbent.sharpnessPct && photo.aestheticPct > incumbent.aestheticPct)
     ) {
       best.set(photo.nearDupCluster, photo);
     }

@@ -39,8 +39,10 @@ fn main() {
     // call over the exact same source files if `cargo test` ever runs test
     // binaries in parallel.
     let source_dir = format!("{}/../sidecar/Fixtures", env!("CARGO_MANIFEST_DIR"));
-    let fixture_dir =
-        std::env::temp_dir().join(format!("pbg-cache-hit-test-fixtures-{}", std::process::id()));
+    let fixture_dir = std::env::temp_dir().join(format!(
+        "pbg-cache-hit-test-fixtures-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&fixture_dir).expect("failed to create fixture copy dir");
     for entry in std::fs::read_dir(&source_dir).expect("read source fixtures") {
         let entry = entry.expect("dir entry");
@@ -53,18 +55,39 @@ fn main() {
     let mut context = tauri::generate_context!();
     context.config_mut().app.windows.clear();
 
-    let app = app_lib::builder().build(context).expect("failed to build tauri app");
+    let app = app_lib::builder()
+        .build(context)
+        .expect("failed to build tauri app");
     let handle = app.handle().clone();
 
-    let first =
-        tauri::async_runtime::block_on(analyze_folder(handle.clone(), fixture_dir_str.clone()))
-            .expect("first analyze_folder run failed");
-    assert!(first.total > 0, "expected at least one supported photo in sidecar/Fixtures");
-    assert_eq!(first.cached, 0, "first run over an empty cache must have zero cache hits");
+    // A no-op streaming channel: this test only cares about the final
+    // `AnalysisSummary`, not the progress events `analyze_folder` now emits
+    // alongside it.
+    let first = tauri::async_runtime::block_on(analyze_folder(
+        handle.clone(),
+        fixture_dir_str.clone(),
+        tauri::ipc::Channel::new(|_| Ok(())),
+    ))
+    .expect("first analyze_folder run failed");
+    assert!(
+        first.total > 0,
+        "expected at least one supported photo in sidecar/Fixtures"
+    );
+    assert_eq!(
+        first.cached, 0,
+        "first run over an empty cache must have zero cache hits"
+    );
 
-    let second = tauri::async_runtime::block_on(analyze_folder(handle, fixture_dir_str))
-        .expect("second analyze_folder run failed");
-    assert_eq!(second.total, first.total, "the folder did not change between runs");
+    let second = tauri::async_runtime::block_on(analyze_folder(
+        handle,
+        fixture_dir_str,
+        tauri::ipc::Channel::new(|_| Ok(())),
+    ))
+    .expect("second analyze_folder run failed");
+    assert_eq!(
+        second.total, first.total,
+        "the folder did not change between runs"
+    );
     assert!(
         second.cached > 0,
         "second run over the SAME folder must hit the cache -- got {} cached of {} total \
@@ -81,7 +104,10 @@ fn main() {
     // to isolate this exact guarantee) both exist to cover.
     let fixture_dir_prefix = fixture_dir.to_string_lossy().into_owned();
     for photo in &second.photos {
-        let path = photo.get("path").and_then(|p| p.as_str()).expect("every ok photo record must have a path");
+        let path = photo
+            .get("path")
+            .and_then(|p| p.as_str())
+            .expect("every ok photo record must have a path");
         assert!(
             path.starts_with(&fixture_dir_prefix),
             "cached photo path {path} does not point into the current fixture_dir {fixture_dir_prefix} \

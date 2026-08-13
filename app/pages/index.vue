@@ -1,7 +1,17 @@
 <script setup lang="ts">
 import { basename, burstSizes, groupByEvent, keepers, pickHero } from "~/types/features";
 
-const { summary, running, error, folder, pickFolderAndAnalyze, retry } = useAnalysis();
+const {
+  summary,
+  running,
+  error,
+  folder,
+  scannedTotal,
+  processed,
+  partialPhotos,
+  pickFolderAndAnalyze,
+  retry,
+} = useAnalysis();
 
 type ViewState = "entry" | "running" | "error" | "no-images" | "no-analyzed" | "results";
 
@@ -32,11 +42,26 @@ const heroPaths = computed<Set<string>>(
 const folderLabel = computed(() => (folder.value ? basename(folder.value) : "the selected folder"));
 
 const gridClass = "grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3";
+
+// Determinate once the folder has been scanned (the `Scanned` event gives a
+// denominator); indeterminate for the brief window before it arrives.
+// `UProgress` treats a `null` model value as indeterminate.
+const progressValue = computed(() => (scannedTotal.value > 0 ? processed.value : null));
+
+// Placeholder tiles for photos not yet streamed in, so the grid still reads
+// as "growing toward a known total" rather than just stopping short. Capped
+// so a folder of thousands doesn't render thousands of empty skeleton
+// nodes -- it is a "more coming" indicator, not a literal one-per-photo count.
+const remainingSkeletonCount = computed(() =>
+  Math.min(Math.max(scannedTotal.value - processed.value, 0), 48),
+);
 </script>
 
 <template>
   <div class="flex h-screen flex-col bg-default text-default">
-    <header class="flex shrink-0 items-center justify-between gap-4 border-b border-default px-6 py-4">
+    <header
+      class="flex shrink-0 items-center justify-between gap-4 border-b border-default px-6 py-4"
+    >
       <div class="flex items-center gap-2.5">
         <UIcon name="i-lucide-images" class="size-5 text-primary" />
         <h1 class="text-sm font-semibold text-highlighted">PhotobookGen</h1>
@@ -78,14 +103,27 @@ const gridClass = "grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3";
 
       <div v-else-if="state === 'running'" class="space-y-6">
         <div class="max-w-sm space-y-2">
-          <UProgress color="primary" size="sm" />
+          <UProgress color="primary" size="sm" :model-value="progressValue" :max="scannedTotal" />
           <p class="text-sm text-muted">
-            Analyzing photos in <span class="text-default">{{ folderLabel }}</span
-            >. This can take a few minutes for large folders.
+            <template v-if="scannedTotal > 0">
+              <span class="font-mono tabular-nums text-default">{{ processed }}</span> /
+              <span class="font-mono tabular-nums text-default">{{ scannedTotal }}</span>
+              analyzed in <span class="text-default">{{ folderLabel }}</span>
+            </template>
+            <template v-else>
+              Scanning <span class="text-default">{{ folderLabel }}</span
+              >&hellip;
+            </template>
           </p>
         </div>
-        <div :class="gridClass" aria-hidden="true">
-          <USkeleton v-for="n in 24" :key="n" class="aspect-square w-full" />
+        <div :class="gridClass">
+          <PhotoTile v-for="photo in partialPhotos" :key="photo.path" :photo="photo" />
+          <USkeleton
+            v-for="n in remainingSkeletonCount"
+            :key="`pending-${n}`"
+            class="aspect-square w-full"
+            aria-hidden="true"
+          />
         </div>
       </div>
 
@@ -148,9 +186,7 @@ const gridClass = "grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3";
               scanned</span
             >
             <span
-              ><span class="font-mono tabular-nums text-default">{{
-                summary.photos.length
-              }}</span>
+              ><span class="font-mono tabular-nums text-default">{{ summary.photos.length }}</span>
               analyzed</span
             >
             <span

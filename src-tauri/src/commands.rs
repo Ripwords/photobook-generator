@@ -5,6 +5,7 @@ use std::io::Read;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_notification::NotificationExt;
 
@@ -57,12 +58,108 @@ pub struct AppState {
 /// runtime, not a build error. If you rename, add, or remove a field the
 /// webview reads off `photos[i]`, update `AnalyzedPhoto` in
 /// `app/types/features.ts` in the same change, and vice versa.
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct AnalysisSummary {
     pub total: usize,
     pub failed: usize,
     pub cached: usize,
     pub photos: Vec<serde_json::Value>,
+}
+
+/// Streamed to the webview over a `tauri::ipc::Channel` as `analyze_folder`
+/// progresses, instead of the frontend blocking on one `AnalysisSummary` at
+/// the end. A `Channel` (not the event system) is deliberate: Tauri's own
+/// docs describe events as JSON-string-only and unsuited to high-throughput,
+/// low-latency streaming, which is exactly what a folder of hundreds of
+/// photos with thumbnails needs.
+///
+/// `Batch.photos` carries only per-photo *intrinsic* data (see
+/// `partial_photo`) -- never a percentile or cluster id, because those are
+/// whole-set derivations that don't exist until every photo has been seen.
+/// Assigning one anyway from a partial population, then correcting it once
+/// `Done` arrives, would render a rank that visibly changes under the user;
+/// the task brief calls this out by name as the thing not to do. The
+/// (`analysed`, `cached`, `failed`) counts on `Batch` are cumulative running
+/// totals, not per-batch deltas, so the frontend can render "analysed X / Y"
+/// directly off the latest event without summing anything itself.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum AnalysisEvent {
+    /// Fired once, right after the folder is scanned, before any analysis
+    /// starts -- gives the frontend the denominator for a determinate
+    /// progress bar.
+    Scanned { total: usize },
+    /// Fired once per resolved batch (cache hits are treated as one batch,
+    /// then each `sidecar::BATCH_SIZE`-sized sidecar batch fires its own).
+    Batch {
+        photos: Vec<serde_json::Value>,
+        analysed: usize,
+        cached: usize,
+        failed: usize,
+    },
+    /// Fired exactly once, at the very end, carrying the whole-set
+    /// derivations (percentiles, cluster ids) that only exist once every
+    /// photo has been analysed. The frontend merges these into the photos it
+    /// already rendered from `Batch` events rather than replacing them, so a
+    /// tile never flickers or reorders -- it just gains its rank.
+    Done { summary: AnalysisSummary },
+}
+
+/// Projects a fully-decoded features record (either a fresh sidecar result's
+/// `features` or a cache hit straight from `Db`) down to the fields
+/// intrinsic to that ONE photo -- everything the UI can render immediately,
+/// before the whole-set derivations in `finalize_photos` exist. Strips
+/// `phash` for the same reason `finalize_photos` does (JS loses precision
+/// above 2^53), and never includes `nearDupCluster`/`eventCluster`/
+/// `aestheticPct`/`sharpnessPct` -- those only exist once every photo has
+/// been analysed.
+///
+/// Optional fields (`smileFraction`, `thumbnailPath`) are copied only when
+/// present in the source, matching Swift's `encodeIfPresent`-driven omission
+/// of `nil` optionals from the wire JSON -- see the comment on
+/// `AnalyzedPhoto.smileFraction` in `app/types/features.ts`. Building the
+/// key unconditionally here would turn "absent" into an explicit JSON
+/// `null`, which the frontend happens to also handle correctly today, but
+/// would silently diverge from what `finalize_photos` produces for the same
+/// photo once `Done` arrives.
+pub(crate) fn partial_photo(features: &serde_json::Value) -> serde_json::Value {
+    let mut partial = serde_json::Map::new();
+    partial.insert("status".into(), "ok".into());
+    for key in ["path", "hash", "width", "height", "isUtility", "sceneTags"] {
+        partial.insert(key.into(), features[key].clone());
+    }
+    partial.insert(
+        "faceCount".into(),
+        features["faces"].as_array().map_or(0, Vec::len).into(),
+    );
+    for key in ["smileFraction", "thumbnailPath"] {
+        if let Some(value) = features.get(key) {
+            partial.insert(key.into(), value.clone());
+        }
+    }
+    serde_json::Value::Object(partial)
+}
+
+/// Splits one already-resolved batch (guaranteed one record per input path
+/// by `sidecar::analyze_batches_with_progress` -- real records on success,
+/// synthetic `{"status":"failed",...}` on a double-error or count mismatch)
+/// into the partial photos worth streaming to the UI and a count of how many
+/// records in this batch failed. Pure and stateless on purpose: the caller
+/// owns the running totals, so this function cannot itself accumulate the
+/// wrong thing across batches -- see the accumulation tests below for the
+/// property that actually matters (a failed batch must not shift a later
+/// batch's photos).
+pub(crate) fn batch_progress(records: &[serde_json::Value]) -> (Vec<serde_json::Value>, usize) {
+    let mut photos = Vec::new();
+    let mut failed = 0usize;
+    for record in records {
+        if record["status"] == "ok" {
+            photos.push(partial_photo(&record["features"]));
+        } else {
+            failed += 1;
+        }
+    }
+    (photos, failed)
 }
 
 /// Pure post-processing over the successfully-analysed (cached + freshly
@@ -84,7 +181,10 @@ pub(crate) fn finalize_photos(mut ok: Vec<serde_json::Value>) -> Vec<serde_json:
     // every derived array below is computed against one fixed ordering.
     ok.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
 
-    let phashes: Vec<u64> = ok.iter().map(|f| f["phash"].as_u64().unwrap_or(0)).collect();
+    let phashes: Vec<u64> = ok
+        .iter()
+        .map(|f| f["phash"].as_u64().unwrap_or(0))
+        .collect();
     let dup_ids = cluster::near_duplicate_clusters(&phashes, 4);
 
     let times: Vec<Option<i64>> = ok
@@ -94,10 +194,14 @@ pub(crate) fn finalize_photos(mut ok: Vec<serde_json::Value>) -> Vec<serde_json:
     let event_ids = cluster::event_clusters(&times, 4 * 3600);
 
     let aesthetic = ranking::percentiles(
-        &ok.iter().map(|f| f["aestheticScore"].as_f64().unwrap_or(0.0)).collect::<Vec<_>>(),
+        &ok.iter()
+            .map(|f| f["aestheticScore"].as_f64().unwrap_or(0.0))
+            .collect::<Vec<_>>(),
     );
     let sharpness = ranking::percentiles(
-        &ok.iter().map(|f| f["sharpness"].as_f64().unwrap_or(0.0)).collect::<Vec<_>>(),
+        &ok.iter()
+            .map(|f| f["sharpness"].as_f64().unwrap_or(0.0))
+            .collect::<Vec<_>>(),
     );
 
     for (i, features) in ok.iter_mut().enumerate() {
@@ -165,7 +269,8 @@ pub(crate) fn count_keepers(photos: &[serde_json::Value]) -> usize {
 
         best.entry(cluster)
             .and_modify(|incumbent| {
-                if sharpness > incumbent.0 || (sharpness == incumbent.0 && aesthetic > incumbent.1) {
+                if sharpness > incumbent.0 || (sharpness == incumbent.0 && aesthetic > incumbent.1)
+                {
                     *incumbent = (sharpness, aesthetic);
                 }
             })
@@ -225,11 +330,19 @@ pub(crate) fn lookup_cache(db: &Db, paths: &[String]) -> Result<CacheLookup, Str
         }
     }
 
-    Ok(CacheLookup { hits, misses, hash_failures })
+    Ok(CacheLookup {
+        hits,
+        misses,
+        hash_failures,
+    })
 }
 
 #[tauri::command]
-pub async fn analyze_folder(app: AppHandle, folder: String) -> Result<AnalysisSummary, String> {
+pub async fn analyze_folder(
+    app: AppHandle,
+    folder: String,
+    on_event: Channel<AnalysisEvent>,
+) -> Result<AnalysisSummary, String> {
     let started = Instant::now();
 
     let mut paths: Vec<String> = std::fs::read_dir(&folder)
@@ -251,6 +364,13 @@ pub async fn analyze_folder(app: AppHandle, folder: String) -> Result<AnalysisSu
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
     paths.sort();
+
+    // A send failure (e.g. the webview navigated away mid-run) must not fail
+    // an analysis that would otherwise succeed -- logged and swallowed, same
+    // pattern as the completion notification below.
+    if let Err(err) = on_event.send(AnalysisEvent::Scanned { total: paths.len() }) {
+        log::warn!("failed to send Scanned event: {err}");
+    }
 
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
 
@@ -280,10 +400,31 @@ pub async fn analyze_folder(app: AppHandle, folder: String) -> Result<AnalysisSu
     // the sidecar. Re-running on the same folder should do almost no work.
     // This ordering -- hash, then consult the cache, THEN call the sidecar --
     // is the entire point of having a cache at all.
-    let CacheLookup { hits, misses, hash_failures } = lookup_cache(&db, &paths)?;
+    let CacheLookup {
+        hits,
+        misses,
+        hash_failures,
+    } = lookup_cache(&db, &paths)?;
     let mut ok: Vec<serde_json::Value> = hits;
     let cached = ok.len();
     let mut failed = hash_failures;
+
+    // Cache hits (and hash failures, discovered in the same pass) are known
+    // the instant `lookup_cache` returns -- no sidecar round-trip needed --
+    // so they stream as one immediate batch, ahead of anything the sidecar
+    // produces. `analysed` is 0 here: nothing has come back from the sidecar
+    // yet.
+    if !ok.is_empty() || hash_failures > 0 {
+        let photos = ok.iter().map(partial_photo).collect();
+        if let Err(err) = on_event.send(AnalysisEvent::Batch {
+            photos,
+            analysed: 0,
+            cached,
+            failed,
+        }) {
+            log::warn!("failed to send cache-hit Batch event: {err}");
+        }
+    }
 
     // `Sidecar::request` (called inside `analyze_all`) does a *blocking*
     // `std::sync::mpsc::Receiver::recv_timeout` while it waits for the
@@ -301,10 +442,32 @@ pub async fn analyze_folder(app: AppHandle, folder: String) -> Result<AnalysisSu
     // pool free for the drain task.
     let records = {
         let app_for_pool = app.clone();
+        let on_event_for_pool = on_event.clone();
+        // Running totals for the sidecar's share of the work, seeded from
+        // what the cache pass already found. `on_batch` closes over these
+        // (FnMut) and fires once per `sidecar::BATCH_SIZE`-sized batch, via
+        // `batch_progress` -- the pure ok/failed split -- so the closure
+        // itself does nothing but accumulate and send.
+        let mut analysed_so_far = 0usize;
+        let mut failed_so_far = failed;
         tauri::async_runtime::spawn_blocking(move || -> Result<Vec<serde_json::Value>, String> {
             let state = app_for_pool.state::<AppState>();
             let mut pool = state.pool.lock().map_err(|e| e.to_string())?;
-            Ok(pool.analyze_all(&app_for_pool, &misses, &thumbnail_dir))
+            Ok(
+                pool.analyze_all(&app_for_pool, &misses, &thumbnail_dir, |batch| {
+                    let (photos, batch_failed) = batch_progress(batch);
+                    analysed_so_far += photos.len();
+                    failed_so_far += batch_failed;
+                    if let Err(err) = on_event_for_pool.send(AnalysisEvent::Batch {
+                        photos,
+                        analysed: analysed_so_far,
+                        cached,
+                        failed: failed_so_far,
+                    }) {
+                        log::warn!("failed to send sidecar-batch Batch event: {err}");
+                    }
+                }),
+            )
         })
         .await
         .map_err(|e| e.to_string())??
@@ -344,14 +507,41 @@ pub async fn analyze_folder(app: AppHandle, folder: String) -> Result<AnalysisSu
         .unwrap_or(true); // Can't determine focus -> assume focused, so we err toward silence rather than a spurious notification.
 
     if should_notify(started.elapsed(), window_focused) {
-        let body = format!("{} photos analysed, {} keepers", ok.len(), count_keepers(&ok));
-        if let Err(err) = app.notification().builder().title("Analysis complete").body(body).show()
+        let body = format!(
+            "{} photos analysed, {} keepers",
+            ok.len(),
+            count_keepers(&ok)
+        );
+        if let Err(err) = app
+            .notification()
+            .builder()
+            .title("Analysis complete")
+            .body(body)
+            .show()
         {
             log::warn!("failed to show completion notification: {err}");
         }
     }
 
-    Ok(AnalysisSummary { total: paths.len(), failed, cached, photos: ok })
+    let summary = AnalysisSummary {
+        total: paths.len(),
+        failed,
+        cached,
+        photos: ok,
+    };
+
+    // The one and only place the whole-set derivations (percentiles, cluster
+    // ids) reach the webview. Everything streamed via `Batch` above was
+    // intentionally missing them; this is what lets the frontend merge
+    // rank/cluster data into tiles it already rendered instead of the tile
+    // itself changing underneath the user.
+    if let Err(err) = on_event.send(AnalysisEvent::Done {
+        summary: summary.clone(),
+    }) {
+        log::warn!("failed to send Done event: {err}");
+    }
+
+    Ok(summary)
 }
 
 #[cfg(test)]
@@ -360,7 +550,9 @@ mod tests {
 
     #[test]
     fn accepts_supported_photo_extensions() {
-        for name in ["a.jpg", "b.JPEG", "c.heic", "d.png", "e.CR2", "f.nef", "g.arw", "h.dng"] {
+        for name in [
+            "a.jpg", "b.JPEG", "c.heic", "d.png", "e.CR2", "f.nef", "g.arw", "h.dng",
+        ] {
             assert!(supported_extension(name), "{name} should be supported");
         }
     }
@@ -375,14 +567,20 @@ mod tests {
     #[test]
     fn recognizes_apple_double_sidecar_files() {
         for name in ["._IMG_1234.JPG", "._photo.heic", "._.DS_Store"] {
-            assert!(is_apple_double(name), "{name} should be recognized as an AppleDouble sidecar");
+            assert!(
+                is_apple_double(name),
+                "{name} should be recognized as an AppleDouble sidecar"
+            );
         }
     }
 
     #[test]
     fn does_not_flag_ordinary_photos_as_apple_double() {
         for name in ["IMG_1234.JPG", "a._weird.jpg", "photo.heic"] {
-            assert!(!is_apple_double(name), "{name} should not be flagged as an AppleDouble sidecar");
+            assert!(
+                !is_apple_double(name),
+                "{name} should not be flagged as an AppleDouble sidecar"
+            );
         }
     }
 
@@ -431,8 +629,7 @@ mod tests {
             .join("../sidecar/Fixtures/landscape.jpg");
         let hash = hash_file(&fixture).unwrap();
         assert_eq!(
-            hash,
-            "08c8f73e189ba397ff2097fe192831e8f266f98538233e9b12b5790e65720159",
+            hash, "08c8f73e189ba397ff2097fe192831e8f266f98538233e9b12b5790e65720159",
             "hash_file's output for sidecar/Fixtures/landscape.jpg must match Swift's \
              contentHash over the same bytes -- see analyzerHashMatchesThePinnedRustLiteral"
         );
@@ -457,12 +654,20 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let path = write_temp_file("cached.jpg", b"cached bytes");
         let hash = hash_file(Path::new(&path)).unwrap();
-        db.put_features(&hash, &path, r#"{"path":"cached.jpg","status":"ok"}"#).unwrap();
+        db.put_features(&hash, &path, r#"{"path":"cached.jpg","status":"ok"}"#)
+            .unwrap();
 
         let result = lookup_cache(&db, &[path]).unwrap();
 
-        assert_eq!(result.hits.len(), 1, "a cached hash must be returned as a hit");
-        assert!(result.misses.is_empty(), "a cached hash must not appear in the miss list");
+        assert_eq!(
+            result.hits.len(),
+            1,
+            "a cached hash must be returned as a hit"
+        );
+        assert!(
+            result.misses.is_empty(),
+            "a cached hash must not appear in the miss list"
+        );
         assert_eq!(result.hash_failures, 0);
     }
 
@@ -473,7 +678,10 @@ mod tests {
 
         let result = lookup_cache(&db, std::slice::from_ref(&path)).unwrap();
 
-        assert!(result.hits.is_empty(), "an uncached hash must not be reported as a hit");
+        assert!(
+            result.hits.is_empty(),
+            "an uncached hash must not be reported as a hit"
+        );
         assert_eq!(result.misses, vec![path]);
         assert_eq!(result.hash_failures, 0);
     }
@@ -516,7 +724,11 @@ mod tests {
         let path_b = write_temp_file("stale-path-duplicate.jpg", b"byte-identical content");
         let result = lookup_cache(&db, std::slice::from_ref(&path_b)).unwrap();
 
-        assert_eq!(result.hits.len(), 1, "byte-identical content must be a cache hit");
+        assert_eq!(
+            result.hits.len(),
+            1,
+            "byte-identical content must be a cache hit"
+        );
         assert_eq!(
             result.hits[0]["path"].as_str().unwrap(),
             path_b,
@@ -530,7 +742,8 @@ mod tests {
 
         let cached_path = write_temp_file("counted-cached.jpg", b"counted cached bytes");
         let hash = hash_file(Path::new(&cached_path)).unwrap();
-        db.put_features(&hash, &cached_path, r#"{"path":"x","status":"ok"}"#).unwrap();
+        db.put_features(&hash, &cached_path, r#"{"path":"x","status":"ok"}"#)
+            .unwrap();
 
         let miss_path = write_temp_file("counted-miss.jpg", b"counted miss bytes");
         let missing_path = "/nonexistent/pbg-cache-test/gone-too.jpg".to_string();
@@ -577,7 +790,10 @@ mod tests {
     fn strips_phash_from_output() {
         let ok = vec![feat("/p/a.jpg", 42, 0.5, 10.0, None, 0)];
         let result = finalize_photos(ok);
-        assert!(result[0].get("phash").is_none(), "phash must not reach the webview");
+        assert!(
+            result[0].get("phash").is_none(),
+            "phash must not reach the webview"
+        );
     }
 
     #[test]
@@ -616,7 +832,8 @@ mod tests {
         assert_eq!(result[0]["path"], "/p/a.jpg");
         assert_eq!(result[1]["path"], "/p/b.jpg");
         assert!(
-            result[0]["aestheticPct"].as_u64().unwrap() < result[1]["aestheticPct"].as_u64().unwrap(),
+            result[0]["aestheticPct"].as_u64().unwrap()
+                < result[1]["aestheticPct"].as_u64().unwrap(),
             "a.jpg (lower raw score) must rank below b.jpg (higher raw score) after sorting"
         );
         assert_eq!(result[1]["faceCount"], 2);
@@ -640,8 +857,245 @@ mod tests {
         assert_eq!(result[0]["path"], "/p/early.jpg");
         assert_eq!(result[1]["path"], "/p/late.jpg");
         assert_ne!(result[0]["eventCluster"], result[1]["eventCluster"]);
-        assert_eq!(result[0]["eventCluster"], 0, "chronologically-first photo gets the lower id");
+        assert_eq!(
+            result[0]["eventCluster"], 0,
+            "chronologically-first photo gets the lower id"
+        );
         assert_eq!(result[1]["eventCluster"], 1);
+    }
+
+    // --- `partial_photo`: projects a full features record down to the
+    // fields intrinsic to one photo, for streaming ahead of the whole-set
+    // derivations.
+
+    fn full_features(over: serde_json::Value) -> serde_json::Value {
+        let mut base = serde_json::json!({
+            "path": "/p/a.jpg",
+            "hash": "abc123",
+            "width": 4032,
+            "height": 3024,
+            "isUtility": false,
+            "sceneTags": ["beach", "sunset"],
+            "faces": [serde_json::json!({}), serde_json::json!({})],
+            "aestheticScore": 0.7,
+            "sharpness": 12.0,
+            "phash": 42u64,
+            "exif": { "captureDate": null },
+        });
+        for (key, value) in over.as_object().unwrap() {
+            base[key] = value.clone();
+        }
+        base
+    }
+
+    #[test]
+    fn partial_photo_carries_intrinsic_fields() {
+        let features = full_features(
+            serde_json::json!({ "thumbnailPath": "/thumbs/a.jpg", "smileFraction": 0.5 }),
+        );
+        let partial = partial_photo(&features);
+
+        assert_eq!(partial["status"], "ok");
+        assert_eq!(partial["path"], "/p/a.jpg");
+        assert_eq!(partial["hash"], "abc123");
+        assert_eq!(partial["width"], 4032);
+        assert_eq!(partial["height"], 3024);
+        assert_eq!(partial["isUtility"], false);
+        assert_eq!(partial["sceneTags"], serde_json::json!(["beach", "sunset"]));
+        assert_eq!(partial["thumbnailPath"], "/thumbs/a.jpg");
+        assert_eq!(partial["smileFraction"], 0.5);
+    }
+
+    #[test]
+    fn partial_photo_derives_face_count_from_the_faces_array_length() {
+        let features = full_features(serde_json::json!({}));
+        let partial = partial_photo(&features);
+        assert_eq!(partial["faceCount"], 2);
+    }
+
+    #[test]
+    fn partial_photo_strips_phash() {
+        let features = full_features(serde_json::json!({}));
+        let partial = partial_photo(&features);
+        assert!(
+            partial.get("phash").is_none(),
+            "phash must not reach the webview, even in a partial record"
+        );
+    }
+
+    /// The invariant the task brief calls out by name: a partial record must
+    /// never carry a percentile or cluster id, even if the source somehow
+    /// already had one (e.g. a future bug re-feeding an already-finalized
+    /// record through `partial_photo`). Those are whole-set derivations that
+    /// don't exist until every photo has been analysed, and showing one that
+    /// will later change is exactly what the brief says not to do.
+    #[test]
+    fn partial_photo_never_carries_whole_set_derivations() {
+        let features = full_features(serde_json::json!({
+            "nearDupCluster": 3,
+            "eventCluster": 1,
+            "aestheticPct": 90,
+            "sharpnessPct": 80,
+        }));
+        let partial = partial_photo(&features);
+
+        for key in [
+            "nearDupCluster",
+            "eventCluster",
+            "aestheticPct",
+            "sharpnessPct",
+        ] {
+            assert!(
+                partial.get(key).is_none(),
+                "partial_photo must never carry {key}"
+            );
+        }
+    }
+
+    /// Swift's synthesized `Codable` omits a `nil` optional from the wire
+    /// JSON entirely (`encodeIfPresent`), so the key is genuinely ABSENT from
+    /// `features`, not present with a JSON `null`. `partial_photo` must
+    /// preserve that absence rather than manufacturing an explicit `null` --
+    /// see the comment on `AnalyzedPhoto.smileFraction` in
+    /// `app/types/features.ts`.
+    #[test]
+    fn partial_photo_omits_smile_fraction_when_absent_rather_than_nulling_it() {
+        let features = full_features(serde_json::json!({}));
+        assert!(
+            features.get("smileFraction").is_none(),
+            "sanity: the fixture omits it"
+        );
+
+        let partial = partial_photo(&features);
+        assert!(
+            partial.get("smileFraction").is_none(),
+            "an absent smileFraction must stay absent, not become an explicit null"
+        );
+    }
+
+    // --- `batch_progress`: splits one resolved batch into the partial
+    // photos worth streaming and a failure count, stateless so the caller
+    // owns (and cannot corrupt) the running totals across batches.
+
+    fn ok_wire_record(path: &str) -> serde_json::Value {
+        serde_json::json!({ "status": "ok", "features": full_features(serde_json::json!({ "path": path })) })
+    }
+
+    fn failed_wire_record(path: &str) -> serde_json::Value {
+        serde_json::json!({ "status": "failed", "path": path, "message": "boom" })
+    }
+
+    #[test]
+    fn batch_progress_splits_ok_and_failed_records() {
+        let records = vec![
+            ok_wire_record("/p/a.jpg"),
+            failed_wire_record("/p/b.jpg"),
+            ok_wire_record("/p/c.jpg"),
+        ];
+        let (photos, failed) = batch_progress(&records);
+
+        assert_eq!(photos.len(), 2);
+        assert_eq!(photos[0]["path"], "/p/a.jpg");
+        assert_eq!(photos[1]["path"], "/p/c.jpg");
+        assert_eq!(failed, 1);
+    }
+
+    #[test]
+    fn batch_progress_on_an_empty_batch_is_empty() {
+        let (photos, failed) = batch_progress(&[]);
+        assert!(photos.is_empty());
+        assert_eq!(failed, 0);
+    }
+
+    #[test]
+    fn batch_progress_on_an_all_failed_batch_streams_no_photos() {
+        let records = vec![
+            failed_wire_record("/p/a.jpg"),
+            failed_wire_record("/p/b.jpg"),
+        ];
+        let (photos, failed) = batch_progress(&records);
+        assert!(photos.is_empty());
+        assert_eq!(failed, 2);
+    }
+
+    // --- Streaming accumulation across multiple sidecar batches: wires
+    // `sidecar::analyze_batches_with_progress` (already covers the
+    // retry/backfill/offset guarantees on its own) together with
+    // `batch_progress` the same way `analyze_folder`'s spawn_blocking closure
+    // does, and checks the two properties the task brief asks for
+    // explicitly: partial records accumulate in input order, and a failed
+    // batch does not shift a later batch's photos.
+
+    #[test]
+    fn streamed_partial_photos_accumulate_in_input_order_across_batches() {
+        let paths: Vec<String> = (0..7).map(|i| format!("/p/{i}.jpg")).collect();
+        let mut streamed: Vec<serde_json::Value> = Vec::new();
+
+        crate::sidecar::analyze_batches_with_progress(
+            &paths,
+            3, // batches: [0,1,2] [3,4,5] [6]
+            |batch| Ok(batch.iter().map(|p| ok_wire_record(p)).collect()),
+            |resolved| {
+                let (photos, _failed) = batch_progress(resolved);
+                streamed.extend(photos);
+            },
+        );
+
+        let streamed_paths: Vec<&str> = streamed
+            .iter()
+            .map(|p| p["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            streamed_paths,
+            paths.iter().map(String::as_str).collect::<Vec<_>>(),
+            "streamed partial photos must arrive in the same order as the input paths"
+        );
+    }
+
+    /// Mutation-checked: batch 2 (paths 3,4,5) always fails and streams zero
+    /// photos. Batch 3 (path 6) must still stream a partial photo for its
+    /// OWN path, not one shifted in from an earlier or later batch, and
+    /// batch 1's photos must be unaffected by batch 2's failure. This is the
+    /// exact "a failed batch does not shift subsequent photos' data"
+    /// property from the brief -- verified below to actually fail under a
+    /// broken accumulation (see the mutation note in the streaming report).
+    #[test]
+    fn a_failed_batch_does_not_shift_or_corrupt_later_streamed_photos() {
+        let paths: Vec<String> = (0..7).map(|i| format!("/p/{i}.jpg")).collect();
+        let mut streamed: Vec<serde_json::Value> = Vec::new();
+        let mut total_failed = 0usize;
+
+        crate::sidecar::analyze_batches_with_progress(
+            &paths,
+            3, // batches: [0,1,2] [3,4,5] [6]
+            |batch| {
+                if batch.iter().any(|p| p == "/p/3.jpg") {
+                    Err(crate::sidecar::SidecarError::Closed)
+                } else {
+                    Ok(batch.iter().map(|p| ok_wire_record(p)).collect())
+                }
+            },
+            |resolved| {
+                let (photos, failed) = batch_progress(resolved);
+                streamed.extend(photos);
+                total_failed += failed;
+            },
+        );
+
+        let streamed_paths: Vec<&str> = streamed
+            .iter()
+            .map(|p| p["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            streamed_paths,
+            vec!["/p/0.jpg", "/p/1.jpg", "/p/2.jpg", "/p/6.jpg"],
+            "the failed middle batch must contribute no photos, and the last batch's photo \
+             must still carry its own path"
+        );
+        assert_eq!(
+            total_failed, 3,
+            "the three paths in the failed batch must all be counted as failed"
+        );
     }
 
     // --- `should_notify`: the pure decision of whether a completed
@@ -652,7 +1106,10 @@ mod tests {
 
     #[test]
     fn does_not_notify_when_unfocused_but_under_the_threshold() {
-        assert!(!should_notify(NOTIFY_MIN_ELAPSED - Duration::from_millis(1), false));
+        assert!(!should_notify(
+            NOTIFY_MIN_ELAPSED - Duration::from_millis(1),
+            false
+        ));
     }
 
     /// The boundary itself: `should_notify` uses `elapsed >=
@@ -667,7 +1124,10 @@ mod tests {
 
     #[test]
     fn notifies_when_unfocused_just_over_the_threshold() {
-        assert!(should_notify(NOTIFY_MIN_ELAPSED + Duration::from_millis(1), false));
+        assert!(should_notify(
+            NOTIFY_MIN_ELAPSED + Duration::from_millis(1),
+            false
+        ));
     }
 
     #[test]
@@ -680,7 +1140,12 @@ mod tests {
     // photo per near-duplicate cluster), so the notification body can report
     // a keeper count without a JS/Rust boundary to call through.
 
-    fn kept_candidate(is_utility: bool, cluster: u64, sharpness: f64, aesthetic: f64) -> serde_json::Value {
+    fn kept_candidate(
+        is_utility: bool,
+        cluster: u64,
+        sharpness: f64,
+        aesthetic: f64,
+    ) -> serde_json::Value {
         serde_json::json!({
             "isUtility": is_utility,
             "nearDupCluster": cluster,

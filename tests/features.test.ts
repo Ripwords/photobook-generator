@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyAnalysisEvent,
   basename,
   burstSizes,
   groupByEvent,
+  initialStreamState,
   isFailed,
+  isRanked,
   keepers,
   pickHero,
   smilePercent,
+  type AnalysisEvent,
   type AnalyzedPhoto,
+  type PartialAnalyzedPhoto,
 } from "../app/types/features";
 
 const photo = (over: Partial<AnalyzedPhoto> = {}): AnalyzedPhoto => ({
@@ -24,6 +29,20 @@ const photo = (over: Partial<AnalyzedPhoto> = {}): AnalyzedPhoto => ({
   sceneTags: [],
   nearDupCluster: 0,
   eventCluster: 0,
+  thumbnailPath: null,
+  ...over,
+});
+
+const partialPhoto = (over: Partial<PartialAnalyzedPhoto> = {}): PartialAnalyzedPhoto => ({
+  status: "ok",
+  path: "/p/a.jpg",
+  hash: "h",
+  width: 4032,
+  height: 3024,
+  isUtility: false,
+  faceCount: 0,
+  smileFraction: null,
+  sceneTags: [],
   thumbnailPath: null,
   ...over,
 });
@@ -232,5 +251,109 @@ describe("pickHero", () => {
       photo({ path: "/p/sharp.jpg", aestheticPct: 70, sharpnessPct: 85 }),
     ]);
     expect(result?.path).toBe("/p/sharp.jpg");
+  });
+});
+
+describe("isRanked", () => {
+  it("is false for a partial photo (no whole-set derivations yet)", () => {
+    expect(isRanked(partialPhoto())).toBe(false);
+  });
+
+  it("is true once a photo carries its percentile/cluster data", () => {
+    expect(isRanked(photo())).toBe(true);
+  });
+});
+
+describe("applyAnalysisEvent", () => {
+  it("records the scanned total", () => {
+    const state = applyAnalysisEvent(initialStreamState, { kind: "scanned", total: 280 });
+    expect(state.scannedTotal).toBe(280);
+  });
+
+  it("appends a batch's photos and adopts its cumulative counts", () => {
+    const event: AnalysisEvent = {
+      kind: "batch",
+      photos: [partialPhoto({ path: "/p/1.jpg" })],
+      analysed: 1,
+      cached: 0,
+      failed: 0,
+    };
+    const state = applyAnalysisEvent(initialStreamState, event);
+    expect(state.partialPhotos.map((p) => p.path)).toEqual(["/p/1.jpg"]);
+    expect(state.analysed).toBe(1);
+  });
+
+  it("adopts the final summary on done", () => {
+    const summary = { total: 1, failed: 0, cached: 0, photos: [photo()] };
+    const state = applyAnalysisEvent(initialStreamState, { kind: "done", summary });
+    expect(state.summary).toBe(summary);
+  });
+
+  // The property the task brief asks for explicitly: partial records
+  // accumulate in the order their batches arrived in, which (per Rust's
+  // `analyze_batches_with_progress`) is input/path order -- not sorted,
+  // reversed, or otherwise reordered by this reducer.
+  it("accumulates partial photos across batches in arrival order", () => {
+    const batch1: AnalysisEvent = {
+      kind: "batch",
+      photos: [partialPhoto({ path: "/p/1.jpg" }), partialPhoto({ path: "/p/2.jpg" })],
+      analysed: 2,
+      cached: 0,
+      failed: 0,
+    };
+    const batch2: AnalysisEvent = {
+      kind: "batch",
+      photos: [partialPhoto({ path: "/p/3.jpg" })],
+      analysed: 3,
+      cached: 0,
+      failed: 0,
+    };
+
+    let state = applyAnalysisEvent(initialStreamState, batch1);
+    state = applyAnalysisEvent(state, batch2);
+
+    expect(state.partialPhotos.map((p) => p.path)).toEqual(["/p/1.jpg", "/p/2.jpg", "/p/3.jpg"]);
+  });
+
+  // Mutation-style guard: a batch that streams zero photos (every photo in
+  // it failed) must not shift a LATER batch's photos to the wrong position.
+  // If an implementation accidentally replaced `partialPhotos` instead of
+  // appending, or dropped the wrong slice on a failure, batch 3's photo
+  // would either vanish or land ahead of batch 1's.
+  it("a failed (zero-photo) batch does not shift a later batch's photos", () => {
+    const batch1: AnalysisEvent = {
+      kind: "batch",
+      photos: [partialPhoto({ path: "/p/1.jpg" })],
+      analysed: 1,
+      cached: 0,
+      failed: 0,
+    };
+    const failedBatch: AnalysisEvent = {
+      kind: "batch",
+      photos: [],
+      analysed: 1,
+      cached: 0,
+      failed: 2,
+    };
+    const batch3: AnalysisEvent = {
+      kind: "batch",
+      photos: [partialPhoto({ path: "/p/6.jpg" })],
+      analysed: 2,
+      cached: 0,
+      failed: 2,
+    };
+
+    let state = applyAnalysisEvent(initialStreamState, batch1);
+    state = applyAnalysisEvent(state, failedBatch);
+    state = applyAnalysisEvent(state, batch3);
+
+    expect(state.partialPhotos.map((p) => p.path)).toEqual(["/p/1.jpg", "/p/6.jpg"]);
+    expect(state.failed).toBe(2);
+  });
+
+  it("does not mutate the state object passed in (each call returns a new state)", () => {
+    const before = initialStreamState;
+    applyAnalysisEvent(before, { kind: "scanned", total: 5 });
+    expect(before).toEqual(initialStreamState);
   });
 });

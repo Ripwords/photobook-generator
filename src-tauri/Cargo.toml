@@ -56,3 +56,8 @@ harness = false
 [[test]]
 name = "cache_hit"
 harness = false
+
+# Same reasoning as `sidecar_worker_pool` above.
+[[test]]
+name = "streaming_order"
+harness = false

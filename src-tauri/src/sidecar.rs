@@ -50,7 +50,11 @@ impl Sidecar {
             }
         });
 
-        Ok(Self { child: Some(child), lines, counter: 0 })
+        Ok(Self {
+            child: Some(child),
+            lines,
+            counter: 0,
+        })
     }
 
     fn next_id(&mut self) -> String {
@@ -66,8 +70,14 @@ impl Sidecar {
         timeout: Duration,
     ) -> Result<ResponseResult, SidecarError> {
         let id = self.next_id();
-        let req = Request { id: id.clone(), kind, paths, thumbnail_dir };
-        let mut line = serde_json::to_string(&req).map_err(|e| SidecarError::Malformed(e.to_string()))?;
+        let req = Request {
+            id: id.clone(),
+            kind,
+            paths,
+            thumbnail_dir,
+        };
+        let mut line =
+            serde_json::to_string(&req).map_err(|e| SidecarError::Malformed(e.to_string()))?;
         line.push('\n');
         self.child
             .as_mut()
@@ -76,7 +86,10 @@ impl Sidecar {
             .map_err(|e| SidecarError::Spawn(e.to_string()))?;
 
         loop {
-            let text = self.lines.recv_timeout(timeout).map_err(|_| SidecarError::Timeout(timeout))?;
+            let text = self
+                .lines
+                .recv_timeout(timeout)
+                .map_err(|_| SidecarError::Timeout(timeout))?;
             let res: Response = serde_json::from_str(&text)
                 .map_err(|e| SidecarError::Malformed(format!("{e}: {text}")))?;
             if res.id == id {
@@ -148,7 +161,10 @@ impl Drop for Sidecar {
 pub const BATCH_SIZE: usize = 16;
 
 pub fn chunk_paths(paths: &[String], batch_size: usize) -> Vec<Vec<String>> {
-    paths.chunks(batch_size.max(1)).map(<[String]>::to_vec).collect()
+    paths
+        .chunks(batch_size.max(1))
+        .map(<[String]>::to_vec)
+        .collect()
 }
 
 /// RAW decode is materially slower than JPEG and has never been benchmarked,
@@ -171,13 +187,26 @@ pub fn failure_record(path: &str, message: &str) -> serde_json::Value {
 /// partially trusted. Task 15 zips this output positionally against `paths`,
 /// so a short or misordered result would silently attribute one photo's
 /// analysis to another.
-pub(crate) fn analyze_batches<F>(
+///
+/// `on_batch` additionally fires once per batch with that batch's
+/// *resolved* records -- exactly the slice about to be appended to the
+/// running output -- so a caller can stream progress to the UI as each batch
+/// of up to `batch_size` photos finishes, instead of waiting for the whole
+/// folder. Pass `|_| {}` to opt out. `on_batch` sees the same records the
+/// function's return value would carry for that batch (real records on
+/// success, synthetic `failed` records on a double-error or a count
+/// mismatch), in the same order, before they are appended to `out` -- so
+/// summing what `on_batch` receives across calls always reconstructs the
+/// eventual return value exactly.
+pub(crate) fn analyze_batches_with_progress<F, P>(
     paths: &[String],
     batch_size: usize,
     mut call: F,
+    mut on_batch: P,
 ) -> Vec<serde_json::Value>
 where
     F: FnMut(&[String]) -> Result<Vec<serde_json::Value>, SidecarError>,
+    P: FnMut(&[serde_json::Value]),
 {
     let mut out = Vec::with_capacity(paths.len());
 
@@ -196,14 +225,27 @@ where
             }
         }
 
-        match records {
-            Some(r) if r.len() == batch.len() => out.extend(r),
+        let resolved: Vec<serde_json::Value> = match records {
+            Some(r) if r.len() == batch.len() => r,
             Some(r) => {
-                log::warn!("sidecar returned {} records for {} paths", r.len(), batch.len());
-                out.extend(batch.iter().map(|p| failure_record(p, "record count mismatch")));
+                log::warn!(
+                    "sidecar returned {} records for {} paths",
+                    r.len(),
+                    batch.len()
+                );
+                batch
+                    .iter()
+                    .map(|p| failure_record(p, "record count mismatch"))
+                    .collect()
             }
-            None => out.extend(batch.iter().map(|p| failure_record(p, "sidecar failed twice"))),
-        }
+            None => batch
+                .iter()
+                .map(|p| failure_record(p, "sidecar failed twice"))
+                .collect(),
+        };
+
+        on_batch(&resolved);
+        out.extend(resolved);
     }
 
     out
@@ -227,26 +269,40 @@ impl SidecarPool {
 
     /// Always returns one record per input path. A batch that fails twice is
     /// converted to synthetic failure records so the caller can proceed.
+    /// `on_batch` fires once per `BATCH_SIZE`-sized batch as it resolves, so
+    /// a caller with a live `Channel` can stream progress to the UI instead
+    /// of waiting for the whole folder -- see `analyze_batches_with_progress`
+    /// for the exact contract of what it receives and when.
     ///
-    /// Thin wrapper around `analyze_batches`: owns the one side effect that
-    /// needs a real `AppHandle` (spawning/respawning the child), which is why
-    /// this method itself is not unit tested — see task-14-report.md.
-    pub fn analyze_all(
+    /// Thin wrapper around `analyze_batches_with_progress`: owns the one side
+    /// effect that needs a real `AppHandle` (spawning/respawning the child),
+    /// which is why this method itself is not unit tested — see
+    /// task-14-report.md.
+    pub fn analyze_all<P>(
         &mut self,
         app: &AppHandle,
         paths: &[String],
         thumbnail_dir: &str,
-    ) -> Vec<serde_json::Value> {
-        analyze_batches(paths, BATCH_SIZE, |batch| {
-            let result = self
-                .ensure(app)
-                .and_then(|sidecar| sidecar.analyze(batch.to_vec(), thumbnail_dir));
-            if result.is_err() {
-                // Drop the child so the next ensure() respawns it.
-                self.inner = None;
-            }
-            result
-        })
+        on_batch: P,
+    ) -> Vec<serde_json::Value>
+    where
+        P: FnMut(&[serde_json::Value]),
+    {
+        analyze_batches_with_progress(
+            paths,
+            BATCH_SIZE,
+            |batch| {
+                let result = self
+                    .ensure(app)
+                    .and_then(|sidecar| sidecar.analyze(batch.to_vec(), thumbnail_dir));
+                if result.is_err() {
+                    // Drop the child so the next ensure() respawns it.
+                    self.inner = None;
+                }
+                result
+            },
+            on_batch,
+        )
     }
 }
 
@@ -339,13 +395,20 @@ mod tests {
     #[test]
     fn analyze_batches_passes_through_records_unchanged_on_success() {
         let ps = paths(5);
-        let out = analyze_batches(&ps, 2, |batch| {
-            Ok(batch.iter().map(|p| ok_record(p)).collect())
-        });
+        let out = analyze_batches_with_progress(
+            &ps,
+            2,
+            |batch| Ok(batch.iter().map(|p| ok_record(p)).collect()),
+            |_resolved| {},
+        );
 
         assert_eq!(out.len(), ps.len());
         for (i, p) in ps.iter().enumerate() {
-            assert_eq!(out[i], ok_record(p), "record at offset {i} does not match input path {p}");
+            assert_eq!(
+                out[i],
+                ok_record(p),
+                "record at offset {i} does not match input path {p}"
+            );
         }
     }
 
@@ -354,16 +417,24 @@ mod tests {
         let ps = paths(3);
         let mut invocations = 0;
 
-        let out = analyze_batches(&ps, 10, |batch| {
-            invocations += 1;
-            if invocations == 1 {
-                Err(SidecarError::Closed)
-            } else {
-                Ok(batch.iter().map(|p| ok_record(p)).collect())
-            }
-        });
+        let out = analyze_batches_with_progress(
+            &ps,
+            10,
+            |batch| {
+                invocations += 1;
+                if invocations == 1 {
+                    Err(SidecarError::Closed)
+                } else {
+                    Ok(batch.iter().map(|p| ok_record(p)).collect())
+                }
+            },
+            |_resolved| {},
+        );
 
-        assert_eq!(invocations, 2, "expected exactly one retry after the first failure");
+        assert_eq!(
+            invocations, 2,
+            "expected exactly one retry after the first failure"
+        );
         assert_eq!(out.len(), 3);
         for (i, p) in ps.iter().enumerate() {
             assert_eq!(out[i], ok_record(p));
@@ -375,10 +446,15 @@ mod tests {
         let ps = paths(3);
         let mut invocations = 0;
 
-        let out = analyze_batches(&ps, 10, |_batch| {
-            invocations += 1;
-            Err(SidecarError::Closed)
-        });
+        let out = analyze_batches_with_progress(
+            &ps,
+            10,
+            |_batch| {
+                invocations += 1;
+                Err(SidecarError::Closed)
+            },
+            |_resolved| {},
+        );
 
         assert_eq!(invocations, 2, "expected exactly two attempts, no more");
         assert_eq!(out.len(), 3);
@@ -397,9 +473,18 @@ mod tests {
     fn analyze_batches_backfills_when_call_returns_too_few_records() {
         let ps = paths(3);
 
-        let out = analyze_batches(&ps, 10, |batch| {
-            Ok(batch.iter().take(batch.len() - 1).map(|p| ok_record(p)).collect())
-        });
+        let out = analyze_batches_with_progress(
+            &ps,
+            10,
+            |batch| {
+                Ok(batch
+                    .iter()
+                    .take(batch.len() - 1)
+                    .map(|p| ok_record(p))
+                    .collect())
+            },
+            |_resolved| {},
+        );
 
         assert_eq!(out.len(), 3, "must still be one record per input path");
         for (i, p) in ps.iter().enumerate() {
@@ -411,19 +496,146 @@ mod tests {
     #[test]
     fn analyze_batches_keeps_successful_batches_at_correct_offsets_around_a_failed_one() {
         let ps = paths(7); // batches of 3: [0,1,2] [3,4,5] [6], middle one always fails
-        let out = analyze_batches(&ps, 3, |batch| {
-            if batch.iter().any(|p| p == "/photos/3.jpg") {
-                Err(SidecarError::Closed)
-            } else {
-                Ok(batch.iter().map(|p| ok_record(p)).collect())
-            }
-        });
+        let out = analyze_batches_with_progress(
+            &ps,
+            3,
+            |batch| {
+                if batch.iter().any(|p| p == "/photos/3.jpg") {
+                    Err(SidecarError::Closed)
+                } else {
+                    Ok(batch.iter().map(|p| ok_record(p)).collect())
+                }
+            },
+            |_resolved| {},
+        );
 
         assert_eq!(out.len(), ps.len());
         for (i, p) in ps.iter().enumerate() {
-            assert_eq!(out[i]["path"], *p, "record at offset {i} does not sit opposite its own input path");
+            assert_eq!(
+                out[i]["path"], *p,
+                "record at offset {i} does not sit opposite its own input path"
+            );
             let expected_status = if (3..=5).contains(&i) { "failed" } else { "ok" };
-            assert_eq!(out[i]["status"], expected_status, "wrong status at offset {i}");
+            assert_eq!(
+                out[i]["status"], expected_status,
+                "wrong status at offset {i}"
+            );
         }
+    }
+
+    // --- analyze_batches_with_progress: the streaming addition. `on_batch`
+    // must see exactly the resolved records for its own batch, in order, and
+    // concatenating everything it receives across calls must reconstruct the
+    // same return value `analyze_batches` would have produced -- so a caller
+    // streaming those records to the UI never shows a photo under the wrong
+    // batch or drops one silently.
+
+    #[test]
+    fn on_batch_fires_once_per_batch_with_that_batchs_own_records() {
+        let ps = paths(5); // batches of 2: [0,1] [2,3] [4]
+        let mut seen: Vec<Vec<String>> = Vec::new();
+
+        let out = analyze_batches_with_progress(
+            &ps,
+            2,
+            |batch| Ok(batch.iter().map(|p| ok_record(p)).collect()),
+            |resolved| {
+                seen.push(
+                    resolved
+                        .iter()
+                        .map(|r| r["path"].as_str().unwrap().to_string())
+                        .collect(),
+                );
+            },
+        );
+
+        assert_eq!(
+            seen,
+            vec![
+                vec!["/photos/0.jpg".to_string(), "/photos/1.jpg".to_string()],
+                vec!["/photos/2.jpg".to_string(), "/photos/3.jpg".to_string()],
+                vec!["/photos/4.jpg".to_string()],
+            ]
+        );
+        assert_eq!(out.len(), 5);
+    }
+
+    /// The concatenation-equivalence property stated in the doc comment:
+    /// flattening everything `on_batch` receives, in call order, must equal
+    /// the function's own return value record-for-record. This is the
+    /// property a streaming caller relies on -- it accumulates only what
+    /// `on_batch` gives it and must end up with the same data the final
+    /// summary is built from.
+    #[test]
+    fn on_batch_records_concatenate_to_exactly_the_return_value() {
+        let ps = paths(7);
+        let mut accumulated: Vec<serde_json::Value> = Vec::new();
+
+        let out = analyze_batches_with_progress(
+            &ps,
+            3,
+            |batch| {
+                if batch.iter().any(|p| p == "/photos/3.jpg") {
+                    Err(SidecarError::Closed)
+                } else {
+                    Ok(batch.iter().map(|p| ok_record(p)).collect())
+                }
+            },
+            |resolved| accumulated.extend(resolved.iter().cloned()),
+        );
+
+        assert_eq!(
+            accumulated, out,
+            "on_batch's accumulated records must equal the return value exactly"
+        );
+    }
+
+    /// Mutation-style guard for the invariant that matters most to the UI: a
+    /// batch that fails must not shift the paths attached to a LATER batch's
+    /// streamed records. Batch 1 (paths 3-5) always fails; batch 2 (path 6)
+    /// always succeeds. If an implementation accidentally dropped the failed
+    /// batch's records instead of synthesizing failures for it (shifting
+    /// everything after it back by one batch), batch 2's streamed record
+    /// would carry path "3.jpg" or similar instead of its own "6.jpg".
+    #[test]
+    fn a_failed_batch_does_not_shift_a_later_batchs_streamed_paths() {
+        let ps = paths(7); // batches of 3: [0,1,2] [3,4,5] [6]
+        let mut batches_seen: Vec<Vec<(String, bool)>> = Vec::new();
+
+        analyze_batches_with_progress(
+            &ps,
+            3,
+            |batch| {
+                if batch.iter().any(|p| p == "/photos/3.jpg") {
+                    Err(SidecarError::Closed)
+                } else {
+                    Ok(batch.iter().map(|p| ok_record(p)).collect())
+                }
+            },
+            |resolved| {
+                batches_seen.push(
+                    resolved
+                        .iter()
+                        .map(|r| (r["path"].as_str().unwrap().to_string(), r["status"] == "ok"))
+                        .collect(),
+                );
+            },
+        );
+
+        assert_eq!(
+            batches_seen.len(),
+            3,
+            "one on_batch call per batch, including the failed one"
+        );
+        assert_eq!(
+            batches_seen[2],
+            vec![("/photos/6.jpg".to_string(), true)],
+            "the third (successful) batch's streamed record must still carry its own path, not one \
+             shifted in from the failed second batch"
+        );
+        assert!(
+            batches_seen[1].iter().all(|(_, ok)| !ok),
+            "the second batch's records must be the synthetic failures"
+        );
     }
 }

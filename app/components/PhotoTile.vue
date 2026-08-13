@@ -1,9 +1,18 @@
 <script setup lang="ts">
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { smilePercent, type AnalyzedPhoto } from "~/types/features";
+import {
+  isRanked,
+  smilePercent,
+  type AnalyzedPhoto,
+  type PartialAnalyzedPhoto,
+} from "~/types/features";
 
-const { photo, burstSize = 1, isHero = false } = defineProps<{
-  photo: AnalyzedPhoto;
+const {
+  photo,
+  burstSize = 1,
+  isHero = false,
+} = defineProps<{
+  photo: AnalyzedPhoto | PartialAnalyzedPhoto;
   /** How many near-duplicate frames this photo was picked from. 1 means no burst. */
   burstSize?: number;
   /** The single top-ranked photo in its event group. Marked with the hero accent. */
@@ -12,16 +21,25 @@ const { photo, burstSize = 1, isHero = false } = defineProps<{
 
 const src = computed(() => (photo.thumbnailPath ? convertFileSrc(photo.thumbnailPath) : null));
 const smilePct = computed(() => smilePercent(photo.smileFraction));
+// While a photo is still streaming in, it has no aesthetic/sharpness
+// percentile yet -- those are whole-set derivations that only exist once
+// every photo in the folder has been analyzed (see `AnalysisEvent` in
+// commands.rs). Rendering a provisional value here that later jumps under
+// the viewer is exactly what the design review ruled out; omitting the
+// badges entirely until `ranked` is honest about the tile's real state.
+const ranked = computed(() => isRanked(photo));
+// Narrowed accessors rather than reading `photo.aestheticPct` directly in
+// the template: `photo`'s type is a union, and this keeps the "only exists
+// once ranked" contract enforced by the type checker instead of by
+// convention.
+const aestheticPct = computed(() => (isRanked(photo) ? photo.aestheticPct : null));
+const sharpnessPct = computed(() => (isRanked(photo) ? photo.sharpnessPct : null));
 </script>
 
 <template>
   <figure
     class="relative aspect-square overflow-hidden rounded-lg bg-elevated"
-    :class="
-      isHero
-        ? 'ring-2 ring-sunlight-800 dark:ring-sunlight-400'
-        : 'ring ring-default'
-    "
+    :class="isHero ? 'ring-2 ring-sunlight-800 dark:ring-sunlight-400' : 'ring ring-default'"
   >
     <img
       v-if="src"
@@ -59,15 +77,26 @@ const smilePct = computed(() => smilePercent(photo.smileFraction));
     <figcaption
       class="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-gradient-to-t from-black/85 via-black/55 to-transparent px-2 pt-6 pb-1.5 text-white"
     >
-      <span class="flex items-center gap-2 text-[11px] leading-none">
+      <span
+        v-if="ranked && aestheticPct !== null && sharpnessPct !== null"
+        class="flex items-center gap-2 text-[11px] leading-none"
+      >
         <span class="flex items-center gap-1" title="Aesthetic percentile within this folder">
           <UIcon name="i-lucide-sparkles" class="size-3" />
-          <span class="font-mono tabular-nums">{{ Math.round(photo.aestheticPct) }}</span>
+          <span class="font-mono tabular-nums">{{ Math.round(aestheticPct) }}</span>
         </span>
         <span class="flex items-center gap-1" title="Sharpness percentile within this folder">
           <UIcon name="i-lucide-focus" class="size-3" />
-          <span class="font-mono tabular-nums">{{ Math.round(photo.sharpnessPct) }}</span>
+          <span class="font-mono tabular-nums">{{ Math.round(sharpnessPct) }}</span>
         </span>
+      </span>
+      <span
+        v-else
+        class="flex items-center gap-1 text-[11px] leading-none text-white"
+        title="Rank is computed once every photo in the folder has been analyzed"
+      >
+        <UIcon name="i-lucide-clock" class="size-3" />
+        <span>unranked</span>
       </span>
 
       <span v-if="photo.faceCount > 0" class="flex items-center gap-2 text-[11px] leading-none">

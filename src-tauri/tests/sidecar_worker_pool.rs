@@ -80,7 +80,9 @@ fn main() {
     // `app_lib::builder()` is the same plugin/state chain `run()` uses in
     // production (including `tauri-plugin-log`), so this test exercises the
     // real startup path rather than a hand-trimmed stand-in.
-    let app = app_lib::builder().build(context).expect("failed to build tauri app");
+    let app = app_lib::builder()
+        .build(context)
+        .expect("failed to build tauri app");
     let handle = app.handle().clone();
 
     // Only the top-level fixture files are used (`std::fs::read_dir` is not
@@ -98,8 +100,12 @@ fn main() {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let started = Instant::now();
-        let join =
-            tauri::async_runtime::spawn(async move { analyze_folder(handle, fixture_dir).await });
+        // A no-op streaming channel: this test is about the worker-pool
+        // starvation deadlock, not the progress events `analyze_folder`
+        // emits alongside its final result.
+        let join = tauri::async_runtime::spawn(async move {
+            analyze_folder(handle, fixture_dir, tauri::ipc::Channel::new(|_| Ok(()))).await
+        });
         let result = tauri::async_runtime::block_on(join);
         let _ = tx.send((started.elapsed(), result));
     });
@@ -113,7 +119,10 @@ fn main() {
                 summary.total > 0,
                 "expected at least one supported photo in sidecar/Fixtures"
             );
-            assert_eq!(summary.failed, 0, "no photo in sidecar/Fixtures should fail to analyze");
+            assert_eq!(
+                summary.failed, 0,
+                "no photo in sidecar/Fixtures should fail to analyze"
+            );
             // The per-batch timeout floor is 13s (10s + 3s/photo, see
             // `sidecar::timeout_for`), and a starved batch is retried once
             // more before giving up (see `sidecar::analyze_batches`) -- so a
@@ -127,7 +136,9 @@ fn main() {
                  sidecar request resolves only once its own timeout \
                  elapses), even though it nominally 'succeeded' here"
             );
-            println!("ok: analyze_folder completed in {elapsed:?} on a single-worker-thread runtime");
+            println!(
+                "ok: analyze_folder completed in {elapsed:?} on a single-worker-thread runtime"
+            );
         }
         Ok((elapsed, Ok(Err(e)))) => {
             panic!("analyze_folder returned an error after {elapsed:?}: {e}")
