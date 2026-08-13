@@ -222,7 +222,16 @@ pairwise cost matrix plus Hungarian assignment; it is not expected to be needed.
 |---|---|
 | A face box clipped by a slot edge | A half-face is ruined, not slightly worse |
 | A face inside the gutter dead strip | It disappears into the crease |
-| Effective resolution below 150 DPI at slot size | Visibly soft in print, unfixable downstream |
+| A face inside the 0.125" safe margin | Pixajoy: leave 1/8" between anything important and the edge, or it can be trimmed off |
+| Effective resolution below 200 DPI at slot size | Pixajoy's published minimum; below it, print is visibly soft |
+
+**These numbers come from Pixajoy's own published guidance** (`8-things-to-avoid-when-designing-a-photo-book`), read 2026-08-14, and supersede the 150 DPI floor and trim-only margin this document originally specified:
+
+- **200 DPI minimum, 300 DPI recommended.** 150 was too permissive and would have passed photos Pixajoy considers unprintable.
+- **1/8" (0.125") safe margin** between important content and the edge. This is *inside* the trim line and is additional to the 0.197" bleed — a face sitting just inside trim is not safe, which the original design missed.
+- **No face or notable feature in the gutter**, and on a spread, subjects positioned off to the side rather than centred. Already enforced.
+
+The page states nothing about accepted file formats, colour space, or file size limits.
 
 Note the split from §2.4: a **face** in the dead strip is a rejection; generic salient
 content there is only a penalty. Otherwise no slot could ever run to the fold.
@@ -250,48 +259,51 @@ tunable without a rebuild.
 
 ### 5.1 Delivery mechanic
 
-**One transparent PNG per photo.** Each file is the full page canvas (3359 × 2668) with the
-cropped photo composited at its exact slot rect and alpha 0 everywhere else.
+**One cropped copy of the user's own photo per slot.** Nothing is composited, nothing is
+synthesised — each exported file is that photo, cropped to the window the engine chose,
+colour-managed, at full resolution.
 
-The user adds one picture box per photo and drags each to the bleed edge — the same gesture
-every time, snapping to an edge that is already a snap target. The photos land exactly where
-the engine placed them because the transparency carries the geometry.
+This is a deliberate reversal of two earlier designs, both now rejected:
 
-This was chosen over two alternatives:
+- **A composite image per page** was rejected because it re-encodes the user's photograph
+  into a flattened page. The book would print a picture of a picture. As the user put it,
+  the photobook uses their camera's images directly, as a memory.
+- **A transparent PNG per photo** — a full page canvas with the photo at its exact slot rect
+  and alpha 0 elsewhere — was designed to carry geometry through an editor with no numeric
+  position entry. It is dead for the same reason, and independently would have been
+  unverifiable: Pixajoy publishes nothing about accepted formats.
 
-- **A composite image per page** would be one drag per page, but gives no per-photo
-  independence in the editor. Declined by the user.
-- **Cropped photos plus a numeric manifest** was the user's first preference, until it was
-  established that Pixajoy's boxes have **no numeric X/Y/W/H entry** — drag and snap only.
-  Hand-positioned boxes would not reproduce the geometry the scorer validated, making the
-  sub-millimetre face and gutter work meaningless.
+**The consequence, stated plainly:** Pixajoy's boxes have no numeric X/Y/W/H entry, so the
+user positions by eye. The engine's geometry is therefore *advisory* at placement time, not
+guaranteed. This is why §4.2 now enforces Pixajoy's 0.125" safe margin and 200 DPI floor
+rather than the more permissive originals — the margins must absorb hand-placement error.
 
-Filenames sort into placement order: `p04-z1-a3f2.png`, `p04-z2-8b19.png`.
+**Encoding matches the source.** A lossy source (JPEG, HEIC) exports as JPEG at quality 95;
+a lossless source (RAW, PNG, TIFF) exports as PNG. Re-encoding a camera JPEG to PNG inflates
+it roughly fivefold without recovering quality already lost, and encoding a RAW-derived crop
+to JPEG introduces the first generation of loss for no reason.
 
-**Z-order** is the order in which boxes are stacked in the editor, and defaults to slot
-order within the page layout. It only matters where slots overlap; none of the 19 surviving
-templates has overlapping slots, but the inset-over-background look is worth re-authoring
-in §6.3 and the field exists so that it can be.
+Colour is sRGB with an embedded ICC profile, converted at export from whatever the source is.
 
-**A page with a 0-slot layout produces no PNG.** The half-pool contains one blank layout
-(§6.5), and a deliberately blank page is a legitimate pacing device. The manifest records
-the page with an empty photo list so the count of pages still reconciles.
+Filenames sort into placement order: `p04-z1-a3f2.jpg`, `p04-z2-8b19.png`.
 
-### 5.2 The open dependency
+**Z-order** is the order the boxes are stacked in the editor, defaulting to slot order within
+the page layout. It matters only where slots overlap.
 
-The transparent-PNG mechanic rests on unverified assumptions about Pixajoy. **The test must
-be run before implementation of the export path begins.** Upload one transparent PNG over a
-coloured box and confirm:
+**A page with no placements exports no files.** A deliberately blank page is a legitimate
+pacing device; the manifest records the page with an empty photo list so page counts
+reconcile.
 
-1. Alpha survives upload rather than flattening to white.
-2. Two stacked boxes composite correctly rather than the top hiding the bottom.
-3. No per-file or per-project size limit is hit. PNG is lossless, so a photo that would be
-   400 KB as JPEG lands near 3 MB; a 60-photo book is roughly 180 MB.
+### 5.2 Format verification — the one open item
 
-**Fallback if any fails:** cropped photos plus an app-rendered visual placement guide per
-page, with the engine widening its safety margins — more gutter clearance, more padding
-around faces — so hand-placement error stays harmless. Layouts become slightly more
-conservative. Nothing else in Phase 2 changes.
+Pixajoy's published guidance states nothing about accepted upload formats. JPEG and PNG are
+near-universal for photobook uploaders and both are ImageIO-native, so this is low risk — but
+it is unverified. Confirm by opening the editor's add-photo picker and reading its accepted
+types before the first real book is exported.
+
+WebP was requested and withdrawn: macOS cannot encode it (`CGImageDestinationCopyTypeIdentifiers()`
+lists no WebP type; `UTType.webP` is decode-only), so it would require linking libwebp into a
+codesigned sidecar — for a format their uploader may not accept.
 
 ### 5.3 Where it runs
 
@@ -311,6 +323,32 @@ profile, converting is worse than not converting.
 **Phase 2 renders no text.** Text zones are treated as whitespace. Templates carrying them
 remain usable; their text areas stay empty.
 
+### 5.4a Projects
+
+The app persists a book as a **project**, so progress survives quitting and a book can be
+reopened, regenerated or re-exported without re-analysing the folder. This replaces the
+earlier idea of exporting reference images alongside the crops: the layout is something the
+user consults *in the app*, not a file they keep beside the photos.
+
+Scope for Phase 2 is **persistence only** — the viewer is Phase 3. Concretely, a project
+stores everything needed to reconstruct a book exactly:
+
+| Stored | Why |
+|---|---|
+| Source folder path and the analysis run it came from | Reopening must not require re-analysis |
+| The culled photo set, by content hash | The book is defined over keepers, not the raw folder |
+| Page count, and the pages with their template ids | The layout itself |
+| Every placement: photo, slot rect, crop rect, z-order | Reproduces the book byte-identically |
+| The seed | Determinism — the same project regenerates the same book |
+| Export history: when, where, which format | So a re-export can be compared against what was uploaded |
+
+Storage goes in the existing SQLite database beside the feature cache rather than a new
+file format — the cache already keys on content hash, which is what a project references.
+
+Phase 3 renders a project; Phase 4 edits one; a Phase 4 edit sets `user_overridden` on a
+slot and regeneration must not overwrite it. Phase 2 only has to make sure the data needed
+for those is captured now, so those phases are not blocked on a migration.
+
 ### 5.5 The manifest
 
 `manifest.json` in the output folder records, per photo: source path, source content hash,
@@ -327,12 +365,13 @@ Runs before a single file is written.
 | Check | Action |
 |---|---|
 | Face outside the trim rectangle | **Block** |
+| Face inside the 0.125" safe margin | **Block** |
 | Face inside the gutter dead strip | **Block** |
 | Bleed slot not extending past the canvas edge | **Block** |
-| Photo below 150 DPI at slot size | **Block** |
+| Photo below **200** DPI at slot size | **Block** |
 | Source file moved or deleted since analysis | **Block** |
 | Estimated output size exceeds free disk space | **Block** |
-| Photo between 150 and 300 DPI | **Warn**, reporting effective DPI |
+| Photo between **200** and 300 DPI | **Warn**, reporting effective DPI |
 | Salient non-face content in the dead strip | **Warn** |
 
 The disk-space check is why export fails on page one rather than after nineteen.
@@ -485,7 +524,8 @@ Carried as explicit unknowns, not assumptions.
 
 | # | Item | Blocks | How to settle |
 |---|---|---|---|
-| 1 | **Pixajoy alpha behaviour** — does upload preserve transparency, composite stacked boxes, and accept ~3 MB PNGs? | The export path only (§5.1). Everything in §3, §4 and §6 is independent. | Upload one transparent PNG over a coloured box. Fallback in §5.2. |
+| 1 | ~~**Pixajoy alpha behaviour**~~ — **CLOSED 2026-08-14, no longer relevant.** The transparent-PNG mechanic was abandoned (§5.1): the book must be the user's own images, not synthesised pages. Nothing now depends on alpha. | — | — |
+| 1a | **Accepted upload formats** — does Pixajoy's picker take JPEG and PNG? | Nothing structurally; both are near-universal and ImageIO-native. Verify before the first real export. | Open the editor's add-photo picker and read its accepted types (§5.2). |
 | 2 | ~~**Post-orientation dimensions**~~ — **RESOLVED 2026-08-13 during planning.** `ExifReader.swift:40-41` already swaps width and height for orientations 5–8 before building `PhotoFeatures`, so `width`/`height` are post-orientation and the scorer can use them directly. No work needed. | — | — |
 
 One further fact established while planning, worth recording because it
