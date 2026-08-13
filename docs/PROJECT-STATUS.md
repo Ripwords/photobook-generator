@@ -226,6 +226,20 @@ inside their declared range; zero have their normalised ratio inside it.
 Every template is **exact-count** (`min_photos == max_photos == slots.length`), so the
 Phase 2 packer selects templates by photo count rather than fitting a range.
 
+**Coverage gaps the Phase 2 packer will hit** (measured across all 40):
+
+| Photos per template | 1 | 2 | 3 | 4 | **5** | 6 |
+|---|---|---|---|---|---|---|
+| Templates available | 11 | 10 | 10 | 6 | **0** | 3 |
+
+- **There are no 5-photo templates.** Since templates are exact-count, the packer cannot
+  put five photos on a spread at all. It must either avoid leaving a group of five, or the
+  library needs a few 5-ups authored.
+- **Pacing material is lopsided.** Density is 14 sparse / 22 medium / **4 dense**; energy is
+  21 calm / 8 lively / 11 neutral. A pacing pass that alternates density has very little to
+  reach for at the dense end, and the same 4 templates would recur.
+- **No single-page templates**, per the page-structure section above.
+
 ---
 
 ## Verified vs unverified
