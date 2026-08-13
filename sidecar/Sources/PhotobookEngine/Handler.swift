@@ -76,6 +76,11 @@ func handle(line: String) -> Response {
             return Response(id: request.id, result: .benchmarked(
                 Benchmarker.benchmark(paths: paths, thumbnailDir: request.thumbnailDir)
             ))
+        case .calibrate:
+            let paths = request.paths ?? []
+            return Response(id: request.id, result: .calibrated(
+                Calibrator.calibrate(paths: paths)
+            ))
         }
     }
     let id = (try? decoder.decode(RequestEnvelope.self, from: Data(line.utf8)))?.id ?? "unknown"

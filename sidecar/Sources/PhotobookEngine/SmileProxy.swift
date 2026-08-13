@@ -25,6 +25,48 @@ import Foundation
 /// mid-face rather than at the mouth, so the resulting ratio stops tracking
 /// expression at all (see `SmileProxyTests` for a worked example of exactly
 /// how wrong this goes).
+/// Why `SmileProxy.geometry(for:)` could not produce a score for a face.
+/// Exists so `Calibrator` can report, per detected face, *why* it was
+/// excluded from the lift distribution rather than just silently omitting a
+/// row -- calibration data is only trustworthy if the reader can tell "this
+/// face had no usable lift" apart from "this face was never considered".
+enum SmileUnusableReason: String, Codable, Error {
+    case missingOuterLips
+    case tooFewOuterLipPoints
+    case poseUnusable
+    case malformedBox
+    case degenerateWidth
+}
+
+/// Every intermediate value `SmileProxy.confidence(for:)` computes on the way
+/// to its final score, plus a second candidate reference line (`midlineY` /
+/// `midpointLift`) that `confidence(for:)` does NOT use. See `geometry(for:)`
+/// for why both exist.
+struct SmileGeometry {
+    let cornerY: Double
+    let centreY: Double
+    let width: Double
+    /// `(centreY - cornerY) / width` -- the reference `confidence(for:)`
+    /// actually uses in production.
+    let lift: Double
+    /// The contour's vertical position near the horizontal midpoint of the
+    /// mouth (the average y of the two contour points whose x is closest to
+    /// the corner-to-corner midpoint), instead of the mean y of the whole
+    /// contour.
+    let midlineY: Double
+    /// `(midlineY - cornerY) / width` -- a candidate alternative to `lift`
+    /// that `confidence(for:)` does NOT use. Not wired into production;
+    /// emitted only so calibration data can show whether it discriminates
+    /// smiling from neutral better than `lift` does.
+    let midpointLift: Double
+    /// `confidence(for: face)` for the same input -- included here (rather
+    /// than requiring a second call) so a caller comparing this struct's
+    /// fields against `confidence(for:)`'s output is comparing against a
+    /// value that came from the exact same computation, not a second one
+    /// that could drift from it.
+    let confidence: Double
+}
+
 enum SmileProxy {
     /// Beyond roughly 30 degrees of yaw or pitch the mouth contour
     /// foreshortens enough that corner elevation is no longer meaningful.
@@ -60,43 +102,49 @@ enum SmileProxy {
     /// missing pose plausibly correlates with a poor detection generally
     /// (occlusion, extreme angle), so scoring it as if frontal would feed a
     /// wrong signal into culling.
-    static func confidence(for face: FaceObservation) -> Double? {
-        guard let points = face.outerLips else { return nil }
+    /// Computes every intermediate value behind `confidence(for:)` (and one
+    /// extra candidate reference, `midlineY`/`midpointLift`, that production
+    /// does not use -- see `SmileGeometry`'s doc comment). `confidence(for:)`
+    /// is a thin wrapper over this, so the two can never independently drift:
+    /// there is exactly one place the lift/width ratio is computed.
+    static func geometry(for face: FaceObservation) -> Result<SmileGeometry, SmileUnusableReason> {
+        guard let points = face.outerLips else { return .failure(.missingOuterLips) }
         guard points.count >= minOuterLipPoints else {
             // Distinguishes "Vision reported a lip contour, but with fewer
             // points than `minOuterLipPoints` assumes it always has" from
             // "pose was unusable" or "no lip contour at all" -- all three
-            // collapse to the same `nil` return below, but only this one
-            // means the unverified assumption in `minOuterLipPoints`'s doc
-            // comment might be miscalibrated against Vision's real
-            // per-region count. Grep stderr for this on the first real run.
+            // collapse to the same `nil` `confidence(for:)` return, but only
+            // this one means the unverified assumption in
+            // `minOuterLipPoints`'s doc comment might be miscalibrated
+            // against Vision's real per-region count. Grep stderr for this
+            // on the first real run.
             FileHandle.standardError.write(Data(
                 "PhotobookEngine: outerLips has \(points.count) points, below minOuterLipPoints (\(minOuterLipPoints))\n".utf8
             ))
-            return nil
+            return .failure(.tooFewOuterLipPoints)
         }
-        guard let yaw = face.yaw, abs(yaw) <= maxYawRadians else { return nil }
-        guard let pitch = face.pitch, abs(pitch) <= maxPitchRadians else { return nil }
+        guard let yaw = face.yaw, abs(yaw) <= maxYawRadians,
+              let pitch = face.pitch, abs(pitch) <= maxPitchRadians
+        else { return .failure(.poseUnusable) }
 
-        guard face.box.count == 4 else { return nil }
+        guard face.box.count == 4 else { return .failure(.malformedBox) }
         let boxX = face.box[0], boxY = face.box[1], boxW = face.box[2], boxH = face.box[3]
-        guard boxW > 0.0001, boxH > 0.0001 else { return nil }
+        guard boxW > 0.0001, boxH > 0.0001 else { return .failure(.malformedBox) }
 
         // Undo the image-space offset-and-scale so the lift/width ratio is
-        // computed in face-box-relative space, where the brief's calibration
+        // computed in face-box-relative space, where the calibration
         // constants below are meaningful.
         let relPoints: [[Double]] = points.map { p in
             [(p[0] - boxX) / boxW, (p[1] - boxY) / boxH]
         }
 
-        // Outer lip contour: leftmost and rightmost points are the corners,
-        // and the vertical midpoint of the contour is the reference line.
+        // Outer lip contour: leftmost and rightmost points are the corners.
         guard let left = relPoints.min(by: { $0[0] < $1[0] }),
               let right = relPoints.max(by: { $0[0] < $1[0] })
-        else { return nil }
+        else { return .failure(.malformedBox) }
 
         let width = right[0] - left[0]
-        guard width > 0.0001 else { return nil }
+        guard width > 0.0001 else { return .failure(.degenerateWidth) }
 
         let cornerY = (left[1] + right[1]) / 2.0
         let centreY = relPoints.reduce(0.0) { $0 + $1[1] } / Double(relPoints.count)
@@ -104,8 +152,32 @@ enum SmileProxy {
         // Top-left origin: corners *above* the contour centre means a smaller y.
         let lift = (centreY - cornerY) / width
 
+        // Candidate alternative reference: the contour's vertical position
+        // near the horizontal midpoint of the mouth -- the two points whose
+        // x sits closest to the corner-to-corner midpoint -- rather than the
+        // mean of the whole contour. Unlike `centreY`, this excludes the
+        // corner points themselves from the average, so it does not shift
+        // when only the corners move: it is what a smile actually bows away
+        // from. See SmileGeometry's doc comment; NOT used by `confidence(for:)`.
+        let midX = (left[0] + right[0]) / 2.0
+        let nearMidpoint = Array(relPoints.sorted { abs($0[0] - midX) < abs($1[0] - midX) }.prefix(2))
+        let midlineY = nearMidpoint.reduce(0.0) { $0 + $1[1] } / Double(nearMidpoint.count)
+        let midpointLift = (midlineY - cornerY) / width
+
         // Map roughly [-0.15, 0.35] of normalised lift onto 0...1.
-        return ((lift + 0.15) / 0.5).clamped(0, 1)
+        let confidence = ((lift + 0.15) / 0.5).clamped(0, 1)
+
+        return .success(SmileGeometry(
+            cornerY: cornerY, centreY: centreY, width: width, lift: lift,
+            midlineY: midlineY, midpointLift: midpointLift, confidence: confidence
+        ))
+    }
+
+    static func confidence(for face: FaceObservation) -> Double? {
+        switch geometry(for: face) {
+        case .success(let g): return g.confidence
+        case .failure: return nil
+        }
     }
 
     /// Fraction of faces scoring above `threshold`, counted only over faces

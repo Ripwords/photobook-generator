@@ -4,6 +4,7 @@ enum RequestKind: String, Codable {
     case ping
     case analyze
     case benchmark
+    case calibrate
 }
 
 struct Request: Codable {
@@ -27,6 +28,7 @@ enum ResponseResult: Codable {
     case error(ErrorResult)
     case analyzed([PhotoRecord])
     case benchmarked([BenchmarkRecord])
+    case calibrated([CalibrationRecord])
 
     private enum CodingKeys: String, CodingKey { case type, data }
 
@@ -45,6 +47,9 @@ enum ResponseResult: Codable {
         case .benchmarked(let v):
             try c.encode("benchmarked", forKey: .type)
             try c.encode(v, forKey: .data)
+        case .calibrated(let v):
+            try c.encode("calibrated", forKey: .type)
+            try c.encode(v, forKey: .data)
         }
     }
 
@@ -54,6 +59,7 @@ enum ResponseResult: Codable {
         case "pong": self = .pong(try c.decode(PongResult.self, forKey: .data))
         case "analyzed": self = .analyzed(try c.decode([PhotoRecord].self, forKey: .data))
         case "benchmarked": self = .benchmarked(try c.decode([BenchmarkRecord].self, forKey: .data))
+        case "calibrated": self = .calibrated(try c.decode([CalibrationRecord].self, forKey: .data))
         default: self = .error(try c.decode(ErrorResult.self, forKey: .data))
         }
     }
