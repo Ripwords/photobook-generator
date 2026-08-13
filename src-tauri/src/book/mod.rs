@@ -7,4 +7,5 @@
 
 pub mod crop;
 pub mod cull;
+pub mod pack;
 pub mod score;
