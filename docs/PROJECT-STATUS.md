@@ -86,6 +86,32 @@ implementing from the design doc alone.
 | **4** | Canvas editor: drag/resize/crop with snapping to the margin guides | Phase 3 |
 | **5** | AI SDK v7 + DeepSeek chat agent driving the layout tools | Phases 2-4 |
 
+### Requested, not yet specced: multiple source folders
+
+The user has asked for the app to accept **more than one folder**. This is a design change,
+not a flag, and it should be specced alongside Phase 2 rather than bolted on. What it
+touches:
+
+- **`analyze_folder(folder: String)`** becomes a list. The picker needs
+  `open({ directory: true, multiple: true })`, and the chunked gather needs to walk several
+  roots while still emitting one coherent progress stream.
+- **Population semantics.** `percentiles` ranks each photo against "the book". With several
+  folders the book is their union, so ranking across the union is correct — but that must be
+  a deliberate decision, not an accident of implementation, because it means adding a folder
+  silently rerankes every photo already on screen.
+- **Event clustering across roots.** `event_clusters` works on timestamps and does not care
+  about folders, so photos from two folders shot the same afternoon become one chapter. That
+  is probably right, but it is a behaviour worth confirming rather than assuming.
+- **Sort order.** `finalize_photos` sorts by path, which interleaves folders arbitrarily.
+  With multiple roots the sheet likely wants grouping by folder, or by capture time.
+- **Duplicates across folders** already resolve correctly — the cache is keyed by content
+  hash, so the same photo in two folders is analysed once.
+- **UI.** Photos probably need to show which folder they came from, and the empty and error
+  states currently assume a single `folder` string.
+
+Nothing about the analysis pipeline blocks this; it is entirely a question of what "the
+book's population" means once there is more than one source.
+
 Also explicitly deferred:
 
 - **SigLIP 2 zero-shot mood axes.** Needs a Core ML conversion, a designed
