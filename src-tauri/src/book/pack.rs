@@ -156,51 +156,85 @@ pub fn pack(photos: &[Photo], capacity: &Capacity, buildable: &[usize]) -> Vec<G
         let mut i = 0;
         while i < members.len() && slots_left > 0 {
             let remaining = members.len() - i;
-            let take = choose_group_size(remaining, buildable, slots_left);
-            groups.push(Group {
-                photos: members[i..i + take].to_vec(),
-                event_cluster: cluster,
-            });
-            i += take;
-            slots_left -= 1;
+            match choose_group_size(remaining, buildable, slots_left) {
+                Some(take) => {
+                    groups.push(Group {
+                        photos: members[i..i + take].to_vec(),
+                        event_cluster: cluster,
+                    });
+                    i += take;
+                    slots_left -= 1;
+                }
+                // No buildable size fits what's left (or nothing left ever
+                // could, given `buildable`). The honest outcome is to leave
+                // the remainder of this chapter OUT of the output rather
+                // than fabricate a group whose size the library cannot
+                // build -- those photos are simply absent from every
+                // `Group`, i.e. dropped. Move on to the next chapter.
+                None => break,
+            }
         }
     }
 
     groups
 }
 
-/// Largest buildable size that does not strand an unbuildable remainder.
+/// A buildable size for `remaining`, preferring one whose leftover is ITSELF
+/// fully decomposable into buildable sizes (so a later group never gets
+/// stranded needlessly). Returns `None` only when no buildable size fits
+/// `remaining` at all -- the caller must then leave the remainder unplaced,
+/// never fabricate a size outside `buildable`.
 ///
 /// With buildable sizes {1,2,3} and 5 remaining, taking 3 leaves 2 (fine);
-/// taking 2 leaves 3 (also fine). With {2,3} and 5 remaining, taking 3
-/// leaves 2 -- but taking 2 leaves 3, so both work. The lookahead matters
-/// when a size would strand a remainder no size can cover.
-fn choose_group_size(remaining: usize, buildable: &[usize], slots_left: usize) -> usize {
-    let largest = buildable.iter().copied().max().unwrap_or(1);
+/// taking 2 leaves 3 (also fine). With a gapped set like {3,5} and 7
+/// remaining, NEITHER 5 (leaves 2, undecomposable) nor 3 (leaves 4,
+/// undecomposable) has a fully coverable remainder -- there the largest
+/// fitting size is still returned (it is a valid, buildable group), and the
+/// leftover is left for the next call, which returns `None` once it drops
+/// below the smallest buildable size, ending the chapter with photos
+/// unplaced rather than a fabricated size.
+fn choose_group_size(remaining: usize, buildable: &[usize], slots_left: usize) -> Option<usize> {
+    if remaining == 0 || slots_left == 0 {
+        return None;
+    }
 
-    // On the last available slot, take as much as one spread can hold.
+    let mut candidates: Vec<usize> =
+        buildable.iter().copied().filter(|&s| s <= remaining).collect();
+    candidates.sort_unstable_by(|a, b| b.cmp(a)); // largest first
+
+    let largest_fitting = *candidates.first()?;
+
+    // On the last available slot there is no "next call" to hand a
+    // remainder to, so just take the most this slot can build.
     if slots_left == 1 {
-        return remaining.min(largest);
+        return Some(largest_fitting);
     }
 
-    let mut best = *buildable
-        .iter()
-        .filter(|&&s| s <= remaining)
-        .max()
-        .unwrap_or(&1);
-
-    // Prefer a size whose remainder is itself coverable.
-    for &size in buildable.iter().rev() {
-        if size > remaining {
-            continue;
-        }
+    // Prefer a size whose remainder is itself fully decomposable, checked
+    // exhaustively (not a one-step lookahead) so a gapped buildable set like
+    // {3,5} can't slip an unreachable remainder past the check.
+    for &size in &candidates {
         let rest = remaining - size;
-        if rest == 0 || buildable.iter().any(|&s| s <= rest) {
-            best = size;
-            break;
+        if rest == 0 || is_decomposable(rest, buildable) {
+            return Some(size);
         }
     }
-    best.min(remaining).max(1)
+
+    // No size leaves a fully decomposable remainder. Still return a real
+    // buildable size -- never `unwrap_or` a fabricated one -- and let the
+    // undecomposable leftover surface as `None` on a later call.
+    Some(largest_fitting)
+}
+
+/// Whether `n` can be written as a sum of (repeated) values from
+/// `buildable`. `0` is trivially decomposable (the empty sum).
+fn is_decomposable(n: usize, buildable: &[usize]) -> bool {
+    let mut reachable = vec![false; n + 1];
+    reachable[0] = true;
+    for i in 1..=n {
+        reachable[i] = buildable.iter().any(|&s| s <= i && reachable[i - s]);
+    }
+    reachable[n]
 }
 
 #[cfg(test)]
@@ -257,6 +291,35 @@ mod tests {
             assert!(sizes().contains(&g.photos.len()),
                 "group of {} is unbuildable", g.photos.len());
         }
+    }
+
+    /// With {1,2,3}, 1 is always buildable, so this fixture alone cannot
+    /// distinguish a correct implementation from one that emits nothing but
+    /// singles -- it only catches a size leaking OUTSIDE the set entirely
+    /// (e.g. 5). A GAPPED buildable set is needed to reach genuine
+    /// stranding: with {3,5} and a chapter of 7, taking 5 leaves 2 (not
+    /// buildable) and taking 3 leaves 4 (not buildable either) -- there is
+    /// no way to place all 7 photos without emitting an invalid size, so
+    /// the only correct behaviour is to place what a real template covers
+    /// and leave the rest OUT of the output entirely, never to fabricate a
+    /// group of, say, 1 or 2 that no template can build.
+    #[test]
+    fn pack_leaves_a_remainder_unplaced_rather_than_fabricate_an_unbuildable_size() {
+        let gapped = vec![3, 5];
+        let photos: Vec<Photo> =
+            (0..7).map(|i| photo(&format!("/p{i}.jpg"), 0, 50)).collect();
+        let c = Capacity::from_sizes(20, &gapped);
+        let groups = pack(&photos, &c, &gapped);
+
+        for g in &groups {
+            assert!(gapped.contains(&g.photos.len()),
+                "group of {} is not in the buildable set {:?}", g.photos.len(), gapped);
+        }
+
+        let placed: usize = groups.iter().map(|g| g.photos.len()).sum();
+        assert!(placed < photos.len(),
+            "7 photos cannot be fully covered by {{3,5}} without an invalid \
+             size, so some must be left unplaced (placed {placed})");
     }
 
     /// The 5-photo gap, pinned. With only {1,2,3} buildable, five photos in
