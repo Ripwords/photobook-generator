@@ -3,7 +3,16 @@ use std::path::Path;
 
 /// Bump this whenever the Swift analyzer's output changes shape or semantics.
 /// Cached rows at an older version are ignored and re-analysed.
-pub const ANALYZER_VERSION: u32 = 1;
+///
+/// v2 (a9121da): the embedded-preview decode path changed which pixels are
+/// analysed -- RAW and HEIC files are now analysed from the camera's
+/// embedded preview rather than a full ImageIO demosaic. That shifts
+/// aesthetics, sharpness, palette and phash for every RAW/HEIC row, so rows
+/// cached under v1 must not be served as if they came from the same
+/// pipeline as v2 rows (see raw-performance-report.md for the measured
+/// deltas). This is the worked example for what counts as a "semantic
+/// change" the next time this constant needs bumping.
+pub const ANALYZER_VERSION: u32 = 2;
 
 pub struct Db {
     pub(crate) conn: Connection,
