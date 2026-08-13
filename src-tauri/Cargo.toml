@@ -29,6 +29,8 @@ log = "0.4"
 tauri-plugin-log = "2"
 
 [dev-dependencies]
+tempfile = "3"
+
 # Needed directly (not just via tauri's re-export) to build a
 # worker-thread-constrained runtime with `tokio::runtime::Builder`, to
 # reproduce the worker-pool starvation deadlock from a low-core machine.

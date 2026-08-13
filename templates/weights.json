@@ -1,0 +1,9 @@
+{
+  "aspect_fit": 1.0,
+  "saliency_retention": 0.8,
+  "face_area_retention": 1.2,
+  "hero_match": 0.6,
+  "resolution_headroom": 0.4,
+  "palette_harmony": 0.2,
+  "variety": 0.5
+}

@@ -5,6 +5,7 @@ pub mod geometry;
 pub mod protocol;
 pub mod ranking;
 pub mod sidecar;
+pub mod templates;
 
 /// Builds the shared plugin/state chain used by both the real app (`run`,
 /// below) and by tests that need a live `AppHandle` (e.g.

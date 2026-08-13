@@ -2656,6 +2656,7 @@ dependencies = [
  "tauri-plugin-log",
  "tauri-plugin-notification",
  "tauri-plugin-shell",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
 ]
