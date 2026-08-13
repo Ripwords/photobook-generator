@@ -89,8 +89,14 @@ export interface ScannedEvent {
 
 export interface BatchEvent {
   kind: "batch";
+  /** Only the photos that finished in THIS batch -- append these, do not replace. */
   photos: PartialAnalyzedPhoto[];
-  /** Cumulative running totals as of this event, not per-batch deltas. */
+  /**
+   * Cumulative running totals as of this event, NOT per-batch deltas --
+   * read the latest event's value directly (e.g. for "analysed X / Y"),
+   * never sum `analysed`/`cached`/`failed` across events. Summing them
+   * double-counts every photo already reflected in an earlier `Batch`.
+   */
   analysed: number;
   cached: number;
   failed: number;

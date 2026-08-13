@@ -78,10 +78,7 @@ pub struct AnalysisSummary {
 /// whole-set derivations that don't exist until every photo has been seen.
 /// Assigning one anyway from a partial population, then correcting it once
 /// `Done` arrives, would render a rank that visibly changes under the user;
-/// the task brief calls this out by name as the thing not to do. The
-/// (`analysed`, `cached`, `failed`) counts on `Batch` are cumulative running
-/// totals, not per-batch deltas, so the frontend can render "analysed X / Y"
-/// directly off the latest event without summing anything itself.
+/// the task brief calls this out by name as the thing not to do.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum AnalysisEvent {
@@ -92,7 +89,14 @@ pub enum AnalysisEvent {
     /// Fired once per resolved batch (cache hits are treated as one batch,
     /// then each `sidecar::BATCH_SIZE`-sized sidecar batch fires its own).
     Batch {
+        /// Only the photos that finished in THIS batch -- callers append
+        /// these, never replace with them.
         photos: Vec<serde_json::Value>,
+        /// Cumulative running totals as of THIS event, NOT per-batch
+        /// deltas -- read the latest event's value directly (e.g. for
+        /// "analysed X / Y"), never sum these fields across events. Summing
+        /// double-counts every photo already reflected in an earlier
+        /// `Batch`. Mirrored in `BatchEvent` in `app/types/features.ts`.
         analysed: usize,
         cached: usize,
         failed: usize,
