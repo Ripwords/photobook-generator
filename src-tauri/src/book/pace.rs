@@ -749,7 +749,7 @@ mod tests {
     }
 
     /// R2: the SKU fixes the page count. Every layout here is rejected on
-    /// resolution (300px photos in ~9" slots is ~30 DPI against a 150 floor),
+    /// resolution (300px photos in ~9" slots is ~30 DPI against a 200 floor),
     /// so a `continue`-on-failure assembler emits an empty book instead of a
     /// blank-but-complete one.
     #[test]
@@ -776,7 +776,7 @@ mod tests {
     /// of the last position -- and because the book is padded back up to the
     /// SKU length, the page count stays 20 either way.
     ///
-    /// One chapter here is unprintable (300px photos, ~30 DPI against a 150
+    /// One chapter here is unprintable (300px photos, ~30 DPI against a 200
     /// floor); every other chapter lays out. 36 fixture photos fill all 11
     /// slots exactly, so the only blanks in a correct book are that chapter's.
     #[test]

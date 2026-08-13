@@ -22,7 +22,7 @@
 use crate::book::cull::Photo;
 use crate::book::pace::Book;
 use crate::book::score::{effective_dpi, MIN_DPI};
-use crate::geometry::{bleeds_correctly, clear_of_gutter, in_trim, BleedEdge, Rect};
+use crate::geometry::{bleeds_correctly, clear_of_gutter, in_safe_margin, in_trim, BleedEdge, Rect};
 use crate::templates::{Role, Slot};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -174,10 +174,10 @@ fn preflight_core(
             }
 
             // DPI floor (BLOCK) and warn band (WARN), agreeing with the
-            // scorer's own `effective_dpi` about what 150/300 DPI mean. The
-            // slot's role/bleed/aspect_pref do not affect the DPI number, so
-            // a throwaway `Slot` carrying only the real `slot_rect` is exact,
-            // not an approximation.
+            // scorer's own `effective_dpi` about what MIN_DPI/300 DPI mean.
+            // The slot's role/bleed/aspect_pref do not affect the DPI
+            // number, so a throwaway `Slot` carrying only the real
+            // `slot_rect` is exact, not an approximation.
             let synthetic_slot =
                 Slot { rect: pl.slot_rect, role: Role::Support, bleed: Vec::new(), aspect_pref: (1.0, 1.0) };
             let dpi = effective_dpi(photo, &pl.crop, &synthetic_slot);
@@ -213,11 +213,20 @@ fn preflight_core(
                 });
             }
 
-            // Faces: outside the trim rectangle, or inside the gutter dead
-            // strip -- both BLOCK. Independent checks, exactly like
-            // `geometry::in_trim` / `clear_of_gutter` themselves: the fold
-            // edge has no trim inset but does have a gutter strip, so a face
-            // flush to the fold can be in-trim and in-gutter at once.
+            // Faces: outside the trim rectangle, inside the 0.125" safe
+            // margin beyond it, or inside the gutter dead strip -- all
+            // three BLOCK. Trim and safe-margin are checked as an
+            // else-if, NOT two independent `if`s: `in_safe_margin` is by
+            // construction a strict subset of `in_trim` (geometry.rs), so a
+            // face outside trim entirely also always fails the safe-margin
+            // check, and reporting both would raise two Block findings for
+            // one root cause. The more specific trim diagnosis wins; a face
+            // that clears trim but not the extra 1/8" gets exactly the
+            // safe-margin finding. Gutter stays an independent check exactly
+            // as before: the fold edge has no trim inset but does have a
+            // gutter strip, so a face flush to the fold can be in-trim (or
+            // in-safe-margin) and in-gutter at once, and both are real,
+            // distinct problems worth reporting.
             for face in &photo.faces {
                 // A face wholly outside the crop is not in the final
                 // picture at all -- matching `score::rejects`, which only
@@ -237,6 +246,13 @@ fn preflight_core(
                         page: page.number,
                         photo_path: photo.path.clone(),
                         message: "Face falls outside the trim rectangle".into(),
+                    });
+                } else if !in_safe_margin(&mapped, page.side) {
+                    findings.push(Finding {
+                        severity: Severity::Block,
+                        page: page.number,
+                        photo_path: photo.path.clone(),
+                        message: "Face falls inside the 0.125\" safe margin".into(),
                     });
                 }
                 if !clear_of_gutter(&mapped, page.side) {
@@ -394,6 +410,39 @@ mod tests {
                 && f.message.contains("trim")),
             "got {findings:?}"
         );
+        // `in_safe_margin` is a strict subset of `in_trim`, so a face outside
+        // trim entirely ALSO fails the safe-margin check -- but it must
+        // report only the more specific trim diagnosis, not a second,
+        // redundant safe-margin finding for the same root cause.
+        assert!(
+            findings.iter().all(|f| !f.message.contains("safe margin")),
+            "a face outside trim entirely must report the trim violation, \
+             not the safe-margin one: {findings:?}"
+        );
+    }
+
+    /// The new hard constraint: a face INSIDE the trim rectangle but inside
+    /// the additional 1/8" Pixajoy buffer beyond it. `in_trim` on the mapped
+    /// rect is comfortably satisfied here -- only `in_safe_margin` catches
+    /// it, which is what distinguishes this from the trim test above.
+    #[test]
+    fn preflight_blocks_a_face_inside_trim_but_inside_the_safe_margin_band() {
+        let dir = tempdir();
+        let mut p = photo(px_for_dpi(400.0), px_for_dpi(400.0) * 2 / 3);
+        p.path = "/dev/null".into();
+        p.faces = vec![Face { box_: Rect::new(0.044, 0.4, 0.02, 0.02), capture_quality: Some(0.8) }];
+        let slot = Rect::new(0.0, 0.1, 0.5, 0.4);
+        let book = book_with(slot, full_crop(), Side::Left);
+        let findings = preflight(&book, &[p], dir.path());
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Block
+                && f.message.contains("safe margin")),
+            "got {findings:?}"
+        );
+        assert!(
+            findings.iter().all(|f| !f.message.contains("trim rectangle")),
+            "a face inside trim must not also report a trim-rectangle finding: {findings:?}"
+        );
     }
 
     #[test]
@@ -462,20 +511,69 @@ mod tests {
         let book = book_with(clean_slot(), full_crop(), Side::Left);
         let findings = preflight(&book, &[p], dir.path());
         assert!(findings.iter().any(|f| f.severity == Severity::Block
-            && f.message.contains("150")), "got {findings:?}");
+            && f.message.contains("200")), "got {findings:?}");
+    }
+
+    /// Pixajoy's floor moved from 150 to 200 DPI: a photo that used to sit
+    /// safely in the warn band now falls below the hard floor and must
+    /// BLOCK, not warn. Pins that the warn band's LOWER edge moved with
+    /// `MIN_DPI`, not just the block/no-block threshold in isolation.
+    #[test]
+    fn preflight_blocks_at_one_hundred_eighty_dpi_now_that_the_floor_moved_to_two_hundred() {
+        let dir = tempdir();
+        let mut p = photo(px_for_dpi(180.0), px_for_dpi(180.0) * 2 / 3);
+        p.path = "/dev/null".into();
+        let book = book_with(clean_slot(), full_crop(), Side::Left);
+        let findings = preflight(&book, &[p], dir.path());
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Block && f.message.contains("200")),
+            "180 DPI must block under the 200 DPI floor: {findings:?}"
+        );
+        assert!(
+            findings.iter().all(|f| f.severity != Severity::Warn),
+            "must not ALSO warn for the same photo: {findings:?}"
+        );
     }
 
     #[test]
-    fn preflight_warns_between_150_and_300_dpi_and_reports_the_effective_value() {
+    fn preflight_warns_between_200_and_300_dpi_and_reports_the_effective_value() {
         let dir = tempdir();
-        let mut p = photo(px_for_dpi(200.0), px_for_dpi(200.0) * 2 / 3);
+        let mut p = photo(px_for_dpi(250.0), px_for_dpi(250.0) * 2 / 3);
         p.path = "/dev/null".into();
         let book = book_with(clean_slot(), full_crop(), Side::Left);
         let findings = preflight(&book, &[p], dir.path());
         let warn = findings.iter().find(|f| f.severity == Severity::Warn)
             .expect("expected a DPI warning");
         // A warning that does not say HOW soft the photo is cannot be acted on.
-        assert!(warn.message.contains("200"), "message was {:?}", warn.message);
+        assert!(warn.message.contains("250"), "message was {:?}", warn.message);
+    }
+
+    /// Pins that pre-flight's floor is the SAME symbol as the scorer's, not
+    /// a hand-copied literal that could silently drift. The fixture is built
+    /// from `crate::book::score::MIN_DPI` via its FULLY QUALIFIED path,
+    /// deliberately bypassing whatever `MIN_DPI` this module's own scope
+    /// resolves to -- so if pre-flight ever stopped importing the scorer's
+    /// constant and defined a local copy that drifted from it, a photo
+    /// placed just below the scorer's real floor would land comfortably
+    /// above pre-flight's stale one and this test would catch the silent
+    /// disagreement. (A version of this test written against the bare,
+    /// in-scope `MIN_DPI` name was tried first and did NOT catch that
+    /// mutation -- it resolved to whichever constant was locally in scope
+    /// and passed either way, which is why the fully qualified path here is
+    /// load-bearing, not decorative.)
+    #[test]
+    fn preflight_dpi_floor_is_the_scorers_min_dpi_not_a_drifted_local_copy() {
+        let dir = tempdir();
+        let just_below = crate::book::score::MIN_DPI - 1.0;
+        let px = (just_below * clean_slot().w * PAGE_W_IN).round() as u32;
+        let mut p = photo(px, px * 2 / 3);
+        p.path = "/dev/null".into();
+        let book = book_with(clean_slot(), full_crop(), Side::Left);
+        let findings = preflight(&book, &[p], dir.path());
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Block),
+            "a photo just below the scorer's floor must block under pre-flight too: {findings:?}"
+        );
     }
 
     /// Boundary AT the boundary, pinned two-sided: exactly 300 DPI is

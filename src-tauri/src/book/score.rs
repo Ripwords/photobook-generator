@@ -6,17 +6,19 @@
 
 use crate::book::crop::choose_crop;
 use crate::book::cull::Photo;
-use crate::geometry::{clear_of_gutter, Rect, Side, PAGE_H_IN, PAGE_W_IN};
+use crate::geometry::{clear_of_gutter, in_safe_margin, Rect, Side, PAGE_H_IN, PAGE_W_IN};
 use crate::templates::{Role, Slot, SpreadTemplate, Weights};
 
-/// Below this, print is visibly soft and no downstream step can fix it.
-/// The design's 300 DPI target is a WARNING; this is the hard floor.
-pub const MIN_DPI: f64 = 150.0;
+/// Pixajoy's published minimum: below this, print is visibly soft and no
+/// downstream step can fix it. Their recommended target is 300 DPI, which
+/// `resolution_headroom` below treats as a WARNING band, not a second floor.
+pub const MIN_DPI: f64 = 200.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rejection {
     FaceClipped,
     FaceInGutter,
+    FaceInSafeMargin,
     TooLowResolution,
 }
 
@@ -93,6 +95,9 @@ pub fn rejects(photo: &Photo, crop: &Rect, slot: &Slot, side: Side) -> Option<Re
         if let Some(page_rect) = face_in_page(&face.box_, crop, slot) {
             if !clear_of_gutter(&page_rect, side) {
                 return Some(Rejection::FaceInGutter);
+            }
+            if !in_safe_margin(&page_rect, side) {
+                return Some(Rejection::FaceInSafeMargin);
             }
         }
     }
@@ -333,7 +338,7 @@ mod tests {
 
     /// A slot exactly 6.0" wide. `6.0 / PAGE_W_IN` round-trips back through
     /// `* PAGE_W_IN` to exactly 6.0 in IEEE doubles, so `effective_dpi` can
-    /// return exactly 150.0 for an integer pixel count -- the only way to
+    /// return exactly 200.0 for an integer pixel count -- the only way to
     /// test the floor's inclusivity at all.
     fn six_inch_slot() -> Slot {
         Slot {
@@ -378,19 +383,19 @@ mod tests {
 
     /// The floor pinned on BOTH sides, on a slot that can express it exactly.
     ///
-    /// `wide_slot` cannot: 5.5985" needs 839.775 px for 150 DPI, and the
-    /// brief's fixture rounded that to 840 px = 150.0402 DPI -- never on the
-    /// boundary it was named for, so `< MIN_DPI` could be flipped to
-    /// `<= MIN_DPI` with the whole suite still green. A slot exactly 6.0"
-    /// wide has an integer answer: 900 px is exactly 150.0 DPI (verified in
-    /// the first assertion, since only exact IEEE equality distinguishes the
-    /// two comparisons), and one pixel less is 149.83.
+    /// `wide_slot` cannot: 5.5985" needs 1119.7 px for 200 DPI, which rounds
+    /// to 1120 px = 200.0357 DPI -- never on the boundary it was named for,
+    /// so `< MIN_DPI` could be flipped to `<= MIN_DPI` with the whole suite
+    /// still green. A slot exactly 6.0" wide has an integer answer: 1200 px
+    /// is exactly 200.0 DPI (verified in the first assertion, since only
+    /// exact IEEE equality distinguishes the two comparisons), and one pixel
+    /// less is 199.83.
     #[test]
     fn score_dpi_floor_admits_exactly_min_dpi_and_rejects_one_pixel_below() {
         let s = six_inch_slot();
         let crop = Rect::new(0.0, 0.0, 1.0, 1.0);
 
-        let at = photo(900, 675);
+        let at = photo(1200, 900);
         assert_eq!(
             effective_dpi(&at, &crop, &s),
             MIN_DPI,
@@ -398,7 +403,7 @@ mod tests {
         );
         assert!(rejects(&at, &crop, &s, Side::Left).is_none(), "the floor itself must pass");
 
-        let below = photo(899, 674);
+        let below = photo(1199, 899);
         assert!(matches!(
             rejects(&below, &crop, &s, Side::Left),
             Some(Rejection::TooLowResolution)
@@ -447,6 +452,84 @@ mod tests {
         // A slot running flush to the fold on a LEFT page.
         let s = Slot {
             rect: Rect::new(0.5, 0.2, 0.5, 0.5),
+            role: Role::Hero,
+            bleed: Vec::<BleedEdge>::new(),
+            aspect_pref: (1.2, 1.35),
+        };
+        let crop = Rect::new(0.0, 0.0, 1.0, 1.0);
+        assert!(matches!(
+            rejects(&p, &crop, &s, Side::Left),
+            Some(Rejection::FaceInGutter)
+        ));
+    }
+
+    /// The safe-margin hard constraint. The face sits INSIDE the trim
+    /// rectangle -- `in_trim` on the mapped rect is asserted true as a
+    /// sanity check -- but inside the additional 1/8" Pixajoy buffer beyond
+    /// it, so only `in_safe_margin` catches it. This is what distinguishes
+    /// the new check from the pre-existing trim/gutter ones: a fixture that
+    /// merely sat outside trim entirely would pass under a scorer with no
+    /// safe-margin check at all, since nothing else in `rejects` looks at
+    /// `in_trim`.
+    #[test]
+    fn score_rejects_a_face_inside_trim_but_inside_the_safe_margin_band() {
+        use crate::geometry::in_trim;
+
+        let mut p = photo(4000, 3000);
+        p.faces = vec![Face { box_: Rect::new(0.044, 0.4, 0.02, 0.02), capture_quality: Some(0.8) }];
+        // Flush to the outer-left edge, far from the fold, so gutter cannot
+        // fire and only the new outer-edge safe-margin inset is in play.
+        let s = Slot {
+            rect: Rect::new(0.0, 0.2, 0.5, 0.5),
+            role: Role::Hero,
+            bleed: vec![BleedEdge::Left, BleedEdge::Top, BleedEdge::Bottom],
+            aspect_pref: (1.0, 1.4),
+        };
+        let crop = Rect::new(0.0, 0.0, 1.0, 1.0);
+
+        // Sanity: prove the fixture is inside trim before asserting it is
+        // rejected on safe-margin grounds specifically.
+        let mapped = Rect::new(0.022, 0.4, 0.01, 0.01);
+        assert!(in_trim(&mapped, Side::Left), "fixture must sit inside trim");
+
+        assert!(matches!(
+            rejects(&p, &crop, &s, Side::Left),
+            Some(Rejection::FaceInSafeMargin)
+        ));
+    }
+
+    /// The counterpart: a face comfortably clear of the outer edge, top and
+    /// bottom by more than 1/8" must not be rejected.
+    #[test]
+    fn score_accepts_a_face_comfortably_inside_the_safe_margin() {
+        let mut p = photo(4000, 3000);
+        p.faces = vec![Face { box_: Rect::new(0.3, 0.3, 0.1, 0.1), capture_quality: Some(0.8) }];
+        let s = Slot {
+            rect: Rect::new(0.0, 0.2, 0.5, 0.5),
+            role: Role::Hero,
+            bleed: Vec::<BleedEdge>::new(),
+            aspect_pref: (1.0, 1.4),
+        };
+        let crop = Rect::new(0.0, 0.0, 1.0, 1.0);
+        assert!(rejects(&p, &crop, &s, Side::Left).is_none());
+    }
+
+    /// Order matters when a face violates BOTH constraints at once. Placed
+    /// near the fold AND near the top edge, the face fails `clear_of_gutter`
+    /// (fold proximity) and would ALSO fail the new safe-margin check (top
+    /// proximity) if reached. The pre-existing gutter rejection must win --
+    /// `rejects` checks it first, so a genuinely ambiguous face reports the
+    /// established diagnosis rather than being silently reclassified by the
+    /// new check. Mirrors the trim-vs-safe-margin ordering pre-flight now
+    /// enforces between its own two findings.
+    #[test]
+    fn score_gutter_rejection_takes_priority_over_safe_margin_when_both_would_fire() {
+        let mut p = photo(4000, 3000);
+        // Near the fold (x) AND near the top edge (y) on a left page slot
+        // that is flush to both.
+        p.faces = vec![Face { box_: Rect::new(0.90, 0.02, 0.08, 0.05), capture_quality: Some(0.8) }];
+        let s = Slot {
+            rect: Rect::new(0.5, 0.0, 0.5, 0.5),
             role: Role::Hero,
             bleed: Vec::<BleedEdge>::new(),
             aspect_pref: (1.2, 1.35),

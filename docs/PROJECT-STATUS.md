@@ -193,6 +193,8 @@ runtime and is not in the files.
 | Fold centre | x = 11.197" (normalised 0.5) |
 | Gutter dead band | x 11.000"–11.394" (normalised 0.491203–0.508797) |
 | Safe area | x 0.008797–0.991203, y 0.022150–0.977850 (normalised) |
+| **Minimum print DPI** | **200** (Pixajoy's published minimum; 300 is their recommended target, treated as a warn band, not a second floor). `book::score::MIN_DPI`, imported (not restated) by `book::preflight`. |
+| **Safe margin** | **0.125"** (1/8") — Pixajoy's published guidance: keep anything important clear of the edge by this much, on top of the trim inset. `geometry::SAFE_MARGIN_IN` / `in_safe_margin`. **Do not confuse with the "Safe area" row above** — that row is the TRIM rectangle (the `BLEED_IN` inset alone); the safe margin is trim inset by a FURTHER 0.125" on every edge except the fold, where the gutter dead band already governs. |
 
 ### Page structure (confirmed by the user, 2026-08-13) — and a template gap
 

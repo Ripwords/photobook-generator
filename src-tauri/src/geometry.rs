@@ -33,6 +33,18 @@ pub const TRIM_V: f64 = BLEED_IN / PAGE_H_IN;
 /// does not silently change the other.
 pub const GUTTER_U: f64 = BLEED_IN / PAGE_W_IN;
 
+/// Pixajoy's published guidance: "leave a gap of 1/8th of an inch between
+/// anything important that you don't want to cut off and the edge." This is
+/// clearance INSIDE the trim line, on top of the trim inset itself -- a face
+/// sitting flush against the trim line is still at real risk of being
+/// guillotined off in production, trim tolerances being what they are.
+pub const SAFE_MARGIN_IN: f64 = 0.125;
+
+/// Page-normalised safe-margin inset, converted exactly as `TRIM_U` is.
+pub const SAFE_U: f64 = SAFE_MARGIN_IN / PAGE_W_IN;
+/// Page-normalised safe-margin inset, converted exactly as `TRIM_V` is.
+pub const SAFE_V: f64 = SAFE_MARGIN_IN / PAGE_H_IN;
+
 /// The fold, normalised on the spread canvas.
 const FOLD_X: f64 = 0.5;
 
@@ -134,6 +146,26 @@ pub fn in_trim(rect: &Rect, side: Side) -> bool {
         && rect.bottom() <= 1.0 - TRIM_V + EPS
 }
 
+/// True when the rect lies wholly inside the SAFE rectangle of its page --
+/// `in_trim` inset by a further `SAFE_MARGIN_IN` (Pixajoy's published 1/8")
+/// on every edge EXCEPT the fold. There is no bleed and no trim inset at the
+/// fold either (the paper is continuous there), and the gutter dead strip
+/// already governs content clearance on that edge, so inserting a second
+/// inset there would double-count it. `in_safe_margin` is therefore always a
+/// SUBSET of `in_trim`: passing this implies passing `in_trim`, but not the
+/// reverse.
+pub fn in_safe_margin(rect: &Rect, side: Side) -> bool {
+    const EPS: f64 = 1e-9;
+    let (x0, x1) = match side {
+        Side::Left => (TRIM_U + SAFE_U, 1.0),
+        Side::Right => (0.0, 1.0 - TRIM_U - SAFE_U),
+    };
+    rect.x >= x0 - EPS
+        && rect.right() <= x1 + EPS
+        && rect.y >= TRIM_V + SAFE_V - EPS
+        && rect.bottom() <= 1.0 - TRIM_V - SAFE_V + EPS
+}
+
 /// True when the rect keeps clear of the gutter dead strip -- the 0.197"
 /// nearest the fold, which curls into the binding. This is a CONTENT
 /// predicate (faces, salient regions), never a slot rejection: a slot may
@@ -223,6 +255,56 @@ mod tests {
         // On a RIGHT page the outer edge is x=1, so trim ends at 1 - TRIM_U.
         assert!(!in_trim(&Rect::new(0.95, 0.5, 0.1, 0.1), Side::Right));
         assert!(in_trim(&Rect::new(0.8, 0.5, 1.0 - TRIM_U - 0.8, 0.1), Side::Right));
+    }
+
+    // --- geometry: safe margin
+
+    /// The core property: `in_safe_margin` is a STRICT subset of `in_trim`.
+    /// A rect sitting exactly at the trim boundary passes `in_trim` (no
+    /// inset failure there) but must fail `in_safe_margin`, which insets a
+    /// further 1/8" beyond it. This is the fixture that catches a
+    /// `in_safe_margin` implemented as a bare delegation to `in_trim` -- the
+    /// mutation the brief names explicitly.
+    #[test]
+    fn geometry_in_safe_margin_is_a_strict_subset_of_in_trim() {
+        let rect = Rect::new(TRIM_U, 0.5, 0.05, 0.05);
+        assert!(in_trim(&rect, Side::Left), "sanity: sits right at the trim boundary");
+        assert!(
+            !in_safe_margin(&rect, Side::Left),
+            "the converse of 'inside safe margin implies inside trim' must not hold"
+        );
+    }
+
+    /// Boundary AT the boundary, pinned two-sided, on the OUTER edge of a
+    /// LEFT page (mirroring `geometry_in_trim_rejects_a_rect_over_the_outer_bleed_on_a_left_page`).
+    #[test]
+    fn geometry_in_safe_margin_insets_the_outer_edge_of_a_left_page_by_an_extra_eighth_inch() {
+        let x0 = TRIM_U + SAFE_U;
+        assert!(!in_safe_margin(&Rect::new(x0 - 1e-6, 0.5, 0.05, 0.05), Side::Left));
+        assert!(in_safe_margin(&Rect::new(x0, 0.5, 0.05, 0.05), Side::Left));
+    }
+
+    /// Same boundary, opposite edge, on a RIGHT page -- the asymmetry
+    /// `in_trim` itself has between left and right pages must carry through.
+    #[test]
+    fn geometry_in_safe_margin_insets_the_outer_edge_of_a_right_page_by_an_extra_eighth_inch() {
+        let x1 = 1.0 - TRIM_U - SAFE_U;
+        assert!(!in_safe_margin(&Rect::new(x1 - 0.05 + 1e-6, 0.5, 0.05, 0.05), Side::Right));
+        assert!(in_safe_margin(&Rect::new(x1 - 0.05, 0.5, 0.05, 0.05), Side::Right));
+    }
+
+    /// The fold edge gets NO additional inset -- the gutter strip already
+    /// governs content clearance there, and inserting a second inset would
+    /// double-count it. A rect flush to the fold that is legal for `in_trim`
+    /// (no inset there either) must stay legal for `in_safe_margin` too.
+    #[test]
+    fn geometry_in_safe_margin_does_not_inset_the_fold_edge() {
+        let rect = Rect::new(0.9, TRIM_V + SAFE_V, 0.1, 0.05);
+        assert!(in_trim(&rect, Side::Left), "sanity: flush to the fold is legal for trim");
+        assert!(
+            in_safe_margin(&rect, Side::Left),
+            "the fold edge must not be inset a second time"
+        );
     }
 
     /// Boundary test AT the boundary, per the plan's anti-pattern rules.
