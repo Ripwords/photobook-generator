@@ -114,3 +114,63 @@ func writeHostile(_ name: String, width: Int, height: Int, cmyk: Bool) {
 writeHostile("one-pixel.jpg", width: 1, height: 1, cmyk: false)
 writeHostile("cmyk.jpg", width: 64, height: 64, cmyk: true)
 writeHostile("no-extension", width: 64, height: 64, cmyk: false)
+
+// MARK: - Two-pass thumbnail fixtures (RAW/HEIC decode performance fix)
+//
+// Real camera JPEGs and HEICs embed a small preview/thumbnail alongside the
+// full image -- for an out-of-camera JPEG that's typically the classic
+// ~160x120 EXIF thumbnail. ImageLoader's size-floor check must detect when
+// that embedded preview is too small and fall back to a full decode. These
+// fixtures reproduce that shape with `kCGImageDestinationEmbedThumbnail`,
+// which makes ImageIO generate a real embedded thumbnail distinct from (and
+// much smaller than) the main image -- confirmed by probing real iPhone
+// JPEGs during this fix: `kCGImageSourceCreateThumbnailFromImageIfAbsent`
+// returns that embedded ~160px thumbnail, not a downscale of the real image.
+func writeWithEmbeddedThumbnail(_ name: String, width: Int, height: Int,
+                                 rgb: (Double, Double, Double), orientation: Int) {
+    let ctx = CGContext(
+        data: nil, width: width, height: height,
+        bitsPerComponent: 8, bytesPerRow: 0,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    ctx.setFillColor(red: rgb.0, green: rgb.1, blue: rgb.2, alpha: 1)
+    ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    let image = ctx.makeImage()!
+
+    let url = dir.appendingPathComponent(name) as CFURL
+    let dest = CGImageDestinationCreateWithURL(url, UTType.jpeg.identifier as CFString, 1, nil)!
+    let props: [CFString: Any] = [
+        kCGImagePropertyOrientation: orientation,
+        kCGImageDestinationEmbedThumbnail: true,
+        kCGImageDestinationLossyCompressionQuality: 0.85,
+    ]
+    CGImageDestinationAddImage(dest, image, props as CFDictionary)
+    precondition(CGImageDestinationFinalize(dest), "failed to write \(name)")
+    print("wrote \(name) (\(width)x\(height), orientation \(orientation), embedded thumbnail)")
+}
+
+// Main image (2000x1333) is well above `analysisMaxPixel` (1536) on its long
+// edge, but the embedded thumbnail ImageIO generates is ~160px -- below any
+// sane floor. Used to prove the floor check actually fires the fallback.
+writeWithEmbeddedThumbnail("postage-stamp-source.jpg", width: 2000, height: 1333,
+                           rgb: (0.2, 0.3, 0.6), orientation: 1)
+
+// Same shape, but stored landscape with EXIF orientation 6 (rotate 90 CW),
+// so it can prove orientation is applied correctly on BOTH the accepted-
+// preview path (low floor, no fallback) and the fallback-to-full-decode path
+// (default floor) -- not just one of them.
+writeWithEmbeddedThumbnail("portrait-rot90-tiny-thumb.jpg", width: 2000, height: 1333,
+                           rgb: (0.4, 0.15, 0.15), orientation: 6)
+
+// No embedded thumbnail at all (unlike the two above), and large enough
+// (long edge 2000) that decoding it via
+// kCGImageSourceCreateThumbnailFromImageIfAbsent alone -- with no smaller
+// embedded thumbnail to fall back from -- already meets the default
+// analysisMaxPixel floor (1536) on the first pass. `landscape.jpg` above is
+// too small (1200x800) to exercise this: its native size is already below
+// the 1536 floor, so it always reports a "fallback" even though there is
+// nothing smaller to have fallen back from. This fixture is what
+// BenchmarkerTests uses to prove the floor is met WITHOUT a wasted second
+// decode when the source is genuinely large.
+write("large-no-thumbnail.jpg", width: 2000, height: 1333, rgb: (0.15, 0.35, 0.25), orientation: 1)
