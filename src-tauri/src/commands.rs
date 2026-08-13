@@ -254,37 +254,17 @@ pub(crate) fn should_notify(elapsed: Duration, window_focused: bool) -> bool {
     !window_focused && elapsed >= NOTIFY_MIN_ELAPSED
 }
 
-/// Counts how many analysed photos would survive the frontend's culling:
-/// drop utility shots (screenshots/documents), then keep only the sharpest
-/// photo from each near-duplicate cluster (ties broken by aesthetic
-/// percentile). This mirrors `keepers()` in `app/types/features.ts` exactly.
+/// Counts surviving photos for the completion notification.
 ///
-/// Duplicated rather than shared: the notification fires from Rust (inside
-/// `analyze_folder`, which already knows when the work finished), and there
-/// is no Rust/TS boundary to call the frontend's implementation through. If
-/// `keepers()` in `features.ts` ever changes, mirror the change here too.
+/// Delegates to `book::cull::cull` rather than reimplementing the rule.
+/// Before Phase 2 there were two implementations of "which photo survives"
+/// -- this one and TypeScript's `keepers()` -- and nothing kept them in
+/// agreement. The notification is now guaranteed to report the same number
+/// the book is built from.
 pub(crate) fn count_keepers(photos: &[serde_json::Value]) -> usize {
-    let mut best: std::collections::HashMap<u64, (f64, f64)> = std::collections::HashMap::new();
-
-    for photo in photos {
-        if photo["isUtility"].as_bool().unwrap_or(false) {
-            continue;
-        }
-        let cluster = photo["nearDupCluster"].as_u64().unwrap_or(0);
-        let sharpness = photo["sharpnessPct"].as_f64().unwrap_or(0.0);
-        let aesthetic = photo["aestheticPct"].as_f64().unwrap_or(0.0);
-
-        best.entry(cluster)
-            .and_modify(|incumbent| {
-                if sharpness > incumbent.0 || (sharpness == incumbent.0 && aesthetic > incumbent.1)
-                {
-                    *incumbent = (sharpness, aesthetic);
-                }
-            })
-            .or_insert((sharpness, aesthetic));
-    }
-
-    best.len()
+    let parsed: Vec<crate::book::cull::Photo> =
+        photos.iter().filter_map(crate::book::cull::from_features).collect();
+    crate::book::cull::cull(&parsed).len()
 }
 
 /// Result of consulting the cache for a batch of candidate paths.
@@ -1441,22 +1421,40 @@ mod tests {
         assert!(!should_notify(NOTIFY_MIN_ELAPSED * 100, true));
     }
 
-    // --- `count_keepers`: mirrors `keepers()` in `app/types/features.ts`
-    // (drop utility shots, keep the sharpest -- tie-broken by aesthetic --
-    // photo per near-duplicate cluster), so the notification body can report
-    // a keeper count without a JS/Rust boundary to call through.
+    // --- `count_keepers`: delegates to `book::cull::cull`, the single
+    // authority on which photo survives a near-duplicate cluster, so the
+    // notification body's count can never disagree with the book.
 
+    /// Builds a full-shaped feature record, not the minimal
+    /// `{isUtility, nearDupCluster, sharpnessPct, aestheticPct}` this fixture
+    /// used before `count_keepers` delegated to `book::cull`.
+    /// `book::cull::from_features` requires `path`/`hash`/`width`/`height`
+    /// (every real record from `finalize_photos` has them; only a hand-built
+    /// test fixture could omit them) -- a record missing them is silently
+    /// dropped by `from_features`'s `filter_map`, so the old minimal shape
+    /// would count zero keepers regardless of the values below. A counter
+    /// keeps `path`/`hash` unique per call so distinct photos in one test
+    /// don't collide.
     fn kept_candidate(
         is_utility: bool,
         cluster: u64,
         sharpness: f64,
         aesthetic: f64,
     ) -> serde_json::Value {
+        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         serde_json::json!({
+            "path": format!("/p{n}.jpg"),
+            "hash": format!("h{n}"),
+            "width": 4032,
+            "height": 3024,
             "isUtility": is_utility,
             "nearDupCluster": cluster,
             "sharpnessPct": sharpness,
             "aestheticPct": aesthetic,
+            "faces": [],
+            "faceAreaFraction": 0.0,
+            "palette": [],
         })
     }
 
