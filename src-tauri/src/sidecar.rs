@@ -101,7 +101,34 @@ impl Sidecar {
         match request_result {
             ResponseResult::Analyzed(records) => Ok(records),
             ResponseResult::Error { message } => Err(SidecarError::Engine(message)),
-            ResponseResult::Pong { .. } => Err(SidecarError::Malformed("expected analyzed".into())),
+            ResponseResult::Pong { .. } | ResponseResult::Benchmarked(_) => {
+                Err(SidecarError::Malformed("expected analyzed".into()))
+            }
+        }
+    }
+
+    /// Runs the `benchmark` request kind: same pipeline as `analyze`, but
+    /// the sidecar returns per-stage timings instead of features. Used by
+    /// `scripts/benchmark.sh`; not wired into the app's UI, since this is a
+    /// diagnostic tool, not a user-facing feature.
+    pub fn benchmark(
+        &mut self,
+        paths: Vec<String>,
+        thumbnail_dir: Option<&str>,
+    ) -> Result<Vec<serde_json::Value>, SidecarError> {
+        let timeout = timeout_for(paths.len());
+        let request_result = self.request(
+            RequestKind::Benchmark,
+            Some(paths),
+            thumbnail_dir.map(str::to_string),
+            timeout,
+        )?;
+        match request_result {
+            ResponseResult::Benchmarked(records) => Ok(records),
+            ResponseResult::Error { message } => Err(SidecarError::Engine(message)),
+            ResponseResult::Pong { .. } | ResponseResult::Analyzed(_) => {
+                Err(SidecarError::Malformed("expected benchmarked".into()))
+            }
         }
     }
 }

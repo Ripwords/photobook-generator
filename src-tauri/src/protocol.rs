@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 pub enum RequestKind {
     Ping,
     Analyze,
+    /// Runs the same per-photo pipeline as `Analyze` but returns per-stage
+    /// timings (hash, EXIF, decode, Vision, classical metrics, thumbnail
+    /// write) instead of features -- a permanent diagnostic, not scaffolding.
+    /// See `scripts/benchmark.sh`.
+    Benchmark,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +35,7 @@ pub enum ResponseResult {
     Pong { version: String },
     Error { message: String },
     Analyzed(Vec<serde_json::Value>),
+    Benchmarked(Vec<serde_json::Value>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +79,18 @@ mod tests {
         let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None };
         let line = serde_json::to_string(&req).unwrap();
         assert!(!line.contains("thumbnailDir"));
+    }
+
+    #[test]
+    fn serializes_benchmark_request_kind_as_lowercase() {
+        let req = Request {
+            id: "a".into(),
+            kind: RequestKind::Benchmark,
+            paths: Some(vec!["/p.arw".into()]),
+            thumbnail_dir: None,
+        };
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(line.contains("\"kind\":\"benchmark\""));
     }
 
     #[test]
@@ -122,6 +140,35 @@ mod tests {
                 assert_eq!(records[1]["message"], "decode error");
             }
             other => panic!("expected analyzed, got {other:?}"),
+        }
+    }
+
+    /// Pins the Swift wire format for `benchmark`: `BenchmarkRecord`'s
+    /// `status`/`result` keys (deliberately distinct from `analyze`'s
+    /// `status`/`features`, since a benchmark record carries timings, not
+    /// photo features) -- see `Benchmarker.swift`.
+    #[test]
+    fn deserializes_benchmarked_response() {
+        let line = r#"{"id":"a","result":{"type":"benchmarked","data":[
+            {"status":"ok","result":{"path":"/p.arw","ext":"arw","width":1536,"height":1024,
+                "usedFullDecodeFallback":false,
+                "timings":{"hashMs":1.0,"exifMs":0.5,"decodeMs":40.0,"visionMs":80.0,
+                    "metricsMs":5.0,"thumbnailWriteMs":0.0,"totalMs":126.5}}},
+            {"status":"failed","path":"/photos/bad.raw","message":"decode error"}
+        ]}}"#;
+        let res: Response = serde_json::from_str(line).unwrap();
+        assert_eq!(res.id, "a");
+        match res.result {
+            ResponseResult::Benchmarked(records) => {
+                assert_eq!(records.len(), 2);
+                assert_eq!(records[0]["status"], "ok");
+                assert_eq!(records[0]["result"]["ext"], "arw");
+                assert_eq!(records[0]["result"]["usedFullDecodeFallback"], false);
+                assert_eq!(records[0]["result"]["timings"]["decodeMs"], 40.0);
+                assert_eq!(records[1]["status"], "failed");
+                assert_eq!(records[1]["path"], "/photos/bad.raw");
+            }
+            other => panic!("expected benchmarked, got {other:?}"),
         }
     }
 }

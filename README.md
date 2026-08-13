@@ -54,3 +54,48 @@ exists so that error is easy to diagnose.
 - `bun run test` — run frontend tests (Vitest)
 - `bun run test:rust` — run Rust tests (`cargo test`)
 - `bun run test:swift` — run Swift tests (`swift test`)
+- `scripts/benchmark.sh <folder>` — measure sidecar per-photo performance against real
+  photos (see below)
+
+## Benchmarking photo analysis performance
+
+`scripts/benchmark.sh` drives the sidecar's `benchmark` NDJSON request (alongside `ping`
+and `analyze` — see `sidecar/Sources/PhotobookEngine/Protocol.swift`) over every supported
+image in a folder and reports per-stage wall-clock timings: file hash, EXIF read, decode,
+Vision pass, classical metrics, and (optionally) thumbnail write. It prints a per-file
+table and a per-extension aggregate, so RAW, HEIC and JPEG throughput are directly
+comparable instead of blended into one number.
+
+This is a permanent diagnostic, not scaffolding — re-run it after any change to
+`ImageLoader`, `Analyzer`, `VisionAnalyzer` or `Metrics` to catch a throughput or
+correctness regression before it ships. It's also how the RAW decode performance fix was
+measured; see
+`.superpowers/sdd/2026-08-12-phase-1-analysis-pipeline/raw-performance-report.md` for the
+baseline-vs-fix numbers, the per-format embedded-preview fallback rates, and a quality
+comparison between the preview-decode and full-decode paths on real RAW files.
+
+```bash
+bun run sidecar                                    # builds the sidecar binary if needed
+scripts/benchmark.sh ~/Pictures/SonyImport --recursive
+scripts/benchmark.sh sidecar/Fixtures --limit 20    # quick smoke test, no real photos needed
+```
+
+Flags:
+
+- `--recursive` — descend into subfolders (real photo exports are often nested; the app's
+  own folder scan is intentionally non-recursive today, see `docs/PROJECT-STATUS.md`'s
+  "known smaller debts", but this script isn't bound by that)
+- `--limit N` — only benchmark the first N matching files
+- `--thumbnails DIR` — also time the contact-sheet thumbnail write stage, writing into
+  `DIR` (omit to skip that stage entirely, which is the default — most throughput
+  questions are about decode/Vision, not thumbnail writing)
+- `--json OUT.json` — dump the raw sidecar response alongside the printed tables
+
+Requires `jq`. The script builds the sidecar binary automatically (via `bun run sidecar`)
+if `src-tauri/binaries/photobook-engine-<target-triple>` doesn't exist yet.
+
+Benchmark runs are deliberately **sequential**, not the concurrent `concurrentPerform` fan-out
+a real `analyze` batch uses — see `Benchmarker.swift`'s doc comment. That makes per-stage
+numbers clean and comparable across formats, but means a benchmark run's total wall time
+under-represents real multi-core throughput; look at the aggregate ratios and per-format
+comparisons, not the raw total, when judging real-world speed.

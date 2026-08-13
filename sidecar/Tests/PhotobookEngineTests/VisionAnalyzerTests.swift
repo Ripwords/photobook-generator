@@ -9,16 +9,25 @@ private func fixture(_ name: String) -> String {
         .appendingPathComponent("Fixtures/\(name)").path
 }
 
+// The three tests below are the only call sites in this file that invoke
+// VisionAnalyzer.analyze, and each now goes through VisionGate rather than
+// calling it directly -- see VisionGate.swift's doc comment. They didn't
+// before, and running the full unfiltered suite with them ungated (even
+// with `Analyzer`'s and `Benchmarker`'s own call sites correctly gated)
+// still reproduced the documented VNControlledCapacityTasksQueue deadlock:
+// `AnalyzerTests.analyzerHandlesA300PhotoBatchWithoutDeadlockingOnVisionConcurrency`
+// timed out at its own 120s watchdog. Gating these three closed that
+// loophole -- confirmed by re-running the full suite several times after.
 @Test func visionReturnsResultForPlainImageWithoutCrashing() throws {
     let img = try ImageLoader.loadThumbnail(path: fixture("landscape.jpg"), maxPixel: 1024)
-    let result = VisionAnalyzer.analyze(img)
+    let result = VisionGate.run { VisionAnalyzer.analyze(img) }
     #expect(result.faces.isEmpty)
     #expect(result.aestheticScore >= -1.0 && result.aestheticScore <= 1.0)
 }
 
 @Test func visionBoxesAreNormalisedAndTopLeftOrigin() throws {
     let img = try ImageLoader.loadThumbnail(path: fixture("landscape.jpg"), maxPixel: 1024)
-    let result = VisionAnalyzer.analyze(img)
+    let result = VisionGate.run { VisionAnalyzer.analyze(img) }
     if let box = result.saliencyBox {
         #expect(box.count == 4)
         for v in box { #expect(v >= -0.001 && v <= 1.001) }
@@ -27,7 +36,7 @@ private func fixture(_ name: String) -> String {
 
 @Test func visionSceneTagsAreReturnedForARecognisableImage() throws {
     let img = try ImageLoader.loadThumbnail(path: fixture("landscape.jpg"), maxPixel: 1024)
-    let result = VisionAnalyzer.analyze(img)
+    let result = VisionGate.run { VisionAnalyzer.analyze(img) }
     // A flat navy field may legitimately produce no confident tags; assert the
     // contract, not the content.
     #expect(result.sceneTags.count <= 8)

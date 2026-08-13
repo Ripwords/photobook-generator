@@ -64,36 +64,6 @@ enum Analyzer {
     // downscaling, which distorts the Laplacian-based sharpness metric.
     static let analysisMaxPixel = 1536
 
-    // Caps the number of VisionAnalyzer.analyze CALLS in flight at once --
-    // and *only* that call, not the metrics that follow it. The guard below
-    // must stay scoped to the immediately-invoked closure that wraps
-    // `VisionAnalyzer.analyze(image)` and nothing else: an earlier version of
-    // this fix scoped the wait()/signal() pair to the entire enclosing
-    // autoreleasepool closure, which meant Metrics.palette/sharpness/contrast/
-    // perceptualHash and the PhotoFeatures construction all ran while still
-    // holding a permit, serializing pure-CPU work that has no business being
-    // gated -- a real throughput regression on multi-core machines, caught in
-    // review, not just a style nit.
-    //
-    // DispatchQueue.concurrentPerform below sizes its fan-out to the CPU core
-    // count, and each iteration's VisionAnalyzer.analyze makes synchronously-
-    // blocking VNImageRequestHandler.perform() calls, which internally wait
-    // on Vision's own VNControlledCapacityTasksQueue via the shared libdispatch
-    // global concurrent queue. Letting core-count-many of those block at once
-    // can starve the very queue Vision needs to service them: this is a real,
-    // reproduced deadlock (zero CPU progress, confirmed via `sample`), not a
-    // hypothetical one -- see sidecar/Tests/PhotobookEngineTests/HostileInputTests.swift
-    // and task-10-report.md. Decode (ImageLoader) and metrics (Metrics.swift)
-    // are CPU-bound and stay at full concurrentPerform width; only the Vision
-    // call itself is gated. DO NOT remove this as a "pessimisation" on a
-    // many-core machine -- removing it reintroduces the deadlock. 4 was
-    // chosen after re-measuring throughput against 2 once the guard was
-    // narrowed to just the Vision call (see task-10-report.md); if you need
-    // to change it, re-run that comparison and the stress test in
-    // AnalyzerTests.swift first.
-    private static let visionConcurrencyLimit = 4
-    private static let visionSemaphore = DispatchSemaphore(value: visionConcurrencyLimit)
-
     /// Long edge, in pixels, of the contact-sheet thumbnail written alongside
     /// each analysed photo. Sized for a grid tile on a Retina display at
     /// typical tile sizes -- large enough to look sharp, small enough that
@@ -139,16 +109,10 @@ enum Analyzer {
 
             // The permit is held for exactly the Vision call and nothing
             // else -- Metrics below runs at full concurrentPerform width,
-            // unthrottled. Signalled on every exit from this closure,
-            // including a future throwing change to VisionAnalyzer.analyze --
-            // a leaked permit here would starve the semaphore down to zero
-            // and turn this fix into a guaranteed hang instead of a bounded
-            // one.
-            let vision: VisionResult = {
-                visionSemaphore.wait()
-                defer { visionSemaphore.signal() }
-                return VisionAnalyzer.analyze(image)
-            }()
+            // unthrottled. See VisionGate's doc comment: every call site
+            // that invokes VisionAnalyzer.analyze must go through it, not
+            // call Vision directly.
+            let vision: VisionResult = VisionGate.run { VisionAnalyzer.analyze(image) }
 
             let palette = Metrics.palette(image, count: 6)
             let faceArea = vision.faces.reduce(0.0) { $0 + $1.box[2] * $1.box[3] }

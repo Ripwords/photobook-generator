@@ -44,6 +44,25 @@ import Foundation
     #expect(err.message == "malformed request")
 }
 
+@Test func decodesBenchmarkRequest() throws {
+    let json = #"{"id":"b1","kind":"benchmark","paths":["/a.jpg"]}"#
+    let req = try JSONDecoder().decode(Request.self, from: Data(json.utf8))
+    #expect(req.id == "b1")
+    #expect(req.kind == .benchmark)
+    #expect(req.paths == ["/a.jpg"])
+}
+
+@Test func benchmarkRequestDispatchesToBenchmarker() throws {
+    let json = #"{"id":"b2","kind":"benchmark","paths":[]}"#
+    let response = handle(line: json)
+    #expect(response.id == "b2")
+    guard case .benchmarked(let records) = response.result else {
+        Issue.record("expected a benchmarked result")
+        return
+    }
+    #expect(records.isEmpty)
+}
+
 @Test func envelopeDecodesGarbageKind() throws {
     let json = #"{"id":"e1","kind":"totally-not-a-kind"}"#
     let envelope = try JSONDecoder().decode(RequestEnvelope.self, from: Data(json.utf8))
