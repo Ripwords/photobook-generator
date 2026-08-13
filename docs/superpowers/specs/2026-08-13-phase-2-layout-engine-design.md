@@ -486,7 +486,18 @@ Carried as explicit unknowns, not assumptions.
 | # | Item | Blocks | How to settle |
 |---|---|---|---|
 | 1 | **Pixajoy alpha behaviour** — does upload preserve transparency, composite stacked boxes, and accept ~3 MB PNGs? | The export path only (§5.1). Everything in §3, §4 and §6 is independent. | Upload one transparent PNG over a coloured box. Fallback in §5.2. |
-| 2 | **Post-orientation dimensions** — does the Phase 1 feature record store width/height *after* applying EXIF orientation? | The scorer. | Read the sidecar's feature record construction. EXIF orientations 5–8 swap width and height; computing layout boxes before orienting drops every portrait photo into a landscape slot, silently. |
+| 2 | ~~**Post-orientation dimensions**~~ — **RESOLVED 2026-08-13 during planning.** `ExifReader.swift:40-41` already swaps width and height for orientations 5–8 before building `PhotoFeatures`, so `width`/`height` are post-orientation and the scorer can use them directly. No work needed. | — | — |
+
+One further fact established while planning, worth recording because it
+shaped the plan: **the full Swift feature record is already available to
+Rust.** `ResponseResult::Analyzed` carries it as `serde_json::Value` and the
+SQLite cache stores it whole; only `partial_photo` narrows it for the
+webview. So the scorer reads face boxes, the saliency box and the palette
+without any change to the analysis pipeline or the wire format.
+
+A gap found the same way: **`templates/` is not in `bundle.resources`**, so a
+packaged `.app` ships no template library at all and would produce a
+zero-page book. The plan fixes this in its Task 3.
 
 ---
 
