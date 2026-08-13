@@ -63,7 +63,13 @@ else
   FIND_ARGS=(-maxdepth 1 -type f)
 fi
 
-mapfile -t PATHS < <(find "$FOLDER" "${FIND_ARGS[@]}" | grep -iE "$SUPPORTED_EXT_REGEX" | sort)
+# `mapfile` is a bash-4 builtin; macOS ships bash 3.2 at /bin/bash, so this
+# reads into the array with a plain `while read` loop instead, which works
+# on both.
+PATHS=()
+while IFS= read -r found_path; do
+  PATHS+=("$found_path")
+done < <(find "$FOLDER" "${FIND_ARGS[@]}" | grep -iE "$SUPPORTED_EXT_REGEX" | sort)
 
 if [ "$LIMIT" -gt 0 ] 2>/dev/null; then
   PATHS=("${PATHS[@]:0:$LIMIT}")
