@@ -143,6 +143,29 @@ runtime and is not in the files.
 | Gutter dead band | x 11.000"–11.394" (normalised 0.491203–0.508797) |
 | Safe area | x 0.008797–0.991203, y 0.022150–0.977850 (normalised) |
 
+### Page structure (confirmed by the user, 2026-08-13) — and a template gap
+
+A book is **not** simply N/2 spreads. The first and last pages are **single pages facing
+the inside covers**, not halves of a spread:
+
+```
+[inside front cover] p1 | p2-p3 | p4-p5 | ... | p18-p19 | p20 [inside back cover]
+                    single   9 full spreads (18 pages)      single
+```
+
+- **20 pages** = 2 single pages + **9 spreads**
+- **40 pages** = 2 single pages + **19 spreads**
+- Generally: `2 singles + (N - 2) / 2 spreads`
+
+This corrects the earlier working assumption of "20 pages = 10 spreads".
+
+**⚠️ Gap: there are no single-page templates.** All 40 in `templates/` are spread
+templates at 22.394" × 8.894". A single page is a different canvas — about
+**11.197" × 8.894"** (trim 11" × 8.5", bleed 0.197" on the outer, top and bottom edges,
+and a **bound inner edge** that needs gutter treatment rather than bleed). Phase 2 needs a
+small second template set for these, and the packer must treat the first and last pages as
+structurally distinct rather than as spread halves.
+
 **Template contract, validator-enforced:** `rect` values are normalised to the spread
 canvas, but **`aspect_pref` is a real-world (inch) aspect ratio**, not the normalised rect
 ratio. The canvas is 2.518:1, so a Phase 2 scorer that assumes normalised ratios will
