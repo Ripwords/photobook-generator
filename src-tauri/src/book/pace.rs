@@ -158,7 +158,13 @@ fn single_fit(layout: &PageLayout, indices: &[usize], photos: &[Photo]) -> Optio
 ///   group by SPREAD counts, and two of the slots it sizes for are single
 ///   pages that hold only a half's worth, so requiring `slots.len() == n`
 ///   leaves the opening page blank whenever the first group is oversized.
-///   The largest half that fits is taken and the remainder is dropped.
+///
+/// Sizes are tried LARGEST FIRST and the first size with a surviving
+/// candidate wins. Committing to the largest size that fits and giving up
+/// when every half at that size is rejected -- a clipped face, a face in the
+/// gutter, too few pixels -- would leave the page blank while a smaller half
+/// in the same library was perfectly printable. A blank page is a legitimate
+/// pacing device but it must be the last resort, not the first failure.
 fn best_single<'a>(
     pool: &[(&'a str, &'a PageLayout)],
     photos: &[Photo],
@@ -171,23 +177,53 @@ fn best_single<'a>(
         return None;
     }
     let fits = |l: &PageLayout| l.side == side && !l.slots.is_empty() && l.slots.len() <= n;
-    let capacity = pool.iter().filter(|(_, l)| fits(l)).map(|(_, l)| l.slots.len()).max()?;
-    let indices: Vec<usize> = group.photos[..capacity].to_vec();
+    let sizes: BTreeSet<usize> =
+        pool.iter().filter(|(_, l)| fits(l)).map(|(_, l)| l.slots.len()).collect();
 
-    let mut scored: Vec<(f64, &str, &PageLayout)> = pool
-        .iter()
-        .filter(|(_, l)| fits(l) && l.slots.len() == capacity)
-        .filter_map(|(id, l)| single_fit(l, &indices, photos).map(|fit| (fit, *id, *l)))
-        .collect();
-    if scored.is_empty() {
-        return None;
+    for capacity in sizes.into_iter().rev() {
+        let indices = strongest(group, photos, capacity);
+        let mut scored: Vec<(f64, &str, &PageLayout)> = pool
+            .iter()
+            .filter(|(_, l)| fits(l) && l.slots.len() == capacity)
+            .filter_map(|(id, l)| single_fit(l, &indices, photos).map(|fit| (fit, *id, *l)))
+            .collect();
+        if scored.is_empty() {
+            continue; // nothing at this size survived; try a smaller half
+        }
+        let best = scored.iter().fold(f64::NEG_INFINITY, |m, (fit, _, _)| m.max(*fit));
+        // Exact equality is the definition of the tie the seed exists to
+        // break; anything looser would let the seed override a real
+        // preference.
+        scored.retain(|(fit, _, _)| *fit == best);
+        let (_, id, layout) = scored[tie_break(seed, scored.len())];
+        return Some((id, layout, indices));
     }
-    let best = scored.iter().fold(f64::NEG_INFINITY, |m, (fit, _, _)| m.max(*fit));
-    // Exact equality is the definition of the tie the seed exists to break;
-    // anything looser would let the seed override a real preference.
-    scored.retain(|(fit, _, _)| *fit == best);
-    let (_, id, layout) = scored[tie_break(seed, scored.len())];
-    Some((id, layout, indices))
+    None
+}
+
+/// The `capacity` strongest photos of a group, in group order.
+///
+/// A single page holds less than the group `pack` sized for a spread, so some
+/// photos are dropped. Which ones is a real decision, not a truncation: this
+/// mirrors `pack`'s own worst-first ranking when it trims to capacity --
+/// aesthetic percentile, then sharpness, then path for determinism -- and
+/// drops from that end, so the page keeps the strongest photos rather than
+/// whichever happen to sort first by filename.
+fn strongest(group: &Group, photos: &[Photo], capacity: usize) -> Vec<usize> {
+    if group.photos.len() <= capacity {
+        return group.photos.clone();
+    }
+    let mut ranked = group.photos.clone();
+    ranked.sort_by(|&a, &b| {
+        photos[a]
+            .aesthetic_pct
+            .cmp(&photos[b].aesthetic_pct)
+            .then(photos[a].sharpness_pct.cmp(&photos[b].sharpness_pct))
+            .then(photos[a].path.cmp(&photos[b].path))
+    });
+    let cut: BTreeSet<usize> =
+        ranked.into_iter().take(group.photos.len() - capacity).collect();
+    group.photos.iter().copied().filter(|i| !cut.contains(i)).collect()
 }
 
 /// Builds one single page, blank when nothing can be laid out on it.
@@ -933,6 +969,82 @@ mod tests {
             2,
             "the opening page must hold what the largest half can, not nothing"
         );
+    }
+
+    /// A photo whose two faces sit far apart vertically. Every 2-slot half in
+    /// the fixture library is ~2.4:1, so its crop window is too short to hold
+    /// both and clips one -- a hard rejection. The 1-slot halves are ~1.26:1,
+    /// keep full height, and accept the same photo.
+    fn split_face_photo(i: usize) -> Photo {
+        let face = |y: f64| Face {
+            box_: Rect::new(0.42, y, 0.10, 0.12),
+            capture_quality: Some(0.5),
+        };
+        Photo {
+            path: format!("/photos/s{i:03}.jpg"),
+            hash: format!("split-{i:03}"),
+            width: 4032,
+            height: 3024,
+            is_utility: false,
+            aesthetic_pct: 50,
+            sharpness_pct: 50,
+            near_dup_cluster: 100 + i as u32,
+            event_cluster: 0,
+            faces: vec![face(0.15), face(0.72)],
+            face_area_fraction: 0.024,
+            saliency_box: None,
+            palette: Vec::new(),
+            capture_quality: Some(0.5),
+        }
+    }
+
+    /// R2's remaining hole: committing to the largest half that FITS and then
+    /// discovering every half at that size is rejected leaves the page blank,
+    /// even though a smaller half in the same library would have been
+    /// accepted. A blank page must be the last resort, not the first failure.
+    #[test]
+    fn pace_falls_back_to_a_smaller_half_when_the_largest_is_rejected() {
+        let lib = fixture_library();
+        let photos = vec![split_face_photo(0), split_face_photo(1)];
+        let book = assemble(&photos, 20, &lib, &Weights::default(), 3);
+
+        // Precondition: the group is two photos and the largest right-hand
+        // half holds exactly two, so the fixed-capacity version stops there.
+        let largest_right = lib
+            .page_half_pool()
+            .iter()
+            .filter(|l| l.side == Side::Right)
+            .map(|l| l.slots.len())
+            .max()
+            .unwrap();
+        assert_eq!(largest_right, 2, "fixture: the largest right half holds two");
+
+        assert_eq!(
+            book.pages[0].placements.len(),
+            1,
+            "every 2-slot half clips a face here, so the page must fall back to a 1-up"
+        );
+        assert_ne!(book.pages[0].template_id, BLANK_TEMPLATE_ID);
+    }
+
+    /// When a group overflows its page half, the photo left out must be the
+    /// WEAKEST, by the same ranking `pack` uses when it trims to capacity --
+    /// not whichever one happens to sit last in path order. Photo 1 is made
+    /// the weakest of its group here precisely so that positional truncation
+    /// (which would keep photos 1 and 2) and ranking (which keeps 2 and 3)
+    /// disagree.
+    #[test]
+    fn pace_drops_the_weakest_photo_when_a_group_overflows_its_page_half() {
+        let lib = fixture_library();
+        let mut photos = fixture_photos(24);
+        assert_eq!(photos[2].aesthetic_pct, 74, "fixture: photo 2 is the strongest");
+        assert_eq!(photos[3].aesthetic_pct, 11);
+        photos[1].aesthetic_pct = 5; // now the weakest of the opening group
+
+        let book = assemble(&photos, 20, &lib, &Weights::default(), 5);
+        let opening: Vec<usize> =
+            book.pages[0].placements.iter().map(|p| p.photo_index).collect();
+        assert_eq!(opening, vec![2, 3], "the weakest photo of the group must be the one dropped");
     }
 
     // --- the index remap --------------------------------------------------

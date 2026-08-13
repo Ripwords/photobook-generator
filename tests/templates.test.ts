@@ -136,8 +136,20 @@ interface LoadedTemplate {
 
 const TEMPLATES_DIR = path.resolve(import.meta.dirname, "../templates");
 
+/**
+ * `weights.json` lives beside the templates by design -- it is the
+ * hot-reloadable soft-term weight table, loaded from the same directory so
+ * taste is tunable without a rebuild. It is NOT a template and does not
+ * conform to the Template shape, so it must be excluded here.
+ * `Library::load` in `src-tauri/src/templates.rs` applies the same filter;
+ * removing this one turns the whole suite red.
+ */
+const NOT_A_TEMPLATE = new Set(["weights.json"]);
+
 function loadTemplates(): LoadedTemplate[] {
-  const files = readdirSync(TEMPLATES_DIR).filter((f) => f.endsWith(".json"));
+  const files = readdirSync(TEMPLATES_DIR).filter(
+    (f) => f.endsWith(".json") && !NOT_A_TEMPLATE.has(f),
+  );
   return files.map((filename) => {
     const raw: unknown = JSON.parse(readFileSync(path.join(TEMPLATES_DIR, filename), "utf-8"));
     if (!isTemplate(raw)) {
