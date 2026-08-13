@@ -167,6 +167,52 @@ pub fn chunk_paths(paths: &[String], batch_size: usize) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// Chunk sizes for `commands::gather_chunked`'s incremental folder gather:
+/// starts small (4) so the very first photos surface as fast as possible
+/// (only 4 files' worth of hashing before the first progress event), then
+/// doubles each step until it reaches `BATCH_SIZE`, after which every
+/// chunk is exactly `BATCH_SIZE` -- the same size the sidecar already
+/// batches cache misses at internally, so once the ramp is warm a chunk
+/// costs one sidecar round-trip. The last chunk is whatever remains, which
+/// may be smaller than the target size.
+///
+/// This is the actual fix for the "0 / 283 frozen for 14 seconds" bug:
+/// the old code hashed and cache-looked-up all 283 paths (SHA-256 over
+/// every byte of every file, ~6.8GB for a folder of 24MB RAWs) in one pass
+/// before the first sidecar batch, let alone the first UI update, ever
+/// ran. Chunking the WHOLE pipeline -- hash, cache lookup, and sidecar
+/// dispatch, not just reporting -- means the first progress event fires
+/// after hashing only 4 files instead of the whole folder.
+pub(crate) fn ramp_chunk_sizes(total: usize) -> Vec<usize> {
+    let mut sizes = Vec::new();
+    let mut remaining = total;
+    let mut size = 4usize;
+    while remaining > 0 {
+        let take = size.min(remaining);
+        sizes.push(take);
+        remaining -= take;
+        size = (size * 2).min(BATCH_SIZE);
+    }
+    sizes
+}
+
+/// Splits `paths` into chunks sized by `ramp_chunk_sizes`. Distinct from
+/// `chunk_paths` above (which uniformly chunks the sidecar's OWN cache-miss
+/// batches at a fixed size): this ramp chunks the WHOLE folder end to end --
+/// hashing, cache lookup, and sidecar dispatch all happen per chunk in
+/// `commands::gather_chunked` -- so the first tiles appear after hashing a
+/// handful of files rather than the entire folder.
+pub(crate) fn chunk_paths_ramped(paths: &[String]) -> Vec<Vec<String>> {
+    let sizes = ramp_chunk_sizes(paths.len());
+    let mut chunks = Vec::with_capacity(sizes.len());
+    let mut offset = 0usize;
+    for size in sizes {
+        chunks.push(paths[offset..offset + size].to_vec());
+        offset += size;
+    }
+    chunks
+}
+
 /// RAW decode is materially slower than JPEG and has never been benchmarked,
 /// so this is deliberately generous.
 pub fn timeout_for(batch_len: usize) -> Duration {
@@ -338,6 +384,77 @@ mod tests {
     #[test]
     fn empty_input_produces_no_batches() {
         assert!(chunk_paths(&[], 10).is_empty());
+    }
+
+    // --- `ramp_chunk_sizes` / `chunk_paths_ramped`: the chunking that
+    // replaces "hash the whole folder before the first sidecar batch runs"
+    // with "hash, cache-lookup, and sidecar-dispatch one small chunk at a
+    // time". The brief calls for something like 4, 8, 16, 16, 16... with
+    // `BATCH_SIZE` as the steady-state size, in a named tested function.
+
+    #[test]
+    fn ramp_starts_at_four_doubles_to_batch_size_then_holds() {
+        // 4 + 8 + 16*k... : first two steps double, then every step is
+        // pinned at BATCH_SIZE (16) except possibly the final, partial,
+        // leftover chunk.
+        let sizes = ramp_chunk_sizes(283);
+        assert_eq!(&sizes[..4], &[4, 8, 16, 16], "ramp shape: 4, 8, then 16 steady-state");
+        let (last, steady_state) = sizes.split_last().expect("283 produces at least one chunk");
+        assert!(
+            steady_state[2..].iter().all(|&s| s == BATCH_SIZE),
+            "every chunk from the third up to (but excluding) the last must be exactly BATCH_SIZE"
+        );
+        assert!(
+            *last <= BATCH_SIZE,
+            "the final leftover chunk must be no larger than BATCH_SIZE"
+        );
+    }
+
+    #[test]
+    fn ramp_covers_every_path_exactly_once_in_order() {
+        for total in [0, 1, 3, 4, 5, 12, 13, 16, 17, 40, 283] {
+            let sizes = ramp_chunk_sizes(total);
+            assert_eq!(
+                sizes.iter().sum::<usize>(),
+                total,
+                "ramp for total={total} must sum to the total"
+            );
+        }
+    }
+
+    #[test]
+    fn ramp_of_zero_is_empty() {
+        assert!(ramp_chunk_sizes(0).is_empty());
+    }
+
+    #[test]
+    fn ramp_never_exceeds_batch_size_per_chunk() {
+        let sizes = ramp_chunk_sizes(500);
+        assert!(sizes.iter().all(|&s| s <= BATCH_SIZE));
+    }
+
+    #[test]
+    fn ramp_final_chunk_is_the_remainder_even_if_smaller_than_the_target() {
+        // 4 + 8 = 12, so total=17 leaves a final chunk of 5 (< BATCH_SIZE).
+        assert_eq!(ramp_chunk_sizes(17), vec![4, 8, 5]);
+    }
+
+    #[test]
+    fn chunk_paths_ramped_reconstructs_the_original_paths_in_order() {
+        let all = paths(283);
+        let chunks = chunk_paths_ramped(&all);
+        // Sanity: chunk sizes match the ramp exactly.
+        assert_eq!(
+            chunks.iter().map(Vec::len).collect::<Vec<_>>(),
+            ramp_chunk_sizes(283)
+        );
+        let flat: Vec<String> = chunks.into_iter().flatten().collect();
+        assert_eq!(flat, all, "chunking must not drop, duplicate, or reorder any path");
+    }
+
+    #[test]
+    fn chunk_paths_ramped_of_empty_input_is_empty() {
+        assert!(chunk_paths_ramped(&[]).is_empty());
     }
 
     #[test]

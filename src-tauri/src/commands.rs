@@ -86,8 +86,11 @@ pub enum AnalysisEvent {
     /// starts -- gives the frontend the denominator for a determinate
     /// progress bar.
     Scanned { total: usize },
-    /// Fired once per resolved batch (cache hits are treated as one batch,
-    /// then each `sidecar::BATCH_SIZE`-sized sidecar batch fires its own).
+    /// Fired once per resolved chunk of `sidecar::chunk_paths_ramped` (cache
+    /// hits within that chunk are one event; that chunk's cache misses, once
+    /// the sidecar resolves them, are another) -- see `gather_chunked`. The
+    /// ramp starts small (4 paths) so the first event fires after hashing a
+    /// handful of files rather than the whole folder.
     Batch {
         /// Only the photos that finished in THIS batch -- callers append
         /// these, never replace with them.
@@ -341,6 +344,119 @@ pub(crate) fn lookup_cache(db: &Db, paths: &[String]) -> Result<CacheLookup, Str
     })
 }
 
+/// Outcome of `gather_chunked`: the fully-gathered `ok` records (cache hits
+/// and freshly-analysed records interleaved in chunk-arrival order, NOT yet
+/// sorted or derived -- `finalize_photos` still owns that, once, over the
+/// complete set) plus the final running totals `analyze_folder` needs for
+/// its `AnalysisSummary`.
+pub(crate) struct GatherResult {
+    pub ok: Vec<serde_json::Value>,
+    pub cached: usize,
+    pub failed: usize,
+}
+
+/// The chunked incremental gather that fixes the "0 / 283 frozen for ~14
+/// seconds" stall: instead of hashing and cache-looking-up every path in the
+/// folder (a SHA-256 pass over the entire folder's bytes) before the first
+/// sidecar batch -- or the first UI update -- ever runs, this processes
+/// `paths` in `sidecar::chunk_paths_ramped` chunks and, for EACH chunk in
+/// turn: hashes + cache-looks-up just that chunk, streams its cache hits via
+/// `on_progress`, hands its cache misses to `analyze`, then streams the
+/// sidecar's results via `on_progress` too -- before moving to the next
+/// chunk. The ramp starts at 4 paths, so the very first `on_progress` call
+/// happens after hashing a handful of files rather than the whole folder;
+/// later chunks grow to `sidecar::BATCH_SIZE` to amortise sidecar
+/// round-trips once the user already has tiles on screen.
+///
+/// `analyze` is the sidecar call for one chunk's cache misses -- pluggable
+/// so this whole function is unit-testable without a live AppHandle/sidecar,
+/// the same reasoning as `sidecar::analyze_batches_with_progress` (which the
+/// real caller's `analyze` closure delegates to via `SidecarPool::analyze_all`).
+/// It must return exactly one record per input path, real or synthetic
+/// `failed` -- a contract `analyze_batches_with_progress` already guarantees
+/// for the real implementation.
+///
+/// Deliberately does NOT sort, cluster, or rank -- `ok` is handed to
+/// `finalize_photos` afterwards to do that once, over the complete set,
+/// exactly as before this change. Only the *gathering* became incremental;
+/// a rank computed against a partial population would be wrong, which is
+/// why `on_progress` only ever receives `partial_photo` projections that
+/// carry no rank at all.
+pub(crate) fn gather_chunked(
+    db: &Db,
+    paths: &[String],
+    mut analyze: impl FnMut(&[String]) -> Vec<serde_json::Value>,
+    mut on_progress: impl FnMut(Vec<serde_json::Value>, usize, usize, usize),
+) -> Result<GatherResult, String> {
+    let mut ok = Vec::with_capacity(paths.len());
+    let mut cached = 0usize;
+    let mut analysed = 0usize;
+    let mut failed = 0usize;
+
+    for chunk in crate::sidecar::chunk_paths_ramped(paths) {
+        let CacheLookup {
+            hits,
+            misses,
+            hash_failures,
+        } = lookup_cache(db, &chunk)?;
+
+        // Cache hits (and hash failures, discovered in the same pass) are
+        // known the instant `lookup_cache` returns for THIS chunk -- no
+        // sidecar round-trip needed -- so they stream immediately, ahead of
+        // whatever the sidecar produces for this chunk's misses. A chunk
+        // that turns out to be entirely cache hits (no misses at all) still
+        // reaches this branch and still reports progress -- it just never
+        // reaches the `analyze` call below.
+        cached += hits.len();
+        failed += hash_failures;
+        if !hits.is_empty() || hash_failures > 0 {
+            let photos = hits.iter().map(partial_photo).collect();
+            on_progress(photos, analysed, cached, failed);
+        }
+        ok.extend(hits);
+
+        if misses.is_empty() {
+            continue;
+        }
+
+        let records = analyze(&misses);
+
+        // Cache-write and collect the full-feature records `finalize_photos`
+        // needs, in one pass over `records`; `batch_progress` (the same pure
+        // ok/failed split `analyze_folder` used to call directly) derives
+        // the partial-photo projections and failure count from the SAME
+        // records right below, so the two views can never disagree about
+        // which records counted as ok.
+        let mut fresh = Vec::with_capacity(records.len());
+        for record in &records {
+            if record["status"] == "ok" {
+                let features = record["features"].clone();
+                if let (Some(hash), Some(path)) =
+                    (features["hash"].as_str(), features["path"].as_str())
+                {
+                    // A failed cache write must not discard a photo the
+                    // sidecar already spent potentially multi-minute
+                    // analysis producing -- it just means this photo won't
+                    // be a cache hit next run. Logged and swallowed, same
+                    // pattern as `analyze_folder`'s notification failure.
+                    if let Err(err) = db.put_features(hash, path, &features.to_string()) {
+                        log::warn!("failed to write cache entry for {path}: {err}");
+                    }
+                }
+                fresh.push(features);
+            }
+        }
+
+        let (photos, batch_failed) = batch_progress(&records);
+        analysed += photos.len();
+        failed += batch_failed;
+        on_progress(photos, analysed, cached, failed);
+        ok.extend(fresh);
+    }
+
+    Ok(GatherResult { ok, cached, failed })
+}
+
 #[tauri::command]
 pub async fn analyze_folder(
     app: AppHandle,
@@ -380,7 +496,6 @@ pub async fn analyze_folder(
 
     let db_path = app_data_dir.join("photobook.sqlite");
     std::fs::create_dir_all(db_path.parent().expect("has parent")).map_err(|e| e.to_string())?;
-    let db = Db::open(&db_path).map_err(|e| e.to_string())?;
 
     // The webview cannot decode RAW/HEIC originals at all and loading
     // hundreds of full-size decoded images is not viable, so the sidecar
@@ -400,104 +515,60 @@ pub async fn analyze_folder(
     }
     let thumbnail_dir = thumbnail_dir.to_string_lossy().into_owned();
 
-    // Hash everything first (cheap, no decode), then send only cache misses to
-    // the sidecar. Re-running on the same folder should do almost no work.
-    // This ordering -- hash, then consult the cache, THEN call the sidecar --
-    // is the entire point of having a cache at all.
-    let CacheLookup {
-        hits,
-        misses,
-        hash_failures,
-    } = lookup_cache(&db, &paths)?;
-    let mut ok: Vec<serde_json::Value> = hits;
-    let cached = ok.len();
-    let mut failed = hash_failures;
-
-    // Cache hits (and hash failures, discovered in the same pass) are known
-    // the instant `lookup_cache` returns -- no sidecar round-trip needed --
-    // so they stream as one immediate batch, ahead of anything the sidecar
-    // produces. `analysed` is 0 here: nothing has come back from the sidecar
-    // yet.
-    if !ok.is_empty() || hash_failures > 0 {
-        let photos = ok.iter().map(partial_photo).collect();
-        if let Err(err) = on_event.send(AnalysisEvent::Batch {
-            photos,
-            analysed: 0,
-            cached,
-            failed,
-        }) {
-            log::warn!("failed to send cache-hit Batch event: {err}");
-        }
-    }
-
-    // `Sidecar::request` (called inside `analyze_all`) does a *blocking*
-    // `std::sync::mpsc::Receiver::recv_timeout` while it waits for the
-    // sidecar's stdout-drain task -- a tokio task spawned in `Sidecar::spawn`
-    // -- to hand it the response line. Both that blocking wait and the drain
-    // task need to run on the tauri/tokio async worker pool. Calling it
-    // inline here (this fn runs as a task on that same pool, since it's an
-    // async `#[tauri::command]`) can starve the drain task of a thread to
-    // run on: on a machine with few worker threads, the request then
-    // resolves only once its OWN timeout elapses, even though the sidecar
-    // already responded. See
+    // `gather_chunked` hashes, cache-looks-up, and dispatches to the sidecar
+    // one small chunk of paths at a time (see `sidecar::chunk_paths_ramped`)
+    // instead of hashing the whole folder before anything can stream --
+    // that upfront hash pass is what used to leave the UI at "0 / 283" for
+    // ~14 seconds on a folder of 24MB RAWs. `Sidecar::request` (called
+    // inside `analyze_all`, itself called from `analyze`'s closure below)
+    // does a *blocking* `std::sync::mpsc::Receiver::recv_timeout` while it
+    // waits for the sidecar's stdout-drain task -- a tokio task spawned in
+    // `Sidecar::spawn` -- to hand it the response line. Both that blocking
+    // wait and the drain task need to run on the tauri/tokio async worker
+    // pool. Running the WHOLE gather (hashing included, also blocking I/O)
+    // inline here, on the same pool this `async fn` itself runs on, can
+    // starve the drain task of a thread to run on: on a machine with few
+    // worker threads, a request then resolves only once its OWN timeout
+    // elapses, even though the sidecar already responded. See
     // `.superpowers/sdd/2026-08-12-phase-1-analysis-pipeline/thumbnails-report.md`
-    // for the traced root cause. `spawn_blocking` moves the blocking wait
+    // for the traced root cause. `spawn_blocking` moves the entire gather
     // onto tokio's separate blocking-thread pool, leaving the async worker
-    // pool free for the drain task.
-    let records = {
+    // pool free for the drain task throughout the run, not just during the
+    // sidecar calls.
+    let GatherResult {
+        ok: gathered,
+        cached,
+        failed,
+    } = {
         let app_for_pool = app.clone();
         let on_event_for_pool = on_event.clone();
-        // Running totals for the sidecar's share of the work, seeded from
-        // what the cache pass already found. `on_batch` closes over these
-        // (FnMut) and fires once per `sidecar::BATCH_SIZE`-sized batch, via
-        // `batch_progress` -- the pure ok/failed split -- so the closure
-        // itself does nothing but accumulate and send.
-        let mut analysed_so_far = 0usize;
-        let mut failed_so_far = failed;
-        tauri::async_runtime::spawn_blocking(move || -> Result<Vec<serde_json::Value>, String> {
+        let paths_for_pool = paths.clone();
+        let db_path_for_pool = db_path.clone();
+        tauri::async_runtime::spawn_blocking(move || -> Result<GatherResult, String> {
+            let db = Db::open(&db_path_for_pool).map_err(|e| e.to_string())?;
             let state = app_for_pool.state::<AppState>();
             let mut pool = state.pool.lock().map_err(|e| e.to_string())?;
-            Ok(
-                pool.analyze_all(&app_for_pool, &misses, &thumbnail_dir, |batch| {
-                    let (photos, batch_failed) = batch_progress(batch);
-                    analysed_so_far += photos.len();
-                    failed_so_far += batch_failed;
+            gather_chunked(
+                &db,
+                &paths_for_pool,
+                |misses| pool.analyze_all(&app_for_pool, misses, &thumbnail_dir, |_| {}),
+                |photos, analysed_now, cached_now, failed_now| {
                     if let Err(err) = on_event_for_pool.send(AnalysisEvent::Batch {
                         photos,
-                        analysed: analysed_so_far,
-                        cached,
-                        failed: failed_so_far,
+                        analysed: analysed_now,
+                        cached: cached_now,
+                        failed: failed_now,
                     }) {
-                        log::warn!("failed to send sidecar-batch Batch event: {err}");
+                        log::warn!("failed to send Batch event: {err}");
                     }
-                }),
+                },
             )
         })
         .await
         .map_err(|e| e.to_string())??
     };
 
-    for record in records {
-        if record["status"] == "ok" {
-            let features = record["features"].clone();
-            if let (Some(hash), Some(path)) = (features["hash"].as_str(), features["path"].as_str())
-            {
-                // A failed cache write must not discard a photo that the
-                // sidecar already spent potentially multi-minute analysis
-                // producing -- it just means this photo won't be a cache hit
-                // next run. Logged and swallowed, matching the notification
-                // failure path below.
-                if let Err(err) = db.put_features(hash, path, &features.to_string()) {
-                    log::warn!("failed to write cache entry for {path}: {err}");
-                }
-            }
-            ok.push(features);
-        } else {
-            failed += 1;
-        }
-    }
-
-    let ok = finalize_photos(ok);
+    let ok = finalize_photos(gathered);
 
     // The window handle and the notification call both need a live
     // AppHandle and cannot be unit-tested; `should_notify` (the decision of
@@ -763,6 +834,237 @@ mod tests {
         assert_eq!(result.hits.len(), 1);
         assert_eq!(result.misses.len(), 1);
         assert_eq!(result.hash_failures, 1);
+    }
+
+    // --- `gather_chunked`: the incremental hash -> cache -> sidecar ->
+    // progress pipeline that replaces hashing the whole folder up front
+    // (see `sidecar::ramp_chunk_sizes`'s doc comment for the bug this
+    // fixes). Uses a real (in-memory) `Db` and real temp files, same style
+    // as `lookup_cache`'s own tests above, with a fake `analyze` closure
+    // standing in for the sidecar -- the same pattern
+    // `sidecar::analyze_batches_with_progress`'s tests use for `call`.
+
+    fn gather_ok_record(path: &str, hash: &str, aesthetic: f64, capture: f64) -> serde_json::Value {
+        serde_json::json!({
+            "status": "ok",
+            "features": {
+                "path": path,
+                "hash": hash,
+                "aestheticScore": aesthetic,
+                "sharpness": 10.0,
+                "phash": 1u64,
+                "exif": { "captureDate": capture },
+                "faces": [],
+            }
+        })
+    }
+
+    /// A chunk that resolves to zero misses (every path in it is a cache
+    /// hit) must still report progress -- otherwise a folder that is
+    /// entirely a cache-warm re-run would stream nothing until the very
+    /// last chunk happened to contain a miss, or nothing at all if the
+    /// whole folder were cached.
+    #[test]
+    fn gather_chunked_reports_progress_for_a_chunk_that_is_entirely_cache_hits() {
+        let db = Db::open_in_memory().unwrap();
+        let path = write_temp_file("gather-all-cached.jpg", b"gather all cached bytes");
+        let hash = hash_file(Path::new(&path)).unwrap();
+        db.put_features(
+            &hash,
+            &path,
+            &serde_json::json!({"path": path, "status": "ok"}).to_string(),
+        )
+        .unwrap();
+
+        let mut progress_calls = 0;
+        let result = gather_chunked(
+            &db,
+            std::slice::from_ref(&path),
+            |_misses| panic!("a chunk with no misses must never call analyze"),
+            |photos, _analysed, _cached, _failed| {
+                progress_calls += 1;
+                assert_eq!(photos.len(), 1, "the cache-hit chunk must stream its photo");
+            },
+        )
+        .unwrap();
+
+        assert_eq!(progress_calls, 1, "a fully-cached chunk must still emit progress");
+        assert_eq!(result.cached, 1);
+        assert_eq!(result.failed, 0);
+        assert_eq!(result.ok.len(), 1);
+    }
+
+    #[test]
+    fn gather_chunked_counts_reconcile_against_the_input() {
+        let db = Db::open_in_memory().unwrap();
+
+        let cached_path = write_temp_file("gather-counted-cached.jpg", b"gather counted cached");
+        let hash = hash_file(Path::new(&cached_path)).unwrap();
+        db.put_features(
+            &hash,
+            &cached_path,
+            &serde_json::json!({"path": cached_path, "status": "ok"}).to_string(),
+        )
+        .unwrap();
+
+        let miss_path = write_temp_file("gather-counted-miss.jpg", b"gather counted miss");
+        let failing_miss_path =
+            write_temp_file("gather-counted-failing-miss.jpg", b"gather counted failing miss");
+        let missing_path = "/nonexistent/pbg-cache-test/gather-gone.jpg".to_string();
+
+        let input = vec![
+            cached_path,
+            miss_path,
+            failing_miss_path.clone(),
+            missing_path,
+        ];
+
+        let result = gather_chunked(
+            &db,
+            &input,
+            |misses| {
+                misses
+                    .iter()
+                    .map(|p| {
+                        if *p == failing_miss_path {
+                            crate::sidecar::failure_record(p, "boom")
+                        } else {
+                            gather_ok_record(p, "freshhash", 0.5, 0.0)
+                        }
+                    })
+                    .collect()
+            },
+            |_photos, _analysed, _cached, _failed| {},
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.ok.len() + result.failed,
+            input.len(),
+            "every input path must end up counted as either a successful record or a failure"
+        );
+        assert_eq!(result.cached, 1);
+        assert_eq!(result.failed, 2, "one hash failure, one sidecar failure");
+        assert_eq!(result.ok.len(), 2, "one cache hit, one fresh sidecar success");
+    }
+
+    /// The invariant the task brief calls out by name: positional
+    /// correspondence must survive from the chunked gather all the way
+    /// through `finalize_photos`. Paths are handed to `gather_chunked` in
+    /// DESCENDING order -- the opposite of the ascending order
+    /// `finalize_photos` sorts into -- and split across TWO ramp chunks (5
+    /// paths -> [4, 1], see `sidecar::ramp_chunk_sizes`), with a mix of
+    /// cache hits and sidecar misses in EACH chunk, so a bug that let
+    /// derived data ride along with gather/append order instead of each
+    /// record's own `path` field would swap data between photos.
+    ///
+    /// Mutation-checked: commenting out `finalize_photos`'s `ok.sort_by`
+    /// call makes this test fail (along with the two pre-existing
+    /// sort-order tests below it) -- see
+    /// `.superpowers/sdd/2026-08-12-phase-1-analysis-pipeline/chunked-analysis-report.md`
+    /// for the transcript.
+    #[test]
+    fn positional_correspondence_survives_chunked_gather_into_finalize_photos() {
+        let db = Db::open_in_memory().unwrap();
+
+        // Cache hits: pre-populate the db for "e" and "d" with known
+        // aesthetic/capture values. `lookup_cache` overwrites the stale
+        // cached `path` with the current one on every hit -- see
+        // `a_cache_hit_carries_the_current_path_not_the_stale_cached_one`.
+        let path_e = write_temp_file("gather-positional-e.jpg", b"content e");
+        let path_d = write_temp_file("gather-positional-d.jpg", b"content d");
+        let path_c = write_temp_file("gather-positional-c.jpg", b"content c");
+        let path_b = write_temp_file("gather-positional-b.jpg", b"content b");
+        let path_a = write_temp_file("gather-positional-a.jpg", b"content a");
+
+        let day = 86_400.0;
+        db.put_features(
+            &hash_file(Path::new(&path_e)).unwrap(),
+            &path_e,
+            &gather_ok_record(&path_e, "hash-e", 0.9, 4.0 * day)["features"].to_string(),
+        )
+        .unwrap();
+        db.put_features(
+            &hash_file(Path::new(&path_d)).unwrap(),
+            &path_d,
+            &gather_ok_record(&path_d, "hash-d", 0.7, 3.0 * day)["features"].to_string(),
+        )
+        .unwrap();
+
+        // Descending path order, split by the ramp into
+        // chunk1=[e,d,c,b] (cache hits e,d; misses c,b) and chunk2=[a] (a
+        // miss) -- the opposite of the ascending order finalize_photos
+        // sorts into.
+        let input = vec![
+            path_e.clone(),
+            path_d.clone(),
+            path_c.clone(),
+            path_b.clone(),
+            path_a.clone(),
+        ];
+
+        let result = gather_chunked(
+            &db,
+            &input,
+            |misses| {
+                misses
+                    .iter()
+                    .map(|p| {
+                        let (aesthetic, capture) = if *p == path_c {
+                            (0.5, 2.0 * day)
+                        } else if *p == path_b {
+                            (0.3, 1.0 * day)
+                        } else if *p == path_a {
+                            (0.1, 0.0)
+                        } else {
+                            panic!("unexpected miss: {p}")
+                        };
+                        gather_ok_record(p, "freshhash", aesthetic, capture)
+                    })
+                    .collect()
+            },
+            |_photos, _analysed, _cached, _failed| {},
+        )
+        .unwrap();
+
+        assert_eq!(result.ok.len(), 5);
+
+        let finalized = finalize_photos(result.ok);
+        let paths: Vec<&str> = finalized
+            .iter()
+            .map(|p| p["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                path_a.as_str(),
+                path_b.as_str(),
+                path_c.as_str(),
+                path_d.as_str(),
+                path_e.as_str(),
+            ],
+            "finalize_photos must sort into ascending path order regardless of gather/chunk order"
+        );
+
+        let by_path = |p: &str| finalized.iter().find(|f| f["path"] == p).unwrap();
+
+        // aestheticPct must rank by the RAW aestheticScore each path was
+        // given above (e: 0.9 highest ... a: 0.05 lowest), not by
+        // gather/chunk order.
+        let pct = |p: &str| by_path(p)["aestheticPct"].as_u64().unwrap();
+        assert!(pct(&path_a) < pct(&path_b));
+        assert!(pct(&path_b) < pct(&path_c));
+        assert!(pct(&path_c) < pct(&path_d));
+        assert!(pct(&path_d) < pct(&path_e));
+
+        // eventCluster must rank by the RAW captureDate each path was given
+        // above (a: earliest ... e: latest), not by gather/chunk order.
+        let cluster = |p: &str| by_path(p)["eventCluster"].as_u64().unwrap();
+        assert_eq!(cluster(&path_a), 0);
+        assert_eq!(cluster(&path_b), 1);
+        assert_eq!(cluster(&path_c), 2);
+        assert_eq!(cluster(&path_d), 3);
+        assert_eq!(cluster(&path_e), 4);
     }
 
     // --- Additional tests beyond the brief: `finalize_photos`, which the

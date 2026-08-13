@@ -108,7 +108,7 @@ const remainingSkeletonCount = computed(() =>
             <template v-if="scannedTotal > 0">
               <span class="font-mono tabular-nums text-default">{{ processed }}</span> /
               <span class="font-mono tabular-nums text-default">{{ scannedTotal }}</span>
-              analyzed in <span class="text-default">{{ folderLabel }}</span>
+              processed in <span class="text-default">{{ folderLabel }}</span>
             </template>
             <template v-else>
               Scanning <span class="text-default">{{ folderLabel }}</span
