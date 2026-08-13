@@ -61,3 +61,9 @@ harness = false
 [[test]]
 name = "streaming_order"
 harness = false
+
+# Same reasoning as `sidecar_worker_pool` above: `Sidecar::spawn` needs a
+# real `Wry` `AppHandle`, built on the process's actual main thread.
+[[test]]
+name = "sidecar_stderr"
+harness = false

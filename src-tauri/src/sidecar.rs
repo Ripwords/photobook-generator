@@ -38,14 +38,31 @@ impl Sidecar {
 
         // The plugin's event channel has capacity 1; a dedicated drain thread
         // prevents the reader thread from blocking.
+        //
+        // Stdout and stderr share this one channel/loop (that's how the
+        // shell plugin delivers both), so a burst of stderr diagnostics is
+        // read out just as promptly as stdout lines -- nothing here waits on
+        // a full pipe. Stderr lines are logged directly and never touch
+        // `tx`/`lines`: that channel feeds response correlation in
+        // `request`, and a stderr line landing there would be parsed as a
+        // malformed response and could eat a request's timeout.
         let (tx, lines) = mpsc::channel();
         tauri::async_runtime::spawn(async move {
             while let Some(event) = rx.recv().await {
-                if let CommandEvent::Stdout(bytes) = event {
-                    let text = String::from_utf8_lossy(&bytes).trim().to_string();
-                    if !text.is_empty() && tx.send(text).is_err() {
-                        break;
+                match event {
+                    CommandEvent::Stdout(bytes) => {
+                        let text = String::from_utf8_lossy(&bytes).trim().to_string();
+                        if !text.is_empty() && tx.send(text).is_err() {
+                            break;
+                        }
                     }
+                    CommandEvent::Stderr(bytes) => {
+                        let text = String::from_utf8_lossy(&bytes).trim().to_string();
+                        if !text.is_empty() {
+                            log::warn!("sidecar stderr: {text}");
+                        }
+                    }
+                    _ => {}
                 }
             }
         });
