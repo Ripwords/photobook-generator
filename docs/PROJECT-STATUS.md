@@ -172,6 +172,72 @@ does not carry the `captureQuality` the tie-break reads. So Rust sends the **ans
 and `keepers()` is now a filter on that flag with no ranking of its own. **Do not
 reintroduce a second copy of this rule; send this one's verdict instead.**
 
+### User-controlled selection (built after Phase 2, on top of that one authority)
+
+The engine no longer decides alone. Every photo carries one of three states,
+keyed by **content hash**: `Auto` (the engine decides, the default), `Include`
+(in the book whatever the engine thinks) and `Exclude` (out of it).
+
+**Cull proposes; the user disposes.** `book::cull::cull(photos, overrides)` is
+still the single authority — it now takes the decisions and honours them:
+
+| Rule | Where |
+|---|---|
+| `Exclude` never survives, and its burst promotes the runner-up | `cull` (excluded before the cluster contest) |
+| `Include` always survives — a lost near-duplicate, an `is_utility` image, anything | `cull` |
+| An `Include` is **additive**: it does NOT displace the `Auto` winner of its own cluster | `cull` |
+| An `Include` is never trimmed to capacity; the weakest `Auto` photo goes instead | `book::pack::pack` |
+| A crowded chapter strands an `Auto` photo, and a chapter holding an `Include` is apportioned a slot first | `pack`, `apportion_slots` |
+| `Include` photos that **alone** exceed capacity are REPORTED, never cut | `pack` -> `IncludeOverflow` |
+| A book that lost an `Include` by ANY other route is refused | `pace::assemble`'s post-condition -> `BookError::IncludedNotPlaced` |
+
+**On the cluster ruling.** Including a photo whose cluster winner is `Auto`
+keeps BOTH. An `Include` is a statement about that photo only; making it
+displace the winner would mean ticking one photo silently removes a different
+photo the user never touched — the same class of surprise the feature exists
+to remove — and `Exclude` already exists for saying "not that one".
+
+**The post-condition is the load-bearing guard, not the per-site ones.** There
+are four places a photo can be lost (capacity trim, chapter apportionment,
+page-half overflow, a template rejecting it outright) and the last two are not
+individually preventable. `assemble` therefore checks the FINISHED book and
+refuses to return one that is missing a photo the user asked for. Proven live:
+with the capacity check in `pack` deleted, the post-condition still catches the
+loss — it degrades from a precise message to a vaguer one, never to a silent
+drop.
+
+**Do not reintroduce a second frontend rule.** An override toggled in the UI
+goes DOWN to Rust (`commands::apply_photo_overrides`, which re-runs
+`stamp_kept`) and the records come back with `kept` re-stamped.
+`usePhotoOverrides` is the only place that happens, and
+`tests/overrides.test.ts` pins it with a mock that returns a verdict
+*disagreeing* with the override, so a composable applying the decision itself
+produces different output from one that forwarded it.
+
+**Persistence.** `project_photo_overrides (project_id, hash, state)`, written in
+the same transaction as the project row and its photo list, returned on
+`ProjectDetail.overrides`. `Auto` is never stored — it is the absence of a
+decision, on both sides of the wire and in SQLite — and an unrecognised state
+token fails the load rather than degrading to `Auto`, because a silently
+forgotten decision is invisible.
+
+**Two things the earlier docs got wrong, corrected here:**
+
+- The contact sheet did **not** "render every photo with a keeper marker" — it
+  rendered `groupByEvent(keepers(...))`, i.e. only the survivors. A photo the
+  engine dropped was invisible, and an invisible photo cannot be asked for, so
+  the include control had nothing to act on. `index.vue` now renders the whole
+  analysed set with the left-out ones dimmed, behind a "Show the N left out"
+  switch that defaults to ON.
+- `vitest.config.ts` now aliases `~` to `app/`. Without it, no file under
+  `app/` that imports `~/types/...` could be unit-tested at all.
+
+**Known cost, not yet measured:** every override toggle ships the full analysed
+photo array to Rust and back. That array carries faces, palettes and saliency
+boxes, so a folder of several hundred photos is a multi-megabyte round trip per
+click. It is in-process IPC and was fine on fixtures; measure it at the
+real-photo run and cache the parsed set in `AppState` if it bites.
+
 ### What Phase 3 and 4 can assume already exists
 
 - **Projects persist and reopen.** `projects`, `project_photos`, `project_exports` tables;
@@ -798,7 +864,8 @@ beside it. The design calls for the OS keychain, read from Rust.
   Consider generated types before Phase 2 widens this boundary.
 - ~~`count_keepers` in Rust duplicates `keepers()` in TypeScript.~~ **Fixed in Phase 2** —
   `book::cull::cull` is the single authority and its verdict travels on the wire as
-  `AnalyzedPhoto.kept`. See "One culling authority" above.
+  `AnalyzedPhoto.kept`. See "One culling authority" above, and
+  "User-controlled selection" for the include/exclude states layered on top of it.
 - `.oxlintrc.json` enables only `correctness` and `suspicious`, so `no-explicit-any` is
   off and the "never use `any`" convention rests on discipline.
 - No `typecheck` script; `nuxi typecheck` and `vue-tsc` both fail on environment issues.
