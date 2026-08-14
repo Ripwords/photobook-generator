@@ -2431,11 +2431,19 @@ mod tests {
     /// would count zero keepers regardless of the values below. A counter
     /// keeps `path`/`hash` unique per call so distinct photos in one test
     /// don't collide.
+    /// Percentiles are passed as INTEGERS, not floats. `from_features` reads
+    /// `sharpnessPct`/`aestheticPct` with `as_u64()`, and `serde_json` stores
+    /// a float literal as an F64 variant whose `as_u64()` is `None` -- so a
+    /// fixture written as `10.0` silently reaches `cull` as percentile 0 for
+    /// EVERY photo, making the "sharper, same cluster -> wins" comments below
+    /// untrue of the data. The tests still pass because they assert counts,
+    /// which per-cluster deduplication alone decides, but the fixture must
+    /// not lie about what it is feeding in.
     fn kept_candidate(
         is_utility: bool,
         cluster: u64,
-        sharpness: f64,
-        aesthetic: f64,
+        sharpness: u64,
+        aesthetic: u64,
     ) -> serde_json::Value {
         static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2461,16 +2469,16 @@ mod tests {
 
     #[test]
     fn utility_photos_are_never_keepers() {
-        let photos = vec![kept_candidate(true, 0, 100.0, 100.0)];
+        let photos = vec![kept_candidate(true, 0, 100, 100)];
         assert_eq!(count_keepers(&photos), 0);
     }
 
     #[test]
     fn keeps_one_photo_per_near_duplicate_cluster() {
         let photos = vec![
-            kept_candidate(false, 0, 10.0, 0.0),
-            kept_candidate(false, 0, 20.0, 0.0), // sharper, same cluster -> wins
-            kept_candidate(false, 1, 5.0, 0.0),  // different cluster -> also kept
+            kept_candidate(false, 0, 10, 0),
+            kept_candidate(false, 0, 20, 0), // sharper, same cluster -> wins
+            kept_candidate(false, 1, 5, 0),  // different cluster -> also kept
         ];
         assert_eq!(count_keepers(&photos), 2);
     }
@@ -2478,8 +2486,8 @@ mod tests {
     #[test]
     fn ties_on_sharpness_are_broken_by_aesthetic_percentile() {
         let photos = vec![
-            kept_candidate(false, 0, 50.0, 10.0),
-            kept_candidate(false, 0, 50.0, 90.0), // same sharpness, higher aesthetic
+            kept_candidate(false, 0, 50, 10),
+            kept_candidate(false, 0, 50, 90), // same sharpness, higher aesthetic
         ];
         // Still one keeper per cluster regardless of which one wins; the
         // count itself doesn't reveal the tie-break, but this at least
