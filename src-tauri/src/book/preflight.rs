@@ -483,8 +483,15 @@ mod tests {
     /// narrow crop turns a small offset into a huge one once divided by
     /// `crop.w`, which can spill the "mapped" rect far past the page edge
     /// and trip `in_trim` on a photo that never shows the face at all.
+    ///
+    /// The same fixture carries a SALIENCY box outside the crop, because the
+    /// saliency arm has its own containment rule (`intersect`, not
+    /// `contained_in`) and every other saliency test here uses `full_crop()`,
+    /// under which `intersect` is the identity and therefore untested.
+    /// Dropping the `intersect` call leaves this box mapping to x >= 2.6 --
+    /// far past the fold -- and a spurious gutter warning appears.
     #[test]
-    fn preflight_ignores_a_face_wholly_outside_the_crop() {
+    fn preflight_ignores_a_face_or_saliency_box_wholly_outside_the_crop() {
         let dir = tempdir();
         // Cropping to 10% of the frame width divides effective DPI by 10, so
         // the source needs 10x the pixels `px_for_dpi(400.0)` would give a
@@ -494,12 +501,35 @@ mod tests {
         // The crop keeps only the left 10% of the frame; the face sits at
         // x=0.5, entirely past the crop's right edge.
         p.faces = vec![Face { box_: Rect::new(0.5, 0.4, 0.05, 0.1), capture_quality: Some(0.8) }];
+        p.saliency_box = Some(Rect::new(0.5, 0.4, 0.05, 0.1));
         let crop = Rect::new(0.0, 0.0, 0.10, 1.0);
         let book = book_with(clean_slot(), crop, Side::Left);
         assert_eq!(
             preflight(&book, &[p], dir.path()),
             Vec::new(),
-            "a face outside the crop must not generate a spurious trim/gutter finding"
+            "content outside the crop must not generate a spurious trim/gutter finding"
+        );
+    }
+
+    /// The clipping half of the same rule, which the wholly-outside case
+    /// above cannot reach: a saliency box that OVERLAPS the crop must be
+    /// judged on the surviving sliver only. Here the box runs from x=0.05 to
+    /// x=0.55 while the crop keeps 0..0.10, so the visible part maps to the
+    /// left 60% of a slot that ends well clear of the fold -- no warning.
+    /// Map the whole declared box instead and it reaches x=2.85, deep past
+    /// the fold, and warns about content the reader never sees.
+    #[test]
+    fn preflight_judges_a_saliency_box_on_the_part_the_crop_keeps() {
+        let dir = tempdir();
+        let mut p = photo(px_for_dpi(4000.0), px_for_dpi(4000.0) * 2 / 3);
+        p.path = "/dev/null".into();
+        p.saliency_box = Some(Rect::new(0.05, 0.4, 0.5, 0.1));
+        let crop = Rect::new(0.0, 0.0, 0.10, 1.0);
+        let book = book_with(clean_slot(), crop, Side::Left);
+        assert_eq!(
+            preflight(&book, &[p], dir.path()),
+            Vec::new(),
+            "only the cropped-in part of the saliency box may be checked"
         );
     }
 

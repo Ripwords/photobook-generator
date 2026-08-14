@@ -374,10 +374,17 @@ mod tests {
     }
 
     /// Guards the real authored library, not a fixture: every file in
-    /// `templates/` must decompose. Ignored by default so the unit tests
-    /// stay hermetic, but run in CI and after any authoring change.
+    /// `templates/` must decompose.
+    ///
+    /// This and the two below used to be `#[ignore]`d "so the unit tests stay
+    /// hermetic", and `bun run test:rust` passes no `--ignored`. There is no
+    /// CI. So the only guards on the authored library -- including the 1..=6
+    /// group-size coverage the whole packer rests on -- ran nowhere at all.
+    /// Measured before un-ignoring: all three together finish in under 10 ms
+    /// (three loads of 37 small JSON files from a path derived from
+    /// `CARGO_MANIFEST_DIR`, which is always present in a checkout). There
+    /// was no cost to weigh against the coverage.
     #[test]
-    #[ignore = "reads the real templates/ directory"]
     fn templates_real_library_decomposes_cleanly() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../templates");
         let lib = Library::load(&dir).expect("the real library must decompose");
@@ -394,7 +401,6 @@ mod tests {
     /// five keepers unplaceable, so the covered range is a library-level
     /// invariant rather than a nice-to-have.
     #[test]
-    #[ignore = "reads the real templates/ directory"]
     fn templates_real_library_covers_every_group_size_from_one_to_six() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../templates");
         let lib = Library::load(&dir).expect("the real library must decompose");
@@ -429,7 +435,6 @@ mod tests {
     /// before Task 13; this pins the floor so a later edit cannot quietly
     /// starve `pace` of bleed pages again.
     #[test]
-    #[ignore = "reads the real templates/ directory"]
     fn templates_real_library_offers_both_edge_treatments() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../templates");
         let lib = Library::load(&dir).expect("the real library must decompose");

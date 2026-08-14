@@ -487,6 +487,18 @@ mod tests {
         assert_eq!(choose_group_size(2, &[3, 5], 1, 0), None, "nothing in {{3,5}} covers 2");
         assert_eq!(choose_group_size(2, &[3, 5], 4, -1), None, "nor with slots still to fill");
         assert_eq!(choose_group_size(3, &[3, 5], 1, 0), Some(3), "3 is covered, and must be");
+        // The decomposability guard itself, at the smallest input that shows
+        // it working. Aim is 3 and 3 is buildable, so nearness-to-aim WANTS
+        // 3 -- only the guard overrules it, because taking 3 of 5 strands a
+        // remainder of 2 that {3,5} cannot build. Without the guard this
+        // returns Some(3) and two photos vanish with nothing to show for it.
+        // Asserted here rather than through `pack`, whose only gapped-set
+        // fixture is decided by the band before the guard is ever consulted.
+        assert_eq!(
+            choose_group_size(5, &[3, 5], 2, 0),
+            Some(5),
+            "taking 3 would strand a remainder of 2 that {{3,5}} cannot build"
+        );
     }
 
     #[test]
