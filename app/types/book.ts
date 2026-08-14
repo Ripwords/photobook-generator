@@ -373,6 +373,41 @@ export function resolveExportProjectId(
 }
 
 /**
+ * The state after a project is deleted from the database.
+ *
+ * If the deleted id is the one "Export" currently targets (see
+ * `resolveExportProjectId`), the WHOLE book state is cleared through
+ * `initialBookState` -- not just `activeProject` set to `null`. Clearing only
+ * `activeProject` would still leave a stale `outputDir` and `exportResult`
+ * behind (harmless on their own), but worse, it would leave nothing wrong
+ * *looking* wrong: the panel would simply vanish while Export, if it were
+ * somehow still reachable, kept the dead id. Deleting a project that is
+ * NEITHER the generated book nor the opened one leaves the state completely
+ * untouched -- deleting some other saved project must not disturb whatever
+ * is currently on screen.
+ */
+export function withProjectDeleted(state: BookState, deletedId: number): BookState {
+  return resolveExportProjectId(state) === deletedId ? initialBookState : state;
+}
+
+/**
+ * The state after a project is renamed.
+ *
+ * Only `activeProject` can carry a project's name at all -- a `GeneratedBook`
+ * has no `name` field, because generating one does not require this session
+ * to have chosen a name for anything yet. So a rename patches `activeProject`
+ * in place ONLY when it is the one just renamed; every other case (a
+ * different project's id, or nothing opened at all) returns `state`
+ * unchanged rather than inventing something to patch.
+ */
+export function withProjectRenamed(state: BookState, id: number, name: string): BookState {
+  if (state.activeProject && state.activeProject.id === id) {
+    return { ...state, activeProject: { ...state.activeProject, name } };
+  }
+  return state;
+}
+
+/**
  * How many decisions a saved project carries, as a sentence -- or `null` when
  * the engine chose everything in it.
  *

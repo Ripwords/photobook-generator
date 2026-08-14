@@ -23,6 +23,8 @@ import {
   warningMessages,
   withGeneratedBook,
   withOpenedProject,
+  withProjectDeleted,
+  withProjectRenamed,
   type BookRecommendation,
   type BookState,
   type ExportEvent,
@@ -520,6 +522,79 @@ describe("book state transitions", () => {
     state = withGeneratedBook(state, { ...generated, projectId: 5 });
     expect(resolveExportProjectId(state)).toBe(5);
     expect(state.activeProject).toBeNull();
+  });
+});
+
+/**
+ * Deleting or renaming a project has to reach through the SAME atomic
+ * transitions `withGeneratedBook`/`withOpenedProject` use -- the hazard is
+ * identical: the currently-open book (`generated` OR `activeProject`) must
+ * never keep pointing at a project id that just stopped existing, or Export
+ * would still target a row the app itself just removed.
+ */
+describe("project deletion and rename", () => {
+  const generated = fixture<GeneratedBook>("generated-book.json");
+  const project = fixture<ProjectDetail>("project-detail.json");
+
+  it("deleting the currently opened project clears the whole book state", () => {
+    const opened = withOpenedProject(project);
+
+    const after = withProjectDeleted(opened, project.id);
+
+    expect(after.activeProject).toBeNull();
+    expect(resolveExportProjectId(after)).toBeNull();
+    expect(after).toEqual(initialBookState);
+  });
+
+  it("deleting the currently generated book's project clears the whole book state", () => {
+    const gen = withGeneratedBook(initialBookState, generated);
+
+    const after = withProjectDeleted(gen, generated.projectId);
+
+    expect(after.generated).toBeNull();
+    expect(resolveExportProjectId(after)).toBeNull();
+  });
+
+  it("deleting a DIFFERENT project leaves the open book untouched", () => {
+    const opened = withOpenedProject(project);
+
+    const after = withProjectDeleted(opened, project.id + 1);
+
+    expect(after).toEqual(opened);
+    expect(resolveExportProjectId(after)).toBe(project.id);
+  });
+
+  it("deleting a project while nothing is open is a no-op", () => {
+    expect(withProjectDeleted(initialBookState, 1)).toEqual(initialBookState);
+  });
+
+  it("renaming the currently opened project updates its displayed name", () => {
+    const opened = withOpenedProject(project);
+
+    const after = withProjectRenamed(opened, project.id, "Kyoto Trip (final)");
+
+    expect(after.activeProject?.name).toBe("Kyoto Trip (final)");
+    // Nothing else about the opened project moves -- a rename is not a
+    // reopen, so the id, book counts and overrides must be untouched.
+    expect(after.activeProject?.id).toBe(project.id);
+    expect(after.activeProject?.overrides).toEqual(project.overrides);
+    expect(resolveExportProjectId(after)).toBe(project.id);
+  });
+
+  it("renaming a DIFFERENT project leaves the open project's name untouched", () => {
+    const opened = withOpenedProject(project);
+
+    const after = withProjectRenamed(opened, project.id + 1, "Someone else's book");
+
+    expect(after.activeProject?.name).toBe(project.name);
+  });
+
+  it("renaming has nothing to patch when a book was generated this session rather than opened", () => {
+    const gen = withGeneratedBook(initialBookState, generated);
+
+    const after = withProjectRenamed(gen, generated.projectId, "New name");
+
+    expect(after).toEqual(gen);
   });
 });
 

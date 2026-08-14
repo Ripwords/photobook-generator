@@ -62,6 +62,8 @@ const {
   refreshRecommendation,
   generate,
   openProject,
+  deleteProject,
+  renameProject,
   pickOutputDir,
   exportBook,
   loadProjects,
@@ -459,35 +461,31 @@ onMounted(() => {
     <div v-if="projects.length > 0" class="space-y-3 border-t border-default pt-6">
       <h3 class="text-sm font-medium text-highlighted">Saved books</h3>
       <ul class="space-y-2">
-        <li
+        <!--
+          `@open` reopens a SAVED project without re-analysing anything: this
+          is what makes it possible to export a book from a previous session
+          without paying for another Vision pass over the same folder.
+          `@delete` routes through `useBook.deleteProject`, which clears
+          `generated`/`activeProject` through `withProjectDeleted` when the
+          project deleted is the one THIS panel is currently showing -- so
+          deleting it here can never leave the panel displayed or leave
+          Export still wired to it.
+        -->
+        <ProjectListRow
           v-for="project in projects"
           :key="project.id"
-          class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-lg border border-default px-3 py-2"
+          :project="project"
+          :busy="busy"
+          @open="openProject"
+          @rename="renameProject"
+          @delete="deleteProject"
         >
-          <span class="text-sm text-default">{{ project.name }}</span>
-          <div class="flex items-center gap-3">
-            <span class="text-xs text-muted">
-              <span class="font-mono tabular-nums">{{ project.pageCount }}</span> pages ·
-              <span class="font-mono tabular-nums">{{ project.photoCount }}</span> photos ·
-              {{ lastExportLabel(project) }}
-            </span>
-            <!--
-              Reopens a SAVED project without re-analysing anything: this is
-              what makes it possible to export a book from a previous session
-              without paying for another Vision pass over the same folder.
-            -->
-            <UButton
-              icon="i-lucide-folder-open"
-              color="neutral"
-              variant="ghost"
-              size="xs"
-              :disabled="busy"
-              @click="openProject(project.id)"
-            >
-              Open
-            </UButton>
-          </div>
-        </li>
+          <template #meta>
+            <span class="font-mono tabular-nums">{{ project.pageCount }}</span> pages ·
+            <span class="font-mono tabular-nums">{{ project.photoCount }}</span> photos ·
+            {{ lastExportLabel(project) }}
+          </template>
+        </ProjectListRow>
       </ul>
     </div>
   </section>

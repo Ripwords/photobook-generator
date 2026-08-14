@@ -7,6 +7,8 @@ import {
   resolveExportProjectId,
   withGeneratedBook,
   withOpenedProject,
+  withProjectDeleted,
+  withProjectRenamed,
   type BookRecommendation,
   type BookState,
   type ExportEvent,
@@ -135,6 +137,44 @@ export function useBook(
     });
   }
 
+  /**
+   * Deletes a saved project from the list -- and, if it is the one the book
+   * panel is currently showing (either generated in this session or opened
+   * from disk), clears the whole book state through `withProjectDeleted`
+   * rather than leaving `activeProject`/`generated` pointing at a row that no
+   * longer exists. Deleting any OTHER project leaves the panel untouched.
+   *
+   * Calls `invoke` directly rather than going through `useProjects`'s own
+   * `deleteProject` -- that one swallows its errors into its OWN `error` ref
+   * (by design, for the home page's picker, which has no book state to
+   * protect). Nesting THIS `guard` around a call that already swallowed its
+   * exception would apply `withProjectDeleted` unconditionally, even after a
+   * failed delete, and never surface the failure through the `error` this
+   * component reads.
+   */
+  async function deleteProject(id: number) {
+    await guard(async () => {
+      await invoke<void>("delete_project", { id });
+      applyBookState(withProjectDeleted(currentBookState(), id));
+      await loadProjects();
+    });
+  }
+
+  /**
+   * Renames a saved project. If it is the one currently open, the displayed
+   * name updates through `withProjectRenamed` immediately rather than waiting
+   * on the next `list_projects` refresh to notice. Calls `invoke` directly --
+   * see `deleteProject`'s doc comment for why this does not go through
+   * `useProjects`'s own `renameProject`.
+   */
+  async function renameProject(id: number, name: string) {
+    await guard(async () => {
+      await invoke<void>("rename_project", { id, name });
+      applyBookState(withProjectRenamed(currentBookState(), id, name));
+      await loadProjects();
+    });
+  }
+
   async function pickOutputDir() {
     const picked = await open({ directory: true, multiple: false });
     if (typeof picked === "string") outputDir.value = picked;
@@ -204,6 +244,8 @@ export function useBook(
     refreshRecommendation,
     generate,
     openProject,
+    deleteProject,
+    renameProject,
     pickOutputDir,
     exportBook,
     loadProjects,

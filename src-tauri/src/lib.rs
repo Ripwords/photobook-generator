@@ -42,6 +42,8 @@ pub fn run() {
             commands::export_book,
             commands::list_projects,
             commands::open_project,
+            commands::delete_project,
+            commands::rename_project,
             commands::reveal_in_finder,
         ])
         .run(tauri::generate_context!())

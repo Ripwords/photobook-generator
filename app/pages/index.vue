@@ -29,7 +29,14 @@ const {
 // Read once here so the home page can offer a saved project without forcing
 // a folder pick first -- the whole point of persistence is skipping a
 // re-analysis of a folder that was already scanned.
-const { projects, refresh: refreshProjects } = useProjects();
+const {
+  projects,
+  busy: projectsBusy,
+  error: projectsError,
+  refresh: refreshProjects,
+  deleteProject,
+  renameProject,
+} = useProjects();
 onMounted(() => {
   void refreshProjects();
 });
@@ -179,33 +186,34 @@ const remainingSkeletonCount = computed(() =>
         -->
         <div v-if="projects.length > 0" class="space-y-3">
           <h2 class="text-sm font-medium text-highlighted">Saved photobooks</h2>
+          <UAlert
+            v-if="projectsError"
+            color="error"
+            variant="subtle"
+            icon="i-lucide-triangle-alert"
+            title="Something went wrong"
+            :description="projectsError"
+            :ui="{ description: 'break-words' }"
+          />
           <ul class="space-y-2">
-            <li
+            <ProjectListRow
               v-for="project in projects"
               :key="project.id"
-              class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-lg border border-default px-3 py-2"
+              :project="project"
+              :busy="projectsBusy"
+              @open="selectedProjectId = $event"
+              @rename="renameProject"
+              @delete="deleteProject"
             >
-              <div class="space-y-0.5">
-                <p class="text-sm text-default">{{ project.name }}</p>
-                <p class="text-xs text-muted">
-                  <span class="font-mono tabular-nums">{{ project.pageCount }}</span> pages ·
-                  {{ basename(project.sourceFolder) }} ·
-                  <template v-if="lastExportedOn(project)"
-                    >exported {{ lastExportedOn(project) }}</template
-                  >
-                  <template v-else>not exported yet</template>
-                </p>
-              </div>
-              <UButton
-                icon="i-lucide-folder-open"
-                color="neutral"
-                variant="outline"
-                size="sm"
-                @click="selectedProjectId = project.id"
-              >
-                Open
-              </UButton>
-            </li>
+              <template #meta>
+                <span class="font-mono tabular-nums">{{ project.pageCount }}</span> pages ·
+                {{ basename(project.sourceFolder) }} ·
+                <template v-if="lastExportedOn(project)"
+                  >exported {{ lastExportedOn(project) }}</template
+                >
+                <template v-else>not exported yet</template>
+              </template>
+            </ProjectListRow>
           </ul>
         </div>
 

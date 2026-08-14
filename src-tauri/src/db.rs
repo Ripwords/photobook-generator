@@ -292,6 +292,22 @@ impl Db {
         Ok(())
     }
 
+    /// Renames a project. Returns the number of rows affected (0 or 1), so a
+    /// caller can tell "renamed" from "that id does not exist" without a
+    /// separate lookup -- `rename_project` (the Tauri command) turns 0 into
+    /// the same "project no longer exists" error `open_project` already
+    /// gives for a missing `load_project`.
+    ///
+    /// `updated_at` is stamped again here, same as `record_export`: a rename
+    /// is a real edit, and `list_projects`' "newest first" ordering should
+    /// reflect it.
+    pub fn rename_project(&self, id: i64, name: &str) -> rusqlite::Result<usize> {
+        self.conn.execute(
+            "UPDATE projects SET name = ?1, updated_at = unixepoch() WHERE id = ?2",
+            rusqlite::params![name, id],
+        )
+    }
+
     /// Removes a project, every export row recorded against it, its photo
     /// list and the user's overrides for it. All four deletes are explicit rather than relying on a
     /// foreign-key cascade (neither child table declares
@@ -768,6 +784,125 @@ mod tests {
         assert_eq!(count("project_exports"), 1, "only the deleted project's export row should be gone");
         assert!(db.load_project(gone).unwrap().is_none());
         assert!(db.load_project(keep).unwrap().is_some());
+    }
+
+    /// Renaming is the only edit a saved project gets after generation: the
+    /// name is set once at generate time from the source folder, and this is
+    /// how the user fixes it later. `updated_at` moves too, on purpose -- a
+    /// rename is a real edit, and `list_projects`' "newest first" ordering
+    /// should reflect it, exactly as it would for a re-export.
+    #[test]
+    fn rename_project_changes_the_name_and_bumps_updated_at() {
+        let db = Db::open_in_memory().unwrap();
+        let id = db
+            .save_project("Kyoto Trip", "/tmp/kyoto", &fixture_book(), &fixture_hashes(), &Overrides::new())
+            .unwrap();
+        db.conn
+            .execute("UPDATE projects SET updated_at = 100 WHERE id = ?1", rusqlite::params![id])
+            .unwrap();
+
+        let affected = db.rename_project(id, "Kyoto Trip (final)").unwrap();
+
+        assert_eq!(affected, 1);
+        let loaded = db.load_project(id).unwrap().unwrap();
+        assert_eq!(loaded.name, "Kyoto Trip (final)");
+        assert!(loaded.updated_at > 100, "rename must bump updated_at, got {}", loaded.updated_at);
+    }
+
+    /// A rename touches ONLY the targeted row -- the book, the photo list,
+    /// the overrides and every other project's name must survive untouched.
+    #[test]
+    fn rename_project_touches_only_the_named_project() {
+        let db = Db::open_in_memory().unwrap();
+        let mut overrides = Overrides::new();
+        overrides.set("hz22", Override::Include);
+        let target = db
+            .save_project("Kyoto Trip", "/tmp/kyoto", &fixture_book(), &fixture_hashes(), &overrides)
+            .unwrap();
+        let other =
+            db.save_project("Osaka Trip", "/tmp/osaka", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
+
+        db.rename_project(target, "Kyoto Trip (final)").unwrap();
+
+        let target_loaded = db.load_project(target).unwrap().unwrap();
+        assert_eq!(target_loaded.book, fixture_book(), "the book itself is unaffected by a rename");
+        assert_eq!(target_loaded.overrides, overrides, "and neither are the user's decisions");
+        let other_loaded = db.load_project(other).unwrap().unwrap();
+        assert_eq!(other_loaded.name, "Osaka Trip", "a rename must not leak to a different project");
+    }
+
+    /// Renaming an id that does not exist affects no rows rather than
+    /// erroring -- the caller (the `rename_project` command) is the one that
+    /// turns "zero rows" into "project no longer exists", exactly as
+    /// `open_project` already does for a missing `load_project`.
+    #[test]
+    fn rename_project_of_an_unknown_id_affects_no_rows() {
+        let db = Db::open_in_memory().unwrap();
+        let affected = db.rename_project(999, "Anything").unwrap();
+        assert_eq!(affected, 0);
+    }
+
+    /// **The analysis cache must survive a delete.** `features` is keyed by
+    /// content hash and shared across every project -- it is the expensive
+    /// thing, the result of running Apple Vision over every photo. A project
+    /// delete that reached into it would force a full re-analysis the next
+    /// time the same folder (or an overlapping one) is opened, which is
+    /// exactly the cost the user objected to.
+    #[test]
+    fn delete_project_leaves_the_features_cache_untouched() {
+        let db = Db::open_in_memory().unwrap();
+        db.put_features("hz22", "/tmp/kyoto/a.jpg", r#"{"v":1}"#).unwrap();
+        db.put_features("hb33", "/tmp/kyoto/b.jpg", r#"{"v":2}"#).unwrap();
+        let id = db
+            .save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &fixture_hashes(), &Overrides::new())
+            .unwrap();
+
+        db.delete_project(id).unwrap();
+
+        assert_eq!(
+            db.get_features("hz22").unwrap(),
+            Some(r#"{"v":1}"#.to_string()),
+            "a project delete must never remove rows from the shared features cache"
+        );
+        assert_eq!(db.get_features("hb33").unwrap(), Some(r#"{"v":2}"#.to_string()));
+    }
+
+    /// **A project delete must never touch the filesystem.** Exported files
+    /// live in a folder the user chose, and may already be uploaded to a
+    /// printer -- removing a book from the app's own database must not reach
+    /// onto their disk. `Db::delete_project` only issues `DELETE` statements
+    /// against its own tables, so this proves that by observing the real
+    /// world, not by reading the implementation.
+    #[test]
+    fn delete_project_does_not_touch_files_on_disk() {
+        let db = Db::open_in_memory().unwrap();
+        let dir = std::env::temp_dir()
+            .join(format!("pbg-delete-project-fs-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exported_file = dir.join("page-01.jpg");
+        std::fs::write(&exported_file, b"fake exported jpeg bytes").unwrap();
+
+        let id = db
+            .save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &fixture_hashes(), &Overrides::new())
+            .unwrap();
+        db.record_export(
+            id,
+            &ExportRecord {
+                at: 0,
+                output_dir: dir.to_string_lossy().into_owned(),
+                format: "jpeg".into(),
+                file_count: 1,
+            },
+        )
+        .unwrap();
+
+        db.delete_project(id).unwrap();
+
+        assert!(
+            exported_file.exists(),
+            "delete_project must never remove files the user exported to disk"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

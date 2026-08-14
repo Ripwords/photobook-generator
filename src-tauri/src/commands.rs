@@ -40,6 +40,18 @@ pub fn is_apple_double(name: &str) -> bool {
     name.starts_with("._")
 }
 
+/// Trims a user-supplied project name and rejects an effectively-empty one.
+/// Extracted so the validation is reachable from a unit test without a live
+/// `AppHandle` -- `rename_project` needs one to open the database, but the
+/// decision "was anything actually typed" does not depend on it at all.
+pub(crate) fn normalize_project_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("a photobook needs a name".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
 /// SHA-256 over raw file bytes. No image decoding, so this is safe to run on
 /// every file before deciding what needs analysis.
 pub fn hash_file(path: &Path) -> std::io::Result<String> {
@@ -1609,6 +1621,48 @@ pub async fn open_project(app: AppHandle, id: i64) -> Result<ProjectDetail, Stri
     .map_err(|e| e.to_string())?
 }
 
+/// Removes a saved project: its row, its export history, its photo list and
+/// the user's include/exclude decisions -- see `Db::delete_project`.
+///
+/// Deliberately does NOT touch anything outside those four tables. The
+/// `features` analysis cache is keyed by content hash and shared across every
+/// project, not owned by this one -- it is the expensive thing (a full Apple
+/// Vision pass over every photo), and `Db::delete_project` never reaches into
+/// it. Any files this project exported live in a folder the user chose, and
+/// may already be uploaded to a printer -- removing a book from the app must
+/// not reach onto their disk, and nothing here does either.
+#[tauri::command]
+pub async fn delete_project(app: AppHandle, id: i64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        db.delete_project(id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Renames a saved project. The name is set once at generate time from the
+/// source folder (see `defaultProjectName` in the webview); this is the only
+/// way to change it afterwards.
+///
+/// Fails with a clear message rather than a silent no-op for both an empty
+/// name and an id that no longer exists -- `Db::rename_project`'s affected-row
+/// count is what tells the two apart from "renamed successfully".
+#[tauri::command]
+pub async fn rename_project(app: AppHandle, id: i64, name: String) -> Result<(), String> {
+    let name = normalize_project_name(&name)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        let affected = db.rename_project(id, &name).map_err(|e| e.to_string())?;
+        if affected == 0 {
+            return Err(format!("project {id} no longer exists"));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Opens Finder with the exported files selected.
 ///
 /// Shells out to macOS's own `open -R` rather than adding the shell plugin's
@@ -1644,6 +1698,22 @@ mod tests {
         for name in ["notes.txt", "movie.mov", "archive.zip", "noextension"] {
             assert!(!supported_extension(name), "{name} should be rejected");
         }
+    }
+
+    #[test]
+    fn normalize_project_name_trims_surrounding_whitespace() {
+        assert_eq!(normalize_project_name("  Kyoto Trip  ").unwrap(), "Kyoto Trip");
+    }
+
+    #[test]
+    fn normalize_project_name_rejects_an_empty_or_whitespace_only_name() {
+        assert!(normalize_project_name("").is_err());
+        assert!(normalize_project_name("   ").is_err());
+    }
+
+    #[test]
+    fn normalize_project_name_keeps_internal_whitespace() {
+        assert_eq!(normalize_project_name("Kyoto  Trip").unwrap(), "Kyoto  Trip");
     }
 
     #[test]
