@@ -6,8 +6,41 @@
 //! input rather than assuming 1..=6, so the missing-5-up gap degrades into a
 //! different split rather than an unfillable spread.
 
-use crate::book::cull::Photo;
+use crate::book::cull::{Override, Overrides, Photo};
 use crate::templates::Library;
+
+/// The user asked for more photos than the book they chose can hold.
+///
+/// Reported rather than resolved, and that is the whole point of the type.
+/// Every other over-capacity case in this module is resolved by dropping the
+/// weakest photos, because nobody asked for those in particular. An explicit
+/// `Include` is different: silently discarding one is exactly the failure
+/// user-controlled selection exists to prevent, so the engine refuses to
+/// build the book and hands the numbers back for the user to act on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncludeOverflow {
+    /// Page count of the book that cannot hold them, so the message can name
+    /// the length the user actually chose.
+    pub pages: u32,
+    /// How many photos the user explicitly asked for.
+    pub included: usize,
+    /// How many photos a book of this length can hold at all.
+    pub capacity: usize,
+    /// `included - capacity`: how many they must let go of, or lengthen the
+    /// book to fit.
+    pub over: usize,
+}
+
+impl std::fmt::Display for IncludeOverflow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "You marked {} photos to include, but a {}-page book holds {}. \
+             Exclude {} of them, or choose a longer book.",
+            self.included, self.pages, self.capacity, self.over
+        )
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Capacity {
@@ -135,11 +168,40 @@ pub struct Group {
 ///
 /// When the keepers exceed capacity, the LOWEST aesthetic percentiles are
 /// dropped first, chapter proportions preserved.
-pub fn pack(photos: &[Photo], capacity: &Capacity, buildable: &[usize]) -> Vec<Group> {
+///
+/// **A photo the user marked `Include` is never one of the dropped.** It is
+/// protected from the capacity trim, its chapter is apportioned a slot ahead
+/// of a chapter with nothing explicitly wanted in it, and a crowded chapter
+/// strands an `Auto` photo rather than an explicit choice. When the `Include`
+/// photos ALONE exceed what the book can hold there is no honest way to
+/// choose between them, so this returns `Err(IncludeOverflow)` rather than
+/// picking -- see that type.
+pub fn pack(
+    photos: &[Photo],
+    capacity: &Capacity,
+    buildable: &[usize],
+    overrides: &Overrides,
+) -> Result<Vec<Group>, IncludeOverflow> {
     use std::collections::BTreeMap;
 
     if photos.is_empty() || buildable.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
+    }
+
+    let wanted = |i: usize| overrides.get(&photos[i].hash) == Override::Include;
+
+    // Checked before anything is cut. Every trim below protects the included
+    // photos, so a book that cannot hold them all would otherwise fail by
+    // dropping something else entirely -- or by running out of slots and
+    // leaving the surplus unplaced with nothing to show for it.
+    let included = (0..photos.len()).filter(|&i| wanted(i)).count();
+    if included > capacity.max_photos {
+        return Err(IncludeOverflow {
+            pages: capacity.pages,
+            included,
+            capacity: capacity.max_photos,
+            over: included - capacity.max_photos,
+        });
     }
 
     // Chapters, keyed by cluster id so iteration is chronological regardless
@@ -149,19 +211,24 @@ pub fn pack(photos: &[Photo], capacity: &Capacity, buildable: &[usize]) -> Vec<G
         chapters.entry(p.event_cluster).or_default().push(i);
     }
 
+    // Worst-first: aesthetic, then sharpness, then path for determinism.
+    // Shared by the book-wide trim and the per-chapter one below so both
+    // discard by the same standard.
+    let weakest_first = |a: &usize, b: &usize| {
+        photos[*a]
+            .aesthetic_pct
+            .cmp(&photos[*b].aesthetic_pct)
+            .then(photos[*a].sharpness_pct.cmp(&photos[*b].sharpness_pct))
+            .then(photos[*a].path.cmp(&photos[*b].path))
+    };
+
     // Trim to capacity by dropping the weakest photos overall.
     let total: usize = chapters.values().map(Vec::len).sum();
     if total > capacity.max_photos {
-        let mut ranked: Vec<usize> = (0..photos.len()).collect();
-        // Sort worst-first: aesthetic, then sharpness, then path for
-        // determinism.
-        ranked.sort_by(|&a, &b| {
-            photos[a]
-                .aesthetic_pct
-                .cmp(&photos[b].aesthetic_pct)
-                .then(photos[a].sharpness_pct.cmp(&photos[b].sharpness_pct))
-                .then(photos[a].path.cmp(&photos[b].path))
-        });
+        // Only `Auto` photos are candidates. The check above guarantees there
+        // are enough of them to get under capacity.
+        let mut ranked: Vec<usize> = (0..photos.len()).filter(|&i| !wanted(i)).collect();
+        ranked.sort_by(weakest_first);
         let drop_count = total - capacity.max_photos;
         let dropped: std::collections::BTreeSet<usize> =
             ranked.into_iter().take(drop_count).collect();
@@ -179,14 +246,36 @@ pub fn pack(photos: &[Photo], capacity: &Capacity, buildable: &[usize]) -> Vec<G
     // what it likes from a shared counter -- otherwise the first chapter
     // drains the book and the last ones never appear.
     let counts: Vec<usize> = chapters.values().map(Vec::len).collect();
+    let wants: Vec<usize> =
+        chapters.values().map(|b| b.iter().filter(|&&i| wanted(i)).count()).collect();
     let (smallest, largest) = size_bounds(buildable);
-    let allowance = apportion_slots(&counts, slots, smallest, largest);
+    let allowance = apportion_slots(&counts, &wants, slots, smallest, largest);
 
     for ((cluster, mut members), mut slots_left) in chapters.into_iter().zip(allowance) {
         // Chronological within the chapter is not knowable without capture
         // times here, so path order is used -- stable, and the same order
         // `finalize_photos` already established.
         members.sort_by(|&a, &b| photos[a].path.cmp(&photos[b].path));
+
+        // A chapter apportioned fewer slots than its photos need strands
+        // whatever the loop below does not reach, which is its TAIL in path
+        // order -- and that tail is chosen by filename, so an explicit choice
+        // is as likely to be in it as anything else. Where the chapter holds
+        // one, the surplus is taken off the WEAKEST `Auto` members instead.
+        //
+        // Gated on the chapter actually holding an include, deliberately.
+        // Unconditionally re-choosing which photo a starved chapter strands
+        // would change books that have no overrides in them at all, and this
+        // feature has no business doing that.
+        let seatable = slots_left.saturating_mul(largest);
+        if members.len() > seatable && members.iter().any(|&i| wanted(i)) {
+            let mut droppable: Vec<usize> =
+                members.iter().copied().filter(|&i| !wanted(i)).collect();
+            droppable.sort_by(weakest_first);
+            let dropped: std::collections::BTreeSet<usize> =
+                droppable.into_iter().take(members.len() - seatable).collect();
+            members.retain(|i| !dropped.contains(i));
+        }
 
         let mut i = 0;
         while i < members.len() && slots_left > 0 {
@@ -228,7 +317,7 @@ pub fn pack(photos: &[Photo], capacity: &Capacity, buildable: &[usize]) -> Vec<G
         }
     }
 
-    groups
+    Ok(groups)
 }
 
 /// The smallest and largest group the library can build, both floored at 1
@@ -278,7 +367,22 @@ fn size_bounds(buildable: &[usize]) -> (usize, usize) {
 ///
 /// Ties go to the earlier chapter, which is arbitrary but total; nothing
 /// here may depend on iteration order.
-fn apportion_slots(counts: &[usize], slots: usize, smallest: usize, largest: usize) -> Vec<usize> {
+///
+/// `wants` is how many photos in each chapter the user explicitly marked
+/// `Include`. It outranks every other consideration in both passes: a chapter
+/// with no slot does not appear in the book at all, so a chapter holding an
+/// explicit choice is represented before a longer one holding none, and it is
+/// brought up to the slots THOSE photos need before any chapter is given a
+/// slot for its automatic ones. With no overrides `wants` is all zeros and
+/// both rules are inert, which is what keeps books with no decisions in them
+/// packed exactly as before.
+fn apportion_slots(
+    counts: &[usize],
+    wants: &[usize],
+    slots: usize,
+    smallest: usize,
+    largest: usize,
+) -> Vec<usize> {
     let n = counts.len();
     let mut out = vec![0usize; n];
     if n == 0 || slots == 0 {
@@ -286,9 +390,12 @@ fn apportion_slots(counts: &[usize], slots: usize, smallest: usize, largest: usi
     }
     let caps: Vec<usize> = counts.iter().map(|&c| c / smallest.max(1)).collect();
     let needs: Vec<usize> = counts.iter().map(|&c| c.div_ceil(largest.max(1))).collect();
+    let want_needs: Vec<usize> = wants.iter().map(|&c| c.div_ceil(largest.max(1))).collect();
 
     let mut longest_first: Vec<usize> = (0..n).collect();
-    longest_first.sort_by(|&a, &b| counts[b].cmp(&counts[a]).then(a.cmp(&b)));
+    longest_first.sort_by(|&a, &b| {
+        (wants[b] > 0).cmp(&(wants[a] > 0)).then(counts[b].cmp(&counts[a])).then(a.cmp(&b))
+    });
     let mut left = slots;
     for &i in &longest_first {
         if left == 0 {
@@ -305,10 +412,12 @@ fn apportion_slots(counts: &[usize], slots: usize, smallest: usize, largest: usi
         // comparison is exact rather than float-rounded. `max_by` yields the
         // LAST maximum, so the tie-break is inverted to leave the earliest
         // chapter as the strict maximum.
+        let short_wanted = |i: usize| usize::from(out[i] < want_needs[i]);
         let short = |i: usize| usize::from(out[i] < needs[i]);
         let pick = (0..n).filter(|&i| out[i] < caps[i]).max_by(|&a, &b| {
-            short(a)
-                .cmp(&short(b))
+            short_wanted(a)
+                .cmp(&short_wanted(b))
+                .then(short(a).cmp(&short(b)))
                 .then((counts[a] * (out[b] + 1)).cmp(&(counts[b] * (out[a] + 1))))
                 .then(b.cmp(&a))
         });
@@ -465,6 +574,172 @@ mod tests {
             .collect()
     }
 
+    /// The paths in `groups`, so an assertion can name a photo rather than an
+    /// index into a slice the reader has to reconstruct.
+    fn placed_paths(photos: &[Photo], groups: &[Group]) -> Vec<String> {
+        let mut out: Vec<String> =
+            groups.iter().flat_map(|g| g.photos.iter().map(|&i| photos[i].path.clone())).collect();
+        out.sort();
+        out
+    }
+
+    fn include(paths: &[&str]) -> Overrides {
+        paths.iter().map(|p| (format!("h{p}"), Override::Include)).collect()
+    }
+
+    // --- overrides: an explicit choice is never traded away silently ------
+
+    /// **An `Include` is not droppable by capacity trimming.**
+    ///
+    /// 100 photos into a 20-page book that holds 33, so 67 must go. The two
+    /// photos the user asked for are the two WORST in the set by the
+    /// comparator that decides the trim (aesthetic 0 and 1), so nothing but
+    /// the override can save them -- `pack_drops_the_lowest_ranked_photos_
+    /// when_over_capacity` above pins that photo 0 is dropped without one.
+    ///
+    /// The placed COUNT is asserted too: protecting a photo must cost an
+    /// `Auto` photo's place, not a slot.
+    #[test]
+    fn pack_never_drops_an_included_photo_when_trimming_to_capacity() {
+        let photos: Vec<Photo> =
+            (0..100).map(|i| photo(&format!("/p{i:03}.jpg"), 0, i as u8)).collect();
+        let c = Capacity::from_sizes(20, &sizes());
+        let o = include(&["/p000.jpg", "/p001.jpg"]);
+
+        let groups = pack(&photos, &c, &sizes(), &o).expect("2 included photos fit in 33");
+
+        let placed = placed_paths(&photos, &groups);
+        assert!(placed.contains(&"/p000.jpg".to_string()), "the worst photo was asked for: {placed:?}");
+        assert!(placed.contains(&"/p001.jpg".to_string()), "{placed:?}");
+        assert_eq!(placed.len(), c.max_photos, "protecting a photo must not cost a slot");
+        assert!(
+            !placed.contains(&"/p002.jpg".to_string()),
+            "an unasked-for weak photo must be the one that goes instead"
+        );
+    }
+
+    /// **Included photos that do not fit are REPORTED, not dropped.**
+    ///
+    /// 40 photos, every one of them explicitly wanted, into a book that holds
+    /// 33. There is no honest way to choose which seven of the user's own
+    /// picks to discard, so the packer refuses and hands back the three
+    /// numbers the user needs: how many they picked, how many fit, how many
+    /// over.
+    #[test]
+    fn pack_reports_rather_than_drops_when_the_included_photos_alone_exceed_capacity() {
+        let photos: Vec<Photo> =
+            (0..40).map(|i| photo(&format!("/p{i:03}.jpg"), 0, i as u8)).collect();
+        let c = Capacity::from_sizes(20, &sizes());
+        assert_eq!(c.max_photos, 33, "fixture: the book holds fewer than the 40 asked for");
+        let o: Overrides =
+            photos.iter().map(|p| (p.hash.clone(), Override::Include)).collect();
+
+        let err = pack(&photos, &c, &sizes(), &o)
+            .expect_err("40 explicit choices cannot be silently cut to 33");
+
+        assert_eq!(err, IncludeOverflow { pages: 20, included: 40, capacity: 33, over: 7 });
+        assert!(err.to_string().contains("40"), "{err}");
+        assert!(err.to_string().contains("20-page"), "{err}");
+        assert!(err.to_string().contains("Exclude 7"), "{err}");
+    }
+
+    /// Exactly AT capacity is not over it. The boundary, at the boundary.
+    #[test]
+    fn pack_accepts_included_photos_that_exactly_fill_the_book() {
+        let photos: Vec<Photo> =
+            (0..33).map(|i| photo(&format!("/p{i:03}.jpg"), 0, i as u8)).collect();
+        let c = Capacity::from_sizes(20, &sizes());
+        assert_eq!(c.max_photos, 33);
+        let o: Overrides = photos.iter().map(|p| (p.hash.clone(), Override::Include)).collect();
+
+        let groups = pack(&photos, &c, &sizes(), &o).expect("33 into 33 must fit");
+
+        assert_eq!(placed_paths(&photos, &groups).len(), 33);
+    }
+
+    /// Capacity trimming is not the only way a photo disappears: a chapter
+    /// that is apportioned fewer slots than it needs strands the tail of
+    /// itself, with no blank spread anywhere to show for it. An explicit
+    /// choice must not be what gets stranded.
+    ///
+    /// Chapters of 31 and 2 with `buildable = {1,2,3}` sum to exactly the
+    /// 33-photo capacity, so nothing is trimmed for capacity at all -- but
+    /// `sum(need) = 11 + 1 = 12` exceeds the 11 slots, so chapter 1 is
+    /// apportioned 10 slots for 31 photos and must strand one. `/c0p030.jpg`
+    /// sorts last in its chapter, which is precisely the one the packer
+    /// reaches after its slots run out.
+    #[test]
+    fn pack_strands_an_auto_photo_rather_than_an_included_one_in_a_crowded_chapter() {
+        let mut photos: Vec<Photo> =
+            (0..31).map(|i| photo(&format!("/c0p{i:03}.jpg"), 0, 50)).collect();
+        photos.extend((0..2).map(|i| photo(&format!("/c1p{i:03}.jpg"), 1, 50)));
+        let c = Capacity::from_sizes(20, &sizes());
+        assert_eq!(photos.len(), c.max_photos, "fixture: exactly at capacity, so nothing is trimmed");
+
+        let without = pack(&photos, &c, &sizes(), &Overrides::new()).expect("no includes");
+        let stranded = placed_paths(&photos, &without);
+        assert!(
+            !stranded.contains(&"/c0p030.jpg".to_string()),
+            "fixture must actually strand this photo without an override, else the test is inert"
+        );
+
+        let groups = pack(&photos, &c, &sizes(), &include(&["/c0p030.jpg"]))
+            .expect("one include is well inside capacity");
+
+        let placed = placed_paths(&photos, &groups);
+        assert!(placed.contains(&"/c0p030.jpg".to_string()), "{placed:?}");
+        assert!(
+            placed.len() >= stranded.len(),
+            "seating the explicit choice must cost an Auto photo's place, never a slot: \
+             {} placed with the override, {} without",
+            placed.len(),
+            stranded.len()
+        );
+    }
+
+    /// A chapter can be apportioned NO slot at all when there are more
+    /// chapters than slots -- pass 1 hands one slot each, longest first, and
+    /// runs out. Every photo in an unslotted chapter vanishes from the book.
+    ///
+    /// Twelve one-photo chapters into 11 slots: without an override the last
+    /// chapter loses (ties go to the earlier chapter), so the photo the user
+    /// asked for is exactly the one the engine would have thrown away.
+    #[test]
+    fn pack_gives_a_slot_to_a_chapter_whose_photo_the_user_asked_for() {
+        let photos: Vec<Photo> =
+            (0..12).map(|i| photo(&format!("/p{i:02}.jpg"), i, 50)).collect();
+        let c = Capacity::from_sizes(20, &sizes());
+
+        let without = pack(&photos, &c, &sizes(), &Overrides::new()).expect("no includes");
+        assert!(
+            !placed_paths(&photos, &without).contains(&"/p11.jpg".to_string()),
+            "fixture must lose this chapter without an override, else the test is inert"
+        );
+
+        let groups = pack(&photos, &c, &sizes(), &include(&["/p11.jpg"])).expect("one include");
+
+        assert!(
+            placed_paths(&photos, &groups).contains(&"/p11.jpg".to_string()),
+            "the chapter holding an explicit choice must be represented: {:?}",
+            placed_paths(&photos, &groups)
+        );
+    }
+
+    /// An empty override map must leave the packer's output byte-identical to
+    /// what it produced before overrides existed. Asserted against a fixture
+    /// that exercises the trim, several chapters and the density swing at
+    /// once.
+    #[test]
+    fn pack_with_no_overrides_packs_exactly_as_before() {
+        let photos: Vec<Photo> = (0..60)
+            .map(|i| photo(&format!("/p{i:02}.jpg"), (i % 4) as u32, (i * 7 % 100) as u8))
+            .collect();
+        let c = Capacity::from_sizes(20, &full());
+        let groups = pack(&photos, &c, &full(), &Overrides::new()).expect("no includes");
+
+        assert_eq!(group_sizes(&groups), vec![4, 6, 5, 6, 4, 5, 4, 6, 5, 6, 6]);
+    }
+
     /// A zero in `buildable` is malformed input (the validator forbids an
     /// empty template), but `pack` advances by whatever size it is handed, so
     /// returning 0 would spin forever instead of failing. Asserted on
@@ -516,7 +791,7 @@ mod tests {
             }
         }
         let c = Capacity::from_sizes(20, buildable);
-        let groups = pack(&photos, &c, buildable);
+        let groups = pack(&photos, &c, buildable, &Overrides::new()).expect("the fixture must fit the included photos");
         (photos, groups)
     }
 
@@ -591,7 +866,7 @@ mod tests {
         let photos: Vec<Photo> =
             (0..30).map(|i| photo(&format!("/p{i:02}.jpg"), 0, 50)).collect();
         let c = Capacity::from_sizes(20, &full());
-        let groups = pack(&photos, &c, &full());
+        let groups = pack(&photos, &c, &full(), &Overrides::new()).expect("the fixture must fit the included photos");
         let s = group_sizes(&groups);
 
         assert_eq!(groups.len(), 11, "variety must not cost a slot: {s:?}");
@@ -662,7 +937,7 @@ mod tests {
         let photos: Vec<Photo> =
             (0..11).map(|i| photo(&format!("/p{i:02}.jpg"), 0, 50)).collect();
         let c = Capacity::from_sizes(20, &sizes());
-        let groups = pack(&photos, &c, &sizes());
+        let groups = pack(&photos, &c, &sizes(), &Overrides::new()).expect("the fixture must fit the included photos");
         for g in &groups {
             assert!(sizes().contains(&g.photos.len()),
                 "group of {} is unbuildable", g.photos.len());
@@ -692,7 +967,7 @@ mod tests {
         let photos: Vec<Photo> =
             (0..7).map(|i| photo(&format!("/p{i}.jpg"), 0, 50)).collect();
         let c = Capacity::from_sizes(20, &gapped);
-        let groups = pack(&photos, &c, &gapped);
+        let groups = pack(&photos, &c, &gapped, &Overrides::new()).expect("the fixture must fit the included photos");
 
         for g in &groups {
             assert!(gapped.contains(&g.photos.len()),
@@ -712,7 +987,7 @@ mod tests {
         let photos: Vec<Photo> =
             (0..5).map(|i| photo(&format!("/p{i}.jpg"), 7, 50)).collect();
         let c = Capacity::from_sizes(20, &sizes());
-        let groups = pack(&photos, &c, &sizes());
+        let groups = pack(&photos, &c, &sizes(), &Overrides::new()).expect("the fixture must fit the included photos");
         assert!(groups.iter().all(|g| g.photos.len() != 5));
         assert_eq!(groups.iter().map(|g| g.photos.len()).sum::<usize>(), 5);
     }
@@ -733,7 +1008,7 @@ mod tests {
         let slots = c.spreads as usize + c.singles as usize;
         assert!(photos.len() > slots, "fixture: more photos than slots, so no slot may be blank");
 
-        let groups = pack(&photos, &c, &full());
+        let groups = pack(&photos, &c, &full(), &Overrides::new()).expect("the fixture must fit the included photos");
         let s = group_sizes(&groups);
         assert_eq!(groups.len(), slots, "{} slots but only {} groups: {s:?}", slots, groups.len());
         assert_eq!(s.iter().sum::<usize>(), 30, "every photo must be placed: {s:?}");
@@ -762,7 +1037,7 @@ mod tests {
         let c = Capacity::from_sizes(20, &full());
         assert_eq!(photos.len(), c.max_photos, "fixture: exactly at capacity, so nothing is trimmed");
 
-        let groups = pack(&photos, &c, &full());
+        let groups = pack(&photos, &c, &full(), &Overrides::new()).expect("the fixture must fit the included photos");
         let chapters: std::collections::BTreeSet<u32> =
             groups.iter().map(|g| g.event_cluster).collect();
         assert_eq!(
@@ -785,7 +1060,7 @@ mod tests {
         photos.extend((0..5).map(|i| photo(&format!("/b{i}.jpg"), 2, 50)));
         let buildable = vec![2, 3];
         let c = Capacity::from_sizes(20, &buildable);
-        let groups = pack(&photos, &c, &buildable);
+        let groups = pack(&photos, &c, &buildable, &Overrides::new()).expect("the fixture must fit the included photos");
 
         assert_eq!(
             group_sizes(&groups).iter().sum::<usize>(),
@@ -809,10 +1084,10 @@ mod tests {
             .map(|i| photo(&format!("/p{i:02}.jpg"), (i % 4) as u32, (i * 7 % 100) as u8))
             .collect();
         let c = Capacity::from_sizes(20, &full());
-        let forward = pack(&photos, &c, &full());
+        let forward = pack(&photos, &c, &full(), &Overrides::new()).expect("the fixture must fit the included photos");
 
         let reversed: Vec<Photo> = photos.iter().rev().cloned().collect();
-        let backward = pack(&reversed, &c, &full());
+        let backward = pack(&reversed, &c, &full(), &Overrides::new()).expect("the fixture must fit the included photos");
 
         assert!(!forward.is_empty());
         assert_eq!(
@@ -832,7 +1107,7 @@ mod tests {
             photo("/m.jpg", 2, 50),
         ];
         let c = Capacity::from_sizes(20, &sizes());
-        let groups = pack(&photos, &c, &sizes());
+        let groups = pack(&photos, &c, &sizes(), &Overrides::new()).expect("the fixture must fit the included photos");
         let clusters: Vec<u32> = groups.iter().map(|g| g.event_cluster).collect();
         assert_eq!(clusters, vec![1, 2, 3]);
     }
@@ -843,7 +1118,7 @@ mod tests {
             .map(|i| photo(&format!("/p{i:03}.jpg"), 0, i as u8))
             .collect();
         let c = Capacity::from_sizes(20, &sizes());
-        let groups = pack(&photos, &c, &sizes());
+        let groups = pack(&photos, &c, &sizes(), &Overrides::new()).expect("the fixture must fit the included photos");
         let used: usize = groups.iter().map(|g| g.photos.len()).sum();
         assert!(used <= c.max_photos, "used {used}, capacity {}", c.max_photos);
         // The best photo must survive; the worst must not.
