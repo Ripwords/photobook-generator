@@ -199,7 +199,7 @@ const remainingSkeletonCount = computed(() =>
             <ProjectListRow
               v-for="project in projects"
               :key="project.id"
-              :project="project"
+              :project
               :busy="projectsBusy"
               @open="selectedProjectId = $event"
               @rename="renameProject"

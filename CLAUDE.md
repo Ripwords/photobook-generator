@@ -23,16 +23,23 @@ merely assumed, and the traps that already caused real bugs. Read it before writ
   `externalBin` path at compile time.
 - Bun, not npm. Conventional Commits. Never `git commit --no-verify`.
 - Never use `any` in TypeScript. oxlint warnings are failures.
+- **`bun run check:build` before every commit that touches `app/**/*.vue`.** oxlint does not
+  parse Vue template structure and vitest never imports a `.vue` file, so a broken SFC (an
+  unbalanced tag, a bad template expression) passes lint and every test while the real app
+  fails to build. This happened once: a stray `</content>` tag landed in a committed
+  component and every other check stayed green. `check:build` is a real `nuxt generate` --
+  ~2-3s even from a cold cache on this project's size -- so there is no excuse to skip it.
 
 ## Commands
 
 ```sh
-bun run sidecar   # build the Swift sidecar (do this first)
-bun run dev       # dev app
-bun run test      # vitest
-bun run test:rust # cargo test
+bun run sidecar     # build the Swift sidecar (do this first)
+bun run dev         # dev app
+bun run test        # vitest
+bun run test:rust   # cargo test
 bun run test:swift
-bun run lint      # oxlint --deny-warnings
+bun run lint        # oxlint --deny-warnings
+bun run check:build # nuxt generate -- the only step that actually compiles .vue files, see above
 ```
 
 ## Conventions

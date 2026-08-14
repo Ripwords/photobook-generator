@@ -474,8 +474,8 @@ onMounted(() => {
         <ProjectListRow
           v-for="project in projects"
           :key="project.id"
-          :project="project"
-          :busy="busy"
+          :project
+          :busy
           @open="openProject"
           @rename="renameProject"
           @delete="deleteProject"

@@ -143,4 +143,3 @@ function confirmDelete() {
     </UModal>
   </li>
 </template>
-</content>

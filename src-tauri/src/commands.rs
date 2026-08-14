@@ -1716,6 +1716,23 @@ mod tests {
         assert_eq!(normalize_project_name("Kyoto  Trip").unwrap(), "Kyoto  Trip");
     }
 
+    /// **Deliberately no length cap.** `save_project`'s own `name: &str`
+    /// never enforced one either (SQLite's `TEXT` column has no practical
+    /// limit), so `rename_project` refusing a long name would be a NEW,
+    /// stricter rule invented for rename alone rather than something the app
+    /// already asks of a project's name. If a cap is ever wanted, it belongs
+    /// here AND in `save_project`'s path, decided together -- this test pins
+    /// today's actual (permissive) behaviour so that decision is visible
+    /// rather than accidental.
+    #[test]
+    fn normalize_project_name_does_not_truncate_a_very_long_name() {
+        let long_name = "A".repeat(5_000);
+        let padded = format!("  {long_name}  ");
+        let result = normalize_project_name(&padded).unwrap();
+        assert_eq!(result.len(), 5_000, "must not be truncated");
+        assert_eq!(result, long_name);
+    }
+
     #[test]
     fn recognizes_apple_double_sidecar_files() {
         for name in ["._IMG_1234.JPG", "._photo.heic", "._.DS_Store"] {

@@ -842,6 +842,32 @@ mod tests {
         assert_eq!(affected, 0);
     }
 
+    /// **Duplicate names are allowed, on purpose.** `projects.name` has no
+    /// `UNIQUE` constraint -- `save_project` never required distinct names
+    /// (two folders named "Kyoto" on different disks are a real scenario, and
+    /// inventing a collision rule for rename alone, when generate never had
+    /// one, would be a new restriction nobody asked for). Asserts both rows
+    /// really do carry the same name afterwards -- not just "no error", but
+    /// the actual state both callers would then read back.
+    #[test]
+    fn rename_project_allows_two_projects_to_share_a_name() {
+        let db = Db::open_in_memory().unwrap();
+        let first =
+            db.save_project("Kyoto Trip", "/tmp/kyoto", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
+        let second =
+            db.save_project("Osaka Trip", "/tmp/osaka", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
+
+        let affected = db.rename_project(second, "Kyoto Trip").unwrap();
+
+        assert_eq!(affected, 1, "the rename itself must succeed, not be rejected as a collision");
+        assert_eq!(db.load_project(first).unwrap().unwrap().name, "Kyoto Trip");
+        assert_eq!(
+            db.load_project(second).unwrap().unwrap().name,
+            "Kyoto Trip",
+            "both rows now legitimately share the name"
+        );
+    }
+
     /// **The analysis cache must survive a delete.** `features` is keyed by
     /// content hash and shared across every project -- it is the expensive
     /// thing, the result of running Apple Vision over every photo. A project
