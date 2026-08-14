@@ -82,6 +82,11 @@ pub fn buildable_sizes(lib: &Library) -> Vec<usize> {
 }
 
 /// Smallest SKU that fits the keepers, defaulting to 20 pages.
+///
+/// Measured against `Capacity::from_sizes`, which OVER-estimates the two
+/// single pages -- see its doc comment. Callers holding a real `Library`
+/// should use `recommend_pages` below instead; this variant exists so the
+/// recommendation is testable against a plain list of buildable sizes.
 pub fn recommend_pages_with(keeper_count: usize, buildable: &[usize]) -> u32 {
     let twenty = Capacity::from_sizes(20, buildable);
     if keeper_count <= twenty.max_photos {
@@ -91,8 +96,23 @@ pub fn recommend_pages_with(keeper_count: usize, buildable: &[usize]) -> u32 {
     }
 }
 
+/// Smallest SKU that fits the keepers, measured with `Capacity::from_library`
+/// -- the ACCURATE capacity, where the two single pages are bounded by what
+/// one page-half can hold rather than by the largest whole spread.
+///
+/// Deliberately not `recommend_pages_with(keeper_count, &buildable_sizes(lib))`:
+/// that measures against the over-estimate, so for a keeper count in the gap
+/// between the two figures (65 or 66 against the real library, whose accurate
+/// 20-page capacity is 64 and whose over-estimate is 66) it recommends a
+/// 20-page book that then silently drops photos a 40-page book would have
+/// kept. `pace::assemble` packs against `from_library`, so this is also the
+/// only figure that agrees with the book the recommendation leads to.
 pub fn recommend_pages(keeper_count: usize, lib: &Library) -> u32 {
-    recommend_pages_with(keeper_count, &buildable_sizes(lib))
+    if keeper_count <= Capacity::from_library(20, lib).max_photos {
+        20
+    } else {
+        40
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -279,6 +299,37 @@ mod tests {
     #[test]
     fn pack_recommends_twenty_pages_for_a_tiny_set() {
         assert_eq!(recommend_pages_with(1, &sizes()), 20);
+    }
+
+    /// `recommend_pages` must measure against the ACCURATE capacity
+    /// (`from_library`), not the single-page over-estimate `from_sizes`
+    /// returns -- otherwise it recommends a 20-page book for a keeper count
+    /// that a 20-page book cannot actually hold, and the user is shown
+    /// "0 dropped" for a book that drops photos.
+    ///
+    /// The fixture library's two figures differ (31 accurate vs 33
+    /// over-estimated), so a keeper count between them distinguishes the two
+    /// rules; both are asserted from the library itself rather than
+    /// hardcoded, and the test asserts they genuinely differ first, so it
+    /// cannot silently degenerate into a tautology if the fixture changes.
+    #[test]
+    fn pack_recommends_against_the_accurate_capacity_not_the_single_page_over_estimate() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/templates");
+        let lib = Library::load(&dir).expect("the frozen fixture library must decompose");
+        let accurate = Capacity::from_library(20, &lib).max_photos;
+        let over_estimate = Capacity::from_sizes(20, &buildable_sizes(&lib)).max_photos;
+        assert!(
+            over_estimate > accurate,
+            "fixture must distinguish the two capacity rules ({over_estimate} vs {accurate})"
+        );
+
+        assert_eq!(recommend_pages(accurate, &lib), 20, "exactly at the accurate capacity");
+        assert_eq!(
+            recommend_pages(accurate + 1, &lib),
+            40,
+            "one past the accurate capacity must move to the larger SKU, even though the \
+             over-estimate would still claim it fits"
+        );
     }
 
     #[test]

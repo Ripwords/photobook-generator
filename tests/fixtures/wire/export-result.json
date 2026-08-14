@@ -1,0 +1,19 @@
+{
+  "blocked": false,
+  "outputDir": "/Users/jj/Desktop/photobook-export",
+  "blocking": [],
+  "warnings": [
+    {
+      "severity": "warn",
+      "page": 4,
+      "photoPath": "/photos/IMG_0042.jpg",
+      "message": "Photo resolves at 250 DPI in this slot, below the 300 DPI target"
+    }
+  ],
+  "written": ["/Users/jj/Desktop/photobook-export/p04-z1-abcd1234.jpg"],
+  "failures": [
+    { "filename": "p04-z2-ef567890", "message": "could not decode: /photos/bad.raw" }
+  ],
+  "manifestPath": "/Users/jj/Desktop/photobook-export/manifest.json",
+  "format": "jpg"
+}

@@ -1,8 +1,18 @@
+use crate::book::cull::Photo;
+use crate::book::manifest::{manifest, Manifest};
+use crate::book::pace::Book;
+use crate::book::pack::{recommend_pages, Capacity};
+use crate::book::preflight::{Finding, Severity};
+use crate::export::build_items;
+use crate::project::ExportRecord;
+use crate::protocol::ExportItem;
+use crate::templates::{Library, Weights};
 use crate::{cluster, db::Db, ranking, sidecar::SidecarPool};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::ipc::Channel;
@@ -474,8 +484,7 @@ pub async fn analyze_folder(
 
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
 
-    let db_path = app_data_dir.join("photobook.sqlite");
-    std::fs::create_dir_all(db_path.parent().expect("has parent")).map_err(|e| e.to_string())?;
+    let db_path = database_path(&app)?;
 
     // The webview cannot decode RAW/HEIC originals at all and loading
     // hundreds of full-size decoded images is not viable, so the sidecar
@@ -597,6 +606,741 @@ pub async fn analyze_folder(
     }
 
     Ok(summary)
+}
+
+// =====================================================================
+// Phase 2: recommend a book, generate and save one, export it.
+//
+// Every type in this section crosses to the webview, where NOTHING checks
+// it: `AnalysisSummary.photos` is untyped `serde_json::Value` and each
+// command's return shape is hand-mirrored by an interface in
+// `app/types/book.ts`. A field renamed on one side and not the other is a
+// silent `undefined` at runtime, not a build error. Each one is therefore
+// pinned by name against a committed fixture in `tests/fixtures/wire/` that
+// `tests/book.test.ts` reads independently -- see that directory's README
+// for why a Rust-to-Rust round-trip cannot do this job.
+// =====================================================================
+
+/// The page lengths the user can choose between: Pixajoy's two published
+/// SKUs for this product. Offered as a list (rather than a `recommended` plus
+/// a free-form number) because a page count that is not a real SKU cannot be
+/// ordered, so an arbitrary override would be a way to build an unbuyable
+/// book.
+pub(crate) const PAGE_OPTIONS: [u32; 2] = [20, 40];
+
+/// One page length the user can pick, and what picking it costs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageOption {
+    pub pages: u32,
+    /// The most photos this length can hold, from `Capacity::from_library` --
+    /// the accurate figure, with the two single pages bounded by a page-half
+    /// rather than by a whole spread.
+    pub capacity_photos: usize,
+    /// How many keepers this length would leave out. The number the user is
+    /// actually deciding on.
+    pub dropped_photos: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookRecommendation {
+    /// Survivors of `book::cull::cull` -- utility images dropped, one photo
+    /// per near-duplicate cluster. NOT the raw analysed count.
+    pub keeper_count: usize,
+    pub recommended_pages: u32,
+    pub options: Vec<PageOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedBook {
+    /// The row `generate_book` wrote. Everything downstream (export, the
+    /// project list, reopening) is keyed by this.
+    pub project_id: i64,
+    pub page_count: usize,
+    pub placed_photos: usize,
+    pub dropped_photos: usize,
+    pub seed: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportFailure {
+    /// The output basename (no extension) the item would have been written
+    /// under -- the only identifier a `.failed` `ExportRecord` carries.
+    pub filename: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportResult {
+    /// True when pre-flight found a `Block` and NOTHING was written.
+    pub blocked: bool,
+    pub output_dir: String,
+    /// Reported separately from `warnings` rather than as one list the UI
+    /// filters: these two are not the same kind of thing (one stopped the
+    /// export, the other did not), and a UI that has to re-derive which is
+    /// which is a UI that can get it backwards.
+    pub blocking: Vec<Finding>,
+    pub warnings: Vec<Finding>,
+    /// Absolute paths the sidecar actually wrote, with the extension IT
+    /// chose from the source container.
+    pub written: Vec<String>,
+    pub failures: Vec<ExportFailure>,
+    pub manifest_path: Option<String>,
+    /// `"jpg"`, `"png"`, `"mixed"`, or empty when nothing was written.
+    pub format: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSummary {
+    pub at: i64,
+    pub output_dir: String,
+    pub format: String,
+    pub file_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectListItem {
+    pub id: i64,
+    pub name: String,
+    pub source_folder: String,
+    pub page_count: i64,
+    pub photo_count: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// The most recent export, or `None` for a book that has never been
+    /// exported -- the distinction the project list exists to show.
+    pub last_export: Option<ExportSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDetail {
+    pub id: i64,
+    pub name: String,
+    pub source_folder: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub page_count: usize,
+    pub photo_count: usize,
+    pub dropped_photos: usize,
+    pub seed: u64,
+    pub exports: Vec<ExportSummary>,
+}
+
+/// Streamed over a `tauri::ipc::Channel` while `export_book` runs, the same
+/// mechanism and for the same reason as `AnalysisEvent`: an export is a
+/// full-size decode, crop, colour conversion and re-encode per photo, so a
+/// sixty-photo book is minutes of work with nothing on screen otherwise.
+///
+/// `Started` fires only once pre-flight has PASSED -- a blocked export writes
+/// nothing and has no progress to report, and showing a progress bar that
+/// never advances would misreport it as a stall.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ExportEvent {
+    Started { total: usize },
+    /// Cumulative as of THIS event, not a delta -- same convention as
+    /// `AnalysisEvent::Batch`'s running totals.
+    Progress { completed: usize, total: usize },
+}
+
+/// Where the SQLite database lives. One authority, shared by every command,
+/// so a second one can never open a different file.
+pub(crate) fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("photobook.sqlite"))
+}
+
+/// The bundled template directory, with a source-tree fallback for `tauri
+/// dev`.
+///
+/// `templates/` ships via `bundle.resources` (see `tauri.conf.json`), so the
+/// packaged app resolves it under `resource_dir()`. The fallback is the
+/// repository copy, resolved from `CARGO_MANIFEST_DIR` at compile time: in a
+/// shipped `.app` that path does not exist on the user's machine, which is
+/// exactly why it is guarded by an existence check rather than tried first.
+fn template_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Ok(resources) = app.path().resource_dir() {
+        let bundled = resources.join("templates");
+        if bundled.is_dir() {
+            return Ok(bundled);
+        }
+    }
+    let source_tree = Path::new(env!("CARGO_MANIFEST_DIR")).join("../templates");
+    if source_tree.is_dir() {
+        return Ok(source_tree);
+    }
+    Err("template library not found in the app resources".into())
+}
+
+fn load_library(app: &AppHandle) -> Result<Library, String> {
+    Library::load(&template_dir(app)?).map_err(|e| e.to_string())
+}
+
+/// Soft-term weights, hot-reloadable from `templates/weights.json`.
+///
+/// A missing or malformed weights file degrades to `Weights::default()` with
+/// a logged warning rather than failing generation: the defaults are a
+/// working set of weights, and refusing to build a book because a taste-tuning
+/// file did not parse would be a worse outcome than building it with the
+/// defaults.
+fn load_weights(app: &AppHandle) -> Weights {
+    let Ok(dir) = template_dir(app) else {
+        return Weights::default();
+    };
+    match Weights::load(&dir.join("weights.json")) {
+        Ok(weights) => weights,
+        Err(err) => {
+            log::warn!("falling back to default weights: {err}");
+            Weights::default()
+        }
+    }
+}
+
+/// Parses the webview's analysed-photo records into engine photos, preserving
+/// positional correspondence exactly.
+///
+/// Fails the whole call on the first record it cannot parse, rather than
+/// skipping it. This is the opposite of `count_keepers`'s `filter_map`, and
+/// deliberately so: `Placement::photo_index` indexes into the slice this
+/// returns, so dropping one record silently shifts every later photo down an
+/// index -- and the book would then export, and manifest, the wrong source
+/// file for every placement after it, with no error raised anywhere.
+pub(crate) fn photos_from_records(records: &[serde_json::Value]) -> Result<Vec<Photo>, String> {
+    records
+        .iter()
+        .enumerate()
+        .map(|(i, record)| {
+            crate::book::cull::from_features(record).ok_or_else(|| {
+                format!(
+                    "photo {i} ({}) is missing fields the layout engine needs",
+                    record["path"].as_str().unwrap_or("<no path>")
+                )
+            })
+        })
+        .collect()
+}
+
+/// The recommended book length and what each length would cost.
+pub(crate) fn recommend(photos: &[Photo], lib: &Library) -> BookRecommendation {
+    let keeper_count = crate::book::cull::cull(photos).len();
+    let options = PAGE_OPTIONS
+        .iter()
+        .map(|&pages| {
+            let capacity = Capacity::from_library(pages, lib);
+            PageOption {
+                pages,
+                capacity_photos: capacity.max_photos,
+                // Saturating: a book with room to spare drops nothing, and an
+                // unsigned wrap-around here would report a colossal number.
+                dropped_photos: keeper_count.saturating_sub(capacity.max_photos),
+            }
+        })
+        .collect();
+    BookRecommendation {
+        keeper_count,
+        recommended_pages: recommend_pages(keeper_count, lib),
+        options,
+    }
+}
+
+/// Splits pre-flight's findings into the ones that stop the export and the
+/// ones that do not, preserving each list's original order.
+pub(crate) fn split_findings(findings: Vec<Finding>) -> (Vec<Finding>, Vec<Finding>) {
+    findings.into_iter().partition(|f| f.severity == Severity::Block)
+}
+
+fn placement_total(book: &Book) -> usize {
+    book.pages.iter().map(|p| p.placements.len()).sum()
+}
+
+/// The length of the photo slice this book was assembled against.
+///
+/// That slice is not persisted with the book -- only the indices into it are
+/// -- so re-exporting against a different set of photos would silently print
+/// the wrong sources. `Book::dropped` is `photos.len() - distinct placed
+/// indices` (`pace::assemble`), so the two together reconstruct the original
+/// length, which is enough to REFUSE a mismatch. It does not detect a
+/// same-length permutation; the UI never reorders `summary.photos`, and
+/// `finalize_photos` sorts by path, so the ordering is stable within a run.
+pub(crate) fn expected_photo_count(book: &Book) -> usize {
+    let placed: BTreeSet<usize> = book
+        .pages
+        .iter()
+        .flat_map(|p| p.placements.iter().map(|pl| pl.photo_index))
+        .collect();
+    book.dropped + placed.len()
+}
+
+/// What `generate_and_save` needs to know about the project it is about to
+/// write, as one value rather than four positional arguments that are easy
+/// to transpose (`name` and `source_folder` are both `&str`, and a swap
+/// between them compiles).
+pub(crate) struct NewProject<'a> {
+    pub name: &'a str,
+    pub source_folder: &'a str,
+    pub pages: u32,
+    pub seed: u64,
+}
+
+/// Assembles a book and PERSISTS it, returning the new project's id.
+///
+/// The persistence is not an optimisation: a generated book the user cannot
+/// find again after quitting is a book they have lost. Saving here, rather
+/// than in a separate "save" command the UI has to remember to call, is what
+/// makes that structurally impossible.
+pub(crate) fn generate_and_save(
+    db: &Db,
+    meta: &NewProject<'_>,
+    photos: &[Photo],
+    lib: &Library,
+    weights: &Weights,
+) -> Result<GeneratedBook, String> {
+    let book = crate::book::pace::assemble(photos, meta.pages, lib, weights, meta.seed);
+    let project_id =
+        db.save_project(meta.name, meta.source_folder, &book).map_err(|e| e.to_string())?;
+    Ok(GeneratedBook {
+        project_id,
+        page_count: book.pages.len(),
+        placed_photos: placement_total(&book),
+        dropped_photos: book.dropped,
+        seed: book.seed,
+    })
+}
+
+/// Maps each output basename the sidecar actually wrote to the extension it
+/// wrote it under.
+///
+/// Keyed on the file STEM of the returned path, which is by construction the
+/// `filename` the item was sent with (`Exporter.outputPath` appends the
+/// extension to the stem it was given).
+fn written_extensions(records: &[serde_json::Value]) -> BTreeMap<String, String> {
+    records
+        .iter()
+        .filter(|r| r["type"] == "ok")
+        .filter_map(|r| {
+            let path = Path::new(r["path"].as_str()?);
+            let stem = path.file_stem()?.to_str()?.to_string();
+            let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+            Some((stem, extension))
+        })
+        .collect()
+}
+
+fn written_paths(records: &[serde_json::Value]) -> Vec<String> {
+    records
+        .iter()
+        .filter(|r| r["type"] == "ok")
+        .filter_map(|r| r["path"].as_str().map(str::to_string))
+        .collect()
+}
+
+fn export_failures(records: &[serde_json::Value]) -> Vec<ExportFailure> {
+    records
+        .iter()
+        .filter(|r| r["type"] != "ok")
+        .map(|r| ExportFailure {
+            filename: r["filename"].as_str().unwrap_or_default().to_string(),
+            message: r["message"].as_str().unwrap_or("export failed").to_string(),
+        })
+        .collect()
+}
+
+/// Rewrites the manifest to describe what was ACTUALLY written.
+///
+/// `book::manifest::manifest` fills `format` from
+/// `export::predicted_format`, which reads the source's file EXTENSION. The
+/// Swift exporter decides the real container from the file itself, via
+/// `CGImageSourceGetType` -- so a `.jpg` that is secretly a PNG makes the two
+/// disagree, and the manifest, which is the record of what the user
+/// uploaded, would name a file that does not exist. The returned
+/// `ExportRecord.ok.path` carries the true extension; this reconciles against
+/// it.
+///
+/// An entry with no successful record is REMOVED: it names no file, so
+/// listing it (with any format at all) would be a claim about a file nobody
+/// wrote. Pages themselves are never removed, preserving `manifest`'s own
+/// rule that `page_count` always reconciles against the SKU. Returns how many
+/// entries were dropped.
+pub(crate) fn reconcile_manifest(m: &mut Manifest, records: &[serde_json::Value]) -> usize {
+    let written = written_extensions(records);
+    let mut dropped = 0usize;
+    for page in &mut m.pages {
+        page.photos.retain_mut(|photo| match written.get(&photo.filename) {
+            Some(extension) => {
+                photo.format.clone_from(extension);
+                true
+            }
+            None => {
+                dropped += 1;
+                false
+            }
+        });
+    }
+    dropped
+}
+
+/// One label for the containers an export produced, for the project's export
+/// history. `"mixed"` rather than picking a winner: a book of camera JPEGs
+/// and scanned PNGs genuinely has both, and naming one of them would be
+/// wrong about the other.
+fn export_format_label(paths: &[String]) -> String {
+    let extensions: BTreeSet<String> = paths
+        .iter()
+        .filter_map(|p| Path::new(p).extension()?.to_str().map(str::to_ascii_lowercase))
+        .collect();
+    match extensions.len() {
+        0 => String::new(),
+        1 => extensions.into_iter().next().expect("exactly one"),
+        _ => "mixed".into(),
+    }
+}
+
+/// Pre-flight first, then write -- with both side effects injected.
+///
+/// `send` (the sidecar round-trip) and `write_manifest` (the filesystem) are
+/// parameters rather than calls, so the ordering guarantee this function
+/// exists to make -- *nothing is written when a finding blocks* -- is
+/// testable without a live `AppHandle`, by handing it closures that panic if
+/// reached. That is the same "extract the part that can be tested" pattern
+/// `finalize_photos`, `lookup_cache`, `gather_chunked` and
+/// `analyze_batches_with_progress` already follow.
+pub(crate) fn run_export<S, W>(
+    book: &Book,
+    photos: &[Photo],
+    project_id: i64,
+    output_dir: &str,
+    findings: Vec<Finding>,
+    send: S,
+    write_manifest: W,
+) -> Result<ExportResult, String>
+where
+    S: FnOnce(&[ExportItem]) -> Vec<serde_json::Value>,
+    W: FnOnce(&Manifest) -> Result<String, String>,
+{
+    // Checked before anything else: `build_items` and `manifest` both index
+    // `photos` by `photo_index` directly, so a slice that is not the one the
+    // book was built against panics rather than misbehaves.
+    let expected = expected_photo_count(book);
+    if photos.len() != expected {
+        return Err(format!(
+            "this book was assembled from {expected} photos but {} were supplied; \
+             re-analyse the source folder and generate the book again",
+            photos.len()
+        ));
+    }
+
+    let (blocking, warnings) = split_findings(findings);
+    if !blocking.is_empty() {
+        return Ok(ExportResult {
+            blocked: true,
+            output_dir: output_dir.to_string(),
+            blocking,
+            warnings,
+            written: Vec::new(),
+            failures: Vec::new(),
+            manifest_path: None,
+            format: String::new(),
+        });
+    }
+
+    let items = build_items(book, photos);
+    let records = send(&items);
+
+    let written = written_paths(&records);
+    let failures = export_failures(&records);
+
+    // Built and reconciled AFTER the export, from the real returned paths --
+    // see `reconcile_manifest`.
+    let mut manifest = manifest(book, photos, project_id);
+    let unwritten = reconcile_manifest(&mut manifest, &records);
+    if unwritten > 0 {
+        log::warn!("{unwritten} placement(s) failed to export and were left out of the manifest");
+    }
+    let manifest_path = write_manifest(&manifest)?;
+
+    Ok(ExportResult {
+        blocked: false,
+        output_dir: output_dir.to_string(),
+        blocking,
+        warnings,
+        format: export_format_label(&written),
+        written,
+        failures,
+        manifest_path: Some(manifest_path),
+    })
+}
+
+fn write_manifest_file(output_dir: &Path, manifest: &Manifest) -> Result<String, String> {
+    std::fs::create_dir_all(output_dir).map_err(|e| e.to_string())?;
+    let path = output_dir.join("manifest.json");
+    let json = serde_json::to_string_pretty(manifest).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// How long a book would be, and what each length costs.
+///
+/// Takes the analysed photo records the webview already holds rather than
+/// re-reading the folder: percentiles and cluster ids are whole-set
+/// derivations computed once by `finalize_photos` and never persisted, so
+/// the webview's copy is the only place they exist.
+#[tauri::command]
+pub async fn recommend_book(
+    app: AppHandle,
+    photos: Vec<serde_json::Value>,
+) -> Result<BookRecommendation, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let lib = load_library(&app)?;
+        let parsed = photos_from_records(&photos)?;
+        Ok(recommend(&parsed, &lib))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Assembles a book and saves it as a project, returning its id.
+#[tauri::command]
+pub async fn generate_book(
+    app: AppHandle,
+    photos: Vec<serde_json::Value>,
+    pages: Option<u32>,
+    name: String,
+    source_folder: String,
+    seed: Option<u64>,
+) -> Result<GeneratedBook, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let lib = load_library(&app)?;
+        let weights = load_weights(&app);
+        let parsed = photos_from_records(&photos)?;
+        let pages = pages.unwrap_or_else(|| recommend_pages(crate::book::cull::cull(&parsed).len(), &lib));
+        // A seed the caller did not pin is taken from the clock, so
+        // "generate again" genuinely re-rolls the tie-breaks instead of
+        // rebuilding the identical book; it is then persisted with the book,
+        // so re-opening one is reproducible.
+        let seed = seed.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0)
+        });
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        let meta = NewProject { name: &name, source_folder: &source_folder, pages, seed };
+        generate_and_save(&db, &meta, &parsed, &lib, &weights)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Pre-flights a saved book and, if nothing blocks, exports it.
+///
+/// The whole body runs inside `spawn_blocking`: `Sidecar::request` does a
+/// BLOCKING `recv_timeout` while waiting for the sidecar's stdout-drain task
+/// -- itself a tokio task -- to hand it the response. Running that on the
+/// async worker pool starves the drain task of a thread on a machine with
+/// few workers, and the request then resolves only when its own timeout
+/// elapses, even though the sidecar already answered. This is a traced,
+/// documented bug from Phase 1, not a precaution.
+#[tauri::command]
+pub async fn export_book(
+    app: AppHandle,
+    project_id: i64,
+    photos: Vec<serde_json::Value>,
+    output_dir: String,
+    on_event: Channel<ExportEvent>,
+) -> Result<ExportResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        let project = db
+            .load_project(project_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("project {project_id} no longer exists"))?;
+        let parsed = photos_from_records(&photos)?;
+        let output = PathBuf::from(&output_dir);
+
+        // Pre-flight reads the real world: it checks every source file still
+        // exists and how much space the volume has. It runs BEFORE anything
+        // is written, which is the entire point of it.
+        //
+        // `preflight`, not `preflight_with_bleed`: a persisted `Placement`
+        // carries its slot rect but not the originating template's bleed
+        // array, so there is no bleed declaration to check here and that one
+        // check is trivially satisfied. Every other check runs in full. A
+        // caller that reloads the template library and re-derives the per
+        // placement bleed edges could call `preflight_with_bleed` instead --
+        // that is a Phase 3 concern, once the preview needs the template
+        // anyway.
+        let findings = crate::book::preflight::preflight(&project.book, &parsed, &output);
+
+        let total = placement_total(&project.book);
+        let mut completed = 0usize;
+
+        let result = run_export(
+            &project.book,
+            &parsed,
+            project_id,
+            &output_dir,
+            findings,
+            |items| {
+                if let Err(err) = on_event.send(ExportEvent::Started { total }) {
+                    log::warn!("failed to send export Started event: {err}");
+                }
+                let state = app.state::<AppState>();
+                let mut pool = match state.pool.lock() {
+                    Ok(pool) => pool,
+                    Err(err) => {
+                        log::warn!("sidecar pool is poisoned: {err}");
+                        return items
+                            .iter()
+                            .map(|i| {
+                                crate::sidecar::export_failure_record(&i.filename, "sidecar unavailable")
+                            })
+                            .collect();
+                    }
+                };
+                pool.export_all(&app, &output_dir, items, |resolved| {
+                    completed += resolved.len();
+                    if let Err(err) =
+                        on_event.send(ExportEvent::Progress { completed, total })
+                    {
+                        log::warn!("failed to send export Progress event: {err}");
+                    }
+                })
+            },
+            |manifest| write_manifest_file(&output, manifest),
+        )?;
+
+        // Recorded only for an export that actually wrote something: an
+        // export history entry for a run that produced no files would show
+        // the user a book as "exported" when nothing landed on disk.
+        if !result.written.is_empty() {
+            let record = ExportRecord {
+                at: 0, // stamped by SQLite; see ExportRecord's doc comment.
+                output_dir: result.output_dir.clone(),
+                format: result.format.clone(),
+                file_count: result.written.len(),
+            };
+            if let Err(err) = db.record_export(project_id, &record) {
+                // The files are already written; failing the command now
+                // would tell the user the export failed when it did not.
+                log::warn!("failed to record export against project {project_id}: {err}");
+            }
+        }
+
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Every saved project, newest-updated first, each with its most recent
+/// export.
+///
+/// `Db::list_projects` deliberately does not parse `book_json`, but it also
+/// does not carry export history, so each row's exports are fetched with a
+/// `load_project`. That parses the book per row, which is wasteful in
+/// principle and irrelevant in practice at the scale a person's project list
+/// actually reaches; worth a dedicated query only if it ever stops being
+/// instant.
+#[tauri::command]
+pub async fn list_projects(app: AppHandle) -> Result<Vec<ProjectListItem>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        let summaries = db.list_projects().map_err(|e| e.to_string())?;
+        let mut items = Vec::with_capacity(summaries.len());
+        for summary in summaries {
+            // Degrades rather than propagates: one project whose `book_json`
+            // no longer parses must not make the whole list unreadable, which
+            // would leave the user with no way to see (or delete) any of their
+            // other books.
+            let last_export = match db.load_project(summary.id) {
+                Ok(project) => project,
+                Err(err) => {
+                    log::warn!("cannot read project {}: {err}", summary.id);
+                    None
+                }
+            }
+            .and_then(|project| project.exports.last().cloned())
+                .map(|record| ExportSummary {
+                    at: record.at,
+                    output_dir: record.output_dir,
+                    format: record.format,
+                    file_count: record.file_count,
+                });
+            items.push(ProjectListItem {
+                id: summary.id,
+                name: summary.name,
+                source_folder: summary.source_folder,
+                page_count: summary.page_count,
+                photo_count: summary.photo_count,
+                created_at: summary.created_at,
+                updated_at: summary.updated_at,
+                last_export,
+            });
+        }
+        Ok(items)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// One saved project in full, for reopening it.
+#[tauri::command]
+pub async fn open_project(app: AppHandle, id: i64) -> Result<ProjectDetail, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        let project = db
+            .load_project(id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("project {id} no longer exists"))?;
+        Ok(ProjectDetail {
+            id: project.id,
+            name: project.name,
+            source_folder: project.source_folder,
+            created_at: project.created_at,
+            updated_at: project.updated_at,
+            page_count: project.book.pages.len(),
+            photo_count: placement_total(&project.book),
+            dropped_photos: project.book.dropped,
+            seed: project.book.seed,
+            exports: project
+                .exports
+                .into_iter()
+                .map(|record| ExportSummary {
+                    at: record.at,
+                    output_dir: record.output_dir,
+                    format: record.format,
+                    file_count: record.file_count,
+                })
+                .collect(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Opens Finder with the exported files selected.
+///
+/// Shells out to macOS's own `open -R` rather than adding the shell plugin's
+/// `open` permission to the webview: this app is macOS-only by constraint,
+/// and the command is spawned (never waited on) so a slow Finder cannot
+/// block the caller. A failure to reveal is reported, not swallowed -- the
+/// user pressed a button and deserves to know it did nothing.
+#[tauri::command]
+pub async fn reveal_in_finder(path: String) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg("-R")
+        .arg(&path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not reveal {path} in Finder: {e}"))
 }
 
 #[cfg(test)]
@@ -1489,5 +2233,776 @@ mod tests {
         // count itself doesn't reveal the tie-break, but this at least
         // pins that a tie doesn't produce two keepers.
         assert_eq!(count_keepers(&photos), 1);
+    }
+
+    // ================================================================
+    // Phase 2: recommend / generate / export / projects
+    // ================================================================
+
+    use crate::book::cull::Photo;
+    use crate::book::manifest::Manifest;
+    use crate::book::pace::{Book, Page, Placement};
+    use crate::book::preflight::{Finding, Severity};
+    use crate::geometry::{Rect, Side};
+    use crate::protocol::ExportItem;
+    use crate::templates::Library;
+
+    /// The frozen five-template library `book::pace`'s goldens already use.
+    /// Deliberately NOT the real `templates/` directory: authoring a new
+    /// template must not churn a command-level expectation.
+    fn fixture_library() -> Library {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/templates");
+        Library::load(&dir).expect("the frozen fixture library must decompose")
+    }
+
+    /// One record in the shape `finalize_photos` hands the webview -- which is
+    /// exactly the shape the webview hands back to `generate_book`.
+    fn photo_record(i: usize, is_utility: bool, dup: u32, event: u32) -> serde_json::Value {
+        serde_json::json!({
+            "status": "ok",
+            "path": format!("/photos/p{i:03}.jpg"),
+            "hash": format!("hash{i:04}"),
+            "width": 4032,
+            "height": 3024,
+            "isUtility": is_utility,
+            "aestheticPct": (i * 7) % 100,
+            "sharpnessPct": (i * 13) % 100,
+            "nearDupCluster": dup,
+            "eventCluster": event,
+            "faces": [],
+            "faceAreaFraction": 0.0,
+            "palette": [],
+        })
+    }
+
+    /// `n` distinct, non-utility, non-duplicate photos spread over a few
+    /// chapters -- so `cull` keeps every one of them and the keeper count is
+    /// `n`, making capacity arithmetic in these tests unambiguous.
+    fn distinct_records(n: usize) -> Vec<serde_json::Value> {
+        (0..n).map(|i| photo_record(i, false, i as u32, (i / 4) as u32)).collect()
+    }
+
+    fn engine_photo(path: &str, hash: &str) -> Photo {
+        Photo {
+            path: path.into(),
+            hash: hash.into(),
+            width: 4032,
+            height: 3024,
+            is_utility: false,
+            aesthetic_pct: 50,
+            sharpness_pct: 50,
+            near_dup_cluster: 0,
+            event_cluster: 0,
+            faces: Vec::new(),
+            face_area_fraction: 0.0,
+            saliency_box: None,
+            palette: Vec::new(),
+            capture_quality: None,
+        }
+    }
+
+    /// Two pages, two placements on the first and one on the second -- so a
+    /// bug that only ever looks at page one, or only at placement one, is
+    /// visible.
+    fn two_page_book() -> (Book, Vec<Photo>) {
+        let photos = vec![
+            engine_photo("/photos/a.jpg", "haaa1111"),
+            engine_photo("/photos/b.jpg", "hbbb2222"),
+            engine_photo("/photos/c.jpg", "hccc3333"),
+        ];
+        let placement = |photo_index: usize, z: u32| Placement {
+            photo_index,
+            slot_rect: Rect::new(0.1, 0.1, 0.4, 0.4),
+            crop: Rect::new(0.0, 0.0, 1.0, 1.0),
+            z,
+        };
+        let book = Book {
+            seed: 99,
+            dropped: 0,
+            pages: vec![
+                Page {
+                    number: 1,
+                    side: Side::Right,
+                    template_id: "t".into(),
+                    placements: vec![placement(0, 1), placement(1, 2)],
+                },
+                Page {
+                    number: 2,
+                    side: Side::Left,
+                    template_id: "t".into(),
+                    placements: vec![placement(2, 1)],
+                },
+            ],
+        };
+        (book, photos)
+    }
+
+    fn ok_record(filename: &str, extension: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": "ok",
+            "path": format!("/out/{filename}.{extension}"),
+            "width": 3000,
+            "height": 2000,
+            "bytes": 1234,
+        })
+    }
+
+    fn failed_record(filename: &str, message: &str) -> serde_json::Value {
+        serde_json::json!({ "type": "failed", "filename": filename, "message": message })
+    }
+
+    fn finding(severity: Severity, page: u32, message: &str) -> Finding {
+        Finding {
+            severity,
+            page,
+            photo_path: "/photos/a.jpg".into(),
+            message: message.into(),
+        }
+    }
+
+    /// Writes the manifest into a real directory, so a test can assert on the
+    /// bytes that actually landed on disk rather than on an in-memory struct
+    /// the writer might never have been handed.
+    fn manifest_writer(dir: &std::path::Path) -> impl FnOnce(&Manifest) -> Result<String, String> + '_ {
+        move |m| {
+            let path = dir.join("manifest.json");
+            std::fs::write(&path, serde_json::to_string_pretty(m).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            Ok(path.to_string_lossy().into_owned())
+        }
+    }
+
+    // --- `photos_from_records`: the index-preserving parse ----------------
+
+    #[test]
+    fn photos_from_records_preserves_input_order() {
+        let records = distinct_records(3);
+        let photos = photos_from_records(&records).unwrap();
+        assert_eq!(photos.len(), 3);
+        assert_eq!(photos[0].path, "/photos/p000.jpg");
+        assert_eq!(photos[1].path, "/photos/p001.jpg");
+        assert_eq!(photos[2].path, "/photos/p002.jpg");
+    }
+
+    /// The load-bearing property: `Placement::photo_index` indexes into this
+    /// exact slice, so a record that cannot be parsed must FAIL the whole
+    /// call rather than be skipped. Skipping (the `filter_map` shape
+    /// `count_keepers` legitimately uses, where only a count matters) would
+    /// shift every later photo down one index, and the book would then export
+    /// and manifest the wrong source file for every placement after the
+    /// broken record -- silently, with no error anywhere.
+    #[test]
+    fn photos_from_records_fails_rather_than_skipping_an_unparseable_record() {
+        let mut records = distinct_records(3);
+        records[1]["hash"] = serde_json::Value::Null;
+
+        let result = photos_from_records(&records);
+
+        let message = result.expect_err("a record missing a required field must fail the call");
+        assert!(
+            message.contains("/photos/p001.jpg") || message.contains('1'),
+            "the error must identify which record failed: {message}"
+        );
+    }
+
+    // --- `recommend`: page length and what it costs -----------------------
+
+    #[test]
+    fn recommend_counts_keepers_after_culling_not_raw_photos() {
+        let lib = fixture_library();
+        let records = vec![
+            photo_record(0, false, 0, 0),
+            photo_record(1, true, 1, 0),  // utility -> culled
+            photo_record(2, false, 2, 0), // distinct cluster -> kept
+            photo_record(3, false, 2, 0), // same cluster as #2 -> one survives
+        ];
+        let photos = photos_from_records(&records).unwrap();
+
+        let rec = recommend(&photos, &lib);
+
+        assert_eq!(rec.keeper_count, 2, "one utility dropped, one near-duplicate collapsed");
+    }
+
+    #[test]
+    fn recommend_reports_how_many_keepers_each_page_length_would_drop() {
+        let lib = fixture_library();
+        let photos = photos_from_records(&distinct_records(200)).unwrap();
+
+        let rec = recommend(&photos, &lib);
+
+        assert_eq!(rec.keeper_count, 200);
+        for option in &rec.options {
+            let capacity = crate::book::pack::Capacity::from_library(option.pages, &lib);
+            assert_eq!(option.capacity_photos, capacity.max_photos);
+            assert_eq!(
+                option.dropped_photos,
+                200 - capacity.max_photos,
+                "the drop count must be keepers minus what the SKU can actually hold"
+            );
+        }
+    }
+
+    /// A book with room to spare must report zero dropped, not a negative
+    /// number wrapped around into a colossal `usize`.
+    #[test]
+    fn recommend_reports_no_drops_when_every_keeper_fits() {
+        let lib = fixture_library();
+        let photos = photos_from_records(&distinct_records(3)).unwrap();
+
+        let rec = recommend(&photos, &lib);
+
+        assert!(rec.options.iter().all(|o| o.dropped_photos == 0), "{:?}", rec.options);
+    }
+
+    /// The recommendation must move to the larger SKU once the keepers stop
+    /// fitting the smaller one -- and stay on the smaller one when they do
+    /// fit. Both directions, because a constant would pass either alone.
+    #[test]
+    fn recommend_moves_to_the_larger_sku_only_once_the_keepers_overflow_the_smaller_one() {
+        let lib = fixture_library();
+        let twenty = crate::book::pack::Capacity::from_library(20, &lib).max_photos;
+
+        let fits = photos_from_records(&distinct_records(twenty)).unwrap();
+        assert_eq!(recommend(&fits, &lib).recommended_pages, 20);
+
+        let overflows = photos_from_records(&distinct_records(twenty + 1)).unwrap();
+        assert_eq!(recommend(&overflows, &lib).recommended_pages, 40);
+    }
+
+    #[test]
+    fn recommend_offers_every_page_length_the_user_can_choose_between() {
+        let lib = fixture_library();
+        let photos = photos_from_records(&distinct_records(5)).unwrap();
+        let rec = recommend(&photos, &lib);
+        let offered: Vec<u32> = rec.options.iter().map(|o| o.pages).collect();
+        assert_eq!(offered, PAGE_OPTIONS.to_vec());
+        assert!(
+            offered.contains(&rec.recommended_pages),
+            "the recommended length must be one the user can actually pick: {offered:?}"
+        );
+    }
+
+    // --- `split_findings`: Blocks and Warns are not interchangeable -------
+
+    #[test]
+    fn split_findings_separates_blocks_from_warnings_without_reclassifying_either() {
+        let findings = vec![
+            finding(Severity::Warn, 1, "soft"),
+            finding(Severity::Block, 2, "too low"),
+            finding(Severity::Warn, 3, "gutter"),
+        ];
+
+        let (blocking, warnings) = split_findings(findings);
+
+        assert_eq!(blocking.len(), 1, "exactly one Block: {blocking:?}");
+        assert_eq!(blocking[0].page, 2);
+        assert!(blocking.iter().all(|f| f.severity == Severity::Block));
+        assert_eq!(warnings.len(), 2, "exactly two Warns: {warnings:?}");
+        assert!(warnings.iter().all(|f| f.severity == Severity::Warn));
+        assert_eq!(
+            warnings.iter().map(|f| f.page).collect::<Vec<_>>(),
+            vec![1, 3],
+            "order within a severity must survive the split"
+        );
+    }
+
+    // --- `generate_and_save`: generation the user cannot lose -------------
+
+    /// The regression this task names by name: a `generate_book` that
+    /// assembles a book and hands it back without writing it means quitting
+    /// the app loses it. The assertion is not "a function was called" but
+    /// "the row is readable back out of the database".
+    #[test]
+    fn generating_a_book_persists_it_so_quitting_cannot_lose_it() {
+        let db = Db::open_in_memory().unwrap();
+        let lib = fixture_library();
+        let photos = photos_from_records(&distinct_records(12)).unwrap();
+
+        let meta = NewProject { name: "Japan 2026", source_folder: "/photos", pages: 20, seed: 7 };
+        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default()).unwrap();
+
+        let loaded = db
+            .load_project(generated.project_id)
+            .unwrap()
+            .expect("the project must be readable back out of the database");
+        assert_eq!(loaded.name, "Japan 2026");
+        assert_eq!(loaded.source_folder, "/photos");
+        assert_eq!(loaded.book.pages.len(), 20);
+        assert_eq!(loaded.book.seed, 7);
+        assert_eq!(
+            loaded.book.pages.iter().map(|p| p.placements.len()).sum::<usize>(),
+            generated.placed_photos,
+            "the persisted book must be the same book whose counts were reported"
+        );
+    }
+
+    #[test]
+    fn a_generated_project_shows_up_in_the_project_list_under_the_id_it_returned() {
+        let db = Db::open_in_memory().unwrap();
+        let lib = fixture_library();
+        let photos = photos_from_records(&distinct_records(12)).unwrap();
+
+        let meta = NewProject { name: "Japan 2026", source_folder: "/photos", pages: 20, seed: 7 };
+        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default()).unwrap();
+
+        let listed = db.list_projects().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, generated.project_id);
+        assert_eq!(listed[0].page_count, 20);
+    }
+
+    #[test]
+    fn generate_reports_the_page_count_the_book_actually_has() {
+        let db = Db::open_in_memory().unwrap();
+        let lib = fixture_library();
+        let photos = photos_from_records(&distinct_records(30)).unwrap();
+
+        let meta = NewProject { name: "b", source_folder: "/photos", pages: 40, seed: 3 };
+        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default()).unwrap();
+
+        assert_eq!(generated.page_count, 40);
+        assert_eq!(generated.seed, 3);
+        assert_eq!(
+            generated.placed_photos + generated.dropped_photos,
+            30,
+            "every input photo is either placed or dropped"
+        );
+    }
+
+    // --- `expected_photo_count`: the slice a book was built against -------
+
+    /// `Placement::photo_index` indexes into the photo slice `assemble` was
+    /// given, and that slice is not persisted with the book -- so re-exporting
+    /// against a DIFFERENT set of photos would silently print the wrong
+    /// sources. `Book::dropped` plus the number of distinct placed indices
+    /// reconstructs the original slice length, which is enough to refuse the
+    /// mismatch instead of exporting nonsense.
+    #[test]
+    fn expected_photo_count_reconstructs_the_slice_the_book_was_built_against() {
+        let lib = fixture_library();
+        let photos = photos_from_records(&distinct_records(12)).unwrap();
+        let book = crate::book::pace::assemble(&photos, 20, &lib, &Weights::default(), 5);
+
+        assert_eq!(expected_photo_count(&book), 12);
+    }
+
+    #[test]
+    fn export_refuses_a_photo_slice_that_is_not_the_one_the_book_was_built_from() {
+        let (book, photos) = two_page_book();
+        let dir = tempfile::tempdir().unwrap();
+        let too_few = photos[..2].to_vec();
+
+        let result = run_export(
+            &book,
+            &too_few,
+            1,
+            &dir.path().to_string_lossy(),
+            Vec::new(),
+            |_| panic!("a mismatched photo slice must never reach the sidecar"),
+            manifest_writer(dir.path()),
+        );
+
+        assert!(result.is_err(), "a book whose placements outrun the photo slice must not export");
+    }
+
+    // --- `run_export`: pre-flight first, then write ----------------------
+
+    /// The whole point of pre-flight: a Block is reported BEFORE anything is
+    /// written, not discovered after nineteen files have landed. Both side
+    /// effects panic if reached, so this cannot pass by accident.
+    #[test]
+    fn a_blocking_finding_stops_the_export_before_a_single_file_is_written() {
+        let (book, photos) = two_page_book();
+        let dir = tempfile::tempdir().unwrap();
+        let findings = vec![
+            finding(Severity::Warn, 1, "soft"),
+            finding(Severity::Block, 2, "below the 200 DPI floor"),
+        ];
+
+        let result = run_export(
+            &book,
+            &photos,
+            1,
+            &dir.path().to_string_lossy(),
+            findings,
+            |_| panic!("the sidecar must never be reached when a finding blocks"),
+            |_| panic!("the manifest must never be written when a finding blocks"),
+        )
+        .unwrap();
+
+        assert!(result.blocked);
+        assert_eq!(result.blocking.len(), 1);
+        assert_eq!(result.warnings.len(), 1, "warnings are still reported alongside the block");
+        assert!(result.written.is_empty());
+        assert_eq!(result.manifest_path, None);
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "the output directory must be untouched"
+        );
+    }
+
+    #[test]
+    fn warnings_alone_do_not_stop_the_export() {
+        let (book, photos) = two_page_book();
+        let dir = tempfile::tempdir().unwrap();
+        let mut sent = 0usize;
+
+        let result = run_export(
+            &book,
+            &photos,
+            1,
+            &dir.path().to_string_lossy(),
+            vec![finding(Severity::Warn, 1, "soft")],
+            |items| {
+                sent = items.len();
+                items.iter().map(|i| ok_record(&i.filename, "jpg")).collect()
+            },
+            manifest_writer(dir.path()),
+        )
+        .unwrap();
+
+        assert!(!result.blocked);
+        assert_eq!(sent, 3, "every placement in the book must be sent");
+        assert_eq!(result.written.len(), 3);
+        assert_eq!(result.warnings.len(), 1);
+        assert!(result.blocking.is_empty());
+        assert!(result.manifest_path.is_some());
+    }
+
+    #[test]
+    fn export_reports_the_paths_actually_written_and_the_items_that_failed() {
+        let (book, photos) = two_page_book();
+        let dir = tempfile::tempdir().unwrap();
+
+        let result = run_export(
+            &book,
+            &photos,
+            1,
+            &dir.path().to_string_lossy(),
+            Vec::new(),
+            |items| {
+                vec![
+                    ok_record(&items[0].filename, "jpg"),
+                    failed_record(&items[1].filename, "could not decode: /photos/b.jpg"),
+                    ok_record(&items[2].filename, "jpg"),
+                ]
+            },
+            manifest_writer(dir.path()),
+        )
+        .unwrap();
+
+        assert_eq!(result.written.len(), 2);
+        assert_eq!(result.failures.len(), 1);
+        assert_eq!(result.failures[0].filename, "p01-z2-hbbb2222");
+        assert_eq!(result.failures[0].message, "could not decode: /photos/b.jpg");
+    }
+
+    // --- the manifest must describe what was written, not what was guessed
+
+    /// The ruling carried into this task: `export::predicted_format` guesses
+    /// the container from the file EXTENSION, while the Swift exporter picks
+    /// it from the actual container via `CGImageSourceGetType`. A `.jpg` file
+    /// that is really a PNG makes the two disagree, and the manifest -- the
+    /// record of what the user uploaded -- would name a file that does not
+    /// exist. Every source here is named `.jpg` (so the prediction is `jpg`)
+    /// while every returned path is `.png`, so a manifest still trusting the
+    /// prediction is unambiguously distinguishable from one reconciled
+    /// against reality.
+    #[test]
+    fn the_manifest_records_the_container_actually_written_not_the_one_predicted() {
+        let (book, photos) = two_page_book();
+        assert!(
+            photos.iter().all(|p| p.path.ends_with(".jpg")),
+            "fixture must make the prediction and the reality disagree"
+        );
+        let dir = tempfile::tempdir().unwrap();
+
+        let result = run_export(
+            &book,
+            &photos,
+            42,
+            &dir.path().to_string_lossy(),
+            Vec::new(),
+            |items| items.iter().map(|i| ok_record(&i.filename, "png")).collect(),
+            manifest_writer(dir.path()),
+        )
+        .unwrap();
+
+        let written: Manifest = serde_json::from_str(
+            &std::fs::read_to_string(result.manifest_path.unwrap()).unwrap(),
+        )
+        .unwrap();
+        let formats: Vec<&str> = written
+            .pages
+            .iter()
+            .flat_map(|p| p.photos.iter().map(|ph| ph.format.as_str()))
+            .collect();
+        assert_eq!(
+            formats,
+            vec!["png", "png", "png"],
+            "the manifest must carry the extension the sidecar actually wrote"
+        );
+        assert_eq!(result.format, "png", "and so must the recorded export");
+    }
+
+    /// A photo the sidecar never wrote must not appear in the manifest at
+    /// all: the manifest is the record of the files that exist, and an entry
+    /// naming a file nobody wrote is exactly the "records a format that
+    /// differs from what was written" failure in its worst form -- there is
+    /// no file to have a format. The page itself still appears, per
+    /// `manifest`'s own never-drop-a-page rule.
+    #[test]
+    fn the_manifest_drops_an_entry_the_sidecar_never_wrote() {
+        let (book, photos) = two_page_book();
+        let dir = tempfile::tempdir().unwrap();
+
+        let result = run_export(
+            &book,
+            &photos,
+            42,
+            &dir.path().to_string_lossy(),
+            Vec::new(),
+            |items| {
+                vec![
+                    ok_record(&items[0].filename, "jpg"),
+                    failed_record(&items[1].filename, "could not decode"),
+                    ok_record(&items[2].filename, "jpg"),
+                ]
+            },
+            manifest_writer(dir.path()),
+        )
+        .unwrap();
+
+        let written: Manifest = serde_json::from_str(
+            &std::fs::read_to_string(result.manifest_path.unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(written.page_count, 2, "the page count still reconciles against the book");
+        assert_eq!(written.pages.len(), 2, "no page is ever dropped");
+        let filenames: Vec<&str> = written
+            .pages
+            .iter()
+            .flat_map(|p| p.photos.iter().map(|ph| ph.filename.as_str()))
+            .collect();
+        assert_eq!(
+            filenames,
+            vec!["p01-z1-haaa1111", "p02-z1-hccc3333"],
+            "the failed item must not be listed as if it had been written"
+        );
+    }
+
+    #[test]
+    fn a_mixed_format_export_is_recorded_as_mixed_rather_than_one_of_the_two() {
+        let (book, photos) = two_page_book();
+        let dir = tempfile::tempdir().unwrap();
+
+        let result = run_export(
+            &book,
+            &photos,
+            1,
+            &dir.path().to_string_lossy(),
+            Vec::new(),
+            |items| {
+                vec![
+                    ok_record(&items[0].filename, "jpg"),
+                    ok_record(&items[1].filename, "png"),
+                    ok_record(&items[2].filename, "jpg"),
+                ]
+            },
+            manifest_writer(dir.path()),
+        )
+        .unwrap();
+
+        assert_eq!(result.format, "mixed");
+    }
+
+    // --- wire fixtures: the Rust half of the pin -------------------------
+    //
+    // Every type below crosses to the webview, where nothing checks it: a
+    // rename on either side is a silent `undefined` at runtime, not a build
+    // error (see `docs/PROJECT-STATUS.md`'s known-debts list). These assert
+    // the serialised value EXACTLY equals a fixture that `tests/book.test.ts`
+    // independently feeds through the real UI functions -- so a rename here
+    // fails this test, and "fixing" the fixture fails the TypeScript one.
+    // A Rust-to-Rust round-trip cannot do that, because both of its sides
+    // move together.
+
+    fn wire_fixture(name: &str) -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/wire")
+            .join(name);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("missing wire fixture {path:?}: {e}"));
+        serde_json::from_str(&text).expect("wire fixture must be valid JSON")
+    }
+
+    #[test]
+    fn book_recommendation_serialises_exactly_the_keys_the_webview_reads() {
+        let value = BookRecommendation {
+            keeper_count: 26,
+            recommended_pages: 20,
+            options: vec![
+                PageOption { pages: 20, capacity_photos: 24, dropped_photos: 2 },
+                PageOption { pages: 40, capacity_photos: 54, dropped_photos: 0 },
+            ],
+        };
+        assert_eq!(
+            serde_json::to_value(&value).unwrap(),
+            wire_fixture("book-recommendation.json")
+        );
+    }
+
+    #[test]
+    fn generated_book_serialises_exactly_the_keys_the_webview_reads() {
+        let value = GeneratedBook {
+            project_id: 7,
+            page_count: 20,
+            placed_photos: 24,
+            dropped_photos: 2,
+            seed: 424242,
+        };
+        assert_eq!(serde_json::to_value(&value).unwrap(), wire_fixture("generated-book.json"));
+    }
+
+    #[test]
+    fn export_result_serialises_exactly_the_keys_the_webview_reads() {
+        let value = ExportResult {
+            blocked: false,
+            output_dir: "/Users/jj/Desktop/photobook-export".into(),
+            blocking: Vec::new(),
+            warnings: vec![Finding {
+                severity: Severity::Warn,
+                page: 4,
+                photo_path: "/photos/IMG_0042.jpg".into(),
+                message: "Photo resolves at 250 DPI in this slot, below the 300 DPI target".into(),
+            }],
+            written: vec!["/Users/jj/Desktop/photobook-export/p04-z1-abcd1234.jpg".into()],
+            failures: vec![ExportFailure {
+                filename: "p04-z2-ef567890".into(),
+                message: "could not decode: /photos/bad.raw".into(),
+            }],
+            manifest_path: Some("/Users/jj/Desktop/photobook-export/manifest.json".into()),
+            format: "jpg".into(),
+        };
+        assert_eq!(serde_json::to_value(&value).unwrap(), wire_fixture("export-result.json"));
+    }
+
+    /// The blocked shape is pinned separately: it is the one the UI renders
+    /// its "nothing was written" branch from, and `manifestPath: null` /
+    /// `written: []` are exactly the fields a careless refactor would omit
+    /// rather than emit empty.
+    #[test]
+    fn a_blocked_export_result_serialises_exactly_the_keys_the_webview_reads() {
+        let value = ExportResult {
+            blocked: true,
+            output_dir: "/Users/jj/Desktop/photobook-export".into(),
+            blocking: vec![Finding {
+                severity: Severity::Block,
+                page: 4,
+                photo_path: "/photos/IMG_0042.jpg".into(),
+                message: "Photo resolves at 120 DPI in this slot, below the 200 DPI floor".into(),
+            }],
+            warnings: vec![Finding {
+                severity: Severity::Warn,
+                page: 6,
+                photo_path: "/photos/IMG_0099.jpg".into(),
+                message: "Salient content falls inside the gutter dead strip".into(),
+            }],
+            written: Vec::new(),
+            failures: Vec::new(),
+            manifest_path: None,
+            format: String::new(),
+        };
+        assert_eq!(
+            serde_json::to_value(&value).unwrap(),
+            wire_fixture("export-result-blocked.json")
+        );
+    }
+
+    #[test]
+    fn export_events_serialise_exactly_the_keys_the_webview_reads() {
+        let events =
+            vec![ExportEvent::Started { total: 24 }, ExportEvent::Progress { completed: 8, total: 24 }];
+        assert_eq!(serde_json::to_value(&events).unwrap(), wire_fixture("export-events.json"));
+    }
+
+    #[test]
+    fn project_list_items_serialise_exactly_the_keys_the_webview_reads() {
+        let items = vec![
+            ProjectListItem {
+                id: 7,
+                name: "Japan 2026".into(),
+                source_folder: "/Users/jj/Pictures/Japan".into(),
+                page_count: 20,
+                photo_count: 24,
+                created_at: 1_755_100_000,
+                updated_at: 1_755_103_600,
+                last_export: Some(ExportSummary {
+                    at: 1_755_103_600,
+                    output_dir: "/Users/jj/Desktop/photobook-export".into(),
+                    format: "jpg".into(),
+                    file_count: 24,
+                }),
+            },
+            ProjectListItem {
+                id: 8,
+                name: "Kyoto draft".into(),
+                source_folder: "/Users/jj/Pictures/Kyoto".into(),
+                page_count: 40,
+                photo_count: 54,
+                created_at: 1_755_200_000,
+                updated_at: 1_755_200_000,
+                last_export: None,
+            },
+        ];
+        assert_eq!(serde_json::to_value(&items).unwrap(), wire_fixture("project-list.json"));
+    }
+
+    #[test]
+    fn project_detail_serialises_exactly_the_keys_the_webview_reads() {
+        let detail = ProjectDetail {
+            id: 7,
+            name: "Japan 2026".into(),
+            source_folder: "/Users/jj/Pictures/Japan".into(),
+            created_at: 1_755_100_000,
+            updated_at: 1_755_103_600,
+            page_count: 20,
+            photo_count: 24,
+            dropped_photos: 2,
+            seed: 424242,
+            exports: vec![ExportSummary {
+                at: 1_755_103_600,
+                output_dir: "/Users/jj/Desktop/photobook-export".into(),
+                format: "jpg".into(),
+                file_count: 24,
+            }],
+        };
+        assert_eq!(serde_json::to_value(&detail).unwrap(), wire_fixture("project-detail.json"));
+    }
+
+    /// `Finding` is re-exported to the webview verbatim from
+    /// `book::preflight`, so its camelCase spelling and its lowercase
+    /// severity are part of THIS boundary too, not just pre-flight's internal
+    /// concern. Pinned here as literal wire bytes rather than by round-trip.
+    #[test]
+    fn a_finding_reaches_the_webview_as_camel_case_with_a_lowercase_severity() {
+        let value = serde_json::to_string(&finding(Severity::Block, 4, "boom")).unwrap();
+        assert!(value.contains(r#""severity":"block""#), "{value}");
+        assert!(value.contains(r#""photoPath":"/photos/a.jpg""#), "{value}");
+        assert!(!value.contains("photo_path"), "{value}");
+        let warn = serde_json::to_string(&finding(Severity::Warn, 4, "boom")).unwrap();
+        assert!(warn.contains(r#""severity":"warn""#), "{warn}");
+    }
+
+    /// A `Vec<ExportItem>` is built from the book and handed straight to the
+    /// sidecar, so the count the UI is told to expect must be the count that
+    /// is actually sent -- otherwise the progress bar's denominator is a
+    /// different number from its numerator's source.
+    #[test]
+    fn the_progress_total_is_the_number_of_items_actually_sent() {
+        let (book, photos) = two_page_book();
+        let items: Vec<ExportItem> = crate::export::build_items(&book, &photos);
+        assert_eq!(items.len(), placement_total(&book));
     }
 }

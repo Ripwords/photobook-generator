@@ -34,7 +34,15 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
 
 pub fn run() {
     builder()
-        .invoke_handler(tauri::generate_handler![commands::analyze_folder])
+        .invoke_handler(tauri::generate_handler![
+            commands::analyze_folder,
+            commands::recommend_book,
+            commands::generate_book,
+            commands::export_book,
+            commands::list_projects,
+            commands::open_project,
+            commands::reveal_in_finder,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

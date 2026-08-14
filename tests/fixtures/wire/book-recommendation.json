@@ -1,0 +1,8 @@
+{
+  "keeperCount": 26,
+  "recommendedPages": 20,
+  "options": [
+    { "pages": 20, "capacityPhotos": 24, "droppedPhotos": 2 },
+    { "pages": 40, "capacityPhotos": 54, "droppedPhotos": 0 }
+  ]
+}

@@ -206,6 +206,14 @@ const remainingSkeletonCount = computed(() =>
           </p>
         </div>
 
+        <!--
+          Everything from here is Phase 2: pick a length, generate a book
+          (which SAVES it), pre-flight it, and export the print files. Mounted
+          only in the results state, since all of it operates on the fully
+          ranked set -- `summary.photos`, exactly as Rust sent it.
+        -->
+        <GenerateBook v-if="folder" :photos="summary.photos" :folder="folder" />
+
         <UEmpty
           v-if="eventGroups.length === 0"
           icon="i-lucide-image-off"

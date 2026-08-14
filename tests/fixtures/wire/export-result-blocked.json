@@ -1,0 +1,24 @@
+{
+  "blocked": true,
+  "outputDir": "/Users/jj/Desktop/photobook-export",
+  "blocking": [
+    {
+      "severity": "block",
+      "page": 4,
+      "photoPath": "/photos/IMG_0042.jpg",
+      "message": "Photo resolves at 120 DPI in this slot, below the 200 DPI floor"
+    }
+  ],
+  "warnings": [
+    {
+      "severity": "warn",
+      "page": 6,
+      "photoPath": "/photos/IMG_0099.jpg",
+      "message": "Salient content falls inside the gutter dead strip"
+    }
+  ],
+  "written": [],
+  "failures": [],
+  "manifestPath": null,
+  "format": ""
+}

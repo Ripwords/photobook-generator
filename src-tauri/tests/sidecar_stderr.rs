@@ -93,6 +93,7 @@ fn main() {
         RequestKind::Analyze,
         Some(vec![fixture_path]),
         Some(bogus_thumbnail_dir_str.clone()),
+        None,
         Duration::from_secs(30),
     );
     // The request itself must still succeed -- a failed thumbnail write
