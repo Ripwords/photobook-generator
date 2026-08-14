@@ -179,8 +179,8 @@ pub fn pack(photos: &[Photo], capacity: &Capacity, buildable: &[usize]) -> Vec<G
     // what it likes from a shared counter -- otherwise the first chapter
     // drains the book and the last ones never appear.
     let counts: Vec<usize> = chapters.values().map(Vec::len).collect();
-    let smallest = buildable.iter().copied().min().unwrap_or(1);
-    let allowance = apportion_slots(&counts, slots, smallest);
+    let (smallest, largest) = size_bounds(buildable);
+    let allowance = apportion_slots(&counts, slots, smallest, largest);
 
     for ((cluster, mut members), mut slots_left) in chapters.into_iter().zip(allowance) {
         // Chronological within the chapter is not knowable without capture
@@ -191,7 +191,24 @@ pub fn pack(photos: &[Photo], capacity: &Capacity, buildable: &[usize]) -> Vec<G
         let mut i = 0;
         while i < members.len() && slots_left > 0 {
             let remaining = members.len() - i;
-            match choose_group_size(remaining, buildable, slots_left) {
+            // The deliberate density swing. Aiming every slot at exactly the
+            // fair share converges the whole book on one group size, and in
+            // this library density is a strict function of slot count
+            // (1 -> sparse, 2..4 -> medium, 6 -> dense) -- so a book of
+            // identically sized groups has ONE density, and `repace` cannot
+            // vary an axis the packer has flattened. Alternating one photo
+            // either side of the share restores the variation `repace`
+            // operates on. It is a preference, not a licence: the feasible
+            // band inside `choose_group_size` overrides it whenever obeying
+            // it would strand a photo or leave a later slot unfillable.
+            //
+            // The phase runs on the whole book's group count rather than the
+            // chapter's, so the rhythm carries across a chapter boundary
+            // instead of resetting at every one. Starting SPARSE puts the
+            // smaller group on the opening single page, which holds only a
+            // page-half's worth anyway.
+            let swing = if groups.len() % 2 == 0 { -1 } else { 1 };
+            match choose_group_size(remaining, buildable, slots_left, swing) {
                 Some(take) => {
                     groups.push(Group {
                         photos: members[i..i + take].to_vec(),
@@ -214,11 +231,28 @@ pub fn pack(photos: &[Photo], capacity: &Capacity, buildable: &[usize]) -> Vec<G
     groups
 }
 
+/// The smallest and largest group the library can build, both floored at 1
+/// so a malformed `buildable` cannot produce a zero divisor or a zero-sized
+/// group.
+fn size_bounds(buildable: &[usize]) -> (usize, usize) {
+    let usable = || buildable.iter().copied().filter(|&s| s > 0);
+    (usable().min().unwrap_or(1), usable().max().unwrap_or(1))
+}
+
 /// How many spread slots each chapter may cut groups from, given the whole
 /// book's budget. `counts` is per chapter in chronological (cluster id)
 /// order; the return is the same length and order.
 ///
-/// Two passes, both deterministic and both independent of the input slice's
+/// Each chapter has two figures that bound its share:
+///
+/// * **`need = count / largest`, rounded up** -- the fewest slots that can
+///   hold all its photos. Below this the chapter silently drops photos, with
+///   no blank spread anywhere to show for it. That is the same failure this
+///   whole module exists to remove, so `need` is a FLOOR, not a preference.
+/// * **`cap = count / smallest`** -- the most slots it could possibly fill.
+///   Above this the surplus slots can only come out blank.
+///
+/// Three passes, all deterministic and all independent of the input slice's
 /// ordering (they see only per-chapter counts, in cluster order):
 ///
 /// 1. **One slot each, longest chapter first.** A chapter with no slot does
@@ -229,22 +263,29 @@ pub fn pack(photos: &[Photo], capacity: &Capacity, buildable: &[usize]) -> Vec<G
 ///    chapters than slots not every chapter can be represented; the longest
 ///    ones win, which is the same rule the over-capacity trim already uses
 ///    (keep the most, drop the least).
-/// 2. **Highest averages (D'Hondt) for the rest.** Each remaining slot goes
-///    to whichever chapter would otherwise be the most crowded -- the one
-///    with the largest `photos / (slots + 1)`. Repeated, that greedily
-///    minimises the worst photos-per-spread figure in the book, which is
-///    exactly "no chapter is starved". Ties go to the earlier chapter.
+/// 2. **Every chapter up to its `need`**, before any chapter is given a slot
+///    it merely *wants*. Whenever the budget can seat every photo, it does.
+/// 3. **Highest averages (D'Hondt) for whatever is left over.** Each
+///    remaining slot goes to whichever chapter would otherwise be the most
+///    crowded -- the one with the largest `photos / (slots + 1)`. Repeated,
+///    that greedily minimises the worst photos-per-spread figure in the
+///    book, which is exactly "no chapter is starved".
 ///
-/// A chapter is capped at `count / smallest`, the most slots it could
-/// possibly fill: handing it more would only manufacture blank spreads.
-fn apportion_slots(counts: &[usize], slots: usize, smallest: usize) -> Vec<usize> {
+/// Passes 2 and 3 are one loop: being short of `need` simply outranks every
+/// D'Hondt average. When the budget cannot seat everyone (`sum(need) >
+/// slots`) that ordering also decides who goes short -- the most crowded
+/// chapters are served first.
+///
+/// Ties go to the earlier chapter, which is arbitrary but total; nothing
+/// here may depend on iteration order.
+fn apportion_slots(counts: &[usize], slots: usize, smallest: usize, largest: usize) -> Vec<usize> {
     let n = counts.len();
     let mut out = vec![0usize; n];
     if n == 0 || slots == 0 {
         return out;
     }
-    let smallest = smallest.max(1);
-    let caps: Vec<usize> = counts.iter().map(|&c| c / smallest).collect();
+    let caps: Vec<usize> = counts.iter().map(|&c| c / smallest.max(1)).collect();
+    let needs: Vec<usize> = counts.iter().map(|&c| c.div_ceil(largest.max(1))).collect();
 
     let mut longest_first: Vec<usize> = (0..n).collect();
     longest_first.sort_by(|&a, &b| counts[b].cmp(&counts[a]).then(a.cmp(&b)));
@@ -264,8 +305,12 @@ fn apportion_slots(counts: &[usize], slots: usize, smallest: usize) -> Vec<usize
         // comparison is exact rather than float-rounded. `max_by` yields the
         // LAST maximum, so the tie-break is inverted to leave the earliest
         // chapter as the strict maximum.
+        let short = |i: usize| usize::from(out[i] < needs[i]);
         let pick = (0..n).filter(|&i| out[i] < caps[i]).max_by(|&a, &b| {
-            (counts[a] * (out[b] + 1)).cmp(&(counts[b] * (out[a] + 1))).then(b.cmp(&a))
+            short(a)
+                .cmp(&short(b))
+                .then((counts[a] * (out[b] + 1)).cmp(&(counts[b] * (out[a] + 1))))
+                .then(b.cmp(&a))
         });
         match pick {
             Some(i) => out[i] += 1,
@@ -273,6 +318,31 @@ fn apportion_slots(counts: &[usize], slots: usize, smallest: usize) -> Vec<usize
         }
     }
     out
+}
+
+/// The least and most this slot may take without stranding a photo or
+/// leaving a later slot with nothing to hold.
+///
+/// * take fewer than `lo` and the `slots_left - 1` slots after it cannot
+///   hold the rest even at `largest` each, so a photo is dropped;
+/// * take more than `hi` and there are not enough photos left to give every
+///   later slot even `smallest`, so a slot comes out blank.
+///
+/// Both saturate at zero, which is the honest answer when there are simply
+/// fewer photos than slots -- there the band collapses towards the smallest
+/// group and the leftover slots are blank because the photos ran out, not
+/// because an earlier slot was greedy.
+///
+/// For a CONTIGUOUS `buildable` (which the real library is, 1..=6) the band
+/// is never empty when `smallest * slots_left <= remaining <= largest *
+/// slots_left`, and staying inside it is what makes "every slot filled and
+/// every photo placed" hold by induction all the way down the chapter.
+fn feasible_band(remaining: usize, buildable: &[usize], slots_left: usize) -> (usize, usize) {
+    let (smallest, largest) = size_bounds(buildable);
+    let later = slots_left.saturating_sub(1);
+    let lo = remaining.saturating_sub(largest.saturating_mul(later));
+    let hi = remaining.saturating_sub(smallest.saturating_mul(later));
+    (lo.min(hi), hi)
 }
 
 /// A buildable size for `remaining`, aimed at this chapter's FAIR SHARE of
@@ -289,25 +359,43 @@ fn apportion_slots(counts: &[usize], slots: usize, smallest: usize) -> Vec<usize
 /// Sizing against the remaining slots instead lands near 3 per spread and
 /// fills all of them.
 ///
+/// `swing` nudges the aim one photo either side of the share so the book's
+/// group sizes -- and therefore its densities -- vary instead of converging
+/// on a single value. It is only ever an aim: `feasible_band` overrides it.
+///
 /// Ordering of the candidates, in priority order:
 ///
-/// 1. a remainder that is itself fully decomposable, checked exhaustively
+/// 1. inside the feasible band, so neither a photo nor a slot is lost to a
+///    stylistic preference -- this outranks everything below it;
+/// 2. a remainder that is itself fully decomposable, checked exhaustively
 ///    (not a one-step lookahead) so a gapped buildable set like {3,5} cannot
 ///    slip an unreachable remainder past the check;
-/// 2. nearest to the fair share;
-/// 3. the larger size, so a fair share sitting exactly between two buildable
-///    sizes rounds up rather than trailing photos into a later slot.
+/// 3. nearest to the aim;
+/// 4. the larger size, so an aim sitting exactly between two buildable sizes
+///    rounds up rather than trailing photos into a later slot.
 ///
-/// The last slot needs no special case: with `slots_left == 1` the fair
-/// share is `remaining` itself, so the nearest candidate is the largest
-/// fitting one -- the most that slot can build.
-fn choose_group_size(remaining: usize, buildable: &[usize], slots_left: usize) -> Option<usize> {
+/// The last slot needs no special case: at `slots_left == 1` the band
+/// collapses to `[remaining, remaining]`, so the slot takes everything left
+/// that it can build.
+fn choose_group_size(
+    remaining: usize,
+    buildable: &[usize],
+    slots_left: usize,
+    swing: i64,
+) -> Option<usize> {
     if remaining == 0 || slots_left == 0 {
         return None;
     }
 
     // `(2r + s) / 2s` is `r / s` rounded half up, in integer arithmetic.
     let share = (2 * remaining + slots_left) / (2 * slots_left);
+    let (lo, hi) = feasible_band(remaining, buildable, slots_left);
+    // The aim is deliberately NOT clamped into the band. Clamping it would
+    // enforce the band a second time, and a second enforcement of the same
+    // rule is one no test can distinguish from the first -- measured: with
+    // the clamp in place, deleting the band check below changes no test's
+    // result at all. One guard, and it is the one below.
+    let aim = (share as i64 + swing).max(0) as usize;
 
     // `s > 0` is not cosmetic: the caller advances by the size returned, so a
     // zero-size group would loop forever rather than fail. The validator
@@ -315,8 +403,9 @@ fn choose_group_size(remaining: usize, buildable: &[usize], slots_left: usize) -
     // `buildable`, and reporting the chapter unplaceable beats hanging.
     buildable.iter().copied().filter(|&s| s > 0 && s <= remaining).min_by_key(|&size| {
         let rest = remaining - size;
+        let outside = usize::from(size < lo || size > hi);
         let strands = usize::from(rest != 0 && !is_decomposable(rest, buildable));
-        (strands, share.abs_diff(size), std::cmp::Reverse(size))
+        (outside, strands, aim.abs_diff(size), std::cmp::Reverse(size))
     })
 }
 
@@ -382,10 +471,125 @@ mod tests {
     /// `choose_group_size` directly rather than through `pack`, because the
     /// regression it guards is a HANG -- a test that drove `pack` would never
     /// report, it would just never finish.
+    /// The remainder that no buildable size covers must come back as `None`,
+    /// so `pack` leaves those photos out rather than inventing a group the
+    /// library cannot build.
+    ///
+    /// Asserted on `choose_group_size` DIRECTLY, not through `pack`, and that
+    /// is not a shortcut. The feasible band now stops a chapter from ever
+    /// eating into the photos its later slots need, so within `pack` the
+    /// chapter runs out of SLOTS before it can run out of buildable sizes and
+    /// the `None` arm is no longer reachable from there -- it is a contract
+    /// this function owes its caller, kept honest here rather than left as an
+    /// arm no test enters.
+    #[test]
+    fn pack_reports_no_size_rather_than_one_the_library_cannot_build() {
+        assert_eq!(choose_group_size(2, &[3, 5], 1, 0), None, "nothing in {{3,5}} covers 2");
+        assert_eq!(choose_group_size(2, &[3, 5], 4, -1), None, "nor with slots still to fill");
+        assert_eq!(choose_group_size(3, &[3, 5], 1, 0), Some(3), "3 is covered, and must be");
+    }
+
     #[test]
     fn pack_never_chooses_a_zero_sized_group() {
-        assert_eq!(choose_group_size(4, &[0], 2), None, "0 is not a group size");
-        assert_eq!(choose_group_size(4, &[0, 3], 2), Some(3), "0 must not out-rank a real size");
+        assert_eq!(choose_group_size(4, &[0], 2, 0), None, "0 is not a group size");
+        assert_eq!(choose_group_size(4, &[0, 3], 2, 0), Some(3), "0 must not out-rank a real size");
+    }
+
+    /// Photos in chapters, packed, keyed so the caller can count them.
+    fn pack_chapters(chapter_sizes: &[usize], buildable: &[usize]) -> (Vec<Photo>, Vec<Group>) {
+        let mut photos = Vec::new();
+        for (c, &n) in chapter_sizes.iter().enumerate() {
+            for i in 0..n {
+                photos.push(photo(&format!("/c{c}p{i:03}.jpg"), c as u32, 50));
+            }
+        }
+        let c = Capacity::from_sizes(20, buildable);
+        let groups = pack(&photos, &c, buildable);
+        (photos, groups)
+    }
+
+    /// **No photo is dropped while any slot could still take it.**
+    ///
+    /// The slot budget is apportioned across chapters before any chapter is
+    /// cut, so it is possible to hand one chapter more slots than it needs
+    /// while another goes short -- and the shortfall vanishes with no blank
+    /// spread anywhere to show for it, which is the same class of defect as
+    /// front-loading arriving by a different route.
+    ///
+    /// The first row is the measured counterexample: chapters of 6/8/12/16/8
+    /// over 11 slots with `buildable = 1..=6`. Apportioning on the upper
+    /// bound alone gives chapter 4 four slots for 16 photos when it needs 3,
+    /// and chapter 5 one slot for 8 photos when it needs 2 -- two photos
+    /// disappear. Every row here fits inside capacity, so "what the slots
+    /// could hold" is every photo.
+    #[test]
+    fn pack_places_every_photo_while_a_slot_could_still_take_it() {
+        let full = full();
+        for shape in [
+            vec![6, 8, 12, 16, 8],
+            vec![16, 8, 12, 6, 8],
+            vec![30],
+            vec![1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            vec![2, 30, 2],
+            vec![25, 25],
+            vec![6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6],
+            vec![13, 5, 1, 9, 22],
+        ] {
+            let total: usize = shape.iter().sum();
+            let (photos, groups) = pack_chapters(&shape, &full);
+            let placed: usize = groups.iter().map(|g| g.photos.len()).sum();
+            assert!(
+                total <= Capacity::from_sizes(20, &full).max_photos,
+                "fixture {shape:?} must fit inside capacity or the property does not apply"
+            );
+            assert_eq!(
+                placed,
+                photos.len(),
+                "{shape:?}: dropped {} photo(s) with slots still available; sizes {:?}",
+                photos.len() - placed,
+                group_sizes(&groups)
+            );
+            assert!(
+                groups.len() <= 11,
+                "{shape:?}: {} groups for 11 slots",
+                groups.len()
+            );
+        }
+    }
+
+    /// **Where the photo budget allows it, group sizes vary across a book
+    /// rather than converging on one value.**
+    ///
+    /// Density is a strict function of slot count across this library
+    /// (1 -> sparse, 2..4 -> medium, 6 -> dense), so a packer that aims every
+    /// slot at exactly the fair share gives every spread the same density and
+    /// `pace::repace` cannot vary an axis the packer has already flattened.
+    ///
+    /// `max - min >= 2` rather than "more than one distinct size": aiming at
+    /// the bare share already yields two adjacent values (the floor and the
+    /// ceiling of 30/11, i.e. 2 and 3), which is rounding, not variation, and
+    /// does not cross a density boundary. A spread of 2 is what proves the
+    /// swing is real.
+    ///
+    /// Filling every slot is the harder constraint and is asserted FIRST, so
+    /// this test can never be satisfied by buying variety with a blank slot
+    /// or a dropped photo.
+    #[test]
+    fn pack_varies_group_size_across_a_book_instead_of_converging_on_the_average() {
+        let photos: Vec<Photo> =
+            (0..30).map(|i| photo(&format!("/p{i:02}.jpg"), 0, 50)).collect();
+        let c = Capacity::from_sizes(20, &full());
+        let groups = pack(&photos, &c, &full());
+        let s = group_sizes(&groups);
+
+        assert_eq!(groups.len(), 11, "variety must not cost a slot: {s:?}");
+        assert_eq!(s.iter().sum::<usize>(), 30, "variety must not cost a photo: {s:?}");
+
+        let (min, max) = (*s.iter().min().unwrap(), *s.iter().max().unwrap());
+        assert!(
+            max - min >= 2,
+            "group sizes converged on the average instead of varying: {s:?}"
+        );
     }
 
     #[test]
@@ -463,6 +667,13 @@ mod tests {
     /// the only correct behaviour is to place what a real template covers
     /// and leave the rest OUT of the output entirely, never to fabricate a
     /// group of, say, 1 or 2 that no template can build.
+    ///
+    /// The mutation it catches is a packer that computes a size
+    /// ARITHMETICALLY and emits it rather than choosing one the library
+    /// actually offers: the last slot's fair share here is 4, and 4 is not in
+    /// {3,5}. `pack_reports_no_size_rather_than_one_the_library_cannot_build`
+    /// above covers the other half of the same contract -- the `None` return
+    /// -- which `pack` itself can no longer reach.
     #[test]
     fn pack_leaves_a_remainder_unplaced_rather_than_fabricate_an_unbuildable_size() {
         let gapped = vec![3, 5];
@@ -514,12 +725,13 @@ mod tests {
         let s = group_sizes(&groups);
         assert_eq!(groups.len(), slots, "{} slots but only {} groups: {s:?}", slots, groups.len());
         assert_eq!(s.iter().sum::<usize>(), 30, "every photo must be placed: {s:?}");
-        // 30 photos over 11 slots is 2.7 each, so nothing may exceed 3. This
-        // is what distinguishes "distributed" from "front-loaded": the greedy
-        // packer's first group alone held 6.
+        // 30 photos over 11 slots is 2.7 each. The deliberate density swing
+        // is one photo either side of that, so 4 is the ceiling -- and no
+        // slot may run at the library's maximum, which is what the greedy
+        // packer did with all five of its groups.
         assert!(
-            s.iter().all(|&n| n <= 3),
-            "a slot took more than its share of 30/11: {s:?}"
+            s.iter().all(|&n| n <= 4),
+            "a slot took more than its share of 30/11 plus the swing: {s:?}"
         );
     }
 

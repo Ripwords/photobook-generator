@@ -59,7 +59,7 @@ thumbnails, chapter dividers and burst-size badges.
 | Nuxt UI | `app/` | `pages/index.vue`, `components/PhotoTile.vue`, `composables/useAnalysis.ts`, `types/features.ts` |
 | Template library | `templates/` | Spread templates + validator at `tests/templates.test.ts`. Was 40 at end of Phase 1; **now 36** — see the Print geometry section. |
 
-**Test counts at last run (2026-08-14, end of Phase 2):** 496 TypeScript, 304 Rust unit
+**Test counts at last run (2026-08-14, end of Phase 2):** 496 TypeScript, 308 Rust unit
 (3 ignored — they read the real `templates/` directory) plus 2 harness'd and 4
 `harness = false` integration binaries, 130 Swift. All green, lint clean.
 **Release build works:** `bun tauri build --bundles app` produces `PhotobookGen.app`.
@@ -238,20 +238,29 @@ guard went **inert** — `1` is buildable, so `is_decomposable(rest)` is true fo
 remainder — and the largest candidate always won. Photos were packed six to a spread until
 they ran out and every remaining slot was left blank.
 
-`pack` now sizes each group against **how many photos and slots remain**
-(`remaining / slots_left`, rounded half up, snapped to the nearest buildable size), and
-apportions the book-wide slot budget across chapters before cutting any of them
-(`apportion_slots`: one slot each longest-chapter-first, then D'Hondt highest-averages for
-the rest). Measured end to end through `pace::assemble` against the **real** `templates/`
-library, 20 pages:
+`pack` now does three things:
+
+* **sizes each group against how many photos and slots remain** (`remaining / slots_left`,
+  rounded half up) rather than against the largest size that fits;
+* **apportions the book-wide slot budget across chapters before cutting any of them**
+  (`apportion_slots`): one slot each longest-chapter-first so no chapter vanishes, then
+  every chapter up to the `ceil(count / largest)` it *needs* to seat all its photos, then
+  D'Hondt highest averages for whatever is left;
+* **bounds every choice by a feasible band** (`feasible_band`) — take less than `lo` and a
+  photo is stranded, take more than `hi` and a later slot comes out blank. The band
+  overrides every stylistic preference, which is what makes "every slot filled and every
+  photo placed" hold by induction down a chapter.
+
+Measured end to end through `pace::assemble` against the **real** `templates/` library,
+20 pages:
 
 | photos | keepers | before: groups / placed / blank pages | after: groups / placed / blank pages |
 |---|---|---|---|
-| 14 | 12 | `[3,4,5]` / 11 / **16** | `[1,1,1,1,1,1,1,1,1,2,1]` / 12 / **0** |
-| 24 | 20 | `[3,4,6,6,1]` / 20 / **12** | `[2,1,2,2,2,2,2,2,2,2,1]` / 20 / **0** |
-| 30 | 25 | `[3,4,6,6,2,4]` / 25 / **10** | `[3,2,2,2,2,2,2,2,2,2,4]` / 25 / **0** |
-| 40 | 34 | `[3,4,6,6,2,6,3,4]` / 34 / **6** | `[3,4,3,3,3,3,2,3,3,3,4]` / 34 / **0** |
-| 60 | 51 | 11 groups / 51 / 0 | 11 groups / 51 / 0 |
+| 14 | 12 | `[3,4,5]` / 11 / **16** | 11 groups / 12 / **0** |
+| 24 | 20 | `[3,4,6,6,1]` / 20 / **12** | `[1,2,1,3,1,4,1,3,1,2,1]` / 20 / **0** |
+| 30 | 25 | `[3,4,6,6,2,4]` / 25 / **10** | `[3,3,1,3,1,2,1,3,1,3,4]` / 25 / **0** |
+| 40 | 34 | `[3,4,6,6,2,6,3,4]` / 34 / **6** | `[3,4,2,4,2,4,2,4,2,3,4]` / 34 / **0** |
+| 60 | 51 | 11 groups / 51 / 0 | `[3,4,6,5,3,6,3,6,6,6,3]` / 51 / 0 |
 | 120 | 102 | 11 groups / **43** / 0 | 11 groups / **52** / 0 |
 
 Never worse on either axis, and at 120 photos it places 9 more of them. The pinned
@@ -260,23 +269,29 @@ photos, 9 spreads + 2 singles, `buildable = 1..=6`), which fails with
 `11 slots but only 5 groups: [6, 6, 6, 6, 6]` against the old rule.
 
 The golden fixture (`src-tauri/tests/fixtures/book-20.json`) went from **2 blank pages to
-0**. Its placed count fell 24 → 21, which is an artefact of the *frozen five-template*
-in-test library, not of the packer: every one of those five templates has a **1-slot left
-half**, so the closing single page can hold exactly one photo however the groups are cut.
-Against the real library the same 30-photo fixture places all 25 keepers (table above).
+0** with **no other regression**: 24 placements and 6 dropped, both identical to before,
+across the same 7 distinct templates. The blank spread at pages 18-19 is simply filled now.
 
-Sizes are not uniform — the half-up rounding interleaves the floor and ceiling values
-(`[3,4,3,3,3,3,2,3,3,3,4]`) rather than clustering the large ones at the front — so
-`pace::repace` still has density and energy variation to work with. See "the remaining
-tension" note below.
+**Density deliberately varies rather than converging.** Aiming every slot at exactly the
+fair share makes every group the same size, and density is a strict function of slot count
+across this library (1 -> sparse, 2..4 -> medium, 6 -> dense) — so a book of equal groups
+has ONE density and `pace::repace` cannot vary an axis the packer has already flattened.
+Measured on the real library at 30 photos, aiming at the bare share gives every spread 2
+photos; the packer therefore aims one photo either side of the share, alternating across
+the whole book, which yields spreads of `[3,1,3,1,2,1,3,1,3]`. The swing is a preference
+only — the feasible band overrides it — so it costs neither a slot nor a photo. Guarded by
+`pack_varies_group_size_across_a_book_instead_of_converging_on_the_average` and, at the
+book level, `pace_spread_density_varies_across_a_book_rather_than_converging`, which
+asserts on the library's declared `density` rather than on photo counts (2, 3 and 4 are all
+`medium`, so a count-based assertion passes while the axis is still flat).
 
-**Still open, smaller:** `pack` sizes every group by SPREAD counts, but two of the slots it
-sizes for are single pages holding only a page-half's worth. Evening out the distribution
-does not cause this (it is why `best_single` takes the largest half that FITS rather than
-an exact match) but it does make the two end groups more likely to overflow on a library
-whose halves are small. Closing it properly means teaching `Capacity`/`apportion_slots`
-that the first and last slots have a smaller photo capacity than a spread. Not attempted;
-judge it at the real-photo run.
+**Still open, smaller:** `pack` sizes every group by SPREAD counts, but two of the eleven
+slots are single pages holding only a page-half's worth, so a group landing on one is
+trimmed by `pace::strongest`. In the golden that costs one photo on the opening page. It is
+not caused by the distribution rule (it is why `best_single` takes the largest half that
+FITS rather than an exact match) but closing it properly means teaching `Capacity` and
+`apportion_slots` that the first and last slots have a smaller photo capacity than a
+spread. Not attempted; judge it at the real-photo run.
 
 ### 5. RAW is uncovered end to end, and cannot be closed synthetically
 

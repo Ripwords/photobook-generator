@@ -780,7 +780,7 @@ mod tests {
     /// floor); every other chapter lays out. 36 fixture photos fill all 11
     /// slots exactly, so the only blanks in a correct book are that chapter's.
     /// Chapter 3 is apportioned two of the eleven slots and its groups land on
-    /// spreads 1 and 2, i.e. pages 4-7.
+    /// spreads 2 and 3, i.e. pages 6-9.
     #[test]
     fn pace_leaves_a_failed_spread_blank_in_place_rather_than_shifting_the_book() {
         let lib = fixture_library();
@@ -798,7 +798,7 @@ mod tests {
             .filter(|p| p.template_id == BLANK_TEMPLATE_ID)
             .map(|p| p.number)
             .collect();
-        assert_eq!(blanks, vec![4, 5, 6, 7], "the blanks belong to the failed chapter");
+        assert_eq!(blanks, vec![6, 7, 8, 9], "the blanks belong to the failed chapter");
         assert!(
             !book.pages.last().unwrap().placements.is_empty(),
             "the closing single page was pushed out of the last position"
@@ -1124,15 +1124,16 @@ mod tests {
     /// Hand-derived, not merely positive. 30 fixture photos: `cull` drops the
     /// five utility ones (indices 0, 7, 14, 21, 28), leaving chapters of
     /// 3/4/6/8/4. With buildable sizes {1,2,3} the packer apportions the 11
-    /// slots (9 spreads + 2 singles) as 1/2/3/4/1 and cuts each chapter to its
-    /// own share: 3 | 2,2 | 2,2,2 | 2,2,2,2 | 3. That is 11 groups holding 24
-    /// of the 25 keepers -- chapter 5's fourth photo has no slot left in its
-    /// own chapter and a group never spans chapters, so it stays unplaced.
+    /// slots (9 spreads + 2 singles) as 1/2/3/3/2 -- every chapter at or above
+    /// the `ceil(count / 3)` it needs to seat all its photos -- and cuts each
+    /// to its own share: 3 | 3,1 | 3,1,2 | 2,3,3 | 3,1. That is 11 groups
+    /// holding all 25 keepers, so the packer itself drops nothing.
     ///
-    /// The opening single takes the first group of 3 and the closing single
-    /// the last group of 3, but the largest page half holds 2, so one photo is
-    /// dropped at each end. Placed: 2 + 18 + 2 = 22. Dropped: 5 utility + 1
-    /// unplaced by the packer + 2 that overflowed the single pages = 8.
+    /// The opening single takes the first group of 3 but the largest page half
+    /// holds 2, so one photo is dropped there; the nine middle groups place 21
+    /// on the nine spreads; the closing single takes the last group of 1 and
+    /// places it whole. Placed: 2 + 21 + 1 = 24. Dropped: the 5 utility photos
+    /// plus the 1 that overflowed the opening page = 6.
     #[test]
     fn pace_accounts_for_every_photo_it_did_not_place() {
         let lib = fixture_library();
@@ -1141,11 +1142,8 @@ mod tests {
         let placed = placed_indices(&book);
         let unique: BTreeSet<usize> = placed.iter().copied().collect();
         assert_eq!(unique.len(), placed.len(), "a photo must not be placed twice");
-        assert_eq!(placed.len(), 22, "placed count");
-        assert_eq!(
-            book.dropped, 8,
-            "5 utility + 1 the packer could not place + 2 that overflowed the single pages"
-        );
+        assert_eq!(placed.len(), 24, "placed count");
+        assert_eq!(book.dropped, 6, "5 utility + 1 that overflowed the opening page");
         assert_eq!(book.dropped, photos.len() - unique.len(), "dropped must reconcile");
 
         // Every spread slot carries a group: no photo is stranded behind a
@@ -1153,6 +1151,53 @@ mod tests {
         assert!(
             book.pages.iter().all(|p| p.template_id != BLANK_TEMPLATE_ID),
             "25 keepers over 11 slots must leave no blank page"
+        );
+    }
+
+    /// Density is a strict function of slot count across this library
+    /// (1 -> sparse, 2..4 -> medium, 6 -> dense). If the packer converges every
+    /// group on the same size then every spread has the same density, and
+    /// `repace` cannot vary an axis the packer has already flattened -- however
+    /// well `repace` is written. So the variation has to exist in the assembled
+    /// book, not merely in `pack`'s own unit tests.
+    ///
+    /// Measured on the frozen library, the one copied from the real `templates/`
+    /// directory, because that is the library whose density buckets the rule
+    /// above describes.
+    ///
+    /// Asserted on the `density` the library itself declares for each spread's
+    /// chosen template, NOT on the raw photo counts. Counts are the wrong
+    /// measure: 2, 3 and 4 are all `medium` here, so a book of 2s and 3s has
+    /// two distinct counts and exactly one density, and a count-based assertion
+    /// passes while the axis is still flat. Measured: aiming every slot at the
+    /// bare share gives this fixture spreads of `[2,2,2,2,2,3,3,2,2]` -- two
+    /// counts, one density -- which is precisely the failure this test exists
+    /// to catch.
+    ///
+    /// Filling every slot is the harder constraint and is asserted first, so
+    /// this can never be satisfied by buying variety with a blank spread.
+    #[test]
+    fn pace_spread_density_varies_across_a_book_rather_than_converging() {
+        let lib = frozen_library();
+        let book = assemble(&fixture_photos(30), 20, &lib, &Weights::default(), 1234);
+        let spreads = (book.pages.len() - 2) / 2;
+        let per_spread: Vec<usize> = (0..spreads)
+            .map(|s| book.pages[1 + 2 * s].placements.len() + book.pages[2 + 2 * s].placements.len())
+            .collect();
+
+        assert!(
+            book.pages.iter().all(|p| p.template_id != BLANK_TEMPLATE_ID),
+            "variety must not cost a spread: {per_spread:?}"
+        );
+
+        let densities: BTreeSet<String> = (0..spreads)
+            .filter_map(|s| spread_template(&book, &lib, s))
+            .map(|t| format!("{:?}", t.density))
+            .collect();
+        assert!(
+            densities.len() >= 2,
+            "every spread has the same density, so `repace` has no density variation left \
+             to work with: densities {densities:?} from photo counts {per_spread:?}"
         );
     }
 
