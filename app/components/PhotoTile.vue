@@ -118,7 +118,6 @@ const sharpnessPct = computed(() => (isRanked(photo) ? photo.sharpnessPct : null
         :icon="override === 'include' ? 'i-lucide-check-circle-2' : 'i-lucide-circle-plus'"
         size="xs"
         :color="override === 'include' ? 'primary' : 'neutral'"
-        :variant="override === 'include' ? 'solid' : 'solid'"
         :class="override === 'include' ? '' : 'bg-black/60 text-white'"
         :aria-pressed="override === 'include'"
         :title="override === 'include' ? 'Included by you - click to let the engine decide' : 'Always include this photo'"
