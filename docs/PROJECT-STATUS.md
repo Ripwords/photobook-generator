@@ -254,6 +254,14 @@ webview's own copy rather than managed: both live in this process, and a
 reload loses `useAnalysis`'s summary at the same moment it would invalidate
 the cache.
 
+*It is a single UNKEYED slot, and that is a real forward hazard.* It holds the
+last analysis only, and neither reader checks that it describes the set on
+screen. That is correct for today's one-folder-at-a-time UI and it breaks the
+moment there is more than one — silently, with the screen wrong and the
+generated book right. See **"Requested, not yet specced: multiple source
+folders"** for what collides, what the symptom looks like, and why widening
+the slot is not the fix.
+
 **The contact sheet is not virtualized.** It renders every analysed photo so
 the include control has something to act on, but 500 photos is 500 tiles,
 re-patched on every toggle. `showsLeftOutByDefault` turns the "show the N left
@@ -601,9 +609,26 @@ touches:
   hash, so the same photo in two folders is analysed once.
 - **UI.** Photos probably need to show which folder they came from, and the empty and error
   states currently assume a single `folder` string.
+- **`AppState.photos` is a single unkeyed slot, and it collides.** It caches the parsed
+  `Vec<Photo>` of the LAST `analyze_folder` (see "User-controlled selection"), and
+  `apply_photo_overrides` and `recommend_book` both answer from it with no check that it
+  describes the set the webview is showing. Analysing a second folder overwrites it. If
+  multiple folders are ever held on screen at once — or analysed sequentially without the
+  sheet being replaced — the override toggle judges **the wrong photo set**, and the symptom
+  is not an error: keeper marks and the keeper count simply become those of a different
+  folder, and `recommend_book` sizes the book against it too. The correct book is still
+  generated (`generate_book` takes the array from the webview, deliberately, so it does not
+  depend on this cache), which makes the divergence *harder* to notice, not easier — the
+  screen lies and the output is right. Fix it by keying the cache on the analysis it came
+  from — the folder list, or a run id minted per `analyze_folder` and passed back with every
+  override call — and rejecting a mismatch rather than answering from whatever is loaded.
+  **Do not simply widen the slot to a list; the bug is the missing identity check, not the
+  capacity.**
 
 Nothing about the analysis pipeline blocks this; it is entirely a question of what "the
-book's population" means once there is more than one source.
+book's population" means once there is more than one source — plus the one concrete
+collision noted above, which is the only place multi-folder support would break existing
+behaviour rather than merely extend it.
 
 Also explicitly deferred:
 
