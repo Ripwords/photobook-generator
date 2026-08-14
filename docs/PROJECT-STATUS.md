@@ -382,6 +382,24 @@ authorities are now one (see "One culling authority" above); `keepers()` carries
 and Rust's verdict travels on the wire as `AnalyzedPhoto.kept`. **Nothing is outstanding on
 this item.**
 
+### 11. `from_features`' new strictness fails silently on two paths
+
+Added 2026-08-14 by the final fix wave's re-review, non-blocking.
+
+`from_features` now refuses a feature record missing a field the book depends on — that is
+the point of it, and `photos_from_records` and `resolve_photos` surface the refusal loudly.
+But `stamp_kept` and `count_keepers` still consume it through `filter_map`, so there a
+malformed record is silently skipped: the photo comes back `kept: false`, or the completion
+notification undercounts, with no error anywhere.
+
+The `filter_map` shape predates the strictness — it was harmless when `from_features`
+defaulted everything and could only fail on a truly unparseable record. It now has a larger
+blast radius. Consider surfacing the count of refused records, or failing the analysis.
+
+Related, cosmetic: the fixture doc at `src-tauri/src/commands.rs:2444` says a record is
+"silently dropped by `from_features`'s `filter_map`". The `filter_map` belongs to the
+caller, not to `from_features`.
+
 ---
 
 ## The outstanding verification — NOT done, and not fakeable
