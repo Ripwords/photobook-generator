@@ -61,11 +61,20 @@ const gutter = computed(() => rectStyle(gutterRect(layout.geometry, side)));
     :class="page ? 'bg-white' : 'bg-elevated'"
   >
     <template v-if="page">
+      <!--
+        The title carries the source path and the basename the exporter writes
+        this placement under, so something odd on screen can be traced to its
+        file and checked against `manifest.json`. The filename comes from Rust's
+        `export::output_filename` -- the same function the exporter uses --
+        rather than being rebuilt here, because a preview naming files the
+        exporter does not write would be worse than one naming none.
+      -->
       <div
         v-for="box in boxes"
         :key="box.key"
         class="absolute overflow-hidden bg-neutral-100 dark:bg-neutral-800"
         :style="box.slot"
+        :title="[box.photo?.path, box.filename].filter(Boolean).join('\n')"
       >
         <!--
           The CROP, not the photo. The image is enlarged to 1/crop of the slot

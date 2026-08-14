@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { leftOutPhotos, toSpreads, type BookLayout } from "~/types/preview";
+import {
+  leftOutPhotos,
+  pageSide,
+  spreadTemplates,
+  toSpreads,
+  type BookLayout,
+} from "~/types/preview";
 
 const { layout } = defineProps<{ layout: BookLayout }>();
 
@@ -69,11 +75,32 @@ const blankPages = computed(() => layout.pages.filter((page) => page.blank).leng
         <span class="h-2.5 w-4 bg-amber-500/20" />
         Gutter — curls into the binding
       </li>
+      <!--
+        Said on screen, not only in a doc. These are the 400px contact-sheet
+        thumbnails, roughly 4x under-sampled against the 300 DPI export, so the
+        preview reads sharper and cleaner than it prints. The geometry is the
+        engine's own numbers and is exact; the pixels are not the pixels that
+        go to the printer. Someone judging a crop needs to know which of those
+        they are looking at.
+      -->
+      <li class="flex items-center gap-1.5">
+        <UIcon name="i-lucide-info" class="size-3.5" />
+        Thumbnails — placement and crop are exact, sharpness and colour are not
+      </li>
     </ul>
 
     <ol class="space-y-6">
       <li v-for="spread in spreads" :key="spread.key" class="space-y-1.5">
-        <p class="font-mono text-xs text-muted tabular-nums">{{ spread.label }}</p>
+        <!--
+          The template id next to the page label, so a template repeating
+          across consecutive openings is directly visible. It is one of the
+          defects this preview exists to reveal, and without the id on screen
+          it can only be inferred from layout shape.
+        -->
+        <p class="flex flex-wrap items-baseline gap-x-2 font-mono text-xs text-muted tabular-nums">
+          <span>{{ spread.label }}</span>
+          <span v-for="id in spreadTemplates(spread)" :key="id" class="text-dimmed">{{ id }}</span>
+        </p>
         <!--
           Both halves side by side with the fold between them. A single page
           keeps its half of the width and is drawn facing an inside cover, so
@@ -81,10 +108,10 @@ const blankPages = computed(() => layout.pages.filter((page) => page.blank).leng
         -->
         <div class="flex max-w-[1400px] gap-px rounded-md bg-default p-px ring ring-default">
           <div class="w-1/2">
-            <BookPreviewPage :layout :page="spread.left" side="left" />
+            <BookPreviewPage :layout :page="spread.left" :side="pageSide(spread.left, 'left')" />
           </div>
           <div class="w-1/2">
-            <BookPreviewPage :layout :page="spread.right" side="right" />
+            <BookPreviewPage :layout :page="spread.right" :side="pageSide(spread.right, 'right')" />
           </div>
         </div>
       </li>

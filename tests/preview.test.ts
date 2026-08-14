@@ -5,11 +5,12 @@ import {
   cropStyle,
   gutterRect,
   leftOutPhotos,
+  pageSide,
   pageSlots,
   photoFor,
   rectStyle,
   safeRect,
-  slotStyle,
+  spreadTemplates,
   toSpreads,
   trimRect,
   type BookLayout,
@@ -214,14 +215,85 @@ describe("cropStyle", () => {
   });
 });
 
-describe("slotStyle", () => {
-  it("places the slot as a percentage of the page box", () => {
-    expect(slotStyle({ x: 0.06, y: 0.08, w: 0.5, h: 0.62 })).toEqual({
-      left: "6%",
-      top: "8%",
-      width: "50%",
-      height: "62%",
-    });
+describe("pageSide", () => {
+  /**
+   * A page's side is a PROPERTY OF THE PAGE, not of which half of the opening
+   * it happens to be drawn in. The two agree for every real SKU --
+   * `pace::assemble` builds R, (L,R)..., L -- but the padding path at
+   * `pace.rs:418` does not: a degenerate odd page count appends pages by
+   * parity, so the final page of a 5-page book is a RIGHT-hand page even
+   * though `toSpreads` renders it in the left half.
+   *
+   * Inferring the side from position there would draw the trim inset and the
+   * gutter band on the wrong edges -- the preview misrepresenting the
+   * physical book, which is the one thing it must never do.
+   */
+  it("reads the page's own side, not the half it is drawn in", () => {
+    const rightHandPageInTheLeftHalf: PreviewPage = {
+      number: 5,
+      side: "right",
+      templateId: "t",
+      blank: false,
+      placements: [],
+    };
+
+    expect(pageSide(rightHandPageInTheLeftHalf, "left")).toBe("right");
+  });
+
+  it("falls back to the half only for the inside cover, which is not a page", () => {
+    expect(pageSide(null, "left")).toBe("left");
+    expect(pageSide(null, "right")).toBe("right");
+  });
+
+  /**
+   * The regression end to end, on the fixture `pace.rs`'s padding path
+   * actually produces: five pages numbered by parity. Page 5 lands in a left
+   * half and must still be drawn as the right-hand page it is.
+   */
+  it("keeps a padded odd-length book's last page on its own side", () => {
+    const pages: PreviewPage[] = [1, 2, 3, 4, 5].map((number) => ({
+      number,
+      // `pace.rs:418` pads by parity: pages 1, 3, 5 are right-hand.
+      side: number % 2 === 1 ? "right" : "left",
+      templateId: "t",
+      blank: false,
+      placements: [],
+    }));
+
+    const spreads = toSpreads(pages);
+    const last = spreads[spreads.length - 1];
+
+    expect(last?.left?.number).toBe(5);
+    expect(pageSide(last?.left ?? null, "left")).toBe("right");
+    // And the guides that follow from it are the RIGHT page's.
+    expect(gutterRect(geometry, pageSide(last?.left ?? null, "left")).x).toBeCloseTo(0, 12);
+    expect(trimRect(geometry, pageSide(last?.left ?? null, "left")).x).toBeCloseTo(0, 12);
+  });
+});
+
+describe("spreadTemplates", () => {
+  /**
+   * A repeating template is one of the defects this preview exists to reveal,
+   * and it is only inferable from layout shape unless the id is on screen.
+   */
+  it("names the distinct templates a spread used", () => {
+    const spreads = toSpreads(layout.pages);
+
+    // Pages 2 and 3 are two halves of ONE template: named once, not twice.
+    expect(spreadTemplates(spreads[1])).toEqual(["03-hero-left-text-right"]);
+    expect(spreadTemplates(spreads[0])).toEqual(["12-quad-right:right"]);
+    expect(spreadTemplates(spreads[2])).toEqual(["blank"]);
+  });
+
+  it("names both when the two halves came from different templates", () => {
+    const spread = toSpreads([
+      { number: 1, side: "right", templateId: "a", blank: false, placements: [] },
+      { number: 2, side: "left", templateId: "b", blank: false, placements: [] },
+      { number: 3, side: "right", templateId: "c", blank: false, placements: [] },
+      { number: 4, side: "left", templateId: "d", blank: false, placements: [] },
+    ])[1];
+
+    expect(spreadTemplates(spread)).toEqual(["b", "c"]);
   });
 });
 

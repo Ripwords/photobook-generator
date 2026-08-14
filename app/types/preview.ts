@@ -59,6 +59,14 @@ export interface PreviewPlacement {
   /** Crop window in the photo's own oriented, normalised frame. */
   crop: PreviewRect;
   z: number;
+  /**
+   * The basename the exporter writes this placement under, extensionless, so
+   * something odd on screen can be traced to the file it produced and checked
+   * against `manifest.json`. Built by `export::output_filename` in Rust --
+   * never re-derived here, or the preview would name files the exporter does
+   * not write. `null` only when the photo index is out of range.
+   */
+  filename: string | null;
 }
 
 /** Mirrors `preview::PreviewPage`. */
@@ -143,6 +151,8 @@ export interface PreviewSlot {
   photo: PreviewPhoto | null;
   slot: BoxStyle;
   crop: CropStyle;
+  /** The exporter's own basename for this placement -- see `PreviewPlacement`. */
+  filename: string | null;
 }
 
 /**
@@ -194,11 +204,6 @@ export function cropStyle(crop: PreviewRect): CropStyle {
     maxWidth: "none",
     transform: `translate(-${pct(crop.x * 100)}%, -${pct(crop.y * 100)}%)`,
   };
-}
-
-/** Where a slot sits on its page, as percentages of the page box. */
-export function slotStyle(rect: PreviewRect): BoxStyle {
-  return rectStyle(rect);
 }
 
 /** Any page-normalised rect as an absolutely positioned box. */
@@ -309,6 +314,43 @@ export function toSpreads(pages: PreviewPage[]): PreviewSpread[] {
  * page whose photos were not assigned in order, and the symptom is the
  * preview showing one photograph where another one prints.
  */
+/**
+ * Which side of the fold a page is, for choosing its guides.
+ *
+ * A page's side is a PROPERTY OF THE PAGE, never of the half of the opening it
+ * happens to be drawn in. The two agree for every real SKU -- `pace::assemble`
+ * builds R, (L,R)..., L -- but the padding path at `pace.rs:418` does not: it
+ * appends by parity, so the last page of a degenerate 5-page book is a
+ * right-hand page even though `toSpreads` renders it in the left half.
+ *
+ * Inferring the side from position there would inset the trim and draw the
+ * gutter band on the wrong edges, i.e. the preview misrepresenting the
+ * physical book -- the one thing it must never do.
+ *
+ * The half is used only for `null`, which is an inside cover rather than a
+ * page, and so has no side of its own.
+ */
+export function pageSide(page: PreviewPage | null, half: PageSide): PageSide {
+  return page?.side ?? half;
+}
+
+/**
+ * The distinct templates an opening drew from, in left-then-right order.
+ *
+ * Deduplicated because a spread's two halves normally come from ONE template
+ * decomposed at the fold, and naming it twice would read as a repeat. A
+ * genuinely repeating template across consecutive spreads is one of the
+ * defects this preview exists to reveal, and it is only inferable from layout
+ * shape unless the id is on screen.
+ */
+export function spreadTemplates(opening: PreviewSpread | undefined): string[] {
+  const ids: string[] = [];
+  for (const page of [opening?.left, opening?.right]) {
+    if (page && !ids.includes(page.templateId)) ids.push(page.templateId);
+  }
+  return ids;
+}
+
 export function photoFor(layout: BookLayout, photoIndex: number): PreviewPhoto | null {
   return layout.photos[photoIndex] ?? null;
 }
@@ -319,8 +361,9 @@ export function pageSlots(layout: BookLayout, page: PreviewPage): PreviewSlot[] 
     key: `p${page.number}-z${placement.z}`,
     z: placement.z,
     photo: photoFor(layout, placement.photoIndex),
-    slot: slotStyle(placement.slotRect),
+    slot: rectStyle(placement.slotRect),
     crop: cropStyle(placement.crop),
+    filename: placement.filename,
   }));
 }
 

@@ -25,6 +25,7 @@
 
 use crate::book::cull::Photo;
 use crate::book::pace::Book;
+use crate::export::output_filename;
 use crate::geometry::{
     Rect, Side, GUTTER_U, PAGE_H_IN, PAGE_W_IN, SAFE_U, SAFE_V, TRIM_U, TRIM_V,
 };
@@ -59,7 +60,7 @@ pub struct PreviewPhoto {
 /// prints. Mirrors `pace::Placement` field for field, but serialised
 /// camelCase for the webview -- `Placement` itself serialises snake_case
 /// into `book_json`, and changing that would break every saved project.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewPlacement {
     pub photo_index: usize,
@@ -71,6 +72,20 @@ pub struct PreviewPlacement {
     /// show.
     pub crop: Rect,
     pub z: u32,
+    /// The basename the exporter writes this placement under, without an
+    /// extension -- so a user looking at something odd on screen can find the
+    /// file it produced, and check it against `manifest.json`.
+    ///
+    /// Built with `export::output_filename`, the SAME function
+    /// `book::manifest` and `export::build_items` use. Deriving it in the
+    /// webview instead would be a second copy of the `p{page:02}-z{z}-{hash8}`
+    /// rule, and a preview naming files the exporter does not write is worse
+    /// than one naming none.
+    ///
+    /// `None` only when `photo_index` falls outside the photo list, which the
+    /// engine never produces -- reported rather than papered over with a
+    /// plausible-looking name.
+    pub filename: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -179,6 +194,9 @@ pub fn book_layout(project_id: i64, book: &Book, photos: Vec<PreviewPhoto>) -> B
                     slot_rect: p.slot_rect,
                     crop: p.crop,
                     z: p.z,
+                    filename: photos
+                        .get(p.photo_index)
+                        .map(|photo| output_filename(page.number, p.z, &photo.hash)),
                 })
                 .collect(),
         })
@@ -411,6 +429,16 @@ mod tests {
                     "page {} z{} crops must be the same window",
                     page.number, placement.z
                 );
+                // The name on screen is the name on disk. Both come from
+                // `export::output_filename`; if the preview ever derived its
+                // own, this is where the two would part company.
+                assert_eq!(
+                    placement.filename.as_deref(),
+                    Some(entry.filename.as_str()),
+                    "page {} z{} must name the file the exporter writes",
+                    page.number,
+                    placement.z
+                );
             }
         }
     }
@@ -471,6 +499,25 @@ mod tests {
 
         assert_eq!(left_out, vec!["/c.jpg", "/e.jpg"]);
         assert_eq!(left_out.len(), layout.dropped_photos);
+    }
+
+    /// A `photo_index` outside the photo list names no file rather than a
+    /// plausible-looking wrong one. The engine never produces such an index;
+    /// if one ever appeared, a preview confidently naming `p01-z1-` (an empty
+    /// hash) would send the user looking for a file that was never written.
+    #[test]
+    fn preview_names_no_file_for_a_placement_pointing_outside_the_photo_list() {
+        let mut book = book();
+        book.pages[0].placements[0].photo_index = 99;
+
+        let layout = book_layout(7, &book, preview_photos());
+
+        assert_eq!(layout.pages[0].placements[0].filename, None);
+        // The surviving placements still name theirs.
+        assert_eq!(
+            layout.pages[1].placements[0].filename.as_deref(),
+            Some("p02-z1-hash-b")
+        );
     }
 
     #[test]
