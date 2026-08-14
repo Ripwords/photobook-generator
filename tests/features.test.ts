@@ -30,10 +30,14 @@ const photo = (over: Partial<AnalyzedPhoto> = {}): AnalyzedPhoto => ({
   nearDupCluster: 0,
   eventCluster: 0,
   thumbnailPath: null,
+  // Rust's culling verdict, stamped by `commands::stamp_kept`. Defaulted true
+  // so fixtures for the OTHER helpers below (which have nothing to do with
+  // culling) read as ordinary photos.
+  kept: true,
   ...over,
 });
 
-const partialPhoto = (over: Partial<PartialAnalyzedPhoto> = {}): PartialAnalyzedPhoto => ({
+const partialPhoto =(over: Partial<PartialAnalyzedPhoto> = {}): PartialAnalyzedPhoto => ({
   status: "ok",
   path: "/p/a.jpg",
   hash: "h",
@@ -53,58 +57,80 @@ describe("feature helpers", () => {
     expect(isFailed(photo())).toBe(false);
   });
 
-  it("drops utility photos from keepers", () => {
-    const result = keepers([photo(), photo({ isUtility: true, path: "/p/shot.png" })]);
-    expect(result).toHaveLength(1);
-  });
+  // --- keepers: a filter on Rust's verdict, with no rule of its own --------
+  //
+  // These tests used to assert the culling RULE (utility filtering,
+  // one-winner-per-cluster, the sharpness/aesthetic ranking). That rule no
+  // longer lives here: `book::cull::cull` in Rust is the single authority and
+  // `commands::stamp_kept` sends its verdict over as `kept`. Asserting the
+  // rule from this side again would be asserting a copy of it, which is the
+  // exact defect that was removed -- the old TypeScript copy went straight
+  // from sharpness to aesthetic while Rust breaks the tie on face capture
+  // quality first, so the screen and the exported book could disagree.
+  //
+  // So what is worth testing here is precisely that NO rule was left behind.
+  // Every fixture below sets `kept` in DELIBERATE CONFLICT with what a local
+  // rule would have concluded, so any re-added condition -- an `isUtility`
+  // check, a cluster dedup, a percentile comparison -- changes the result.
 
-  it("keeps one photo per near-duplicate cluster", () => {
+  it("returns exactly the photos Rust flagged as kept", () => {
     const result = keepers([
-      photo({ path: "/p/1.jpg", nearDupCluster: 7, sharpnessPct: 40 }),
-      photo({ path: "/p/2.jpg", nearDupCluster: 7, sharpnessPct: 90 }),
-      photo({ path: "/p/3.jpg", nearDupCluster: 8, sharpnessPct: 10 }),
+      photo({ path: "/p/1.jpg", kept: true }),
+      photo({ path: "/p/2.jpg", kept: false }),
+      photo({ path: "/p/3.jpg", kept: true }),
     ]);
-    expect(result).toHaveLength(2);
-    expect(result.find((p) => p.nearDupCluster === 7)?.path).toBe("/p/2.jpg");
+    expect(result.map((p) => p.path)).toEqual(["/p/1.jpg", "/p/3.jpg"]);
   });
 
   it("returns an empty array for no input", () => {
     expect(keepers([])).toEqual([]);
   });
 
-  // --- Additional tests beyond the brief ---
-
-  /// The brief's "drops utility photos from keepers" test is vacuous: both
-  /// its photos share nearDupCluster: 0 and tie on sharpness/aesthetic, so
-  /// the near-duplicate dedup logic alone collapses them to length 1 even if
-  /// the `isUtility` filter were deleted entirely. This test isolates the
-  /// utility filter by putting the utility photo in its own cluster, so a
-  /// dropped filter would leave it in the result (length 2) instead of
-  /// filtering it out (length 1).
-  it("drops a utility photo even when it is the sole member of its own cluster", () => {
-    const result = keepers([
-      photo({ path: "/p/keep.jpg", nearDupCluster: 1 }),
-      photo({ path: "/p/utility.png", nearDupCluster: 2, isUtility: true }),
-    ]);
-    expect(result).toHaveLength(1);
-    expect(result[0]?.path).toBe("/p/keep.jpg");
+  /// A re-added `if (photo.isUtility) continue;` would drop this photo.
+  /// Rust flagged it kept, so it must survive: `isUtility` is an input to the
+  /// rule Rust already applied, not a second filter to apply again here.
+  it("keeps a utility photo when Rust flagged it kept, applying no filter of its own", () => {
+    const result = keepers([photo({ path: "/p/shot.png", isUtility: true, kept: true })]);
+    expect(result.map((p) => p.path)).toEqual(["/p/shot.png"]);
   });
 
-  it("drops all photos when every photo is utility", () => {
+  /// Three photos in ONE near-duplicate cluster, two of them flagged kept.
+  /// A re-added one-winner-per-cluster dedup would collapse these to a single
+  /// result no matter which one it picked.
+  it("returns two photos from the same near-duplicate cluster when Rust kept both", () => {
     const result = keepers([
-      photo({ path: "/p/u1.png", nearDupCluster: 1, isUtility: true }),
-      photo({ path: "/p/u2.png", nearDupCluster: 2, isUtility: true }),
+      photo({ path: "/p/1.jpg", nearDupCluster: 7, kept: true }),
+      photo({ path: "/p/2.jpg", nearDupCluster: 7, kept: false }),
+      photo({ path: "/p/3.jpg", nearDupCluster: 7, kept: true }),
     ]);
-    expect(result).toEqual([]);
+    expect(result.map((p) => p.path)).toEqual(["/p/1.jpg", "/p/3.jpg"]);
   });
 
-  it("breaks a sharpness tie using aesthetic percentile", () => {
+  /// The dropped photo is the SHARPEST and the most AESTHETIC of the three,
+  /// and the two survivors are the worst on both axes. Any percentile
+  /// comparison re-added here -- in either direction -- picks a different
+  /// set. This is the assertion that would have caught the old divergence.
+  it("ignores sharpness and aesthetic percentiles entirely", () => {
     const result = keepers([
-      photo({ path: "/p/dull.jpg", nearDupCluster: 3, sharpnessPct: 70, aestheticPct: 20 }),
-      photo({ path: "/p/pretty.jpg", nearDupCluster: 3, sharpnessPct: 70, aestheticPct: 80 }),
+      photo({ path: "/p/dull.jpg", nearDupCluster: 3, sharpnessPct: 10, aestheticPct: 10, kept: true }),
+      photo({ path: "/p/best.jpg", nearDupCluster: 3, sharpnessPct: 99, aestheticPct: 99, kept: false }),
+      photo({ path: "/p/dim.jpg", nearDupCluster: 3, sharpnessPct: 20, aestheticPct: 20, kept: true }),
     ]);
-    expect(result).toHaveLength(1);
-    expect(result[0]?.path).toBe("/p/pretty.jpg");
+    expect(result.map((p) => p.path)).toEqual(["/p/dull.jpg", "/p/dim.jpg"]);
+  });
+
+  /// Input order is `finalize_photos`'s path order, which is also the order
+  /// `cull` returns, so the sheet and the book list survivors identically.
+  /// The fixture is deliberately NOT already in the asserted order under any
+  /// other plausible sort (it is reverse-alphabetical), so a filter that
+  /// reordered would be visible.
+  it("preserves input order rather than imposing its own", () => {
+    const result = keepers([
+      photo({ path: "/p/c.jpg", kept: true }),
+      photo({ path: "/p/b.jpg", kept: true }),
+      photo({ path: "/p/a.jpg", kept: true }),
+    ]);
+    expect(result.map((p) => p.path)).toEqual(["/p/c.jpg", "/p/b.jpg", "/p/a.jpg"]);
   });
 });
 

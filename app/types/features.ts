@@ -50,6 +50,25 @@ export interface AnalyzedPhoto extends PartialAnalyzedPhoto {
   sharpnessPct: number;
   nearDupCluster: number;
   eventCluster: number;
+  /**
+   * Whether this photo survives culling -- Rust's VERDICT, not an input to
+   * one. Stamped by `commands::stamp_kept` from `book::cull::cull`, the
+   * single authority on which photo survives, and the same function the
+   * printed book is built from.
+   *
+   * Do NOT recompute this in the webview. It used to be recomputed here (see
+   * `keepers()` below) and the two implementations ranked differently, so the
+   * contact sheet could disagree with the book about both the count and the
+   * identity of the survivors. The webview cannot get it right by copying the
+   * rule more carefully either: the rule's sharpness tie-break reads a face's
+   * `captureQuality`, which `AnalyzedPhoto` does not carry.
+   *
+   * Only present on a fully-ranked photo, never on a streaming
+   * `PartialAnalyzedPhoto`: culling is a whole-set derivation (it needs
+   * `nearDupCluster`, which does not exist until every photo has been seen),
+   * exactly like the percentiles above it.
+   */
+  kept: boolean;
 }
 
 /** Type guard distinguishing a still-streaming tile from a fully-ranked one. */
@@ -171,25 +190,27 @@ export function applyAnalysisEvent(state: StreamState, event: AnalysisEvent): St
 }
 
 /**
- * Drops utility images, then keeps the best photo from each near-duplicate
- * cluster, ranked by sharpness then aesthetic percentile.
+ * The photos that survive culling: exactly the ones the book is built from.
+ *
+ * This is a FILTER, not a rule. `book::cull::cull` in Rust decides which
+ * photo survives -- dropping utility images, then keeping one winner per
+ * near-duplicate cluster ranked sharpness -> face capture quality ->
+ * aesthetic -- and `commands::stamp_kept` writes that verdict onto each
+ * record as `kept`. Reading the flag is the whole implementation.
+ *
+ * It used to re-derive the rule here, and that was a real user-visible
+ * defect rather than mere duplication: this copy went straight from
+ * sharpness to aesthetic with no capture-quality tie-break, so on any burst
+ * where two frames tied on sharpness the screen could show one survivor and
+ * the exported book contain another. Reproducing the Rust rule faithfully is
+ * not an option from here -- `AnalyzedPhoto` does not carry the
+ * `captureQuality` the tie-break reads.
+ *
+ * Input order is preserved, which is `finalize_photos`'s path order -- the
+ * same order `cull` itself returns.
  */
 export function keepers(photos: AnalyzedPhoto[]): AnalyzedPhoto[] {
-  const best = new Map<number, AnalyzedPhoto>();
-
-  for (const photo of photos) {
-    if (photo.isUtility) continue;
-    const incumbent = best.get(photo.nearDupCluster);
-    if (
-      !incumbent ||
-      photo.sharpnessPct > incumbent.sharpnessPct ||
-      (photo.sharpnessPct === incumbent.sharpnessPct && photo.aestheticPct > incumbent.aestheticPct)
-    ) {
-      best.set(photo.nearDupCluster, photo);
-    }
-  }
-
-  return [...best.values()];
+  return photos.filter((photo) => photo.kept);
 }
 
 export interface EventGroup {

@@ -238,7 +238,48 @@ pub(crate) fn finalize_photos(mut ok: Vec<serde_json::Value>) -> Vec<serde_json:
         }
     }
 
+    stamp_kept(&mut ok);
     ok
+}
+
+/// Stamps each record with `kept`: the verdict of `book::cull::cull`, which
+/// is the SINGLE authority on which photo survives.
+///
+/// Why the verdict travels on the wire rather than the rule being reproduced
+/// in the webview: before this, TypeScript's `keepers()` re-derived the same
+/// rule independently and the two ranked differently -- Rust breaks a
+/// sharpness tie on face capture quality and only then on aesthetic,
+/// TypeScript went straight from sharpness to aesthetic. The contact sheet
+/// could therefore show a different set of survivors from the one the book
+/// was built out of, in both count and identity. The webview cannot fix that
+/// by copying the Rust rule more carefully, because `AnalyzedPhoto` does not
+/// even carry `captureQuality` -- the tie-break input is not on the wire.
+/// Sending the ANSWER instead of the inputs removes the second implementation
+/// entirely; `keepers()` in `app/types/features.ts` is now a filter on this
+/// flag and contains no ranking of its own.
+///
+/// Must run AFTER the loop above: `cull` reads `nearDupCluster`,
+/// `sharpnessPct` and `aestheticPct`, none of which exist on the record until
+/// that loop stamps them.
+///
+/// Keyed by `path`, which is unique per record here (`analyze_folder` walks
+/// one directory, and `lookup_cache` rewrites every cached record's path to
+/// the current one precisely so two byte-identical files never share a path).
+/// `book::pace::assemble` already keys the same way.
+///
+/// A record `from_features` cannot parse (a missing `path`, `hash`, `width`
+/// or `height`) is stamped `kept: false`, which is honest: the book builder
+/// would skip that photo for the same reason.
+fn stamp_kept(ok: &mut [serde_json::Value]) {
+    let parsed: Vec<crate::book::cull::Photo> =
+        ok.iter().filter_map(crate::book::cull::from_features).collect();
+    let kept: std::collections::HashSet<String> =
+        crate::book::cull::cull(&parsed).into_iter().map(|p| p.path).collect();
+
+    for features in ok.iter_mut() {
+        let survives = features["path"].as_str().is_some_and(|p| kept.contains(p));
+        features["kept"] = survives.into();
+    }
 }
 
 /// Minimum wall-clock time `analyze_folder` must take before its completion
@@ -1980,6 +2021,129 @@ mod tests {
             "chronologically-first photo gets the lower id"
         );
         assert_eq!(result[1]["eventCluster"], 1);
+    }
+
+    // --- `stamp_kept`: Rust's culling verdict, sent to the webview so the
+    // contact sheet and the printed book cannot disagree.
+
+    /// A features record complete enough for `book::cull::from_features` to
+    /// parse. `feat` above deliberately omits `hash`/`width`/`height`, which
+    /// `from_features` requires, so culling tests need their own fixture.
+    fn cullable(
+        path: &str,
+        phash: u64,
+        aesthetic: f64,
+        sharpness: f64,
+        capture_quality: Option<f64>,
+        is_utility: bool,
+    ) -> serde_json::Value {
+        let faces = match capture_quality {
+            Some(q) => serde_json::json!([{ "box": [0.1, 0.1, 0.2, 0.2], "captureQuality": q }]),
+            None => serde_json::json!([]),
+        };
+        serde_json::json!({
+            "path": path,
+            "hash": format!("hash-{path}"),
+            "width": 4032,
+            "height": 3024,
+            "isUtility": is_utility,
+            "phash": phash,
+            "aestheticScore": aesthetic,
+            "sharpness": sharpness,
+            "exif": { "captureDate": null },
+            "faces": faces,
+        })
+    }
+
+    /// **This is the regression the reconciliation exists for.**
+    ///
+    /// Two frames of one burst (identical phash -> one near-duplicate
+    /// cluster), tied on raw sharpness, where the two ranking rules that used
+    /// to coexist give OPPOSITE answers:
+    ///
+    /// - Rust (`book::cull::cull`, the authority): sharpness ties, so face
+    ///   capture quality decides -> `/p/b.jpg` (0.9 beats 0.2).
+    /// - The deleted TypeScript `keepers()`: sharpness ties, so aesthetic
+    ///   decides -> `/p/a.jpg` (0.9 beats 0.1).
+    ///
+    /// The screen used to show one and the book contained the other. A
+    /// fixture where the two rules happened to agree could not detect that at
+    /// all, which is why the capture quality and the aesthetic are pointed in
+    /// deliberately opposite directions here.
+    #[test]
+    fn stamps_kept_using_the_capture_quality_tie_break_the_webview_could_not_apply() {
+        let finalized = finalize_photos(vec![
+            cullable("/p/a.jpg", 100, 0.9, 5.0, Some(0.2), false),
+            cullable("/p/b.jpg", 100, 0.1, 5.0, Some(0.9), false),
+        ]);
+
+        // Preconditions, asserted rather than assumed: the fixture only
+        // exercises the tie-break if the first two keys really do tie.
+        assert_eq!(
+            finalized[0]["nearDupCluster"], finalized[1]["nearDupCluster"],
+            "fixture must put both photos in one near-duplicate cluster"
+        );
+        assert_eq!(
+            finalized[0]["sharpnessPct"], finalized[1]["sharpnessPct"],
+            "fixture must tie on sharpness so the tie-break is what decides"
+        );
+        assert!(
+            finalized[0]["aestheticPct"].as_u64() > finalized[1]["aestheticPct"].as_u64(),
+            "fixture must point aesthetic at the LOSER, or it cannot tell the rules apart"
+        );
+
+        assert_eq!(finalized[0]["path"], "/p/a.jpg");
+        assert_eq!(finalized[1]["path"], "/p/b.jpg");
+        assert_eq!(finalized[0]["kept"], false, "higher aesthetic must NOT win the tie");
+        assert_eq!(finalized[1]["kept"], true, "higher capture quality wins the tie");
+    }
+
+    #[test]
+    fn stamps_kept_false_on_utility_images() {
+        let finalized = finalize_photos(vec![
+            cullable("/p/a.jpg", 100, 0.5, 5.0, None, true),
+            cullable("/p/b.jpg", 999, 0.5, 5.0, None, false),
+        ]);
+        assert_eq!(finalized[0]["kept"], false);
+        assert_eq!(finalized[1]["kept"], true);
+    }
+
+    /// The notification's count and the screen's kept set are now the same
+    /// number by construction. Both derive from `book::cull::cull` over the
+    /// same finalized records, so this pins that they cannot drift apart --
+    /// the property the old two-implementation arrangement could not offer.
+    #[test]
+    fn kept_stamps_agree_with_the_notification_keeper_count() {
+        let finalized = finalize_photos(vec![
+            cullable("/p/a.jpg", 100, 0.9, 5.0, None, false),
+            cullable("/p/b.jpg", 100, 0.1, 9.0, None, false), // same burst, sharper -> wins
+            cullable("/p/c.jpg", 999, 0.5, 5.0, None, true),  // utility -> dropped
+            cullable("/p/d.jpg", 4095, 0.5, 5.0, None, false),
+        ]);
+        let stamped = finalized.iter().filter(|f| f["kept"] == true).count();
+
+        assert_eq!(stamped, count_keepers(&finalized));
+        // A fixture where nothing is culled would make the equality above
+        // hold trivially (every photo kept, on both sides).
+        assert!(
+            stamped > 0 && stamped < finalized.len(),
+            "fixture must actually cull something: {stamped} of {}",
+            finalized.len()
+        );
+    }
+
+    /// A record `from_features` cannot parse still gets the key, stamped
+    /// false -- `keepers()` in the webview reads it unconditionally, so a
+    /// missing key would arrive as `undefined` and silently drop the photo
+    /// with no record of why. `feat` omits `hash`/`width`/`height` on
+    /// purpose, which is exactly such a record.
+    #[test]
+    fn stamps_kept_on_every_record_including_ones_culling_cannot_parse() {
+        let finalized = finalize_photos(vec![feat("/p/a.jpg", 42, 0.5, 10.0, None, 0)]);
+        assert_eq!(
+            finalized[0]["kept"], false,
+            "an unparseable record is not kept, and says so explicitly"
+        );
     }
 
     // --- `partial_photo`: projects a full features record down to the

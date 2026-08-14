@@ -129,13 +129,16 @@ pub fn from_features(v: &serde_json::Value) -> Option<Photo> {
 /// 100% false-negative rate (see `PROJECT-STATUS.md`), so including it adds
 /// noise rather than signal.
 ///
-/// This function replaces the old Rust `count_keepers`, which reimplemented
-/// this same rule by hand; `count_keepers` now delegates here, so the two
-/// can no longer disagree. TypeScript's `keepers()` in
-/// `app/types/features.ts` is a SEPARATE, still-unreconciled implementation
-/// of the same rule -- unifying it with this one is a later task. Until
-/// that happens, the screen (driven by `keepers()`) and the printed book
-/// (driven by this function) can still disagree.
+/// This is now the ONLY implementation of the rule anywhere in the project.
+/// Two others used to exist and have both been removed: Rust's
+/// `count_keepers` hand-rolled it (it delegates here now), and TypeScript's
+/// `keepers()` re-derived it in the webview, ranking sharpness straight to
+/// aesthetic with no capture-quality tie-break -- so the contact sheet could
+/// show a different set of survivors, in count and identity, from the one the
+/// book was built out of. `commands::stamp_kept` now writes this function's
+/// verdict onto each photo record as `kept`, and `keepers()` is a filter on
+/// that flag with no ranking of its own. Do not reintroduce a second copy of
+/// this rule; send this one's answer instead.
 pub fn cull(photos: &[Photo]) -> Vec<Photo> {
     use std::collections::BTreeMap;
 
