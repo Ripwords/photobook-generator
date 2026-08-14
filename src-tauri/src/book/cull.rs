@@ -191,11 +191,154 @@ fn parse_features(v: &serde_json::Value, derived: Derived) -> Option<Photo> {
     })
 }
 
+/// What the USER said about one photo, overriding what the engine would
+/// decide on its own. Keyed by CONTENT HASH rather than by path, so a
+/// decision survives the file being moved or renamed -- the same reason
+/// `Project::photo_hashes` is hash-keyed.
+///
+/// Two byte-identical files in one folder share a hash and therefore share a
+/// decision. That is the honest reading: they are, in pixels, the same
+/// photograph, and the user picking "this one" cannot have meant one copy of
+/// it and not the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Override {
+    /// The engine decides. The default, and the state every photo starts in.
+    #[default]
+    Auto,
+    /// The user wants this photo in the book, whatever the engine thinks.
+    Include,
+    /// The user wants this photo out of the book, whatever the engine thinks.
+    Exclude,
+}
+
+impl Override {
+    /// The token this state is stored and transmitted as. One spelling, used
+    /// by serde (via `rename_all`), by SQLite and by the TypeScript union --
+    /// so a state cannot mean one thing on the wire and another in the
+    /// database.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Include => "include",
+            Self::Exclude => "exclude",
+        }
+    }
+
+    /// Parses a stored token. `None` for anything else: an unrecognised state
+    /// is a decision this build cannot honour, and treating it as `Auto`
+    /// would silently discard a user's choice -- the one failure this whole
+    /// feature exists to prevent. Callers surface it instead.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "auto" => Some(Self::Auto),
+            "include" => Some(Self::Include),
+            "exclude" => Some(Self::Exclude),
+            _ => None,
+        }
+    }
+}
+
+/// Every user decision in one map, hash -> state. Absent means `Auto`, so an
+/// empty map is exactly "the engine decides everything", i.e. the behaviour
+/// this project had before overrides existed.
+///
+/// `#[serde(transparent)]` so the wire shape is a plain object
+/// (`{"<hash>": "include"}`) rather than a wrapper with a field name the
+/// TypeScript side would also have to know about. Pinned from both sides in
+/// `tests/fixtures/wire/photo-overrides.json`.
+/// Deserialisation goes through `FromIterator` rather than the derive, so an
+/// explicit `"auto"` arriving from the webview is normalised away exactly as
+/// `set` normalises it -- keeping "one state, one representation" true of
+/// values that came off the wire too, not only of ones built in Rust.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct Overrides(std::collections::BTreeMap<String, Override>);
+
+impl<'de> Deserialize<'de> for Overrides {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = std::collections::BTreeMap::<String, Override>::deserialize(d)?;
+        Ok(raw.into_iter().collect())
+    }
+}
+
+impl Overrides {
+    pub fn new() -> Self {
+        Self(std::collections::BTreeMap::new())
+    }
+
+    /// The user's decision for a photo, `Auto` when they never made one.
+    pub fn get(&self, hash: &str) -> Override {
+        self.0.get(hash).copied().unwrap_or_default()
+    }
+
+    /// Records a decision. `Auto` REMOVES the entry rather than storing it:
+    /// "back to automatic" is the absence of a decision, and storing it would
+    /// make two representations of the same state that every comparison and
+    /// every persisted row would then have to treat as equal.
+    pub fn set(&mut self, hash: impl Into<String>, state: Override) {
+        let hash = hash.into();
+        match state {
+            Override::Auto => {
+                self.0.remove(&hash);
+            }
+            _ => {
+                self.0.insert(hash, state);
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Hash and state for every decision actually made, in hash order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, Override)> {
+        self.0.iter().map(|(h, &s)| (h.as_str(), s))
+    }
+
+    /// How many of `photos` the user explicitly asked for. Counted over the
+    /// photo set rather than over the map, because a decision whose photo is
+    /// not in this folder must not inflate the figure the user is shown.
+    pub fn included_in(&self, photos: &[Photo]) -> usize {
+        photos.iter().filter(|p| self.get(&p.hash) == Override::Include).count()
+    }
+}
+
+impl FromIterator<(String, Override)> for Overrides {
+    fn from_iter<I: IntoIterator<Item = (String, Override)>>(iter: I) -> Self {
+        let mut out = Self::new();
+        for (hash, state) in iter {
+            out.set(hash, state);
+        }
+        out
+    }
+}
+
 /// The single authority on which photo survives.
 ///
 /// Drops `is_utility`, then keeps one winner per near-duplicate cluster,
 /// ranked sharpness percentile -> face capture quality -> aesthetic
 /// percentile.
+///
+/// **Cull proposes; the user disposes.** `overrides` is applied on top of
+/// that verdict, and it wins:
+///
+/// * `Exclude` never survives, whatever the engine thinks of it.
+/// * `Include` always survives -- even a `is_utility` image, even a frame
+///   that lost its near-duplicate cluster.
+///
+/// An `Include` is ADDITIVE, not a substitution: it does not displace the
+/// `Auto` winner of its own cluster. Two photos from one burst therefore both
+/// appear when the user picks one and the engine picks another. The
+/// alternative -- letting an `Include` take over its cluster's single slot --
+/// would make ticking one photo silently remove a different photo the user
+/// never touched, which is the same class of surprise this whole feature
+/// exists to remove; and `Exclude` already exists for saying "not that one".
 ///
 /// `smile_fraction` is deliberately NOT in the ranking, departing from
 /// section 7.4 of the original design: it is miscalibrated with a proven
@@ -212,24 +355,43 @@ fn parse_features(v: &serde_json::Value, derived: Derived) -> Option<Photo> {
 /// verdict onto each photo record as `kept`, and `keepers()` is a filter on
 /// that flag with no ranking of its own. Do not reintroduce a second copy of
 /// this rule; send this one's answer instead.
-pub fn cull(photos: &[Photo]) -> Vec<Photo> {
+pub fn cull(photos: &[Photo], overrides: &Overrides) -> Vec<Photo> {
     use std::collections::BTreeMap;
 
     let mut best: BTreeMap<u32, &Photo> = BTreeMap::new();
-    for photo in photos.iter().filter(|p| !p.is_utility) {
-        best.entry(photo.near_dup_cluster)
-            .and_modify(|incumbent| {
-                if beats(photo, incumbent) {
-                    *incumbent = photo;
+    let mut included: Vec<&Photo> = Vec::new();
+
+    for photo in photos {
+        match overrides.get(&photo.hash) {
+            // Out, unconditionally -- and BEFORE the cluster contest, so
+            // excluding the winner of a burst promotes its runner-up rather
+            // than leaving the burst unrepresented.
+            Override::Exclude => continue,
+            // In, unconditionally, and NOT entered into the cluster contest:
+            // an explicit choice neither competes for the cluster's single
+            // automatic slot nor takes it away from the photo that won it.
+            Override::Include => included.push(photo),
+            Override::Auto => {
+                if photo.is_utility {
+                    continue;
                 }
-            })
-            .or_insert(photo);
+                best.entry(photo.near_dup_cluster)
+                    .and_modify(|incumbent| {
+                        if beats(photo, incumbent) {
+                            *incumbent = photo;
+                        }
+                    })
+                    .or_insert(photo);
+            }
+        }
     }
 
     // `BTreeMap` iterates by cluster id, so the output order depends only on
     // cluster ids, never on input order -- the property the ordering test
-    // pins with deliberately unsorted input.
-    let mut kept: Vec<Photo> = best.into_values().cloned().collect();
+    // pins with deliberately unsorted input. The final sort by path then
+    // interleaves the explicit choices with the automatic survivors rather
+    // than appending them, because `pack` cuts chapters in this order.
+    let mut kept: Vec<Photo> = best.into_values().chain(included).cloned().collect();
     kept.sort_by(|a, b| a.path.cmp(&b.path));
     kept
 }
@@ -277,18 +439,17 @@ mod tests {
     fn cull_drops_utility_images() {
         let mut u = photo("/a.jpg", 0, 90, 90);
         u.is_utility = true;
-        let kept = cull(&[u, photo("/b.jpg", 1, 10, 10)]);
+        let kept = cull(&[u, photo("/b.jpg", 1, 10, 10)], &Overrides::new());
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].path, "/b.jpg");
     }
 
     #[test]
     fn cull_keeps_one_photo_per_near_duplicate_cluster() {
-        let kept = cull(&[
-            photo("/a.jpg", 7, 50, 90),
-            photo("/b.jpg", 7, 80, 10),
-            photo("/c.jpg", 8, 20, 20),
-        ]);
+        let kept = cull(
+            &[photo("/a.jpg", 7, 50, 90), photo("/b.jpg", 7, 80, 10), photo("/c.jpg", 8, 20, 20)],
+            &Overrides::new(),
+        );
         assert_eq!(kept.len(), 2);
         assert!(kept.iter().any(|p| p.path == "/b.jpg"), "sharpness wins first");
         assert!(!kept.iter().any(|p| p.path == "/a.jpg"));
@@ -303,14 +464,14 @@ mod tests {
         a.capture_quality = Some(0.2);
         let mut b = photo("/b.jpg", 7, 50, 10);
         b.capture_quality = Some(0.9);
-        let kept = cull(&[a, b]);
+        let kept = cull(&[a, b], &Overrides::new());
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].path, "/b.jpg", "capture quality outranks aesthetic");
     }
 
     #[test]
     fn cull_breaks_a_sharpness_and_quality_tie_on_aesthetic() {
-        let kept = cull(&[photo("/a.jpg", 7, 50, 30), photo("/b.jpg", 7, 50, 80)]);
+        let kept = cull(&[photo("/a.jpg", 7, 50, 30), photo("/b.jpg", 7, 50, 80)], &Overrides::new());
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].path, "/b.jpg");
     }
@@ -336,7 +497,7 @@ mod tests {
         a.capture_quality = Some(0.5);
         let mut b = photo("/b.jpg", 7, 50, 90);
         b.capture_quality = Some(0.5);
-        let kept = cull(&[a, b]);
+        let kept = cull(&[a, b], &Overrides::new());
         assert_eq!(kept[0].path, "/b.jpg", "aesthetic is the only key left that can decide it");
     }
 
@@ -345,13 +506,260 @@ mod tests {
     #[test]
     fn cull_output_order_is_stable_regardless_of_input_order() {
         let forward = cull(&[photo("/c.jpg", 3, 10, 10), photo("/a.jpg", 1, 10, 10),
-                             photo("/b.jpg", 2, 10, 10)]);
+                             photo("/b.jpg", 2, 10, 10)], &Overrides::new());
         let reverse = cull(&[photo("/b.jpg", 2, 10, 10), photo("/a.jpg", 1, 10, 10),
-                             photo("/c.jpg", 3, 10, 10)]);
+                             photo("/c.jpg", 3, 10, 10)], &Overrides::new());
         let f: Vec<_> = forward.iter().map(|p| p.path.clone()).collect();
         let r: Vec<_> = reverse.iter().map(|p| p.path.clone()).collect();
         assert_eq!(f, r);
         assert_eq!(f, vec!["/a.jpg", "/b.jpg", "/c.jpg"]);
+    }
+
+    // --- overrides: cull proposes, the user disposes ----------------------
+
+    /// `Overrides::set(_, Auto)` must REMOVE the decision rather than store
+    /// it, so "back to automatic" has exactly one representation. Two
+    /// representations of one state is a bug factory for every equality
+    /// check and every persisted row downstream.
+    #[test]
+    fn cull_overrides_setting_auto_erases_the_decision_rather_than_storing_it() {
+        let mut o = Overrides::new();
+        o.set("h1", Override::Include);
+        assert_eq!(o.len(), 1);
+        assert_eq!(o.get("h1"), Override::Include);
+
+        o.set("h1", Override::Auto);
+
+        assert!(o.is_empty(), "auto must not be stored: {o:?}");
+        assert_eq!(o.get("h1"), Override::Auto);
+        assert_eq!(o, Overrides::new(), "and must compare equal to never having decided");
+    }
+
+    /// Overrides are keyed by CONTENT HASH, not by path. Two byte-identical
+    /// files in one folder are, in pixels, the same photograph, so one
+    /// decision covers both -- and a photo that moves keeps its decision.
+    ///
+    /// The fixture gives the two photos DIFFERENT paths and different
+    /// clusters: a path-keyed implementation would exclude only `/a.jpg`, so
+    /// the surviving count distinguishes the two rules.
+    #[test]
+    fn cull_overrides_are_keyed_by_content_hash_not_by_path() {
+        let mut a = photo("/a.jpg", 1, 50, 50);
+        let mut b = photo("/b.jpg", 2, 50, 50);
+        a.hash = "same-bytes".into();
+        b.hash = "same-bytes".into();
+        let mut o = Overrides::new();
+        o.set("same-bytes", Override::Exclude);
+
+        let kept = cull(&[a, b, photo("/c.jpg", 3, 50, 50)], &o);
+
+        assert_eq!(
+            kept.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(),
+            vec!["/c.jpg"],
+            "one decision covers every file with those bytes"
+        );
+    }
+
+    /// An excluded photo never reaches the book, whatever the engine thinks
+    /// of it. `/b.jpg` here is the outright winner of cluster 7 (sharpest)
+    /// AND `/solo.jpg` is the only photo in its cluster, so neither exclusion
+    /// can be mistaken for the cluster rule doing the work.
+    #[test]
+    fn cull_never_keeps_an_excluded_photo() {
+        let mut o = Overrides::new();
+        o.set("h-/b.jpg", Override::Exclude);
+        o.set("h-/solo.jpg", Override::Exclude);
+
+        let kept = cull(
+            &[
+                photo("/a.jpg", 7, 50, 90),
+                photo("/b.jpg", 7, 80, 10),
+                photo("/solo.jpg", 9, 70, 70),
+            ],
+            &o,
+        );
+
+        assert!(
+            !kept.iter().any(|p| p.path == "/b.jpg"),
+            "the cluster winner was excluded and must not survive: {:?}",
+            kept.iter().map(|p| &p.path).collect::<Vec<_>>()
+        );
+        assert!(!kept.iter().any(|p| p.path == "/solo.jpg"), "an uncontested photo too");
+        assert_eq!(
+            kept.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(),
+            vec!["/a.jpg"],
+            "and the cluster's next-best frame takes the slot instead"
+        );
+    }
+
+    /// Excluding the winner of a burst must PROMOTE the next-best frame, not
+    /// leave the burst unrepresented. Three photos in one cluster, so
+    /// "promoted the runner-up" is distinguishable from "kept everything
+    /// left".
+    #[test]
+    fn cull_promotes_the_runner_up_when_the_cluster_winner_is_excluded() {
+        let mut o = Overrides::new();
+        o.set("h-/win.jpg", Override::Exclude);
+
+        let kept = cull(
+            &[
+                photo("/win.jpg", 4, 90, 50),
+                photo("/second.jpg", 4, 70, 50),
+                photo("/third.jpg", 4, 10, 50),
+            ],
+            &o,
+        );
+
+        assert_eq!(
+            kept.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(),
+            vec!["/second.jpg"],
+            "exactly one frame from the burst, and it must be the runner-up"
+        );
+    }
+
+    /// **The near-duplicate case.** A genuine cluster of THREE: a two-photo
+    /// cluster cannot distinguish "kept the included one" from "kept both".
+    ///
+    /// `/loser.jpg` is the worst frame in the cluster by every key, so
+    /// nothing but the override can put it in the book. `/win.jpg` is `Auto`
+    /// and still wins its cluster -- an `Include` is additive, it does not
+    /// displace a photo the user never touched. `/mid.jpg` is the control:
+    /// it lost the cluster and was not asked for, so it must stay out.
+    #[test]
+    fn cull_keeps_an_included_photo_that_lost_its_near_duplicate_cluster() {
+        let mut o = Overrides::new();
+        o.set("h-/loser.jpg", Override::Include);
+
+        let kept = cull(
+            &[
+                photo("/win.jpg", 4, 90, 90),
+                photo("/mid.jpg", 4, 50, 50),
+                photo("/loser.jpg", 4, 10, 10),
+            ],
+            &o,
+        );
+
+        let paths: Vec<&str> = kept.iter().map(|p| p.path.as_str()).collect();
+        assert!(paths.contains(&"/loser.jpg"), "the explicit choice must survive: {paths:?}");
+        assert!(paths.contains(&"/win.jpg"), "an Include must not displace the Auto winner");
+        assert!(!paths.contains(&"/mid.jpg"), "the cluster rule still governs the rest");
+        assert_eq!(paths.len(), 2, "{paths:?}");
+    }
+
+    /// Two frames from one burst, both explicitly wanted: the cluster rule
+    /// yields to an explicit choice, so BOTH appear. Four photos in the
+    /// cluster, so this cannot pass by keeping everything -- the two
+    /// untouched frames still compete for one slot between them.
+    #[test]
+    fn cull_keeps_every_included_frame_from_the_same_burst() {
+        let mut o = Overrides::new();
+        o.set("h-/pick1.jpg", Override::Include);
+        o.set("h-/pick2.jpg", Override::Include);
+
+        let kept = cull(
+            &[
+                photo("/auto-win.jpg", 4, 95, 95),
+                photo("/auto-lose.jpg", 4, 60, 60),
+                photo("/pick1.jpg", 4, 20, 20),
+                photo("/pick2.jpg", 4, 10, 10),
+            ],
+            &o,
+        );
+
+        let paths: Vec<&str> = kept.iter().map(|p| p.path.as_str()).collect();
+        assert!(paths.contains(&"/pick1.jpg"), "{paths:?}");
+        assert!(paths.contains(&"/pick2.jpg"), "{paths:?}");
+        assert!(paths.contains(&"/auto-win.jpg"), "{paths:?}");
+        assert!(!paths.contains(&"/auto-lose.jpg"), "the untouched frames still cull to one");
+        assert_eq!(paths.len(), 3, "{paths:?}");
+    }
+
+    /// `is_utility` is the engine's other veto, and an `Include` overrides it
+    /// too: a screenshot the user deliberately wants in the book is their
+    /// call, not the classifier's.
+    #[test]
+    fn cull_keeps_an_included_utility_image() {
+        let mut screenshot = photo("/shot.png", 1, 90, 90);
+        screenshot.is_utility = true;
+        let mut other = photo("/other.png", 2, 90, 90);
+        other.is_utility = true;
+        let mut o = Overrides::new();
+        o.set("h-/shot.png", Override::Include);
+
+        let kept = cull(&[screenshot, other], &o);
+
+        assert_eq!(
+            kept.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(),
+            vec!["/shot.png"],
+            "the included utility image survives and the untouched one does not"
+        );
+    }
+
+    /// An empty override map must reproduce the engine-only verdict exactly.
+    /// This is what makes "overrides are additive to the existing rule"
+    /// checkable rather than assumed.
+    #[test]
+    fn cull_with_no_overrides_is_the_engine_verdict_unchanged() {
+        let mut utility = photo("/u.jpg", 5, 99, 99);
+        utility.is_utility = true;
+        let photos = vec![
+            photo("/a.jpg", 7, 50, 90),
+            photo("/b.jpg", 7, 80, 10),
+            photo("/c.jpg", 8, 20, 20),
+            utility,
+        ];
+
+        let kept = cull(&photos, &Overrides::new());
+
+        assert_eq!(
+            kept.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(),
+            vec!["/b.jpg", "/c.jpg"]
+        );
+    }
+
+    /// Output order stays path-sorted once includes are mixed in, rather
+    /// than appending them after the engine's own survivors -- `pack` cuts
+    /// chapters in this order, so an unsorted tail would reorder the book.
+    /// The fixture's include sorts FIRST, so an append-at-the-end
+    /// implementation is distinguishable.
+    #[test]
+    fn cull_returns_includes_in_path_order_with_the_rest() {
+        let mut o = Overrides::new();
+        o.set("h-/aaa.jpg", Override::Include);
+
+        let kept = cull(
+            &[photo("/zzz.jpg", 1, 50, 50), photo("/mmm.jpg", 2, 50, 50), photo("/aaa.jpg", 1, 10, 10)],
+            &o,
+        );
+
+        assert_eq!(
+            kept.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(),
+            vec!["/aaa.jpg", "/mmm.jpg", "/zzz.jpg"]
+        );
+    }
+
+    /// `Overrides` crosses to the webview and back as a plain object. Pinned
+    /// as literal wire bytes: a `rename_all` change or a dropped
+    /// `transparent` is otherwise a silent `undefined` on the TypeScript
+    /// side. The companion fixture assertion lives in `commands.rs`.
+    #[test]
+    fn cull_overrides_serialise_as_a_plain_hash_to_lowercase_state_object() {
+        let mut o = Overrides::new();
+        o.set("hb", Override::Exclude);
+        o.set("ha", Override::Include);
+
+        assert_eq!(
+            serde_json::to_string(&o).unwrap(),
+            r#"{"ha":"include","hb":"exclude"}"#
+        );
+        let back: Overrides = serde_json::from_str(r#"{"ha":"include","hb":"exclude"}"#).unwrap();
+        assert_eq!(back, o);
+        // An explicit "auto" on the wire is accepted and normalises away, so
+        // a webview that sends the default state cannot create a second
+        // representation of "no decision".
+        let auto: Overrides = serde_json::from_str(r#"{"hc":"auto"}"#).unwrap();
+        assert_eq!(auto.get("hc"), Override::Auto);
+        assert_eq!(auto, Overrides::new(), "an explicit auto must not be stored");
     }
 
     // --- from_features: the boundary between Swift's wire JSON and the engine

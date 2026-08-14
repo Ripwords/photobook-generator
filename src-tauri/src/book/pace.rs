@@ -11,8 +11,8 @@
 //! the pool of page-halves rather than from whole spread templates.
 
 use crate::book::crop::choose_crop;
-use crate::book::cull::{cull, Photo};
-use crate::book::pack::{buildable_sizes, pack, Capacity, Group};
+use crate::book::cull::{cull, Overrides, Photo};
+use crate::book::pack::{buildable_sizes, pack, Capacity, Group, IncludeOverflow};
 use crate::book::score::{best_spread, rejects, slot_aspect};
 use crate::geometry::{Rect, Side};
 use crate::templates::{EdgeTreatment, Library, PageLayout, SpreadTemplate, Weights};
@@ -290,19 +290,68 @@ fn rebuild(
     ]
 }
 
+/// Why a book could not be built as asked. Both variants exist for the same
+/// reason: the user made an explicit choice the engine cannot honour, and
+/// reporting that is the only honest outcome -- silently discarding one is
+/// precisely the failure user-controlled selection exists to prevent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BookError {
+    /// More photos were marked `Include` than a book of this length can hold.
+    /// Detected before anything is laid out.
+    IncludedExceedCapacity(IncludeOverflow),
+    /// Every `Include` fits the book's capacity, but the layout engine could
+    /// not seat these ones: a chapter apportioned too few slots, a group that
+    /// overflowed a page half, or a template that rejected the photo outright.
+    ///
+    /// This is the catch-all post-condition, deliberately checked against the
+    /// FINISHED book rather than at each of the places a photo can be lost.
+    /// There are four such places and they are not all reachable by a test, so
+    /// a per-site guard would be a claim this module cannot back; asserting
+    /// over the result is one check that covers all of them, present and
+    /// future.
+    IncludedNotPlaced { paths: Vec<String> },
+}
+
+impl std::fmt::Display for BookError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IncludedExceedCapacity(overflow) => overflow.fmt(f),
+            Self::IncludedNotPlaced { paths } => write!(
+                f,
+                "{} photo(s) you marked to include could not be placed in this book: {}. \
+                 Exclude them, or choose a longer book.",
+                paths.len(),
+                paths.join(", ")
+            ),
+        }
+    }
+}
+
 /// Full pipeline: cull -> size -> pack -> score -> place -> pace.
 ///
 /// Always emits exactly `pages` pages. A group that cannot be laid out yields
 /// a page with zero placements rather than a shorter book: the SKU fixes the
 /// page count, and a 19-page book cannot be uploaded against a 20-page
 /// product.
-pub fn assemble(photos: &[Photo], pages: u32, lib: &Library, w: &Weights, seed: u64) -> Book {
-    let kept = cull(photos);
+///
+/// `overrides` carries the user's own include/exclude decisions all the way
+/// through: `cull` honours them, `pack` refuses to trim an `Include` away,
+/// and the post-condition at the bottom of this function refuses to RETURN a
+/// book that lost one by any other route.
+pub fn assemble(
+    photos: &[Photo],
+    pages: u32,
+    lib: &Library,
+    w: &Weights,
+    seed: u64,
+    overrides: &Overrides,
+) -> Result<Book, BookError> {
+    let kept = cull(photos, overrides);
     let sizes = buildable_sizes(lib);
     // `from_library`, not `from_sizes`: the latter over-estimates what the two
     // single pages hold by measuring them against the largest whole SPREAD.
     let cap = Capacity::from_library(pages, lib);
-    let groups = pack(&kept, &cap, &sizes);
+    let groups = pack(&kept, &cap, &sizes, overrides).map_err(BookError::IncludedExceedCapacity)?;
 
     // `pack` indexes into `kept`; the manifest wants indices into `photos`.
     // Keyed on PATH, not hash: a content hash is not unique within a run --
@@ -387,7 +436,25 @@ pub fn assemble(photos: &[Photo], pages: u32, lib: &Library, w: &Weights, seed: 
         .flat_map(|p| p.placements.iter().map(|pl| pl.photo_index))
         .collect();
     book.dropped = photos.len().saturating_sub(placed.len());
-    book
+
+    // The post-condition. Everything above tries to seat every explicit
+    // choice; this is what makes "an Include is never silently dropped" a
+    // property of the OUTPUT rather than a hope about four separate code
+    // paths. Ordered by path so the message is stable.
+    let mut missing: Vec<String> = photos
+        .iter()
+        .enumerate()
+        .filter(|(i, p)| {
+            overrides.get(&p.hash) == crate::book::cull::Override::Include && !placed.contains(i)
+        })
+        .map(|(_, p)| p.path.clone())
+        .collect();
+    if !missing.is_empty() {
+        missing.sort();
+        return Err(BookError::IncludedNotPlaced { paths: missing });
+    }
+
+    Ok(book)
 }
 
 /// The three pacing axes. `density` and `energy` are authored per template;
@@ -497,6 +564,7 @@ pub fn repace(book: &mut Book, lib: &Library, photos: &[Photo], w: &Weights) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::book::cull::Override;
     use crate::book::cull::{Face, PaletteColor};
 
     // --- fixture library -------------------------------------------------
@@ -709,13 +777,286 @@ mod tests {
             .collect()
     }
 
+    /// Paths of every photo that reached a page, so an assertion can name a
+    /// file rather than an index the reader has to resolve.
+    fn placed_paths(book: &Book, photos: &[Photo]) -> Vec<String> {
+        let mut out: Vec<String> =
+            placed_indices(book).into_iter().map(|i| photos[i].path.clone()).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    fn overrides(pairs: &[(&str, Override)]) -> Overrides {
+        pairs.iter().map(|(h, s)| ((*h).to_string(), *s)).collect()
+    }
+
+    // --- the user's own choices, end to end through the whole pipeline ----
+
+    /// **An excluded photo never appears in the finished book.**
+    ///
+    /// Asserted on the assembled `Book` rather than on `cull`'s return value:
+    /// that is the artefact that gets printed, and the whole point of the
+    /// feature is what comes out at the end. The un-overridden run is
+    /// asserted first, so the test cannot pass because the photo was never
+    /// going to be in the book anyway.
+    #[test]
+    fn pace_never_places_an_excluded_photo() {
+        let lib = fixture_library();
+        let photos = fixture_photos(24);
+        let before = assemble(&photos, 20, &lib, &Weights::default(), 42, &Overrides::new())
+            .expect("no overrides");
+        assert!(
+            placed_paths(&before, &photos).contains(&"/photos/p005.jpg".to_string()),
+            "fixture: this photo must be in the book without an override, or the test is inert"
+        );
+
+        let after = assemble(
+            &photos,
+            20,
+            &lib,
+            &Weights::default(),
+            42,
+            &overrides(&[("hash-005", Override::Exclude)]),
+        )
+        .expect("excluding a photo cannot overflow anything");
+
+        assert!(
+            !placed_paths(&after, &photos).contains(&"/photos/p005.jpg".to_string()),
+            "an excluded photo reached the printed book: {:?}",
+            placed_paths(&after, &photos)
+        );
+    }
+
+    /// **An included photo that lost its near-duplicate cluster still reaches
+    /// the book.**
+    ///
+    /// The fixture gives photos 3, 4 and 5 one shared cluster -- THREE, not
+    /// two, because a two-photo cluster cannot distinguish "kept the included
+    /// one" from "kept both". Photo 3 is the sharpest and wins the cluster
+    /// automatically; photo 5 is the worst and can only get in by being asked
+    /// for; photo 4 is the control that must stay out.
+    #[test]
+    fn pace_places_an_included_photo_that_lost_its_near_duplicate_cluster() {
+        let lib = fixture_library();
+        let mut photos = fixture_photos(24);
+        for (i, sharp) in [(3usize, 90u8), (4, 60), (5, 10)] {
+            photos[i].near_dup_cluster = 99;
+            photos[i].sharpness_pct = sharp;
+        }
+        let before = assemble(&photos, 20, &lib, &Weights::default(), 42, &Overrides::new())
+            .expect("no overrides");
+        let was = placed_paths(&before, &photos);
+        assert!(was.contains(&"/photos/p003.jpg".to_string()), "fixture: 3 wins the burst");
+        assert!(
+            !was.contains(&"/photos/p005.jpg".to_string()),
+            "fixture: 5 must lose the burst without an override, or the test is inert"
+        );
+
+        let after = assemble(
+            &photos,
+            20,
+            &lib,
+            &Weights::default(),
+            42,
+            &overrides(&[("hash-005", Override::Include)]),
+        )
+        .expect("one extra photo is well inside capacity");
+
+        let now = placed_paths(&after, &photos);
+        assert!(now.contains(&"/photos/p005.jpg".to_string()), "the explicit choice is absent: {now:?}");
+        assert!(now.contains(&"/photos/p003.jpg".to_string()), "and must not displace the winner");
+        assert!(!now.contains(&"/photos/p004.jpg".to_string()), "the cluster rule still governs the rest");
+    }
+
+    /// Two frames from the SAME burst, both asked for, both printed.
+    #[test]
+    fn pace_places_both_frames_when_two_from_one_burst_are_included() {
+        let lib = fixture_library();
+        let mut photos = fixture_photos(24);
+        for (i, sharp) in [(3usize, 90u8), (4, 60), (5, 10)] {
+            photos[i].near_dup_cluster = 99;
+            photos[i].sharpness_pct = sharp;
+        }
+
+        let book = assemble(
+            &photos,
+            20,
+            &lib,
+            &Weights::default(),
+            42,
+            &overrides(&[("hash-004", Override::Include), ("hash-005", Override::Include)]),
+        )
+        .expect("two extra photos are well inside capacity");
+
+        let now = placed_paths(&book, &photos);
+        for path in ["/photos/p003.jpg", "/photos/p004.jpg", "/photos/p005.jpg"] {
+            assert!(now.contains(&path.to_string()), "{path} missing from {now:?}");
+        }
+    }
+
+    /// **Included photos that cannot all fit are reported, not silently cut.**
+    ///
+    /// Every photo in the fixture is asked for, against a book whose capacity
+    /// is read from the library rather than hardcoded -- so the fixture
+    /// cannot silently stop overflowing if the template set changes.
+    #[test]
+    fn pace_refuses_to_build_a_book_too_short_for_every_photo_the_user_asked_for() {
+        let lib = fixture_library();
+        let capacity = Capacity::from_library(20, &lib).max_photos;
+        let photos = fixture_photos(capacity + 5);
+        let all: Overrides =
+            photos.iter().map(|p| (p.hash.clone(), Override::Include)).collect();
+
+        let err = assemble(&photos, 20, &lib, &Weights::default(), 42, &all)
+            .expect_err("every photo asked for, more than the book holds");
+
+        assert_eq!(
+            err,
+            BookError::IncludedExceedCapacity(IncludeOverflow {
+                pages: 20,
+                included: capacity + 5,
+                capacity,
+                over: 5,
+            })
+        );
+    }
+
+    /// The post-condition, on the one route that is still reachable: a photo
+    /// the templates cannot lay out at all.
+    ///
+    /// This photo is 300x225, which resolves at roughly 30 DPI in any slot in
+    /// the library and is hard-rejected by every one of them. `pack` seats it
+    /// happily -- it is a group member like any other -- and it then falls
+    /// out at layout time. Without the post-condition it would simply be
+    /// absent from the finished book, which is exactly the silent discard
+    /// this feature exists to prevent, so `assemble` refuses to return that
+    /// book and names the file.
+    #[test]
+    fn pace_refuses_a_book_that_lost_an_included_photo_to_the_layout_engine() {
+        let lib = fixture_library();
+        let mut photos = fixture_photos(24);
+        photos[5].width = 300;
+        photos[5].height = 225;
+
+        let err = assemble(
+            &photos,
+            20,
+            &lib,
+            &Weights::default(),
+            42,
+            &overrides(&[("hash-005", Override::Include)]),
+        )
+        .expect_err("a photo no template can lay out must be reported, not dropped");
+
+        assert_eq!(err, BookError::IncludedNotPlaced { paths: vec!["/photos/p005.jpg".into()] });
+        assert!(err.to_string().contains("/photos/p005.jpg"), "{err}");
+    }
+
+    /// **Capacity trimming would have dropped this photo, and the book still
+    /// contains it.**
+    ///
+    /// The end-to-end counterpart of
+    /// `pack_never_drops_an_included_photo_when_trimming_to_capacity`: that
+    /// one asserts on `pack`'s groups, this one on the printed pages, which
+    /// is the artefact the property is actually about. There are more photos
+    /// than the book holds, the included photo is the WORST in the set by the
+    /// comparator the trim uses (aesthetic 0, sharpness 0), and the
+    /// un-overridden run is asserted to drop it first -- so nothing but the
+    /// override can put it on a page.
+    #[test]
+    fn pace_keeps_an_included_photo_capacity_trimming_would_have_dropped() {
+        let lib = fixture_library();
+        let capacity = Capacity::from_library(20, &lib).max_photos;
+        let mut photos = fixture_photos(capacity + 12);
+        // The weakest photo in the set, by both keys the trim ranks on.
+        photos[5].aesthetic_pct = 0;
+        photos[5].sharpness_pct = 0;
+        photos[5].is_utility = false;
+        photos[5].near_dup_cluster = 5000;
+
+        let before = assemble(&photos, 20, &lib, &Weights::default(), 42, &Overrides::new())
+            .expect("no overrides");
+        assert!(
+            before.dropped > 0,
+            "fixture must actually overflow the book, or nothing is trimmed"
+        );
+        assert!(
+            !placed_paths(&before, &photos).contains(&"/photos/p005.jpg".to_string()),
+            "fixture: the trim must drop this photo without an override, or the test is inert"
+        );
+
+        let after = assemble(
+            &photos,
+            20,
+            &lib,
+            &Weights::default(),
+            42,
+            &overrides(&[("hash-005", Override::Include)]),
+        )
+        .expect("one included photo is far inside capacity");
+
+        assert!(
+            placed_paths(&after, &photos).contains(&"/photos/p005.jpg".to_string()),
+            "the photo the user asked for was trimmed away: {:?}",
+            placed_paths(&after, &photos)
+        );
+    }
+
+    /// The post-condition must name EVERY photo it could not place, not the
+    /// first one it noticed. A message listing one file when two are missing
+    /// sends the user round the exclude-and-retry loop once per photo.
+    ///
+    /// Two unplaceable includes, and the list is asserted in full and in
+    /// path order -- a fixture with one missing photo cannot tell a complete
+    /// list from a `find()`.
+    #[test]
+    fn pace_names_every_included_photo_it_could_not_place_not_just_the_first() {
+        let lib = fixture_library();
+        let mut photos = fixture_photos(24);
+        for i in [5usize, 11] {
+            photos[i].width = 300;
+            photos[i].height = 225;
+        }
+
+        let err = assemble(
+            &photos,
+            20,
+            &lib,
+            &Weights::default(),
+            42,
+            &overrides(&[("hash-005", Override::Include), ("hash-011", Override::Include)]),
+        )
+        .expect_err("neither photo can be laid out");
+
+        assert_eq!(
+            err,
+            BookError::IncludedNotPlaced {
+                paths: vec!["/photos/p005.jpg".into(), "/photos/p011.jpg".into()]
+            }
+        );
+    }
+
+    /// An empty override map must leave the assembled book byte-identical to
+    /// what the engine produced before overrides existed. Compared as a whole
+    /// `Book`, so a change to any placement, crop or template choice fails.
+    #[test]
+    fn pace_with_no_overrides_assembles_exactly_the_same_book() {
+        let lib = fixture_library();
+        let photos = fixture_photos(30);
+        let a = assemble(&photos, 20, &lib, &Weights::default(), 1234, &Overrides::new()).unwrap();
+        let b = assemble(&photos, 20, &lib, &Weights::default(), 1234, &Overrides::default()).unwrap();
+        assert_eq!(a, b);
+        assert!(a.pages.iter().any(|p| !p.placements.is_empty()), "sanity: not an empty book");
+    }
+
     // --- structure -------------------------------------------------------
 
     #[test]
     fn pace_assembles_the_correct_page_count_for_twenty_pages() {
         let lib = fixture_library();
         let photos = fixture_photos(24);
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 42);
+        let book = assemble(&photos, 20, &lib, &Weights::default(), 42, &Overrides::new()).expect("the fixture must place every included photo");
         assert_eq!(book.pages.len(), 20, "2 singles + 9 spreads = 20 pages");
         assert_eq!(book.pages[0].side, Side::Right, "page 1 faces the inside front cover");
         assert_eq!(
@@ -728,7 +1069,7 @@ mod tests {
     #[test]
     fn pace_numbers_pages_consecutively_from_one() {
         let lib = fixture_library();
-        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 42);
+        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 42, &Overrides::new()).expect("the fixture must place every included photo");
         let numbers: Vec<u32> = book.pages.iter().map(|p| p.number).collect();
         assert_eq!(numbers, (1..=20).collect::<Vec<u32>>());
     }
@@ -741,7 +1082,7 @@ mod tests {
     #[test]
     fn pace_alternates_sides_so_odd_pages_are_right_hand_pages() {
         let lib = fixture_library();
-        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 42);
+        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 42, &Overrides::new()).expect("the fixture must place every included photo");
         for page in &book.pages {
             let expected = if page.number % 2 == 1 { Side::Right } else { Side::Left };
             assert_eq!(page.side, expected, "page {} sits on the wrong side", page.number);
@@ -760,7 +1101,7 @@ mod tests {
             p.width = 300;
             p.height = 225;
         }
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 42);
+        let book = assemble(&photos, 20, &lib, &Weights::default(), 42, &Overrides::new()).expect("the fixture must place every included photo");
         assert_eq!(book.pages.len(), 20, "a 19-page book cannot be uploaded as a 20-page SKU");
         assert!(
             book.pages.iter().all(|p| p.placements.is_empty()),
@@ -789,7 +1130,7 @@ mod tests {
             p.width = 300;
             p.height = 225;
         }
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 5);
+        let book = assemble(&photos, 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         assert_eq!(book.pages.len(), 20);
 
         let blanks: Vec<u32> = book
@@ -803,7 +1144,7 @@ mod tests {
             !book.pages.last().unwrap().placements.is_empty(),
             "the closing single page was pushed out of the last position"
         );
-        let intact = assemble(&fixture_photos(36), 20, &lib, &Weights::default(), 5);
+        let intact = assemble(&fixture_photos(36), 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         assert!(
             intact.pages.iter().all(|p| p.template_id != BLANK_TEMPLATE_ID),
             "fixture check: 36 photos fill all 11 slots, so only the failure blanks"
@@ -816,8 +1157,8 @@ mod tests {
     fn pace_is_deterministic_for_the_same_seed() {
         let lib = fixture_library();
         let photos = fixture_photos(24);
-        let a = assemble(&photos, 20, &lib, &Weights::default(), 7);
-        let b = assemble(&photos, 20, &lib, &Weights::default(), 7);
+        let a = assemble(&photos, 20, &lib, &Weights::default(), 7, &Overrides::new()).expect("the fixture must place every included photo");
+        let b = assemble(&photos, 20, &lib, &Weights::default(), 7, &Overrides::new()).expect("the fixture must place every included photo");
         assert_eq!(a.pages, b.pages);
     }
 
@@ -832,7 +1173,7 @@ mod tests {
         let photos = fixture_photos(24);
         let openings: BTreeSet<String> = (0..16)
             .map(|seed| {
-                assemble(&photos, 20, &lib, &Weights::default(), seed).pages[0].template_id.clone()
+                assemble(&photos, 20, &lib, &Weights::default(), seed, &Overrides::new()).expect("the fixture must place every included photo").pages[0].template_id.clone()
             })
             .collect();
         assert!(
@@ -862,7 +1203,7 @@ mod tests {
     #[test]
     fn pace_places_every_photo_within_its_page() {
         let lib = fixture_library();
-        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 5);
+        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         for page in &book.pages {
             for pl in &page.placements {
                 assert!(
@@ -898,7 +1239,7 @@ mod tests {
     #[test]
     fn pace_places_into_slots_of_the_layout_the_page_names() {
         let lib = fixture_library();
-        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 5);
+        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         for page in &book.pages {
             if page.template_id == BLANK_TEMPLATE_ID {
                 assert!(page.placements.is_empty(), "a blank page holds nothing");
@@ -928,7 +1269,7 @@ mod tests {
     #[test]
     fn pace_fills_every_slot_of_a_spread_template() {
         let lib = fixture_library();
-        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 5);
+        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         for page in &book.pages {
             if page.template_id == BLANK_TEMPLATE_ID || page.template_id.contains(':') {
                 continue;
@@ -947,7 +1288,7 @@ mod tests {
     #[test]
     fn pace_assigns_distinct_z_order_within_a_page() {
         let lib = fixture_library();
-        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 5);
+        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         for page in &book.pages {
             let zs: BTreeSet<u32> = page.placements.iter().map(|p| p.z).collect();
             assert_eq!(zs.len(), page.placements.len(), "z values must be distinct");
@@ -973,8 +1314,9 @@ mod tests {
         assert_eq!(largest_half, 2, "fixture: no half holds three photos");
 
         let photos = fixture_photos(36);
-        let kept = cull(&photos);
-        let opening = pack(&kept, &Capacity::from_library(20, &lib), &buildable_sizes(&lib))
+        let kept = cull(&photos, &Overrides::new());
+        let opening = pack(&kept, &Capacity::from_library(20, &lib), &buildable_sizes(&lib), &Overrides::new())
+            .expect("no includes in the fixture")
             .first()
             .map(|g| g.photos.len())
             .unwrap();
@@ -983,7 +1325,7 @@ mod tests {
             "fixture: the opening group ({opening}) must overflow the largest half ({largest_half})"
         );
 
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 5);
+        let book = assemble(&photos, 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         assert_eq!(
             book.pages[0].placements.len(),
             largest_half,
@@ -1026,7 +1368,7 @@ mod tests {
     fn pace_falls_back_to_a_smaller_half_when_the_largest_is_rejected() {
         let lib = fixture_library();
         let photos = vec![split_face_photo(0), split_face_photo(1)];
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 3);
+        let book = assemble(&photos, 20, &lib, &Weights::default(), 3, &Overrides::new()).expect("the fixture must place every included photo");
 
         // Precondition: the group is two photos and the largest right-hand
         // half holds exactly two, so the fixed-capacity version stops there.
@@ -1065,7 +1407,7 @@ mod tests {
         assert_eq!(photos[3].aesthetic_pct, 11);
         photos[1].aesthetic_pct = 5; // now the weakest of the opening group
 
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 5);
+        let book = assemble(&photos, 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         let opening: Vec<usize> =
             book.pages[0].placements.iter().map(|p| p.photo_index).collect();
         assert_eq!(opening, vec![2, 3], "the weakest photo of the group must be the one dropped");
@@ -1081,7 +1423,7 @@ mod tests {
     fn pace_placement_indices_name_photos_that_survived_culling() {
         let lib = fixture_library();
         let photos = fixture_photos(24);
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 5);
+        let book = assemble(&photos, 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         assert!(!placed_indices(&book).is_empty());
         for i in placed_indices(&book) {
             assert!(i < photos.len(), "index {i} is out of range");
@@ -1101,7 +1443,7 @@ mod tests {
         for p in photos.iter_mut().filter(|p| !p.is_utility) {
             p.hash = duplicate.clone();
         }
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 5);
+        let book = assemble(&photos, 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         let placed = placed_indices(&book);
         let unique: BTreeSet<usize> = placed.iter().copied().collect();
         assert_eq!(unique.len(), placed.len(), "a hash-keyed remap collapses onto one index");
@@ -1138,7 +1480,7 @@ mod tests {
     fn pace_accounts_for_every_photo_it_did_not_place() {
         let lib = fixture_library();
         let photos = fixture_photos(30);
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 11);
+        let book = assemble(&photos, 20, &lib, &Weights::default(), 11, &Overrides::new()).expect("the fixture must place every included photo");
         let placed = placed_indices(&book);
         let unique: BTreeSet<usize> = placed.iter().copied().collect();
         assert_eq!(unique.len(), placed.len(), "a photo must not be placed twice");
@@ -1179,7 +1521,7 @@ mod tests {
     #[test]
     fn pace_spread_density_varies_across_a_book_rather_than_converging() {
         let lib = frozen_library();
-        let book = assemble(&fixture_photos(30), 20, &lib, &Weights::default(), 1234);
+        let book = assemble(&fixture_photos(30), 20, &lib, &Weights::default(), 1234, &Overrides::new()).expect("the fixture must place every included photo");
         let spreads = (book.pages.len() - 2) / 2;
         let per_spread: Vec<usize> = (0..spreads)
             .map(|s| book.pages[1 + 2 * s].placements.len() + book.pages[2 + 2 * s].placements.len())
@@ -1207,7 +1549,7 @@ mod tests {
     fn pace_records_how_many_photos_were_dropped() {
         let lib = fixture_library();
         let photos = fixture_photos(500);
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 1);
+        let book = assemble(&photos, 20, &lib, &Weights::default(), 1, &Overrides::new()).expect("the fixture must place every included photo");
         let placed = placed_indices(&book);
         let unique: BTreeSet<usize> = placed.iter().copied().collect();
         assert_eq!(unique.len(), placed.len(), "a photo must not be placed twice");
@@ -1231,7 +1573,7 @@ mod tests {
         let flat = library_from(&[("f2.json", F2_TWO_UP_MARGIN)]);
         let photos = fixture_photos(24);
         let w = Weights::default();
-        let mut book = assemble(&photos, 20, &flat, &w, 9);
+        let mut book = assemble(&photos, 20, &flat, &w, 9, &Overrides::new()).expect("the fixture must place every included photo");
         let before: Vec<String> = book.pages.iter().map(|p| p.template_id.clone()).collect();
         assert!(
             before.iter().filter(|id| *id == "f2-two-up-margin").count() >= 6,
@@ -1270,7 +1612,7 @@ mod tests {
         let lib = fixture_library();
         let photos = fixture_photos(24);
         let w = Weights::default();
-        let mut book = assemble(&photos, 20, &flat, &w, 9);
+        let mut book = assemble(&photos, 20, &flat, &w, 9, &Overrides::new()).expect("the fixture must place every included photo");
         repace(&mut book, &lib, &photos, &w);
 
         let mut swapped = 0;
@@ -1300,7 +1642,7 @@ mod tests {
         let flat = library_from(&[("f2.json", F2_TWO_UP_MARGIN)]);
         let photos = fixture_photos(24);
         let w = Weights::default();
-        let mut book = assemble(&photos, 20, &flat, &w, 9);
+        let mut book = assemble(&photos, 20, &flat, &w, 9, &Overrides::new()).expect("the fixture must place every included photo");
         repace(&mut book, &fixture_library(), &photos, &w);
         for s in 0..(book.pages.len() - 2) / 2 {
             let left = &book.pages[1 + 2 * s];
@@ -1317,7 +1659,7 @@ mod tests {
     #[test]
     fn pace_golden_twenty_page_book() {
         let lib = frozen_library();
-        let book = assemble(&fixture_photos(30), 20, &lib, &Weights::default(), 1234);
+        let book = assemble(&fixture_photos(30), 20, &lib, &Weights::default(), 1234, &Overrides::new()).expect("the fixture must place every included photo");
         let actual = serde_json::to_string_pretty(&book).unwrap();
         let golden_path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/book-20.json");

@@ -1,18 +1,56 @@
 <script setup lang="ts">
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { isRanked, type AnalyzedPhoto, type PartialAnalyzedPhoto } from "~/types/features";
+import {
+  isRanked,
+  toggledOverride,
+  type AnalyzedPhoto,
+  type PartialAnalyzedPhoto,
+  type PhotoOverride,
+} from "~/types/features";
 
 const {
   photo,
   burstSize = 1,
   isHero = false,
+  override = "auto",
+  isKept = true,
 } = defineProps<{
   photo: AnalyzedPhoto | PartialAnalyzedPhoto;
   /** How many near-duplicate frames this photo was picked from. 1 means no burst. */
   burstSize?: number;
   /** The single top-ranked photo in its event group. Marked with the hero accent. */
   isHero?: boolean;
+  /**
+   * The user's own decision about this photo. Display only -- this component
+   * decides nothing about whether the photo survives; it emits the decision
+   * and Rust sends back the verdict (see `usePhotoOverrides`).
+   */
+  override?: PhotoOverride;
+  /**
+   * Whether this photo survives culling -- RUST'S verdict, read off
+   * `AnalyzedPhoto.kept` by the caller, never re-derived here. Drives nothing
+   * but the tile's appearance.
+   */
+  isKept?: boolean;
 }>();
+
+const emit = defineEmits<{ setOverride: [state: PhotoOverride] }>();
+
+/**
+ * Pressing the state a photo is already in returns it to "auto", so both
+ * buttons are toggles and there is always a way back to letting the engine
+ * decide.
+ */
+function press(state: Exclude<PhotoOverride, "auto">) {
+  emit("setOverride", toggledOverride(override, state));
+}
+
+/**
+ * A photo the book will not contain is dimmed rather than hidden: it has to
+ * stay on screen for the user to be able to ask for it back, which is the
+ * whole point of the include control.
+ */
+const dimmed = computed(() => !isKept);
 
 const src = computed(() => (photo.thumbnailPath ? convertFileSrc(photo.thumbnailPath) : null));
 // While a photo is still streaming in, it has no aesthetic/sharpness
@@ -32,8 +70,11 @@ const sharpnessPct = computed(() => (isRanked(photo) ? photo.sharpnessPct : null
 
 <template>
   <figure
-    class="relative aspect-square overflow-hidden rounded-lg bg-elevated"
-    :class="isHero ? 'ring-2 ring-sunlight-800 dark:ring-sunlight-400' : 'ring ring-default'"
+    class="group relative aspect-square overflow-hidden rounded-lg bg-elevated"
+    :class="[
+      isHero ? 'ring-2 ring-sunlight-800 dark:ring-sunlight-400' : 'ring ring-default',
+      dimmed ? 'opacity-45 grayscale' : '',
+    ]"
   >
     <img
       v-if="src"
@@ -59,6 +100,42 @@ const sharpnessPct = computed(() => (isRanked(photo) ? photo.sharpnessPct : null
       <span class="font-mono tabular-nums">{{ burstSize }}</span>
     </UBadge>
 
+    <!--
+      The user's own decision. Rendered on hover (and always, once a decision
+      has been made) so the contact sheet stays photo-first, which is the
+      whole point of it.
+
+      These buttons carry no rule: they emit, `usePhotoOverrides` sends the
+      map to Rust, and Rust sends back records with `kept` re-stamped by the
+      single culling authority. Do not "helpfully" filter here -- that is the
+      second implementation Phase 2 removed.
+    -->
+    <div
+      class="absolute inset-x-0 top-0 flex justify-center gap-1 p-2 transition-opacity"
+      :class="override === 'auto' ? 'opacity-0 group-hover:opacity-100 focus-within:opacity-100' : 'opacity-100'"
+    >
+      <UButton
+        :icon="override === 'include' ? 'i-lucide-check-circle-2' : 'i-lucide-circle-plus'"
+        size="xs"
+        :color="override === 'include' ? 'primary' : 'neutral'"
+        :class="override === 'include' ? '' : 'bg-black/60 text-white'"
+        :aria-pressed="override === 'include'"
+        :title="override === 'include' ? 'Included by you - click to let the engine decide' : 'Always include this photo'"
+        aria-label="Always include this photo"
+        @click="press('include')"
+      />
+      <UButton
+        :icon="override === 'exclude' ? 'i-lucide-x-circle' : 'i-lucide-circle-minus'"
+        size="xs"
+        :color="override === 'exclude' ? 'error' : 'neutral'"
+        :class="override === 'exclude' ? '' : 'bg-black/60 text-white'"
+        :aria-pressed="override === 'exclude'"
+        :title="override === 'exclude' ? 'Excluded by you - click to let the engine decide' : 'Never include this photo'"
+        aria-label="Never include this photo"
+        @click="press('exclude')"
+      />
+    </div>
+
     <UBadge
       v-if="isHero"
       size="sm"
@@ -66,6 +143,22 @@ const sharpnessPct = computed(() => (isRanked(photo) ? photo.sharpnessPct : null
       title="Highest-ranked photo in this event"
     >
       <UIcon name="i-lucide-star" class="size-3" />
+    </UBadge>
+    <UBadge
+      v-else-if="dimmed"
+      color="neutral"
+      size="sm"
+      class="absolute top-2 right-2 gap-1 bg-black/60 text-white ring-0"
+      :title="
+        override === 'exclude'
+          ? 'You excluded this photo'
+          : 'Not selected for the book - click + to include it'
+      "
+    >
+      <UIcon
+        :name="override === 'exclude' ? 'i-lucide-x' : 'i-lucide-minus'"
+        class="size-3"
+      />
     </UBadge>
 
     <figcaption

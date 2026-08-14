@@ -172,6 +172,116 @@ does not carry the `captureQuality` the tie-break reads. So Rust sends the **ans
 and `keepers()` is now a filter on that flag with no ranking of its own. **Do not
 reintroduce a second copy of this rule; send this one's verdict instead.**
 
+### User-controlled selection (built after Phase 2, on top of that one authority)
+
+The engine no longer decides alone. Every photo carries one of three states,
+keyed by **content hash**: `Auto` (the engine decides, the default), `Include`
+(in the book whatever the engine thinks) and `Exclude` (out of it).
+
+**Cull proposes; the user disposes.** `book::cull::cull(photos, overrides)` is
+still the single authority — it now takes the decisions and honours them:
+
+| Rule | Where |
+|---|---|
+| `Exclude` never survives, and its burst promotes the runner-up | `cull` (excluded before the cluster contest) |
+| `Include` always survives — a lost near-duplicate, an `is_utility` image, anything | `cull` |
+| An `Include` is **additive**: it does NOT displace the `Auto` winner of its own cluster | `cull` |
+| An `Include` is never trimmed to capacity; the weakest `Auto` photo goes instead | `book::pack::pack` |
+| A crowded chapter strands an `Auto` photo, and a chapter holding an `Include` is apportioned a slot first | `pack`, `apportion_slots` |
+| `Include` photos that **alone** exceed capacity are REPORTED, never cut | `pack` -> `IncludeOverflow` |
+| A book that lost an `Include` by ANY other route is refused | `pace::assemble`'s post-condition -> `BookError::IncludedNotPlaced` |
+
+**On the cluster ruling.** Including a photo whose cluster winner is `Auto`
+keeps BOTH. An `Include` is a statement about that photo only; making it
+displace the winner would mean ticking one photo silently removes a different
+photo the user never touched — the same class of surprise the feature exists
+to remove — and `Exclude` already exists for saying "not that one".
+
+**The post-condition is the load-bearing guard, not the per-site ones.** There
+are four places a photo can be lost (capacity trim, chapter apportionment,
+page-half overflow, a template rejecting it outright) and the last two are not
+individually preventable. `assemble` therefore checks the FINISHED book and
+refuses to return one that is missing a photo the user asked for. Proven live:
+with the capacity check in `pack` deleted, the post-condition still catches the
+loss — it degrades from a precise message to a vaguer one, never to a silent
+drop.
+
+**Do not reintroduce a second frontend rule.** An override toggled in the UI
+goes DOWN to Rust (`commands::apply_photo_overrides`, which re-runs
+`stamp_kept`) and the records come back with `kept` re-stamped.
+`usePhotoOverrides` is the only place that happens, and
+`tests/overrides.test.ts` pins it with a mock that returns a verdict
+*disagreeing* with the override, so a composable applying the decision itself
+produces different output from one that forwarded it.
+
+**Persistence.** `project_photo_overrides (project_id, hash, state)`, written in
+the same transaction as the project row and its photo list, returned on
+`ProjectDetail.overrides`. `Auto` is never stored — it is the absence of a
+decision, on both sides of the wire and in SQLite — and an unrecognised state
+token fails the load rather than degrading to `Auto`, because a silently
+forgotten decision is invisible.
+
+**Two things the earlier docs got wrong, corrected here:**
+
+- The contact sheet did **not** "render every photo with a keeper marker" — it
+  rendered `groupByEvent(keepers(...))`, i.e. only the survivors. A photo the
+  engine dropped was invisible, and an invisible photo cannot be asked for, so
+  the include control had nothing to act on. `index.vue` now renders the whole
+  analysed set with the left-out ones dimmed, behind a "Show the N left out"
+  switch that defaults to ON.
+- `vitest.config.ts` now aliases `~` to `app/`. Without it, no file under
+  `app/` that imports `~/types/...` could be unit-tested at all.
+
+**The toggle is cheap, and `AppState` is why.** `AppState.photos` holds the
+parsed `Vec<Photo>` from the end of `analyze_folder`, so
+`apply_photo_overrides` and `recommend_book` take only the override map --
+the first returns the surviving PATHS, not re-stamped records. Sending the
+records instead was ~2.5 KB per photo, three uploads per click (the toggle
+plus two `recommend_book` watchers that both fired), i.e. ~10 MB per click on
+a 1000-photo folder. Measured after: 10.9 KB at 200 photos, 26.6 KB at 500,
+52.8 KB at 1000 — roughly 180x smaller and, unlike before, near-independent of
+what a feature record carries.
+
+*Overrides are hash-keyed; the verdict is path-keyed.* A decision is about the
+photograph, so it follows the bytes. The verdict is about the file, and a
+content hash is **not** unique within one analysis — two byte-identical files
+share one, and `cull` keeps only one of them, so a hash-keyed verdict would
+mark both copies kept. `stamp_kept` and `pace::assemble` key on path for
+exactly this reason.
+
+*An empty cache is reported, never papered over.* Its lifetime is tied to the
+webview's own copy rather than managed: both live in this process, and a
+reload loses `useAnalysis`'s summary at the same moment it would invalidate
+the cache.
+
+*It is a single UNKEYED slot, and that is a real forward hazard.* It holds the
+last analysis only, and neither reader checks that it describes the set on
+screen. That is correct for today's one-folder-at-a-time UI and it breaks the
+moment there is more than one — silently, with the screen wrong and the
+generated book right. See **"Requested, not yet specced: multiple source
+folders"** for what collides, what the symptom looks like, and why widening
+the slot is not the fix.
+
+**The contact sheet is not virtualized.** It renders every analysed photo so
+the include control has something to act on, but 500 photos is 500 tiles,
+re-patched on every toggle. `showsLeftOutByDefault` turns the "show the N left
+out" switch off above **200** photos. If a real folder makes even the keeper
+grid slow, virtualize it — do not go back to hiding the left-out photos, which
+makes the feature unusable.
+
+**A reopened project's selection is visible and editable.** The panel states
+it (`selectionLabel`) and offers "Edit the selection", which re-analyses the
+project's own folder (all features-cache hits, no Vision work) and restores
+the saved decisions through the same Rust round trip a fresh click uses.
+Returning `overrides` over the wire and rendering nothing was the same
+"persisted but unreachable from the UI" defect that started this line of work.
+
+**Watch `photoSetId`, never the photos array.** `usePhotoOverrides` replaces
+`photos` on every toggle. `GenerateBook`'s reset branch discards the generated
+book, the opened project, the output directory, a typed name and a chosen page
+length — keyed on the array, it did all five on every click. `photoSetId`
+bumps once per analysis and is the identity to watch.
+
 ### What Phase 3 and 4 can assume already exists
 
 - **Projects persist and reopen.** `projects`, `project_photos`, `project_exports` tables;
@@ -499,9 +609,26 @@ touches:
   hash, so the same photo in two folders is analysed once.
 - **UI.** Photos probably need to show which folder they came from, and the empty and error
   states currently assume a single `folder` string.
+- **`AppState.photos` is a single unkeyed slot, and it collides.** It caches the parsed
+  `Vec<Photo>` of the LAST `analyze_folder` (see "User-controlled selection"), and
+  `apply_photo_overrides` and `recommend_book` both answer from it with no check that it
+  describes the set the webview is showing. Analysing a second folder overwrites it. If
+  multiple folders are ever held on screen at once — or analysed sequentially without the
+  sheet being replaced — the override toggle judges **the wrong photo set**, and the symptom
+  is not an error: keeper marks and the keeper count simply become those of a different
+  folder, and `recommend_book` sizes the book against it too. The correct book is still
+  generated (`generate_book` takes the array from the webview, deliberately, so it does not
+  depend on this cache), which makes the divergence *harder* to notice, not easier — the
+  screen lies and the output is right. Fix it by keying the cache on the analysis it came
+  from — the folder list, or a run id minted per `analyze_folder` and passed back with every
+  override call — and rejecting a mismatch rather than answering from whatever is loaded.
+  **Do not simply widen the slot to a list; the bug is the missing identity check, not the
+  capacity.**
 
 Nothing about the analysis pipeline blocks this; it is entirely a question of what "the
-book's population" means once there is more than one source.
+book's population" means once there is more than one source — plus the one concrete
+collision noted above, which is the only place multi-folder support would break existing
+behaviour rather than merely extend it.
 
 Also explicitly deferred:
 
@@ -798,7 +925,8 @@ beside it. The design calls for the OS keychain, read from Rust.
   Consider generated types before Phase 2 widens this boundary.
 - ~~`count_keepers` in Rust duplicates `keepers()` in TypeScript.~~ **Fixed in Phase 2** —
   `book::cull::cull` is the single authority and its verdict travels on the wire as
-  `AnalyzedPhoto.kept`. See "One culling authority" above.
+  `AnalyzedPhoto.kept`. See "One culling authority" above, and
+  "User-controlled selection" for the include/exclude states layered on top of it.
 - `.oxlintrc.json` enables only `correctness` and `suspicious`, so `no-explicit-any` is
   off and the "never use `any`" convention rests on discipline.
 - No `typecheck` script; `nuxi typecheck` and `vue-tsc` both fail on environment issues.

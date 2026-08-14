@@ -88,6 +88,10 @@ export function useAnalysis() {
   }
 
   return {
+    // Exposed so a reopened project can re-analyse its OWN folder without the
+    // user picking it again -- see `index.vue`'s "Edit the selection". Every
+    // photo is a features-cache hit by then, so it costs no Vision work.
+    analyze,
     summary,
     running,
     error,

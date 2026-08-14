@@ -8,6 +8,10 @@
   "photoCount": 24,
   "droppedPhotos": 2,
   "seed": 424242,
+  "overrides": {
+    "a1b2c3d4": "include",
+    "e5f6a7b8": "exclude"
+  },
   "exports": [
     {
       "at": 1755103600,

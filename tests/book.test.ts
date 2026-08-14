@@ -12,7 +12,10 @@ import {
   lastExportedOn,
   lastExportLabel,
   optionFor,
+  canGenerateAt,
+  includeOverflowLabel,
   projectDetailLabel,
+  selectionLabel,
   recommendedOption,
   resolveExportProjectId,
   revealTarget,
@@ -28,6 +31,12 @@ import {
   type ProjectDetail,
   type ProjectListItem,
 } from "../app/types/book";
+import {
+  overrideFor,
+  toggledOverride,
+  withOverride,
+  type PhotoOverrides,
+} from "../app/types/features";
 
 /**
  * The TypeScript half of the Rust<->webview pin.
@@ -58,11 +67,39 @@ describe("book recommendation wire shape", () => {
       pages: 20,
       capacityPhotos: 24,
       droppedPhotos: 2,
+      includedOverCapacity: 0,
     });
   });
 
   it("reads the capacity and drop count of an overridden length", () => {
-    expect(optionFor(rec, 40)).toEqual({ pages: 40, capacityPhotos: 54, droppedPhotos: 0 });
+    expect(optionFor(rec, 40)).toEqual({
+      pages: 40,
+      capacityPhotos: 54,
+      droppedPhotos: 0,
+      includedOverCapacity: 0,
+    });
+  });
+
+  /**
+   * The two new keys, read through the real functions the length chooser
+   * calls. `includedCount` is what the panel shows beside the keeper count;
+   * `includedOverCapacity` is what disables a length outright.
+   *
+   * A drift on either side reads back `undefined` here: `undefined === 0` is
+   * false, so `canGenerateAt` would return false for a length that fits and
+   * this test fails -- which is the whole point of asserting through the
+   * function rather than on `Object.keys`.
+   */
+  it("reads how many photos the user picked, and where they do not fit", () => {
+    expect(rec.includedCount).toBe(3);
+    expect(rec.options.every((option) => canGenerateAt(option))).toBe(true);
+    expect(includeOverflowLabel(optionFor(rec, 20)!)).toBeNull();
+
+    const tooMany = { ...optionFor(rec, 20)!, includedOverCapacity: 2 };
+    expect(canGenerateAt(tooMany)).toBe(false);
+    expect(includeOverflowLabel(tooMany)).toBe(
+      "2 more photos marked to include than a 20-page book holds",
+    );
   });
 
   it("returns nothing for a length the backend did not offer", () => {
@@ -239,6 +276,121 @@ describe("project list wire shape", () => {
   it("counts a never-exported project's history as none", () => {
     const detail = fixture<ProjectDetail>("project-detail.json");
     expect(projectDetailLabel({ ...detail, exports: [] })).toBe("20 pages · 24 photos · no exports");
+  });
+
+  /**
+   * **Reopening a project restores the user's own decisions.**
+   *
+   * Without this key, a reopened project comes back with `overrides:
+   * undefined` and every decision quietly reverts to "auto" -- and it looks
+   * entirely correct, because the engine's own verdict is a perfectly
+   * plausible book. Read through `overrideFor`, so a drifted key surfaces as
+   * "auto" for a hash the fixture says is "include" rather than as a
+   * TypeScript error that does not exist across this boundary.
+   *
+   * BOTH states plus an untouched hash: a fixture with one state cannot tell
+   * a real map from one that answered the same thing to everything.
+   */
+  it("restores the include and exclude decisions a project was generated with", () => {
+    const detail = fixture<ProjectDetail>("project-detail.json");
+
+    expect(overrideFor(detail.overrides, "a1b2c3d4")).toBe("include");
+    expect(overrideFor(detail.overrides, "e5f6a7b8")).toBe("exclude");
+    expect(overrideFor(detail.overrides, "never-decided")).toBe("auto");
+  });
+
+  /**
+   * **The restored decisions must be VISIBLE, not merely returned.**
+   *
+   * `ProjectDetail.overrides` round-tripped correctly and nothing in `app/`
+   * read it, so reopening a project showed no sign of the selection at all --
+   * the same "persisted but unreachable from the UI" defect that started this
+   * line of work. This is the function the project panel renders.
+   *
+   * Both states are counted, and separately: a label summing them into one
+   * number cannot tell "3 included" from "2 included, 1 excluded", which are
+   * very different statements about a book.
+   */
+  it("says what selection a reopened project was generated with", () => {
+    const detail = fixture<ProjectDetail>("project-detail.json");
+
+    expect(selectionLabel(detail)).toBe("Your selection: 1 you included, 1 you excluded");
+  });
+
+  it("says nothing about selection when the engine chose the whole book", () => {
+    const detail = fixture<ProjectDetail>("project-detail.json");
+
+    expect(selectionLabel({ ...detail, overrides: {} })).toBeNull();
+  });
+
+  it("names only the state that is actually present", () => {
+    const detail = fixture<ProjectDetail>("project-detail.json");
+
+    expect(selectionLabel({ ...detail, overrides: { h1: "include", h2: "include" } })).toBe(
+      "Your selection: 2 you included",
+    );
+    expect(selectionLabel({ ...detail, overrides: { h1: "exclude" } })).toBe(
+      "Your selection: 1 you excluded",
+    );
+  });
+});
+
+/**
+ * The override map crosses this boundary in both directions -- up on every
+ * toggle and on generation, down inside `ProjectDetail` on reopen -- and the
+ * hazard is the STATE SPELLING, not the keys (which are content hashes).
+ * Rust pins the same file from its side in `commands.rs`.
+ */
+describe("photo override wire shape", () => {
+  const overrides = fixture<PhotoOverrides>("photo-overrides.json");
+
+  it("reads the states Rust writes", () => {
+    expect(overrideFor(overrides, "a1b2c3d4")).toBe("include");
+    expect(overrideFor(overrides, "e5f6a7b8")).toBe("exclude");
+  });
+
+  it("round-trips a decision through the map the webview sends back", () => {
+    const next = withOverride(overrides, "c9d0e1f2", "exclude");
+    expect(JSON.parse(JSON.stringify(next))).toEqual({
+      a1b2c3d4: "include",
+      e5f6a7b8: "exclude",
+      c9d0e1f2: "exclude",
+    });
+  });
+});
+
+describe("override toggling", () => {
+  it("records a decision without mutating the map it was given", () => {
+    const before: PhotoOverrides = { a: "include" };
+    const after = withOverride(before, "b", "exclude");
+
+    expect(after).toEqual({ a: "include", b: "exclude" });
+    expect(before).toEqual({ a: "include" }, "the input map must not be mutated");
+  });
+
+  /**
+   * "auto" DELETES the key rather than storing it, mirroring Rust's
+   * `Overrides::set`. Storing it would make two representations of "no
+   * decision" -- and since the map is what gets persisted, one project would
+   * come back with an `auto` row and another without, comparing unequal for
+   * no reason.
+   */
+  it("returning a photo to auto erases the decision rather than storing it", () => {
+    const after = withOverride({ a: "include", b: "exclude" }, "a", "auto");
+
+    expect(after).toEqual({ b: "exclude" });
+    expect("a" in after).toBe(false);
+  });
+
+  it("pressing the state a photo is already in returns it to auto", () => {
+    expect(toggledOverride("include", "include")).toBe("auto");
+    expect(toggledOverride("exclude", "exclude")).toBe("auto");
+  });
+
+  it("pressing the other state switches straight to it", () => {
+    expect(toggledOverride("include", "exclude")).toBe("exclude");
+    expect(toggledOverride("exclude", "include")).toBe("include");
+    expect(toggledOverride("auto", "include")).toBe("include");
   });
 });
 

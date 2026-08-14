@@ -1,8 +1,20 @@
 <script setup lang="ts">
 import { lastExportedOn } from "~/types/book";
-import { basename, burstSizes, groupByEvent, keepers, pickHero } from "~/types/features";
+import {
+  basename,
+  burstSizes,
+  groupByEvent,
+  keepers,
+  overrideFor,
+  pickHero,
+  showsLeftOutByDefault,
+  type AnalyzedPhoto,
+  type PhotoOverride,
+  type PhotoOverrides,
+} from "~/types/features";
 
 const {
+  analyze,
   summary,
   running,
   error,
@@ -45,21 +57,75 @@ const state = computed<ViewState>(() => {
   return "results";
 });
 
-const kept = computed(() => (summary.value ? keepers(summary.value.photos) : []));
-const eventGroups = computed(() => groupByEvent(kept.value));
-const burstMap = computed<Map<number, number>>(() =>
-  summary.value ? burstSizes(summary.value.photos) : new Map(),
-);
+// The analysed set, and the user's own decisions over it.
+//
+// `photos` is NOT `summary.photos`: it is the same records with `kept`
+// re-stamped by Rust after each override. The contact sheet reads Rust's
+// verdict and never computes one -- see `usePhotoOverrides` for why that
+// round trip exists rather than a two-line filter here.
+const analysed = computed<AnalyzedPhoto[]>(() => summary.value?.photos ?? []);
+const {
+  overrides,
+  photos,
+  photoSetId,
+  error: overrideError,
+  setOverride,
+  restore,
+} = usePhotoOverrides(analysed);
+
+const kept = computed(() => keepers(photos.value));
+
+/**
+ * Whether photos the book will leave out are shown.
+ *
+ * On by default, and that is a deliberate change: the sheet used to render
+ * only the keepers, which made a photo the engine dropped invisible -- and a
+ * photo you cannot see is one you cannot ask for. The include control has
+ * nothing to act on without this.
+ *
+ * Off above `LEFT_OUT_SHOWN_BY_DEFAULT_UP_TO`, because the grid is not
+ * virtualized: a 500-photo folder would render 500 tiles and re-patch all of
+ * them on every toggle. Re-evaluated per analysed SET, not per toggle, so it
+ * never fights a choice the user just made.
+ */
+const showLeftOut = ref(true);
+watch(photoSetId, () => {
+  showLeftOut.value = showsLeftOutByDefault(analysed.value.length);
+});
+const visiblePhotos = computed(() => (showLeftOut.value ? photos.value : kept.value));
+const eventGroups = computed(() => groupByEvent(visiblePhotos.value));
+const burstMap = computed<Map<number, number>>(() => burstSizes(photos.value));
 // One hero per event group - the pastel-yellow accent marks exactly this
-// photo, so it stays meaningful instead of becoming decoration.
+// photo, so it stays meaningful instead of becoming decoration. Chosen from
+// the KEPT photos only: a hero the book does not contain is not a hero.
 const heroPaths = computed<Set<string>>(
   () =>
     new Set(
-      eventGroups.value
+      groupByEvent(kept.value)
         .map((group) => pickHero(group.photos)?.path)
         .filter((path): path is string => path !== undefined),
     ),
 );
+const leftOutCount = computed(() => photos.value.length - kept.value.length);
+
+function onSetOverride(photo: AnalyzedPhoto, decision: PhotoOverride) {
+  void setOverride(photo.hash, decision);
+}
+
+/**
+ * Re-analyse a reopened project's own folder and restore the decisions it was
+ * saved with, so they become visible and editable on the contact sheet.
+ *
+ * Order matters: `analyze` replaces the photo set, and that resets the
+ * override map by design (a hash-keyed decision must not survive into a
+ * different folder). `restore` therefore runs after it has resolved, never
+ * before.
+ */
+async function onEditSelection(payload: { sourceFolder: string; overrides: PhotoOverrides }) {
+  selectedProjectId.value = null;
+  await analyze(payload.sourceFolder);
+  await restore(payload.overrides);
+}
 const folderLabel = computed(() => (folder.value ? basename(folder.value) : "the selected folder"));
 
 const gridClass = "grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3";
@@ -167,7 +233,11 @@ const remainingSkeletonCount = computed(() =>
           becomes reachable for a second project without an unmount in
           between, rather than silently keeping the first project on screen.
         -->
-        <GenerateBook :key="selectedProjectId" :open-project-id="selectedProjectId" />
+        <GenerateBook
+          :key="selectedProjectId"
+          :open-project-id="selectedProjectId"
+          @edit-selection="onEditSelection"
+        />
       </section>
 
       <div v-else-if="state === 'running'" class="space-y-6">
@@ -269,25 +339,50 @@ const remainingSkeletonCount = computed(() =>
             <span class="font-medium text-highlighted"
               ><span class="font-mono tabular-nums">{{ kept.length }}</span> keepers</span
             >
+            <USwitch
+              v-if="leftOutCount > 0 || !showLeftOut"
+              v-model="showLeftOut"
+              size="sm"
+              :label="`Show the ${leftOutCount} left out`"
+            />
           </div>
           <p class="text-xs text-muted">
             Percentiles are ranked within this folder. Sparkle is aesthetic, focus is sharpness.
+            Use + and &minus; on a photo to override what the engine chose.
           </p>
+          <UAlert
+            v-if="overrideError"
+            color="error"
+            variant="subtle"
+            icon="i-lucide-triangle-alert"
+            title="Could not re-check the selection"
+            :description="overrideError"
+            class="mt-2"
+          />
         </div>
 
         <!--
           Everything from here is Phase 2: pick a length, generate a book
           (which SAVES it), pre-flight it, and export the print files. Mounted
           only in the results state, since all of it operates on the fully
-          ranked set -- `summary.photos`, exactly as Rust sent it.
+          ranked set -- `photos`, which is `summary.photos` with `kept`
+          re-stamped by Rust for the user's own overrides. `overrides` rides
+          along so `generate_book` can persist the decisions with the project.
         -->
-        <GenerateBook v-if="folder" :photos="summary.photos" :folder />
+        <GenerateBook
+          v-if="folder"
+          :photos
+          :overrides
+          :photo-set-id="photoSetId"
+          :folder
+          @edit-selection="onEditSelection"
+        />
 
         <UEmpty
           v-if="eventGroups.length === 0"
           icon="i-lucide-image-off"
           title="No photos were kept"
-          description="Every analyzed photo was flagged as a screenshot, document, or similar non-photo image."
+          description="Every analyzed photo was flagged as a screenshot, document, or similar non-photo image, or was excluded by you."
           :actions="[
             {
               label: 'Choose a different folder',
@@ -318,6 +413,9 @@ const remainingSkeletonCount = computed(() =>
               :photo="photo"
               :burst-size="burstMap.get(photo.nearDupCluster) ?? 1"
               :is-hero="heroPaths.has(photo.path)"
+              :is-kept="photo.kept"
+              :override="overrideFor(overrides, photo.hash)"
+              @set-override="onSetOverride(photo, $event)"
             />
           </div>
         </section>

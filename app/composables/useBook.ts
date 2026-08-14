@@ -15,7 +15,7 @@ import {
   type GeneratedBook,
   type ProjectDetail,
 } from "~/types/book";
-import type { AnalyzedPhoto } from "~/types/features";
+import type { AnalyzedPhoto, PhotoOverrides } from "~/types/features";
 
 /**
  * Everything between "the folder is analysed" and "the files are on disk":
@@ -34,7 +34,17 @@ import type { AnalyzedPhoto } from "~/types/features";
  * slice from those -- so exporting works after a restart, and cannot be fed
  * a different photo set than the book was built from.
  */
-export function useBook(photos: Ref<AnalyzedPhoto[]>, folder: Ref<string | null>) {
+export function useBook(
+  photos: Ref<AnalyzedPhoto[]>,
+  folder: Ref<string | null>,
+  /**
+   * The user's own include/exclude decisions. Sent with BOTH commands:
+   * `recommend_book` so the length chooser can say a length cannot hold every
+   * photo they asked for, and `generate_book` because that call is what
+   * finally gives the decisions somewhere durable to live.
+   */
+  overrides: Ref<PhotoOverrides>,
+) {
   const recommendation = ref<BookRecommendation | null>(null);
   const generated = ref<GeneratedBook | null>(null);
   /** A saved project opened from disk via `openProject` -- see `BookState`'s doc comment for why this and `generated` are never both non-null. */
@@ -82,8 +92,12 @@ export function useBook(photos: Ref<AnalyzedPhoto[]>, folder: Ref<string | null>
 
   async function refreshRecommendation() {
     await guard(async () => {
+      // No photos: Rust reads the set cached by `analyze_folder`. This runs
+      // on every override toggle, and re-uploading several megabytes of
+      // feature records to answer "how many keepers now?" is what made the
+      // toggle unusable on a real folder.
       recommendation.value = await invoke<BookRecommendation>("recommend_book", {
-        photos: photos.value,
+        overrides: overrides.value,
       });
     });
   }
@@ -98,6 +112,7 @@ export function useBook(photos: Ref<AnalyzedPhoto[]>, folder: Ref<string | null>
         pages,
         name,
         sourceFolder: folder.value,
+        overrides: overrides.value,
       });
       // Supersedes anything previously opened from disk -- see
       // `withGeneratedBook`'s doc comment. The current `outputDir` is
