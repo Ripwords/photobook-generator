@@ -36,12 +36,21 @@ use std::path::Path;
 const WARN_DPI_CEILING: f64 = 300.0;
 
 /// Estimated bytes written to disk per placement, used to gate export
-/// against free disk space before any page renders. Assumes LOSSLESS PNG at
-/// the page canvas size (`PAGE_W_PX` x `PAGE_H_PX`, see geometry.rs) -- the
-/// current export path's format. If the export path ever changes format or
-/// compression (e.g. a different upload mechanic wants JPEG, or a different
-/// target DPI), this constant needs retuning. Every OTHER check in this
-/// module holds regardless of delivery mechanic.
+/// against free disk space before any file is written.
+///
+/// One output file per placement: a CROP OF THE SOURCE PHOTOGRAPH at the
+/// source's own resolution, encoded JPEG for a lossy source and PNG for a
+/// lossless one (`Exporter.outputFormat`). Nothing is composited and nothing
+/// is scaled to a page canvas, so this figure tracks what cameras produce and
+/// how much of the frame the crop keeps -- not `PAGE_W_PX` x `PAGE_H_PX`,
+/// which an earlier transparent-PNG export mechanic would have written and
+/// which this comment used to claim.
+///
+/// 3 MB is a placeholder chosen to be conservative for a ~12 MP JPEG; it has
+/// never been checked against a real export run, and a folder of lossless
+/// sources would blow through it (see PROJECT-STATUS's unmeasured-constants
+/// item). Retune it against measurements, not against intuition. Every OTHER
+/// check in this module holds regardless of delivery mechanic.
 pub const EST_BYTES_PER_PLACEMENT: u64 = 3_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

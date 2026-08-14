@@ -247,7 +247,7 @@ tunable without a rebuild.
 | Saliency retention | Fraction of the saliency box surviving the crop |
 | Face area retention | Same for faces, weighted above generic saliency |
 | Hero match | Highest aesthetic percentile should land in the `hero` role |
-| Resolution headroom | Effective DPI at slot size, above the 150 floor |
+| Resolution headroom | Effective DPI at slot size, above the 200 floor (§4.2), saturating at 300 |
 | Palette harmony | Oklab hue spread across the spread's photos — deferred out of Phase 1 |
 | Variety | Penalise reusing or mirroring the previous spread's template |
 
@@ -307,12 +307,19 @@ codesigned sidecar — for a format their uploader may not accept.
 
 ### 5.3 Where it runs
 
-The Swift sidecar, over the existing NDJSON channel — a new `render` request alongside
+The Swift sidecar, over the existing NDJSON channel — an `export` request alongside
 `analyze`, inheriting the pool, timeouts and crash-respawn path.
 
-- **Request:** output directory, page canvas in pixels, and a list of
-  `{ source path, crop rect in source px, destination rect page-normalised, z-order, filename }`.
-- **Response:** written paths plus per-file errors.
+The sidecar composites nothing. It decodes each source photograph, crops it, and writes the
+crop at the source's own resolution; the page layout travels separately, in `manifest.json`.
+So the request carries no page canvas, no destination rect and no z-order — an earlier
+revision of this section specified all three, for a transparent-PNG mechanic that was
+abandoned before it was built (see §5.1).
+
+- **Request:** `{ outputDir, items: [{ sourcePath, filename, cropX, cropY, cropW, cropH }] }`,
+  where the crop rect is in the source image's own normalised coordinates.
+- **Response:** one record per item, in input order — a written path with its pixel
+  dimensions and byte size, or a per-file error.
 
 Colour is **sRGB with an embedded ICC profile**, converted at render from whatever the
 source is (Display P3 and AdobeRGB are both common). Not CMYK: without Pixajoy's specific
@@ -494,10 +501,13 @@ Goldens run against a **frozen fixture template set** at `tests/fixtures/templat
 the live library. Otherwise every template authored in §6 churns every golden and the tests
 degrade into noise that gets regenerated without being read.
 
-**Swift — the renderer.** Raster golden comparison within tolerance, plus assertions a
-composite path cannot fake: the transparent region really is alpha 0, the ICC profile really
-is embedded, output is exactly 3359 × 2668, and a crop reaching the bleed edge really
-extends past it.
+**Swift — the exporter.** Assertions a crop-and-write path cannot fake: the written file's
+pixel dimensions really are the requested fraction of the SOURCE image's own dimensions (not
+a page canvas size — nothing is scaled to one), the crop really is taken from the requested
+corner of the frame rather than the centre, the encoded format follows the source (JPEG for
+a lossy source, PNG for a lossless one) so a JPEG is never re-encoded as a bloated PNG, and
+the ICC profile really is embedded. An earlier revision specified alpha-0 and exactly
+3359 × 2668 assertions here; both belonged to the abandoned transparent-PNG mechanic.
 
 **TypeScript.** The validator gains the fold-spanning rule and the page-decomposition check
 (every half must be a valid page layout). Manifest schema tests.

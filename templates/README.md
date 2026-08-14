@@ -28,10 +28,14 @@ disagree.
 
 1. **Text zones must lie entirely inside the safe area.** Anything outside gets trimmed
    off the printed page.
-2. **Nothing important may overlap the gutter dead band**, the strip that disappears into
-   the binding. A photo *may* span it — a full-bleed image crossing the fold is a
-   legitimate, striking layout, and several templates here do it deliberately (see the
-   panorama and asymmetric-hero designs). But a text zone must never overlap the band, and
+2. **No slot may cross the fold, and nothing important may overlap the gutter dead band.**
+   Pixajoy picture boxes are page-local: a box is placed on the left page *or* the right
+   page, so a slot straddling `x = 0.5` describes a layout the printer cannot build. Running
+   flush *to* the fold — a slot ending at exactly `0.5`, or starting at exactly `0.5` — is
+   legal and is how full-bleed spreads are built; crossing it is not. `tests/templates.test.ts`
+   fails the build on a fold-spanning slot.
+   Separately, the gutter dead band (the strip either side of the fold that disappears into
+   the binding) must stay clear of anything important: a text zone must never overlap it, and
    a small photo should never be centred on it.
 3. **A full-bleed slot must extend past the canvas edge, not stop short of it.** A slot
    meant to bleed off the left edge starts at `x = 0` (or negative), never at `0.005` —
@@ -73,10 +77,9 @@ Two consequences worth internalising:
 - **Two full-width photos stacked on one page can never both fit.** Each would need ~79% of
   the page height to be 4:3. If you want two landscapes on one page they must be a narrower
   centred column, which leaves wide side margins — that is the geometry, not sloppiness.
-- **Running flush TO the fold is legal and wanted**; crossing it is not. A slot ending at
-  exactly `x = 0.5`, or starting at exactly `0.5`, is how fold-flush and full-bleed spreads
-  are built. Keep the *subject* out of the innermost 0.197", which curls into the binding —
-  the scorer enforces that for faces, but composition is the author's job.
+- **Running flush TO the fold is legal and wanted**; crossing it is not — rule 2 above.
+  Keep the *subject* out of the innermost 0.197", which curls into the binding — the scorer
+  enforces that for faces, but composition is the author's job.
 
 ## Look at it before you trust it
 
@@ -114,13 +117,18 @@ letterbox failure above is obvious on the sheet and invisible in the rect arrays
   real aspect — multiply by 2.518 (canvas width ÷ height) to convert. A tall portrait slot
   reads as roughly `[0.6, 0.95]`; a wide panorama slot as `[2.5, 5.0]`. This is enforced by
   `tests/templates.test.ts`: every slot's own real-world aspect ratio must fall inside its
-  declared `aspect_pref`, so an accidentally-normalised range fails the build instead of
-  silently mis-scoring Phase 2's template selection.
+  declared `aspect_pref`, so an accidentally-normalised range fails the build.
+  **`aspect_pref` is a validator-only field.** It is parsed and stored, but the scorer never
+  reads it: `book::score::aspect_fit` derives the slot's target aspect from the rect itself
+  (`slot_aspect`) and compares that to the photo. So a wrong `aspect_pref` fails the test
+  suite rather than mis-scoring a layout — it is a declared-intent cross-check on the rect,
+  not an input to template selection. Keep it accurate anyway: it is how the validator
+  catches a rect that does not mean what its author thought.
 - `density`: `"sparse" | "medium" | "dense"`.
 - `energy`: `"calm" | "neutral" | "lively"`.
 - `text_zones` may be empty.
 - **`min_photos == max_photos == slots.length` for every template in this library.** Each
-  template accepts an exact photo count, not a range — none of the 40 have optional slots.
+  template accepts an exact photo count, not a range — none of the 36 have optional slots.
   This is a design choice, not a schema requirement: the format supports `min_photos <
   max_photos` for a template with optional slots, but no template here uses it. If you add
   one, the Phase 2 packer will need to handle a template whose slot count varies by photo

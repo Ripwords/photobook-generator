@@ -39,8 +39,10 @@ bun run lint      # oxlint --deny-warnings
 
 **Print geometry is normalised to the spread canvas** (22.394" × 8.894"). One exception:
 `aspect_pref` in `templates/*.json` is a **real-world inch ratio**, not the normalised rect
-ratio. The canvas is 2.518:1, so conflating them mis-scores every slot. The validator
-enforces this.
+ratio. The canvas is 2.518:1, so conflating the two units mis-scores every slot — that trap
+is real, but it lives in `score::slot_aspect`/`Rect::aspect_in`, which do the conversion.
+`aspect_pref` itself is **validator-only**: parsed, stored, never read by the scorer. A
+wrong value fails `tests/templates.test.ts` rather than changing a layout.
 
 **Vue:** prop shorthand when the name matches, `useTemplateRef()` over manually typed refs,
 destructuring defaults on `defineProps` rather than `withDefaults`.

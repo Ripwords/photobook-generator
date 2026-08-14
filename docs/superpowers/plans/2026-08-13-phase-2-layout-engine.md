@@ -4,11 +4,27 @@
 
 **Goal:** Turn the analysed photos from Phase 1 into print-resolution page files plus a manifest, so a book can be assembled in Pixajoy's editor.
 
-**Architecture:** A pure-Rust layout engine (cull → pack → crop → score → pace) consumes the *full* Phase 1 feature records, which Rust already holds as `serde_json::Value` and caches in SQLite. It emits a `Book` of pages. The Swift sidecar gains one new `render` request that writes one transparent PNG per photo at page canvas size. Nuxt gains a single "Generate book" step. The spread JSON stays the authoring format; the page is the engine's atom.
+**Architecture:** A pure-Rust layout engine (cull → pack → crop → score → pace) consumes the *full* Phase 1 feature records, which Rust already holds as `serde_json::Value` and caches in SQLite. It emits a `Book` of pages. ~~The Swift sidecar gains one new `render` request that writes one transparent PNG per photo at page canvas size.~~ **(Superseded: the sidecar gains an `export` request that writes one cropped copy of each source photograph at source resolution. See the revision plan.)** Nuxt gains a single "Generate book" step. The spread JSON stays the authoring format; the page is the engine's atom.
 
 **Tech Stack:** Rust (Tauri 2), Swift 6 + Core Graphics (sidecar), Nuxt 4 + Vue 3, vitest, swift-testing, cargo test.
 
 **Spec:** `docs/superpowers/specs/2026-08-13-phase-2-layout-engine-design.md`
+
+> **⚠️ PARTLY SUPERSEDED — Tasks 0, 9, 10, 12 and 14 describe an export mechanic that was
+> abandoned and never built.** They are superseded by
+> `docs/superpowers/plans/2026-08-14-phase-2-export-revision.md` (Tasks 3, 4, 5 and 6).
+> Each superseded task carries its own marker where you meet it; the markers are the
+> authority, this note is only the index.
+>
+> The one paragraph to unlearn before reading anything below: **the app does not composite
+> pages.** There is no `Renderer.swift`, no transparent PNG, no page canvas written to disk.
+> Export writes **one cropped copy of each source photograph** at its own source resolution
+> (JPEG for lossy sources, PNG for lossless) plus a `manifest.json` describing where each
+> goes. The `[x, y, w, h]` destination rects and z-order the tasks below specify are not on
+> the wire.
+>
+> Tasks 1–8, 11 and 13 shipped as written and stand, except that Task 1 of the revision
+> corrects their constants (the DPI floor is **200**, not 150).
 
 ## Global Constraints
 
@@ -52,9 +68,9 @@ Phase 1 shipped eight tests that passed under a broken implementation. Each rule
 | `src-tauri/src/book/pace.rs` | Density/energy/edge-treatment variation sweep |
 | `src-tauri/src/book/manifest.rs` | `manifest.json` shape and serialisation |
 | `src-tauri/src/book/preflight.rs` | Block/warn checks before any file is written |
-| `src-tauri/src/render.rs` | Rust-side render client: builds render requests, calls the sidecar |
-| `sidecar/Sources/PhotobookEngine/Renderer.swift` | Core Graphics composite of one transparent page PNG |
-| `sidecar/Tests/PhotobookEngineTests/RendererTests.swift` | Renderer tests |
+| ~~`src-tauri/src/render.rs`~~ | **Superseded.** Shipped as `src-tauri/src/export.rs` — builds export requests, no compositing |
+| ~~`sidecar/Sources/PhotobookEngine/Renderer.swift`~~ | **Never built.** No page is composited; see the banner above |
+| ~~`sidecar/Tests/PhotobookEngineTests/RendererTests.swift`~~ | **Never built.** |
 | `templates/weights.json` | Soft-term weights, hot-reloadable |
 | `app/types/book.ts` | TypeScript mirror of the book/manifest wire types |
 | `app/composables/useBook.ts` | Generate-book invocation and progress state |
@@ -80,6 +96,13 @@ Phase 1 shipped eight tests that passed under a broken implementation. Each rule
 ---
 
 ## Task 0: Verify Pixajoy's alpha behaviour
+
+> **⚠️ SUPERSEDED — DEAD TASK. Do not perform it.**
+>
+> This gated the transparent-PNG export, which was abandoned before it was built. There is
+> nothing to measure: the app never uploads a composited page, so Pixajoy's alpha handling
+> cannot affect it. Superseded by
+> `docs/superpowers/plans/2026-08-14-phase-2-export-revision.md`.
 
 **This is a human task and it gates Tasks 9–11 only.** Tasks 1–8 are independent of the outcome and should proceed in parallel.
 
@@ -3219,6 +3242,15 @@ git commit -m "feat(book): assemble and pace a full book from scored spreads"
 
 ## Task 9: Swift renderer
 
+> **⚠️ SUPERSEDED — NEVER BUILT. `Renderer.swift` does not exist.**
+>
+> Replaced by Task 3 of `docs/superpowers/plans/2026-08-14-phase-2-export-revision.md`,
+> which ships `sidecar/Sources/PhotobookEngine/Exporter.swift` instead: it decodes each source photo, crops it, and writes
+> the crop at **source resolution** — no page canvas, no transparency, no destination rect
+> and no z-order on the wire. The shipped request is
+> `{outputDir, items: [{sourcePath, filename, cropX, cropY, cropW, cropH}]}`.
+> Every interface, fixture and mutation below describes the abandoned design.
+
 **Blocked on Task 0.** Do not start until the alpha test has passed.
 
 **Files:**
@@ -3554,6 +3586,13 @@ git commit -m "feat(sidecar): render one transparent full-page PNG per photo"
 ---
 
 ## Task 10: Rust render client and manifest
+
+> **⚠️ SUPERSEDED IN PART.** The manifest shipped; the render client did not.
+>
+> Replaced by Task 4 of `docs/superpowers/plans/2026-08-14-phase-2-export-revision.md`.
+> `src-tauri/src/render.rs` shipped as `src-tauri/src/export.rs`, and it sends crop
+> rectangles rather than page-canvas placements — the `destX/destY/destW/destH` and
+> `pageWidthPx/pageHeightPx` fields below are not on the wire.
 
 **Blocked on Task 0.**
 
@@ -3893,6 +3932,11 @@ git commit -m "feat(book): pre-flight blocks and warnings before any file is wri
 
 ## Task 12: The `generate_book` command and UI
 
+> **⚠️ SUPERSEDED.** Replaced by Task 5 of
+> `docs/superpowers/plans/2026-08-14-phase-2-export-revision.md`, which splits generate from
+> export and persists a book as a reopenable project. The command surface below (a single
+> generate-and-render step) is not what shipped.
+
 **Files:**
 - Create: `app/types/book.ts`, `app/composables/useBook.ts`, `app/components/GenerateBook.vue`
 - Modify: `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`, `app/pages/index.vue`
@@ -4048,6 +4092,12 @@ git commit -m "feat(templates): author page-subdivision layouts closing the 4/5/
 ---
 
 ## Task 14: End-to-end verification
+
+> **⚠️ SUPERSEDED.** Replaced by Task 6 of
+> `docs/superpowers/plans/2026-08-14-phase-2-export-revision.md`. The round-trip test
+> shipped as `src-tauri/tests/export_roundtrip.rs` and asserts a cropped JPEG of the SOURCE
+> photograph's dimensions — not "a transparent PNG of exactly the page dimensions". There is
+> no `RenderRequest` and no `render` sidecar method to drive.
 
 **Files:**
 - Create: `src-tauri/tests/render_roundtrip.rs`

@@ -115,8 +115,13 @@ into a flattened page, so the book prints **a picture of a picture**. A photoboo
 value is that it reproduces the camera's own image. Decode, crop, re-encode, write —
 nothing else. There are **no composites and no transparent PNGs** anywhere in the output.
 
-**Format rule** (`Exporter.outputFormat`): a **lossy source (JPEG, HEIC, HEIF, WebP)
-exports as JPEG at quality 0.95**; a **lossless source (PNG, TIFF, RAW) exports as PNG**.
+**Format rule** (`Exporter.outputFormat`): a **lossy source (JPEG, HEIC, HEIF) exports as
+JPEG at quality 0.95**; a **lossless source (PNG, TIFF, RAW) exports as PNG**.
+
+The rule covers WebP and TIFF, but **the app cannot ingest either**: `commands::SUPPORTED`
+accepts only `jpg jpeg png heic heif cr2 cr3 nef arw dng raf orf`. So a WebP or TIFF branch
+in the format rule is dead code today, not a supported input path. (macOS cannot encode
+WebP at all — see the export-revision spec §5.2.)
 Re-encoding a camera JPEG to PNG inflates it roughly fivefold without recovering quality
 already lost; encoding a RAW-derived crop to JPEG introduces the first generation of loss
 for no reason. An unrecognised container falls to PNG, because PNG never adds a generation
@@ -263,7 +268,26 @@ Measured end to end through `pace::assemble` against the **real** `templates/` l
 | 60 | 51 | 11 groups / 51 / 0 | `[3,4,6,5,3,6,3,6,6,6,3]` / 51 / 0 |
 | 120 | 102 | 11 groups / **43** / 0 | 11 groups / **52** / 0 |
 
-Never worse on either axis, and at 120 photos it places 9 more of them. The pinned
+Re-measured against `eb56f35` on 2026-08-14: placed = 12 / 20 / 25 / 34 / 51 / 52 and blank
+spread slots = 0 for every row, reproducing the table exactly. Never worse on either axis,
+and at 120 photos it places 9 more of them. (The seed does not reach the packer, so all
+three of seeds 1, 9 and 1234 give identical figures — see the open item on that.)
+
+**"0 blank pages" here means "no spread slot went unfilled". It does not mean every printed
+page carries a photo, and the difference is large.** Ten of the 36 templates put all of
+their slots on ONE page half and leave the other half empty — `03`, `04`, `05`, `06`, `20`,
+`28`, `30`, `36`, `41`, `45`, eight of them because they carry text zones that Phase 2 never
+renders (§ "Phase 2 renders no text"). Every time the packer picks one, a full printed page
+comes out blank white. Measured on the same runs above, the count of printed pages with zero
+photos is **8 / 4 / 5 / 1 / 2 / 1** for 14 / 24 / 30 / 40 / 60 / 120 photos — not zero.
+
+The golden does it twice: its spread group sizes are `[3,1,3,1,2,2,3,3,3]`, and both `1`s
+are template `03-hero-left-text-right`, whose right page (pages 5 and 9) prints blank. A
+reader who sees "0 blank pages" and opens the golden will find two. This is a known,
+accepted Phase 2 limitation of shipping text-zone templates with no text renderer, not a
+packer defect — the packer filled every slot those templates offered.
+
+The pinned
 regression is `pack_fills_every_slot_rather_than_front_loading_the_first_spreads` (30
 photos, 9 spreads + 2 singles, `buildable = 1..=6`), which fails with
 `11 slots but only 5 groups: [6, 6, 6, 6, 6]` against the old rule.
@@ -571,9 +595,19 @@ that rule). The packer does treat the first and last pages as structurally disti
 
 **Template contract, validator-enforced:** `rect` values are normalised to the spread
 canvas, but **`aspect_pref` is a real-world (inch) aspect ratio**, not the normalised rect
-ratio. The canvas is 2.518:1, so a Phase 2 scorer that assumes normalised ratios will
-mis-score every slot. Verified numerically: 102 of 103 slots have their real-world ratio
-inside their declared range; zero have their normalised ratio inside it.
+ratio. The canvas is 2.518:1, so the two are never interchangeable. Verified numerically:
+102 of 103 slots have their real-world ratio inside their declared range; zero have their
+normalised ratio inside it.
+
+**`aspect_pref` is validator-only — the scorer never reads it.** It is parsed into
+`templates::Slot` and stored, and nothing else. `score::aspect_fit` derives the slot's
+target aspect from the RECT (`slot_aspect`, which applies the same inch conversion) and
+compares that to the photo. So a wrong `aspect_pref` fails `tests/templates.test.ts`; it
+cannot mis-score a layout. The unit-confusion trap is real and still worth guarding — it
+lives in `slot_aspect`, and `geometry::Rect::aspect_in` plus
+`score_slot_aspect_uses_page_inches_not_the_normalised_ratio` are what pin it — but treat
+`aspect_pref` itself as a declared-intent cross-check on the rect, not as an input to
+template selection.
 
 Every template is **exact-count** (`min_photos == max_photos == slots.length`), so the
 packer selects templates by photo count rather than fitting a range.
