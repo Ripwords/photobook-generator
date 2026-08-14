@@ -54,6 +54,7 @@ const {
   generated,
   activeProject,
   exportResult,
+  layout,
   progress,
   projects,
   outputDir,
@@ -363,6 +364,16 @@ onMounted(() => {
         </p>
       </div>
     </div>
+
+    <!--
+      The book itself, spread by spread, as it will print. Read-only: this
+      is what makes any of the engine's decisions judgeable at all -- until
+      it existed the only way to see a layout was to open the exported files
+      in Finder and reassemble it mentally. Rendered for a book generated in
+      this session AND for one reopened from disk, since both are saved
+      projects by the time `book_layout` reads them.
+    -->
+    <BookPreview v-if="layout" :layout />
 
     <!--
       Pre-flight. Blocks and Warns are rendered as two separate lists from

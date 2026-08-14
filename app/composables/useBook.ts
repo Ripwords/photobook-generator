@@ -17,6 +17,7 @@ import {
   type GeneratedBook,
   type ProjectDetail,
 } from "~/types/book";
+import type { BookLayout } from "~/types/preview";
 import type { AnalyzedPhoto, PhotoOverrides } from "~/types/features";
 
 /**
@@ -52,6 +53,13 @@ export function useBook(
   /** A saved project opened from disk via `openProject` -- see `BookState`'s doc comment for why this and `generated` are never both non-null. */
   const activeProject = ref<ProjectDetail | null>(null);
   const exportResult = ref<ExportResult | null>(null);
+  /**
+   * The assembled book, for the read-only preview. Kept beside `BookState`
+   * rather than inside it: every `BookState` transition is a pure function
+   * over values the webview already holds, and this one is a round trip to
+   * SQLite that only two of those transitions should trigger.
+   */
+  const layout = ref<BookLayout | null>(null);
   const progress = ref<ExportProgress>(initialExportProgress);
   const { projects, refresh: loadProjects } = useProjects();
   const outputDir = ref<string | null>(null);
@@ -73,10 +81,28 @@ export function useBook(
 
   /** Assigns a `BookState` transition into the refs above, all at once. */
   function applyBookState(next: BookState) {
+    // The preview belongs to ONE book, identified the same way Export is (see
+    // `resolveExportProjectId`). Cleared only when that identity actually
+    // changes: `withProjectRenamed` and a `withProjectDeleted` for some OTHER
+    // project both return a state describing the same book, and blanking the
+    // preview under either would look like the book had vanished.
+    if (resolveExportProjectId(currentBookState()) !== resolveExportProjectId(next)) {
+      layout.value = null;
+    }
     generated.value = next.generated;
     activeProject.value = next.activeProject;
     exportResult.value = next.exportResult;
     outputDir.value = next.outputDir;
+  }
+
+  /**
+   * Loads the layout of a SAVED book. Works identically for one generated
+   * moments ago (generating saves the project first) and one reopened from
+   * disk after a restart -- which is most of the preview's value, since a
+   * reopened project carries its full layout and nothing could show it.
+   */
+  async function loadLayout(projectId: number) {
+    layout.value = await invoke<BookLayout>("book_layout", { projectId });
   }
 
   async function guard<T>(work: () => Promise<T>): Promise<T | null> {
@@ -120,6 +146,7 @@ export function useBook(
       // `withGeneratedBook`'s doc comment. The current `outputDir` is
       // threaded through deliberately: it survives a regenerate.
       applyBookState(withGeneratedBook(currentBookState(), result));
+      await loadLayout(result.projectId);
       await loadProjects();
     });
   }
@@ -134,6 +161,7 @@ export function useBook(
     await guard(async () => {
       const project = await invoke<ProjectDetail>("open_project", { id });
       applyBookState(withOpenedProject(project));
+      await loadLayout(project.id);
     });
   }
 
@@ -221,6 +249,7 @@ export function useBook(
    */
   function reset() {
     recommendation.value = null;
+    layout.value = null;
     applyBookState(initialBookState);
     progress.value = initialExportProgress;
     error.value = null;
@@ -236,6 +265,7 @@ export function useBook(
     activeProject,
     exportResult,
     exportProjectId,
+    layout,
     progress,
     projects,
     outputDir,
