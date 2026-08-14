@@ -2,6 +2,7 @@ pub mod book;
 pub mod cluster;
 pub mod commands;
 pub mod db;
+pub mod export;
 pub mod geometry;
 pub mod project;
 pub mod protocol;

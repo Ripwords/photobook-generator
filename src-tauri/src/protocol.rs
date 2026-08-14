@@ -10,6 +10,47 @@ pub enum RequestKind {
     /// write) instead of features -- a permanent diagnostic, not scaffolding.
     /// See `scripts/benchmark.sh`.
     Benchmark,
+    /// Crops and re-encodes the photos the layout engine placed. See
+    /// `Request.export` for the payload and `export::build_items` for how
+    /// Rust builds it from a `Book`.
+    Export,
+}
+
+/// One photo to crop and write, as decided by the Rust layout engine.
+/// Mirrors Swift's `ExportItem` in `Protocol.swift` field for field --
+/// `sourcePath`/`cropX`/`cropY`/`cropW`/`cropH` are spelled out individually
+/// because, like `Request` below, this struct has no blanket `rename_all`.
+///
+/// `crop_x/y/w/h` are normalised 0...1 of the photo's own ORIENTED
+/// (displayed) frame -- exactly what `book::crop::choose_crop` already
+/// produces, so nothing converts on the wire.
+///
+/// `filename` is the output basename WITHOUT an extension; the sidecar
+/// appends the one that matches the format it chooses from the source (see
+/// `Exporter.outputFormat` in the Swift sidecar). Sending an extension here
+/// would double it or mismatch the sidecar's own choice.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExportItem {
+    #[serde(rename = "sourcePath")]
+    pub source_path: String,
+    pub filename: String,
+    #[serde(rename = "cropX")]
+    pub crop_x: f64,
+    #[serde(rename = "cropY")]
+    pub crop_y: f64,
+    #[serde(rename = "cropW")]
+    pub crop_w: f64,
+    #[serde(rename = "cropH")]
+    pub crop_h: f64,
+}
+
+/// Mirrors Swift's `ExportRequest`. `output_dir` is renamed the same way
+/// `Request.thumbnail_dir` is; `items` already matches Swift's spelling.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExportRequest {
+    #[serde(rename = "outputDir")]
+    pub output_dir: String,
+    pub items: Vec<ExportItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +68,14 @@ pub struct Request {
     /// disagree on the wire.
     #[serde(rename = "thumbnailDir", skip_serializing_if = "Option::is_none")]
     pub thumbnail_dir: Option<String>,
+    /// Payload for `.export` requests. Nil for every other kind; an
+    /// `.export` request without it is answered with an error rather than an
+    /// empty result, so a caller that forgets it hears about it. Already
+    /// spelled `export` on both sides, so no rename is needed -- but it is
+    /// still spelled out explicitly here rather than left to a blanket rule,
+    /// matching every other field on this struct.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub export: Option<ExportRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +85,12 @@ pub enum ResponseResult {
     Error { message: String },
     Analyzed(Vec<serde_json::Value>),
     Benchmarked(Vec<serde_json::Value>),
+    /// One `ExportRecord` per `ExportItem`, in input order. Kept as raw JSON
+    /// like `Analyzed`/`Benchmarked` rather than a typed Rust enum: nothing
+    /// in Rust needs to branch on `.ok` vs `.failed` today, and typing it
+    /// early would just be a second place the `type` tag could drift from
+    /// Swift's.
+    Exported(Vec<serde_json::Value>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,7 +105,7 @@ mod tests {
 
     #[test]
     fn serializes_ping_request_as_single_line() {
-        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None };
+        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None, export: None };
         let line = serde_json::to_string(&req).unwrap();
         assert!(!line.contains('\n'));
         assert!(line.contains("\"kind\":\"ping\""));
@@ -66,6 +121,7 @@ mod tests {
             kind: RequestKind::Analyze,
             paths: Some(vec!["/p.jpg".into()]),
             thumbnail_dir: Some("/cache/thumbnails".into()),
+            export: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(line.contains(r#""thumbnailDir":"/cache/thumbnails""#));
@@ -76,7 +132,7 @@ mod tests {
     /// matching how `paths` is already omitted for ping requests.
     #[test]
     fn omits_thumbnail_dir_when_absent() {
-        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None };
+        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None, export: None };
         let line = serde_json::to_string(&req).unwrap();
         assert!(!line.contains("thumbnailDir"));
     }
@@ -88,6 +144,7 @@ mod tests {
             kind: RequestKind::Benchmark,
             paths: Some(vec!["/p.arw".into()]),
             thumbnail_dir: None,
+            export: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(line.contains("\"kind\":\"benchmark\""));
@@ -169,6 +226,141 @@ mod tests {
                 assert_eq!(records[1]["path"], "/photos/bad.raw");
             }
             other => panic!("expected benchmarked, got {other:?}"),
+        }
+    }
+
+    // --- export: the wire contract read from Protocol.swift ---------------
+    //
+    // Swift's `ExportItem`/`ExportRequest` have no blanket `rename_all`
+    // either, so every field is checked BY NAME. This is the failure mode
+    // the brief calls out explicitly: a drifted field name degrades into
+    // "every photo failed" with no cause reported anywhere, because Swift's
+    // decoder just fails the whole item silently from the caller's point of
+    // view. A round-trip test alone (serialize then deserialize with the
+    // SAME Rust struct) cannot catch this -- a symmetrically wrong rename
+    // round-trips perfectly. Only asserting the literal wire bytes can.
+
+    #[test]
+    fn serializes_export_request_kind_as_lowercase() {
+        let req = Request {
+            id: "a".into(),
+            kind: RequestKind::Export,
+            paths: None,
+            thumbnail_dir: None,
+            export: None,
+        };
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(line.contains("\"kind\":\"export\""));
+    }
+
+    /// Every `ExportItem` field, by name, in the exact camelCase spelling
+    /// Swift's struct declares. Also asserts the snake_case Rust names never
+    /// leak onto the wire -- the mutation this guards against is dropping a
+    /// single `#[serde(rename)]` attribute, which compiles fine and only
+    /// breaks at the sidecar.
+    #[test]
+    fn serializes_export_item_fields_in_camel_case() {
+        let item = ExportItem {
+            source_path: "/photos/a.jpg".into(),
+            filename: "p04-z1-abcd1234".into(),
+            crop_x: 0.1,
+            crop_y: 0.2,
+            crop_w: 0.3,
+            crop_h: 0.4,
+        };
+        let line = serde_json::to_string(&item).unwrap();
+        assert!(line.contains(r#""sourcePath":"/photos/a.jpg""#), "{line}");
+        assert!(line.contains(r#""filename":"p04-z1-abcd1234""#), "{line}");
+        assert!(line.contains(r#""cropX":0.1"#), "{line}");
+        assert!(line.contains(r#""cropY":0.2"#), "{line}");
+        assert!(line.contains(r#""cropW":0.3"#), "{line}");
+        assert!(line.contains(r#""cropH":0.4"#), "{line}");
+        assert!(!line.contains("source_path"), "{line}");
+        assert!(!line.contains("crop_x"), "{line}");
+        assert!(!line.contains("crop_y"), "{line}");
+        assert!(!line.contains("crop_w"), "{line}");
+        assert!(!line.contains("crop_h"), "{line}");
+    }
+
+    #[test]
+    fn serializes_export_request_output_dir_as_camel_case() {
+        let req = ExportRequest { output_dir: "/tmp/out".into(), items: Vec::new() };
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(line.contains(r#""outputDir":"/tmp/out""#), "{line}");
+        assert!(!line.contains("output_dir"), "{line}");
+    }
+
+    /// `export` must not appear on the wire at all when the request is not
+    /// an export -- matching how `thumbnailDir` is already omitted for ping
+    /// requests. A wire-visible `null` here would still be a needless extra
+    /// key Swift has to tolerate.
+    #[test]
+    fn omits_export_field_when_absent() {
+        let req = Request {
+            id: "a".into(),
+            kind: RequestKind::Ping,
+            paths: None,
+            thumbnail_dir: None,
+            export: None,
+        };
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(!line.contains("\"export\""));
+    }
+
+    /// The full export request as Swift will actually receive it, checked
+    /// key-by-key inside the nested `items` array too -- a rename that only
+    /// worked at the top level (e.g. `outputDir` right but `sourcePath`
+    /// wrong) would slip past a shallower test.
+    #[test]
+    fn serializes_a_full_export_request_with_camel_case_items() {
+        let req = Request {
+            id: "a".into(),
+            kind: RequestKind::Export,
+            paths: None,
+            thumbnail_dir: None,
+            export: Some(ExportRequest {
+                output_dir: "/tmp/out".into(),
+                items: vec![ExportItem {
+                    source_path: "/photos/a.jpg".into(),
+                    filename: "p04-z1-abcd1234".into(),
+                    crop_x: 0.0,
+                    crop_y: 0.0,
+                    crop_w: 1.0,
+                    crop_h: 1.0,
+                }],
+            }),
+        };
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(line.contains(r#""outputDir":"/tmp/out""#), "{line}");
+        assert!(line.contains(r#""sourcePath":"/photos/a.jpg""#), "{line}");
+        assert!(line.contains(r#""cropX":0.0"#), "{line}");
+        assert!(!line.contains("output_dir"), "{line}");
+        assert!(!line.contains("source_path"), "{line}");
+    }
+
+    /// Pins the Swift wire format for `export`: a `type`/`data` tagged union
+    /// whose data array holds `ExportRecord`s discriminated on `type`
+    /// (`"ok"`/`"failed"`) -- NOT `status`, which an earlier abandoned plan
+    /// for this project used and which would silently decode as `Error` under
+    /// `ResponseResult`'s own tag if that ever leaked in here.
+    #[test]
+    fn deserializes_exported_response() {
+        let line = r#"{"id":"a","result":{"type":"exported","data":[
+            {"type":"ok","path":"/out/p04-z1-abcd1234.jpg","width":3000,"height":2000,"bytes":845210},
+            {"type":"failed","filename":"p04-z2-ef567890","message":"could not decode: /photos/bad.raw"}
+        ]}}"#;
+        let res: Response = serde_json::from_str(line).unwrap();
+        assert_eq!(res.id, "a");
+        match res.result {
+            ResponseResult::Exported(records) => {
+                assert_eq!(records.len(), 2);
+                assert_eq!(records[0]["type"], "ok");
+                assert_eq!(records[0]["path"], "/out/p04-z1-abcd1234.jpg");
+                assert_eq!(records[0]["width"], 3000);
+                assert_eq!(records[1]["type"], "failed");
+                assert_eq!(records[1]["filename"], "p04-z2-ef567890");
+            }
+            other => panic!("expected exported, got {other:?}"),
         }
     }
 }

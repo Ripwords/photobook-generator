@@ -92,6 +92,7 @@ impl Sidecar {
             kind,
             paths,
             thumbnail_dir,
+            export: None,
         };
         let mut line =
             serde_json::to_string(&req).map_err(|e| SidecarError::Malformed(e.to_string()))?;
@@ -131,9 +132,9 @@ impl Sidecar {
         match request_result {
             ResponseResult::Analyzed(records) => Ok(records),
             ResponseResult::Error { message } => Err(SidecarError::Engine(message)),
-            ResponseResult::Pong { .. } | ResponseResult::Benchmarked(_) => {
-                Err(SidecarError::Malformed("expected analyzed".into()))
-            }
+            ResponseResult::Pong { .. }
+            | ResponseResult::Benchmarked(_)
+            | ResponseResult::Exported(_) => Err(SidecarError::Malformed("expected analyzed".into())),
         }
     }
 
@@ -156,7 +157,7 @@ impl Sidecar {
         match request_result {
             ResponseResult::Benchmarked(records) => Ok(records),
             ResponseResult::Error { message } => Err(SidecarError::Engine(message)),
-            ResponseResult::Pong { .. } | ResponseResult::Analyzed(_) => {
+            ResponseResult::Pong { .. } | ResponseResult::Analyzed(_) | ResponseResult::Exported(_) => {
                 Err(SidecarError::Malformed("expected benchmarked".into()))
             }
         }
