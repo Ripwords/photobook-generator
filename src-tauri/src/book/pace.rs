@@ -779,6 +779,8 @@ mod tests {
     /// One chapter here is unprintable (300px photos, ~30 DPI against a 200
     /// floor); every other chapter lays out. 36 fixture photos fill all 11
     /// slots exactly, so the only blanks in a correct book are that chapter's.
+    /// Chapter 3 is apportioned two of the eleven slots and its groups land on
+    /// spreads 1 and 2, i.e. pages 4-7.
     #[test]
     fn pace_leaves_a_failed_spread_blank_in_place_rather_than_shifting_the_book() {
         let lib = fixture_library();
@@ -796,7 +798,7 @@ mod tests {
             .filter(|p| p.template_id == BLANK_TEMPLATE_ID)
             .map(|p| p.number)
             .collect();
-        assert_eq!(blanks, vec![6, 7, 8, 9], "the blanks belong to the failed chapter");
+        assert_eq!(blanks, vec![4, 5, 6, 7], "the blanks belong to the failed chapter");
         assert!(
             !book.pages.last().unwrap().placements.is_empty(),
             "the closing single page was pushed out of the last position"
@@ -956,17 +958,35 @@ mod tests {
     /// so the group handed to a single page is routinely larger than any page
     /// half. Requiring an exact match leaves the opening page blank; taking
     /// the largest half that fits places what it can and drops the rest.
+    ///
+    /// 36 photos, not 24: the opening chapter must hand the single page a
+    /// group BIGGER than any half or the two rules agree and the test proves
+    /// nothing. At 36 the packer apportions chapter 1 one slot for its three
+    /// photos, so the group is 3 against a largest half of 2. The size is
+    /// asserted from the packer rather than assumed, so a future packing
+    /// change cannot silently defang this.
     #[test]
     fn pace_fills_a_single_page_from_a_group_larger_than_any_page_half() {
         let lib = fixture_library();
         let largest_half =
             lib.page_half_pool().iter().map(|p| p.slots.len()).max().unwrap();
         assert_eq!(largest_half, 2, "fixture: no half holds three photos");
-        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 5);
-        // The opening group holds three photos (chapter 1 is p001..p003).
+
+        let photos = fixture_photos(36);
+        let kept = cull(&photos);
+        let opening = pack(&kept, &Capacity::from_library(20, &lib), &buildable_sizes(&lib))
+            .first()
+            .map(|g| g.photos.len())
+            .unwrap();
+        assert!(
+            opening > largest_half,
+            "fixture: the opening group ({opening}) must overflow the largest half ({largest_half})"
+        );
+
+        let book = assemble(&photos, 20, &lib, &Weights::default(), 5);
         assert_eq!(
             book.pages[0].placements.len(),
-            2,
+            largest_half,
             "the opening page must hold what the largest half can, not nothing"
         );
     }
@@ -1033,10 +1053,14 @@ mod tests {
     /// the weakest of its group here precisely so that positional truncation
     /// (which would keep photos 1 and 2) and ranking (which keeps 2 and 3)
     /// disagree.
+    ///
+    /// 36 photos, not 24: the opening group has to OVERFLOW the page half for
+    /// anything to be dropped at all, and at 24 the packer hands the opening
+    /// page a group of two, which a two-slot half holds whole.
     #[test]
     fn pace_drops_the_weakest_photo_when_a_group_overflows_its_page_half() {
         let lib = fixture_library();
-        let mut photos = fixture_photos(24);
+        let mut photos = fixture_photos(36);
         assert_eq!(photos[2].aesthetic_pct, 74, "fixture: photo 2 is the strongest");
         assert_eq!(photos[3].aesthetic_pct, 11);
         photos[1].aesthetic_pct = 5; // now the weakest of the opening group
@@ -1099,12 +1123,16 @@ mod tests {
 
     /// Hand-derived, not merely positive. 30 fixture photos: `cull` drops the
     /// five utility ones (indices 0, 7, 14, 21, 28), leaving chapters of
-    /// 3/4/6/8/4. With buildable sizes {1,2,3} and 11 slots (9 spreads + 2
-    /// singles) the packer cuts them into 10 groups of 3,3,1,3,3,3,3,2,3,1.
-    /// The opening single takes the first group of 3 but the largest page half
-    /// holds 2, so one photo there is dropped; the remaining 8 middle groups
-    /// fill 8 of the 9 spreads and the last group of 1 fills the closing page.
-    /// Placed: 2 + 21 + 1 = 24. Dropped: 5 utility + 1 = 6.
+    /// 3/4/6/8/4. With buildable sizes {1,2,3} the packer apportions the 11
+    /// slots (9 spreads + 2 singles) as 1/2/3/4/1 and cuts each chapter to its
+    /// own share: 3 | 2,2 | 2,2,2 | 2,2,2,2 | 3. That is 11 groups holding 24
+    /// of the 25 keepers -- chapter 5's fourth photo has no slot left in its
+    /// own chapter and a group never spans chapters, so it stays unplaced.
+    ///
+    /// The opening single takes the first group of 3 and the closing single
+    /// the last group of 3, but the largest page half holds 2, so one photo is
+    /// dropped at each end. Placed: 2 + 18 + 2 = 22. Dropped: 5 utility + 1
+    /// unplaced by the packer + 2 that overflowed the single pages = 8.
     #[test]
     fn pace_accounts_for_every_photo_it_did_not_place() {
         let lib = fixture_library();
@@ -1113,9 +1141,19 @@ mod tests {
         let placed = placed_indices(&book);
         let unique: BTreeSet<usize> = placed.iter().copied().collect();
         assert_eq!(unique.len(), placed.len(), "a photo must not be placed twice");
-        assert_eq!(placed.len(), 24, "placed count");
-        assert_eq!(book.dropped, 6, "5 utility + 1 that overflowed the opening page");
+        assert_eq!(placed.len(), 22, "placed count");
+        assert_eq!(
+            book.dropped, 8,
+            "5 utility + 1 the packer could not place + 2 that overflowed the single pages"
+        );
         assert_eq!(book.dropped, photos.len() - unique.len(), "dropped must reconcile");
+
+        // Every spread slot carries a group: no photo is stranded behind a
+        // blank spread that an earlier slot took more than its share to create.
+        assert!(
+            book.pages.iter().all(|p| p.template_id != BLANK_TEMPLATE_ID),
+            "25 keepers over 11 slots must leave no blank page"
+        );
     }
 
     /// The over-capacity path: 500 photos cannot fit 9 spreads of at most 3

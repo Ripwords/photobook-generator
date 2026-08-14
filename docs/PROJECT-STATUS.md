@@ -59,7 +59,7 @@ thumbnails, chapter dividers and burst-size badges.
 | Nuxt UI | `app/` | `pages/index.vue`, `components/PhotoTile.vue`, `composables/useAnalysis.ts`, `types/features.ts` |
 | Template library | `templates/` | Spread templates + validator at `tests/templates.test.ts`. Was 40 at end of Phase 1; **now 36** — see the Print geometry section. |
 
-**Test counts at last run (2026-08-14, end of Phase 2):** 496 TypeScript, 300 Rust unit
+**Test counts at last run (2026-08-14, end of Phase 2):** 496 TypeScript, 304 Rust unit
 (3 ignored — they read the real `templates/` directory) plus 2 harness'd and 4
 `harness = false` integration binaries, 130 Swift. All green, lint clean.
 **Release build works:** `bun tauri build --bundles app` produces `PhotobookGen.app`.
@@ -96,7 +96,7 @@ file per placement.
 | Stage | Where | What it does |
 |---|---|---|
 | Cull | `book::cull::cull` | Drops utility images, keeps one winner per near-duplicate cluster. **The single authority** — see below. |
-| Pack | `book::pack` | Chapter-aware grouping into buildable group sizes; drops the lowest aesthetic percentiles when keepers exceed capacity. |
+| Pack | `book::pack` | Chapter-aware grouping into buildable group sizes, **distributed over the available slots rather than front-loaded**; drops the lowest aesthetic percentiles when keepers exceed capacity. |
 | Score | `book::score` | Scores each template against a group: aspect fit, saliency and face-area retention, hero match, resolution headroom, palette harmony, variety. Hard rejections for a face in the gutter, a face outside the safe margin, and sub-`MIN_DPI` resolution. |
 | Crop | `book::crop::choose_crop` | Deterministic saliency- and face-aware crop window, normalised 0…1 of the photo's **oriented** frame. |
 | Pace | `book::pace::assemble` | Lays groups into pages, keeps both halves of a spread on one template, falls back to a smaller page half rather than blanking a page. |
@@ -230,32 +230,53 @@ is persisted, so the data model is ready; the plumbing is not.
 "regenerate" control must either thread the seed through `best_spread` or pick a different
 regeneration mechanism. Decide before planning, not during.
 
-### 4. `choose_group_size` front-loads, and full 1–6 coverage made it worse
+### 4. `choose_group_size` front-loaded — **FIXED 2026-08-14**
 
-Re-checked on 2026-08-14 now that the library covers every group size 1–6. **The problem is
-not fixed; it is more pronounced.** Because `1` is buildable, `is_decomposable(rest)` is
-true for every remainder, so the function always returns the **largest** fitting size.
-Measured directly against `choose_group_size` with `buildable = {1,2,3,4,5,6}`:
+The greedy packer took the largest buildable size that fit, guarded by a lookahead asking
+whether the remainder stayed decomposable. Once the library covered every size 1–6 that
+guard went **inert** — `1` is buildable, so `is_decomposable(rest)` is true for every
+remainder — and the largest candidate always won. Photos were packed six to a spread until
+they ran out and every remaining slot was left blank.
 
-```
-photos=30 slots=9  -> groups=[6,6,6,6,6]     spreads_used=5  blank_spreads=4
-photos=24 slots=9  -> groups=[6,6,6,6]       spreads_used=4  blank_spreads=5
-photos=14 slots=9  -> groups=[6,6,2]         spreads_used=3  blank_spreads=6
-photos=40 slots=19 -> groups=[6,6,6,6,6,6,4] spreads_used=7  blank_spreads=12
-```
+`pack` now sizes each group against **how many photos and slots remain**
+(`remaining / slots_left`, rounded half up, snapped to the nearest buildable size), and
+apportions the book-wide slot budget across chapters before cutting any of them
+(`apportion_slots`: one slot each longest-chapter-first, then D'Hondt highest-averages for
+the rest). Measured end to end through `pace::assemble` against the **real** `templates/`
+library, 20 pages:
 
-Photos are packed six to a spread until they run out, and every remaining slot in the
-chapter is left blank. The blank spread at pages 18–19 of the golden fixture
-(`src-tauri/tests/fixtures/book-20.json`) is this, though note the golden runs against a
-*frozen* in-test library, not `templates/`.
+| photos | keepers | before: groups / placed / blank pages | after: groups / placed / blank pages |
+|---|---|---|---|
+| 14 | 12 | `[3,4,5]` / 11 / **16** | `[1,1,1,1,1,1,1,1,1,2,1]` / 12 / **0** |
+| 24 | 20 | `[3,4,6,6,1]` / 20 / **12** | `[2,1,2,2,2,2,2,2,2,2,1]` / 20 / **0** |
+| 30 | 25 | `[3,4,6,6,2,4]` / 25 / **10** | `[3,2,2,2,2,2,2,2,2,2,4]` / 25 / **0** |
+| 40 | 34 | `[3,4,6,6,2,6,3,4]` / 34 / **6** | `[3,4,3,3,3,3,2,3,3,3,4]` / 34 / **0** |
+| 60 | 51 | 11 groups / 51 / 0 | 11 groups / 51 / 0 |
+| 120 | 102 | 11 groups / **43** / 0 | 11 groups / **52** / 0 |
 
-A blank spread is a legitimate pacing device (`pace::BLANK_TEMPLATE_ID`, spec 5.1), which
-is why this is not a bug in the strict sense. But "all the photos at the front, then
-silence" is not pacing.
+Never worse on either axis, and at 120 photos it places 9 more of them. The pinned
+regression is `pack_fills_every_slot_rather_than_front_loading_the_first_spreads` (30
+photos, 9 spreads + 2 singles, `buildable = 1..=6`), which fails with
+`11 slots but only 5 groups: [6, 6, 6, 6, 6]` against the old rule.
 
-**Ruling: parked, needs a distribution rule rather than a greedy one.** The natural fix is
-to spread groups evenly across available slots rather than take the maximum each time.
-Judge it against real photos, not the fixtures.
+The golden fixture (`src-tauri/tests/fixtures/book-20.json`) went from **2 blank pages to
+0**. Its placed count fell 24 → 21, which is an artefact of the *frozen five-template*
+in-test library, not of the packer: every one of those five templates has a **1-slot left
+half**, so the closing single page can hold exactly one photo however the groups are cut.
+Against the real library the same 30-photo fixture places all 25 keepers (table above).
+
+Sizes are not uniform — the half-up rounding interleaves the floor and ceiling values
+(`[3,4,3,3,3,3,2,3,3,3,4]`) rather than clustering the large ones at the front — so
+`pace::repace` still has density and energy variation to work with. See "the remaining
+tension" note below.
+
+**Still open, smaller:** `pack` sizes every group by SPREAD counts, but two of the slots it
+sizes for are single pages holding only a page-half's worth. Evening out the distribution
+does not cause this (it is why `best_single` takes the largest half that FITS rather than
+an exact match) but it does make the two end groups more likely to overflow on a library
+whose halves are small. Closing it properly means teaching `Capacity`/`apportion_slots`
+that the first and last slots have a smaller photo capacity than a spread. Not attempted;
+judge it at the real-photo run.
 
 ### 5. RAW is uncovered end to end, and cannot be closed synthetically
 
@@ -555,9 +576,9 @@ closing the 4/5/6-up gaps. The ignored test
 `templates_real_library_covers_every_group_size_from_one_to_six` asserts this against the
 real directory — run it with `cargo test -- --ignored`.
 
-**Note the side effect:** with every size 1–6 buildable, `choose_group_size` now always
-takes 6. See open item 4 above — closing the coverage gap made the front-loading worse, not
-better.
+**Note the side effect, since fixed:** closing the coverage gap made `choose_group_size`
+always take 6, because its decomposability guard is trivially true once `1` is buildable.
+See open item 4 above — the packer now sizes groups against the remaining slots instead.
 
 ---
 
@@ -744,7 +765,8 @@ beside it. The design calls for the OS keychain, read from Rust.
    remaining — it is the only thing that would turn "Phase 2 is internally verified" into
    "Phase 2 works". It settles, in one sitting: whether the picker accepts JPEG and PNG,
    RAW and HEIC throughput, the whole face code path, Pixajoy's page-count semantics, and
-   whether the front-loaded pacing (open item 4) is actually as bad as it measures.
+   whether the new even-distribution pacing (open item 4) reads well on real photographs --
+   it is measured against fixtures only.
 2. **Answer the Pixajoy page-count question** — 30 seconds in their editor, while you are
    there.
 3. **Decide the seed question before planning Phase 3** (open item 3). "Regenerate this
