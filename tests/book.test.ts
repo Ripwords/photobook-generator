@@ -15,6 +15,7 @@ import {
   canGenerateAt,
   includeOverflowLabel,
   projectDetailLabel,
+  selectionLabel,
   recommendedOption,
   resolveExportProjectId,
   revealTarget,
@@ -296,6 +297,41 @@ describe("project list wire shape", () => {
     expect(overrideFor(detail.overrides, "a1b2c3d4")).toBe("include");
     expect(overrideFor(detail.overrides, "e5f6a7b8")).toBe("exclude");
     expect(overrideFor(detail.overrides, "never-decided")).toBe("auto");
+  });
+
+  /**
+   * **The restored decisions must be VISIBLE, not merely returned.**
+   *
+   * `ProjectDetail.overrides` round-tripped correctly and nothing in `app/`
+   * read it, so reopening a project showed no sign of the selection at all --
+   * the same "persisted but unreachable from the UI" defect that started this
+   * line of work. This is the function the project panel renders.
+   *
+   * Both states are counted, and separately: a label summing them into one
+   * number cannot tell "3 included" from "2 included, 1 excluded", which are
+   * very different statements about a book.
+   */
+  it("says what selection a reopened project was generated with", () => {
+    const detail = fixture<ProjectDetail>("project-detail.json");
+
+    expect(selectionLabel(detail)).toBe("Your selection: 1 you included, 1 you excluded");
+  });
+
+  it("says nothing about selection when the engine chose the whole book", () => {
+    const detail = fixture<ProjectDetail>("project-detail.json");
+
+    expect(selectionLabel({ ...detail, overrides: {} })).toBeNull();
+  });
+
+  it("names only the state that is actually present", () => {
+    const detail = fixture<ProjectDetail>("project-detail.json");
+
+    expect(selectionLabel({ ...detail, overrides: { h1: "include", h2: "include" } })).toBe(
+      "Your selection: 2 you included",
+    );
+    expect(selectionLabel({ ...detail, overrides: { h1: "exclude" } })).toBe(
+      "Your selection: 1 you excluded",
+    );
   });
 });
 

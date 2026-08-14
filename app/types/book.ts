@@ -372,6 +372,26 @@ export function resolveExportProjectId(
   return state.generated?.projectId ?? state.activeProject?.id ?? null;
 }
 
+/**
+ * How many decisions a saved project carries, as a sentence -- or `null` when
+ * the engine chose everything in it.
+ *
+ * A reopened project used to return `overrides` and show nothing at all, so
+ * the decisions were invisible and unchangeable. That is the same defect that
+ * started this line of work (persistence that existed but was unreachable
+ * from the UI), one level down.
+ */
+export function selectionLabel(project: ProjectDetail): string | null {
+  const states = Object.values(project.overrides);
+  const included = states.filter((state) => state === "include").length;
+  const excluded = states.filter((state) => state === "exclude").length;
+  if (included === 0 && excluded === 0) return null;
+  const parts: string[] = [];
+  if (included > 0) parts.push(`${included} you included`);
+  if (excluded > 0) parts.push(`${excluded} you excluded`);
+  return `Your selection: ${parts.join(", ")}`;
+}
+
 export function projectDetailLabel(project: ProjectDetail): string {
   const exports =
     project.exports.length === 0
