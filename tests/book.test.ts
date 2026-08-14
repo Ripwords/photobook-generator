@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyExportEvent,
   blockingMessages,
+  exportOutcome,
   defaultProjectName,
   generatedLabel,
   initialExportProgress,
@@ -146,6 +147,34 @@ describe("export result wire shape", () => {
   it("carries a manifest path only when a manifest was written", () => {
     expect(exported.manifestPath).toBe("/Users/jj/Desktop/photobook-export/manifest.json");
     expect(blocked.manifestPath).toBeNull();
+  });
+
+  it("reads the manifest-write failure Rust reports alongside a successful export", () => {
+    expect(exported.manifestError).toBeNull();
+    const manifestFailed: ExportResult = {
+      ...exported,
+      manifestPath: null,
+      manifestError: "Read-only file system (os error 30)",
+    };
+    // The files still exist, so this is NOT a failed export -- the outcome
+    // must stay a written one, with the manifest problem reported beside it.
+    expect(exportOutcome(manifestFailed)).toBe("partial");
+    expect(manifestFailed.manifestError).toBe("Read-only file system (os error 30)");
+  });
+
+  /**
+   * An export where every item failed has `blocked: false` and `written: []`
+   * -- it is neither a block nor a success. Rendering the success alert for
+   * it read "0 files written" with an empty format, which tells the user
+   * their book exported when nothing did.
+   */
+  it("does not call an export where nothing was written a success", () => {
+    expect(exportOutcome({ ...exported, written: [], failures: exported.failures })).toBe(
+      "failed",
+    );
+    expect(exportOutcome({ ...blocked })).toBe("blocked");
+    expect(exportOutcome(exported)).toBe("partial");
+    expect(exportOutcome({ ...exported, failures: [] })).toBe("written");
   });
 });
 

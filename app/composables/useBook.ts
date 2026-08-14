@@ -17,15 +17,17 @@ import type { AnalyzedPhoto } from "~/types/features";
  * how long the book should be, generating and saving it, exporting it, and
  * the list of books already saved.
  *
- * The analysed photos are passed BACK to Rust on every call rather than
- * re-read there. `aestheticPct`, `sharpnessPct`, `nearDupCluster` and
- * `eventCluster` are whole-set derivations computed once by `finalize_photos`
- * and never persisted (the SQLite cache stores per-photo features only), so
- * the webview's copy is the only place they exist. The records handed back
- * are the ones Rust sent, unmodified and in the same order -- which is also
- * what makes `Placement::photo_index` line up between `generate_book` and
- * `export_book`. Rust refuses the export outright if the count no longer
- * matches the book (see `expected_photo_count`).
+ * `recommend_book` and `generate_book` are passed the analysed photos back
+ * rather than re-reading them in Rust: `aestheticPct`, `sharpnessPct`,
+ * `nearDupCluster` and `eventCluster` are whole-set derivations computed
+ * once by `finalize_photos` and never persisted (the SQLite cache stores
+ * per-photo features only), so the webview's copy is the only place they
+ * exist.
+ *
+ * `export_book` is NOT passed them. Generating a book persists the content
+ * hash of every photo it was assembled against, and export rebuilds the
+ * slice from those -- so exporting works after a restart, and cannot be fed
+ * a different photo set than the book was built from.
  */
 export function useBook(photos: Ref<AnalyzedPhoto[]>, folder: Ref<string | null>) {
   const recommendation = ref<BookRecommendation | null>(null);
@@ -92,9 +94,13 @@ export function useBook(photos: Ref<AnalyzedPhoto[]>, folder: Ref<string | null>
     };
 
     await guard(async () => {
+      // No photos are sent: Rust rebuilds the exact slice the book was
+      // assembled against from the content hashes persisted with the
+      // project. That is what lets a saved book be exported after a restart,
+      // and it removes the hazard of handing back a same-length-but-
+      // different array after a re-analysis.
       exportResult.value = await invoke<ExportResult>("export_book", {
         projectId,
-        photos: photos.value,
         outputDir: outputDir.value,
         onEvent,
       });
@@ -108,6 +114,22 @@ export function useBook(photos: Ref<AnalyzedPhoto[]>, folder: Ref<string | null>
 
   async function loadProjects() {
     projects.value = await invoke<ProjectListItem[]>("list_projects");
+  }
+
+  /**
+   * Clears everything derived from one analysed set. Called when the photos
+   * change: a generated book, a chosen output folder and an export report
+   * all belong to the folder they were made from, and carrying any of them
+   * across to a different folder means offering to export a book against
+   * photos that are no longer on screen.
+   */
+  function reset() {
+    recommendation.value = null;
+    generated.value = null;
+    exportResult.value = null;
+    progress.value = initialExportProgress;
+    outputDir.value = null;
+    error.value = null;
   }
 
   async function reveal(path: string) {
@@ -128,6 +150,7 @@ export function useBook(photos: Ref<AnalyzedPhoto[]>, folder: Ref<string | null>
     pickOutputDir,
     exportBook,
     loadProjects,
+    reset,
     reveal,
   };
 }

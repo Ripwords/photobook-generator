@@ -38,6 +38,30 @@ pub struct Project {
     pub created_at: i64,
     pub updated_at: i64,
     pub book: Book,
+    /// Content hashes of the photo set the book is defined over, in the
+    /// SAME ORDER as the slice `pace::assemble` was given -- so
+    /// `Placement::photo_index` indexes straight into this list (spec 5.4a:
+    /// "The culled photo set, by content hash").
+    ///
+    /// This is what makes a project genuinely durable. Without it, exporting
+    /// a saved book required the webview to hand back the same photo array
+    /// it happened to still be holding, in the same order: the app could not
+    /// export a project after a restart, and a re-analysis that produced a
+    /// same-length-but-different set would have exported the old book's
+    /// crops against the new photos, with no error anywhere. Every hash
+    /// resolves back to a full feature record through the `features` cache,
+    /// which is keyed by exactly this hash.
+    ///
+    /// **Every photo, not only the placed ones.** `Placement::photo_index`
+    /// indexes the whole slice `assemble` received (see `pace.rs`), so a
+    /// list holding only the survivors would renumber every index and change
+    /// which photo each placement points at. Storing the full ordered list
+    /// keeps `Placement` -- and the goldens built on it -- untouched.
+    ///
+    /// A hash may legitimately repeat: two byte-identical files in one
+    /// folder hash the same, and both are real placements of what is, in
+    /// pixels, the same photo.
+    pub photo_hashes: Vec<String>,
     pub exports: Vec<ExportRecord>,
 }
 

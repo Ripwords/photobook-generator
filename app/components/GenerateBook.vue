@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   defaultProjectName,
+  exportOutcome,
   generatedLabel,
   lastExportLabel,
   optionFor,
@@ -36,6 +37,7 @@ const {
   pickOutputDir,
   exportBook,
   loadProjects,
+  reset,
   reveal,
 } = useBook(photosRef, folderRef);
 
@@ -66,6 +68,7 @@ const pageItems = computed(() =>
   })),
 );
 const counts = computed(() => (exportResult.value ? summarizeExport(exportResult.value) : null));
+const outcome = computed(() => (exportResult.value ? exportOutcome(exportResult.value) : null));
 const revealPath = computed(() => (exportResult.value ? revealTarget(exportResult.value) : null));
 const exportPercent = computed(() =>
   progress.value.total > 0
@@ -80,6 +83,11 @@ const exportPercent = computed(() =>
 watch(
   () => photos,
   () => {
+    // Everything below belongs to the PREVIOUS folder: a generated book, the
+    // output directory chosen for it, and its export report. Carrying any of
+    // them across would leave an "Export" button wired to a book built from
+    // photos that are no longer on screen.
+    reset();
     name.value = defaultProjectName(folder);
     chosenPages.value = null;
     void refreshRecommendation();
@@ -227,20 +235,37 @@ onMounted(() => {
     -->
     <div v-if="exportResult && counts" class="space-y-4">
       <UAlert
-        v-if="exportResult.blocked"
+        v-if="outcome === 'blocked'"
         icon="i-lucide-octagon-x"
         color="error"
         variant="subtle"
         title="Nothing was exported"
         description="Pre-flight found problems that would print badly. No files were written; fix these and export again."
       />
+      <!--
+        `blocked: false` with nothing written is an export where every single
+        item failed. It is not a success and must not be dressed as one.
+      -->
+      <UAlert
+        v-else-if="outcome === 'failed'"
+        icon="i-lucide-triangle-alert"
+        color="error"
+        variant="subtle"
+        title="No files could be written"
+        description="Pre-flight passed, but every photo failed to export. The reasons are listed below."
+      />
       <UAlert
         v-else
-        icon="i-lucide-check"
-        color="success"
+        :icon="outcome === 'partial' ? 'i-lucide-triangle-alert' : 'i-lucide-check'"
+        :color="outcome === 'partial' ? 'warning' : 'success'"
         variant="subtle"
-        :title="`${counts.writtenCount} files written`"
-        :description="`Format: ${exportResult.format}. A manifest of what went where is in the same folder.`"
+        :title="`${counts.writtenCount} ${counts.writtenCount === 1 ? 'file' : 'files'} written to ${exportResult.outputDir}`"
+        :description="
+          exportResult.manifestError
+            ? `Format: ${exportResult.format}. The files are there, but manifest.json could not be written: ${exportResult.manifestError}`
+            : `Format: ${exportResult.format}. A manifest of what went where is in the same folder.`
+        "
+        :ui="{ description: 'break-words' }"
         :actions="[
           {
             label: 'Reveal in Finder',

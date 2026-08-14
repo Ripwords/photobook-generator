@@ -67,7 +67,13 @@ impl Db {
                  exported_at INTEGER NOT NULL DEFAULT (unixepoch())
              );
              CREATE INDEX IF NOT EXISTS idx_project_exports_project_id
-                 ON project_exports (project_id);",
+                 ON project_exports (project_id);
+             CREATE TABLE IF NOT EXISTS project_photos (
+                 project_id INTEGER NOT NULL REFERENCES projects(id),
+                 position   INTEGER NOT NULL,
+                 hash       TEXT NOT NULL,
+                 PRIMARY KEY (project_id, position)
+             );",
         )
     }
 
@@ -98,16 +104,41 @@ impl Db {
     /// (see `project.rs` for why); `page_count`/`photo_count` are
     /// denormalised alongside it so `list_projects` never has to parse
     /// JSON. Returns the new row's id.
-    pub fn save_project(&self, name: &str, source_folder: &str, book: &Book) -> rusqlite::Result<i64> {
+    ///
+    /// `photo_hashes` is the content hash of every photo the book was
+    /// assembled against, in that slice's own order -- see
+    /// `Project::photo_hashes` for why the ORDER and the FULL set are both
+    /// load-bearing. Written in the same transaction as the project row, so
+    /// a half-written project (a book whose photo list is missing or short)
+    /// is not a state that can exist.
+    pub fn save_project(
+        &self,
+        name: &str,
+        source_folder: &str,
+        book: &Book,
+        photo_hashes: &[String],
+    ) -> rusqlite::Result<i64> {
         let book_json = serde_json::to_string(book)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         let (page_count, photo_count) = project::book_counts(book);
-        self.conn.execute(
+
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "INSERT INTO projects (name, source_folder, page_count, photo_count, book_json)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![name, source_folder, page_count, photo_count, book_json],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        let id = tx.last_insert_rowid();
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO project_photos (project_id, position, hash) VALUES (?1, ?2, ?3)",
+            )?;
+            for (position, hash) in photo_hashes.iter().enumerate() {
+                stmt.execute(rusqlite::params![id, position as i64, hash])?;
+            }
+        }
+        tx.commit()?;
+        Ok(id)
     }
 
     /// Loads a project and its export history. `None` if `id` does not
@@ -138,6 +169,16 @@ impl Db {
             rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, Box::new(e))
         })?;
 
+        // `ORDER BY position` is not cosmetic: `Placement::photo_index`
+        // indexes this list positionally, so any other order silently
+        // repoints every placement at a different photo.
+        let mut stmt = self
+            .conn
+            .prepare("SELECT hash FROM project_photos WHERE project_id = ?1 ORDER BY position ASC")?;
+        let photo_hashes = stmt
+            .query_map(rusqlite::params![id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
         let mut stmt = self.conn.prepare(
             "SELECT output_dir, format, file_count, exported_at
              FROM project_exports WHERE project_id = ?1 ORDER BY exported_at ASC, id ASC",
@@ -152,7 +193,16 @@ impl Db {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
-        Ok(Some(Project { id, name, source_folder, created_at, updated_at, book, exports }))
+        Ok(Some(Project {
+            id,
+            name,
+            source_folder,
+            created_at,
+            updated_at,
+            book,
+            photo_hashes,
+            exports,
+        }))
     }
 
     /// Summaries for every saved project, newest-updated first.
@@ -189,14 +239,16 @@ impl Db {
         Ok(())
     }
 
-    /// Removes a project and every export row recorded against it. Both
-    /// deletes are explicit rather than relying on a foreign-key cascade
-    /// (`project_exports.project_id` has no `ON DELETE CASCADE`) -- the
-    /// export rows must go first, since `migrate()` turns
-    /// `PRAGMA foreign_keys` on for this connection and would otherwise
-    /// reject deleting a `projects` row that export rows still reference.
+    /// Removes a project, every export row recorded against it, and its
+    /// photo list. All three deletes are explicit rather than relying on a
+    /// foreign-key cascade (neither child table declares
+    /// `ON DELETE CASCADE`) -- the child rows must go first, since
+    /// `migrate()` turns `PRAGMA foreign_keys` on for this connection and
+    /// would otherwise reject deleting a `projects` row they still
+    /// reference.
     pub fn delete_project(&self, id: i64) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM project_exports WHERE project_id = ?1", rusqlite::params![id])?;
+        self.conn.execute("DELETE FROM project_photos WHERE project_id = ?1", rusqlite::params![id])?;
         self.conn.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])?;
         Ok(())
     }
@@ -207,6 +259,19 @@ mod tests {
     use super::*;
     use crate::book::pace::{Book, Page, Placement};
     use crate::geometry::{Rect, Side};
+
+    /// Seven hashes, deliberately NOT in sorted order and NOT equal to their
+    /// own positions: `Placement::photo_index` indexes this list
+    /// positionally, so a fixture whose order happens to match any incidental
+    /// ordering (alphabetical, insertion-by-id) could not tell a correct
+    /// round trip from one that re-sorted on the way out. Seven because
+    /// `fixture_book` places 4 photos and reports 3 dropped.
+    fn fixture_hashes() -> Vec<String> {
+        ["hf00", "ha11", "hz22", "hb33", "hy44", "hc55", "hx66"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
 
     /// Two pages, two placements per page, distinct non-round `z` values,
     /// and `slot_rect`/`crop` rects that differ from each other AND carry
@@ -306,7 +371,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let book = fixture_book();
 
-        let id = db.save_project("Kyoto Trip", "/Users/j/Photos/kyoto", &book).unwrap();
+        let id = db.save_project("Kyoto Trip", "/Users/j/Photos/kyoto", &book, &fixture_hashes()).unwrap();
         let loaded = db.load_project(id).unwrap().expect("project should exist");
 
         assert_eq!(loaded.book, book);
@@ -321,10 +386,126 @@ mod tests {
         assert!(db.load_project(999).unwrap().is_none());
     }
 
+    /// Spec 5.4a: a project stores the photo set the book is defined over,
+    /// by content hash. The ORDER is the contract -- `Placement::photo_index`
+    /// indexes this list positionally -- so this asserts the exact sequence,
+    /// not a set.
+    #[test]
+    fn round_trips_the_photo_hash_list_in_its_original_order() {
+        let db = Db::open_in_memory().unwrap();
+        let hashes = fixture_hashes();
+
+        let id = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &hashes).unwrap();
+        let loaded = db.load_project(id).unwrap().unwrap();
+
+        assert_eq!(loaded.photo_hashes, hashes);
+        // Sanity: the fixture is not already sorted, so a query that lost its
+        // `ORDER BY position` (or re-sorted by hash) is distinguishable from
+        // one that kept insertion order.
+        let mut sorted = hashes.clone();
+        sorted.sort();
+        assert_ne!(sorted, hashes, "fixture must not be pre-sorted");
+    }
+
+    /// Two byte-identical files in one folder hash the same and are two real
+    /// placements. The list is positional, not a set, so it must keep both.
+    #[test]
+    fn keeps_a_repeated_hash_at_both_of_its_positions() {
+        let db = Db::open_in_memory().unwrap();
+        let hashes: Vec<String> =
+            ["hdup", "hb11", "hdup"].iter().map(|s| s.to_string()).collect();
+
+        let id = db.save_project("Dupes", "/tmp/dupes", &fixture_book(), &hashes).unwrap();
+
+        assert_eq!(db.load_project(id).unwrap().unwrap().photo_hashes, hashes);
+    }
+
+    /// A project saved before `project_photos` existed has no rows there.
+    /// That must read back as an empty list, not fail the load -- the caller
+    /// turns it into "re-analyse this folder", and a project the user cannot
+    /// even list is worse than one they cannot export.
+    #[test]
+    fn a_project_with_no_stored_photo_list_loads_with_an_empty_one() {
+        let db = Db::open_in_memory().unwrap();
+        let id = db.save_project("Legacy", "/tmp/legacy", &fixture_book(), &[]).unwrap();
+
+        let loaded = db.load_project(id).unwrap().expect("the project must still load");
+
+        assert!(loaded.photo_hashes.is_empty());
+        assert_eq!(loaded.book, fixture_book(), "the book itself is unaffected");
+    }
+
+    /// `save_project` writes the project row and its photo list in one
+    /// transaction, so a failure partway through must leave NO project row
+    /// at all rather than one whose photo list is missing or short -- a
+    /// project that looks saved but cannot be exported is worse than a save
+    /// that visibly failed.
+    ///
+    /// The failure is forced by pre-claiming the `(project_id, position)`
+    /// primary key the next save will need. Foreign keys are switched off
+    /// only for the duration of that squatting insert, since the project row
+    /// it references does not exist yet by construction.
+    #[test]
+    fn a_failed_photo_list_write_leaves_no_half_written_project() {
+        let db = Db::open_in_memory().unwrap();
+        let existing =
+            db.save_project("First", "/tmp/first", &fixture_book(), &fixture_hashes()).unwrap();
+        let next_id = existing + 1;
+
+        db.conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO project_photos (project_id, position, hash) VALUES (?1, 0, 'squatter')",
+                rusqlite::params![next_id],
+            )
+            .unwrap();
+        db.conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+
+        let before: i64 =
+            db.conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0)).unwrap();
+
+        let result =
+            db.save_project("Second", "/tmp/second", &fixture_book(), &fixture_hashes());
+
+        assert!(result.is_err(), "the colliding photo-list insert must fail the save");
+        let after: i64 =
+            db.conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0)).unwrap();
+        assert_eq!(after, before, "a rolled-back save must leave no project row behind");
+        assert!(
+            db.load_project(next_id).unwrap().is_none(),
+            "and the id it would have taken must still be unused"
+        );
+    }
+
+    #[test]
+    fn delete_project_removes_its_photo_list_too() {
+        let db = Db::open_in_memory().unwrap();
+        let keep =
+            db.save_project("Keep", "/tmp/keep", &fixture_book(), &fixture_hashes()).unwrap();
+        let gone =
+            db.save_project("Gone", "/tmp/gone", &fixture_book(), &fixture_hashes()).unwrap();
+
+        let photo_rows = |id: i64| -> i64 {
+            db.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM project_photos WHERE project_id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(photo_rows(gone), 7, "sanity: the photo list was written");
+
+        db.delete_project(gone).unwrap();
+
+        assert_eq!(photo_rows(gone), 0, "the deleted project's photo list must go with it");
+        assert_eq!(photo_rows(keep), 7, "and only that project's");
+    }
+
     #[test]
     fn save_project_denormalises_page_and_photo_counts_for_listing() {
         let db = Db::open_in_memory().unwrap();
-        let id = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book()).unwrap();
+        let id = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &fixture_hashes()).unwrap();
 
         let summaries = db.list_projects().unwrap();
         let summary = summaries.iter().find(|s| s.id == id).unwrap();
@@ -336,8 +517,8 @@ mod tests {
     #[test]
     fn list_projects_orders_newest_updated_first() {
         let db = Db::open_in_memory().unwrap();
-        let older = db.save_project("Older", "/tmp/older", &fixture_book()).unwrap();
-        let newer = db.save_project("Newer", "/tmp/newer", &fixture_book()).unwrap();
+        let older = db.save_project("Older", "/tmp/older", &fixture_book(), &fixture_hashes()).unwrap();
+        let newer = db.save_project("Newer", "/tmp/newer", &fixture_book(), &fixture_hashes()).unwrap();
 
         // `unixepoch()` has one-second granularity, so two saves in the
         // same test can easily tie -- force a deterministic ordering
@@ -356,7 +537,7 @@ mod tests {
     #[test]
     fn record_export_appends_and_load_project_returns_them_in_order() {
         let db = Db::open_in_memory().unwrap();
-        let id = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book()).unwrap();
+        let id = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &fixture_hashes()).unwrap();
 
         db.record_export(
             id,
@@ -381,8 +562,8 @@ mod tests {
     #[test]
     fn delete_project_removes_the_project_and_its_export_rows_only() {
         let db = Db::open_in_memory().unwrap();
-        let keep = db.save_project("Keep", "/tmp/keep", &fixture_book()).unwrap();
-        let gone = db.save_project("Gone", "/tmp/gone", &fixture_book()).unwrap();
+        let keep = db.save_project("Keep", "/tmp/keep", &fixture_book(), &fixture_hashes()).unwrap();
+        let gone = db.save_project("Gone", "/tmp/gone", &fixture_book(), &fixture_hashes()).unwrap();
         db.record_export(
             gone,
             &ExportRecord { at: 0, output_dir: "/tmp/gone-out".into(), format: "jpeg".into(), file_count: 3 },

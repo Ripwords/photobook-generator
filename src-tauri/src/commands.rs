@@ -690,6 +690,14 @@ pub struct ExportResult {
     pub written: Vec<String>,
     pub failures: Vec<ExportFailure>,
     pub manifest_path: Option<String>,
+    /// Why `manifest.json` could not be written, when it could not be.
+    ///
+    /// A manifest failure NEVER fails the export: by the time it is written
+    /// every file is already on disk, and turning that into an error would
+    /// tell the user the export failed while leaving nineteen files
+    /// somewhere they were never told about. Reported alongside a result
+    /// that still names every path written.
+    pub manifest_error: Option<String>,
     /// `"jpg"`, `"png"`, `"mixed"`, or empty when nothing was written.
     pub format: String,
 }
@@ -828,6 +836,54 @@ pub(crate) fn photos_from_records(records: &[serde_json::Value]) -> Result<Vec<P
         .collect()
 }
 
+/// Rebuilds the exact photo slice a saved book was assembled against, from
+/// the content hashes persisted with it.
+///
+/// This is what makes a project durable: exporting no longer depends on the
+/// webview still holding the same array in the same order. The features
+/// cache is keyed by exactly these hashes, and the fields export and
+/// pre-flight need -- `path`, `hash`, `width`/`height`, `faces`,
+/// `saliencyBox` -- are all in the stored record. The percentile and cluster
+/// fields are not (they are whole-set derivations `finalize_photos` never
+/// persists), which is fine: nothing downstream of assembly reads them.
+/// `from_features` defaults them to 0.
+///
+/// **All or nothing.** A single unresolvable hash fails the call. Returning
+/// a shorter list would renumber every `photo_index` after the gap, and the
+/// export would then write one photo's crop under another photo's name --
+/// silently. The two ways a hash stops resolving are a cache that was
+/// cleared and an `ANALYZER_VERSION` bump (`Db::get_features` filters on it,
+/// so every row goes stale at once); both produce the same instruction,
+/// because from the user's side they are the same problem.
+pub(crate) fn resolve_photos(db: &Db, hashes: &[String]) -> Result<Vec<Photo>, String> {
+    const REMEDY: &str =
+        "re-analyse the source folder, then generate the book again";
+
+    if hashes.is_empty() {
+        return Err(format!(
+            "This book was saved without its photo list (it predates that being recorded) -- {REMEDY}."
+        ));
+    }
+
+    let mut photos = Vec::with_capacity(hashes.len());
+    for hash in hashes {
+        let json = db
+            .get_features(hash)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| {
+                format!(
+                    "This book's photos are no longer in the analysis cache \
+                     (either it was cleared, or the analyser has been updated since) -- {REMEDY}."
+                )
+            })?;
+        let value: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+        photos.push(crate::book::cull::from_features(&value).ok_or_else(|| {
+            format!("A cached photo record is missing fields the layout engine needs -- {REMEDY}.")
+        })?);
+    }
+    Ok(photos)
+}
+
 /// The recommended book length and what each length would cost.
 pub(crate) fn recommend(photos: &[Photo], lib: &Library) -> BookRecommendation {
     let keeper_count = crate::book::cull::cull(photos).len();
@@ -904,8 +960,14 @@ pub(crate) fn generate_and_save(
     weights: &Weights,
 ) -> Result<GeneratedBook, String> {
     let book = crate::book::pace::assemble(photos, meta.pages, lib, weights, meta.seed);
-    let project_id =
-        db.save_project(meta.name, meta.source_folder, &book).map_err(|e| e.to_string())?;
+    // The hash of EVERY photo the book was assembled against, in that
+    // slice's order -- `Placement::photo_index` indexes it positionally.
+    // This is what makes the project exportable after a restart; see
+    // `Project::photo_hashes`.
+    let photo_hashes: Vec<String> = photos.iter().map(|p| p.hash.clone()).collect();
+    let project_id = db
+        .save_project(meta.name, meta.source_folder, &book, &photo_hashes)
+        .map_err(|e| e.to_string())?;
     Ok(GeneratedBook {
         project_id,
         page_count: book.pages.len(),
@@ -928,7 +990,15 @@ fn written_extensions(records: &[serde_json::Value]) -> BTreeMap<String, String>
         .filter_map(|r| {
             let path = Path::new(r["path"].as_str()?);
             let stem = path.file_stem()?.to_str()?.to_string();
-            let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+            // The extension is OPTIONAL on purpose. A record's presence means
+            // the file was written; requiring an extension to keep the entry
+            // would drop a real file out of the manifest because its name
+            // happened to carry no container. Unknown is recorded as unknown.
+            let extension = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
             Some((stem, extension))
         })
         .collect()
@@ -1047,6 +1117,7 @@ where
             written: Vec::new(),
             failures: Vec::new(),
             manifest_path: None,
+            manifest_error: None,
             format: String::new(),
         });
     }
@@ -1064,7 +1135,17 @@ where
     if unwritten > 0 {
         log::warn!("{unwritten} placement(s) failed to export and were left out of the manifest");
     }
-    let manifest_path = write_manifest(&manifest)?;
+    // Deliberately not `?`: the sidecar has already written every file, and
+    // a failure here (read-only volume, full disk) must not discard an
+    // export that succeeded. Reported instead, so the user still learns
+    // where their files are.
+    let (manifest_path, manifest_error) = match write_manifest(&manifest) {
+        Ok(path) => (Some(path), None),
+        Err(err) => {
+            log::warn!("export succeeded but the manifest could not be written: {err}");
+            (None, Some(err))
+        }
+    };
 
     Ok(ExportResult {
         blocked: false,
@@ -1074,7 +1155,8 @@ where
         format: export_format_label(&written),
         written,
         failures,
-        manifest_path: Some(manifest_path),
+        manifest_path,
+        manifest_error,
     })
 }
 
@@ -1141,6 +1223,13 @@ pub async fn generate_book(
 
 /// Pre-flights a saved book and, if nothing blocks, exports it.
 ///
+/// Takes NO photos from the webview. The photo slice is rebuilt from the
+/// content hashes persisted with the project (`resolve_photos`), which is
+/// what lets a book be exported after a restart -- and, just as importantly,
+/// removes the hazard of the webview handing back a same-length-but-
+/// different array after a re-analysis, which would have exported the old
+/// book's crops against the new photos with no error anywhere.
+///
 /// The whole body runs inside `spawn_blocking`: `Sidecar::request` does a
 /// BLOCKING `recv_timeout` while waiting for the sidecar's stdout-drain task
 /// -- itself a tokio task -- to hand it the response. Running that on the
@@ -1152,7 +1241,6 @@ pub async fn generate_book(
 pub async fn export_book(
     app: AppHandle,
     project_id: i64,
-    photos: Vec<serde_json::Value>,
     output_dir: String,
     on_event: Channel<ExportEvent>,
 ) -> Result<ExportResult, String> {
@@ -1162,7 +1250,7 @@ pub async fn export_book(
             .load_project(project_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("project {project_id} no longer exists"))?;
-        let parsed = photos_from_records(&photos)?;
+        let parsed = resolve_photos(&db, &project.photo_hashes)?;
         let output = PathBuf::from(&output_dir);
 
         // Pre-flight reads the real world: it checks every source file still
@@ -2282,6 +2370,26 @@ mod tests {
         (0..n).map(|i| photo_record(i, false, i as u32, (i / 4) as u32)).collect()
     }
 
+    /// As `distinct_records`, but each photo's HASH is numbered backwards
+    /// against its position, so sorted-by-hash order is the exact reverse of
+    /// slice order.
+    ///
+    /// Load-bearing, not decorative: `distinct_records`'s hashes ascend with
+    /// position, so a persistence layer that lost the ordering and re-sorted
+    /// by hash would round-trip it unchanged and every ordering assertion
+    /// built on it would pass under the bug. (Verified: the sort-by-hash
+    /// mutation was inert against `distinct_records` and fails against
+    /// this.)
+    fn records_with_hashes_out_of_slice_order(n: usize) -> Vec<serde_json::Value> {
+        (0..n)
+            .map(|i| {
+                let mut record = photo_record(i, false, i as u32, (i / 4) as u32);
+                record["hash"] = format!("hash{:04}", n - 1 - i).into();
+                record
+            })
+            .collect()
+    }
+
     fn engine_photo(path: &str, hash: &str) -> Photo {
         Photo {
             path: path.into(),
@@ -2883,6 +2991,7 @@ mod tests {
                 message: "could not decode: /photos/bad.raw".into(),
             }],
             manifest_path: Some("/Users/jj/Desktop/photobook-export/manifest.json".into()),
+            manifest_error: None,
             format: "jpg".into(),
         };
         assert_eq!(serde_json::to_value(&value).unwrap(), wire_fixture("export-result.json"));
@@ -2912,6 +3021,7 @@ mod tests {
             written: Vec::new(),
             failures: Vec::new(),
             manifest_path: None,
+            manifest_error: None,
             format: String::new(),
         };
         assert_eq!(
@@ -2993,6 +3103,261 @@ mod tests {
         assert!(!value.contains("photo_path"), "{value}");
         let warn = serde_json::to_string(&finding(Severity::Warn, 4, "boom")).unwrap();
         assert!(warn.contains(r#""severity":"warn""#), "{warn}");
+    }
+
+    // --- a project is durable across a restart (spec 5.4a) --------------
+
+    /// Writes each record into the features cache under its own hash, the
+    /// way a real analysis run does, so a project saved against them can be
+    /// resolved back later without the webview.
+    fn cache_records(db: &Db, records: &[serde_json::Value]) {
+        for record in records {
+            db.put_features(
+                record["hash"].as_str().unwrap(),
+                record["path"].as_str().unwrap(),
+                &record.to_string(),
+            )
+            .unwrap();
+        }
+    }
+
+    /// **The property the review asked for**: a project saved, the app
+    /// restarted, and the project reopened must export exactly what the
+    /// original export did, without re-analysing the folder.
+    ///
+    /// "Byte-identical files" is asserted through the three inputs that
+    /// wholly determine each output file -- source path, crop window, and
+    /// output filename -- because the exporter is a pure function of those
+    /// (decode the source, crop that window, write that name; see
+    /// `Exporter.exportOne`). Running the real sidecar twice would test the
+    /// sidecar's determinism, not this module's.
+    ///
+    /// The restart is real, not simulated: the database is a FILE, the first
+    /// handle is dropped, and a second `Db::open` reads it back with no
+    /// in-memory state carried over. The webview's photo array is never
+    /// consulted on the second pass -- `resolve_photos` is given nothing but
+    /// the hashes that were persisted.
+    #[test]
+    fn a_project_exports_identically_after_a_restart_without_re_analysing() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("photobook.sqlite");
+        let lib = fixture_library();
+        let records = records_with_hashes_out_of_slice_order(12);
+
+        let before_restart = {
+            let db = Db::open(&db_path).unwrap();
+            cache_records(&db, &records);
+            let photos = photos_from_records(&records).unwrap();
+            let meta =
+                NewProject { name: "Japan", source_folder: "/photos", pages: 20, seed: 11 };
+            let generated =
+                generate_and_save(&db, &meta, &photos, &lib, &Weights::default()).unwrap();
+            let book = db.load_project(generated.project_id).unwrap().unwrap().book;
+            (generated.project_id, crate::export::build_items(&book, &photos))
+        }; // every handle dropped here -- this is the "quit".
+
+        let (project_id, original_items) = before_restart;
+        assert!(!original_items.is_empty(), "sanity: the book must place something");
+
+        // --- restart ---
+        let db = Db::open(&db_path).unwrap();
+        let project = db.load_project(project_id).unwrap().expect("the project must survive");
+        let resolved = resolve_photos(&db, &project.photo_hashes)
+            .expect("a saved project must resolve its photos from the cache alone");
+        let items = crate::export::build_items(&project.book, &resolved);
+
+        assert_eq!(
+            items, original_items,
+            "the reopened project must export the same sources, crops and filenames"
+        );
+    }
+
+    #[test]
+    fn generating_a_book_stores_one_hash_per_photo_in_slice_order() {
+        let db = Db::open_in_memory().unwrap();
+        let lib = fixture_library();
+        let records = records_with_hashes_out_of_slice_order(12);
+        let photos = photos_from_records(&records).unwrap();
+        let meta = NewProject { name: "b", source_folder: "/photos", pages: 20, seed: 2 };
+
+        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default()).unwrap();
+
+        let expected: Vec<String> = photos.iter().map(|p| p.hash.clone()).collect();
+        let mut sorted = expected.clone();
+        sorted.sort();
+        assert_ne!(
+            sorted, expected,
+            "fixture must not be pre-sorted, or a re-sorting bug is invisible here"
+        );
+
+        let stored = db.load_project(generated.project_id).unwrap().unwrap().photo_hashes;
+        assert_eq!(
+            stored, expected,
+            "the stored list must be every photo the book was assembled against, in that order"
+        );
+    }
+
+    /// The caveat the review named explicitly: `Db::get_features` filters on
+    /// `ANALYZER_VERSION`, so bumping it makes every stored hash
+    /// unresolvable. That must be a clear instruction to re-analyse -- never
+    /// a panic, and never a partial photo list that would export the wrong
+    /// sources for every placement after the first gap.
+    #[test]
+    fn a_project_cached_under_an_older_analyzer_version_asks_for_a_re_analysis() {
+        let db = Db::open_in_memory().unwrap();
+        let records = distinct_records(3);
+        cache_records(&db, &records);
+        let hashes: Vec<String> = records
+            .iter()
+            .map(|r| r["hash"].as_str().unwrap().to_string())
+            .collect();
+        assert!(resolve_photos(&db, &hashes).is_ok(), "sanity: resolvable at the current version");
+
+        // Exactly what an ANALYZER_VERSION bump does to these rows.
+        db.conn
+            .execute(
+                "UPDATE features SET analyzer_version = ?1",
+                rusqlite::params![crate::db::ANALYZER_VERSION - 1],
+            )
+            .unwrap();
+
+        let message = resolve_photos(&db, &hashes)
+            .expect_err("stale-version rows must not silently resolve to a shorter list");
+        assert!(
+            message.contains("re-analyse") || message.contains("re-analyze"),
+            "the error must tell the user what to do: {message}"
+        );
+    }
+
+    #[test]
+    fn a_project_whose_photos_left_the_cache_asks_for_a_re_analysis() {
+        let db = Db::open_in_memory().unwrap();
+        let records = distinct_records(3);
+        cache_records(&db, &records);
+        let mut hashes: Vec<String> = records
+            .iter()
+            .map(|r| r["hash"].as_str().unwrap().to_string())
+            .collect();
+        hashes.push("hash-that-was-never-analysed".into());
+
+        let message = resolve_photos(&db, &hashes).expect_err("a missing photo must fail loudly");
+        assert!(message.contains("re-analyse"), "{message}");
+    }
+
+    /// A project saved before `project_photos` existed. `load_project`
+    /// returns an empty list rather than failing (so the book still appears
+    /// in the project list); resolving it is where the user is told what to
+    /// do about it.
+    #[test]
+    fn a_project_saved_before_photo_lists_existed_asks_for_a_re_analysis() {
+        let db = Db::open_in_memory().unwrap();
+        let message = resolve_photos(&db, &[]).expect_err("an empty photo list cannot export");
+        assert!(message.contains("re-analyse"), "{message}");
+    }
+
+    // --- a successful export is not reported as a failure ---------------
+
+    /// The files are already on disk by the time the manifest is written. A
+    /// manifest that cannot be written (read-only volume, full disk) must
+    /// NOT discard the export: the user has nineteen files somewhere and
+    /// needs to be told where, not shown "something went wrong" with no path
+    /// back to them.
+    #[test]
+    fn a_manifest_that_cannot_be_written_does_not_discard_a_successful_export() {
+        let (book, photos) = two_page_book();
+        let dir = tempfile::tempdir().unwrap();
+
+        let result = run_export(
+            &book,
+            &photos,
+            1,
+            &dir.path().to_string_lossy(),
+            Vec::new(),
+            |items| items.iter().map(|i| ok_record(&i.filename, "jpg")).collect(),
+            |_| Err("Read-only file system (os error 30)".into()),
+        )
+        .expect("a manifest failure must not fail the export");
+
+        assert!(!result.blocked);
+        assert_eq!(result.written.len(), 3, "the files that were written are still reported");
+        assert_eq!(result.manifest_path, None);
+        let error = result
+            .manifest_error
+            .as_ref()
+            .expect("the manifest failure must be surfaced, not swallowed");
+        assert!(error.contains("Read-only"), "the real cause must reach the user: {error}");
+    }
+
+    #[test]
+    fn a_successful_export_reports_no_manifest_error() {
+        let (book, photos) = two_page_book();
+        let dir = tempfile::tempdir().unwrap();
+
+        let result = run_export(
+            &book,
+            &photos,
+            1,
+            &dir.path().to_string_lossy(),
+            Vec::new(),
+            |items| items.iter().map(|i| ok_record(&i.filename, "jpg")).collect(),
+            manifest_writer(dir.path()),
+        )
+        .unwrap();
+
+        assert_eq!(result.manifest_error, None);
+        assert!(result.manifest_path.is_some());
+    }
+
+    /// Reconciliation keys on the file stem and reads the extension off the
+    /// returned path. A path with no extension at all must keep its manifest
+    /// entry -- the file WAS written -- rather than be dropped as if it never
+    /// existed. Latent today (Swift always appends one) but it fails in the
+    /// direction that loses a real file from the record.
+    #[test]
+    fn an_output_path_without_an_extension_keeps_its_manifest_entry() {
+        let (book, photos) = two_page_book();
+        let dir = tempfile::tempdir().unwrap();
+
+        let result = run_export(
+            &book,
+            &photos,
+            42,
+            &dir.path().to_string_lossy(),
+            Vec::new(),
+            |items| {
+                items
+                    .iter()
+                    .map(|i| {
+                        serde_json::json!({
+                            "type": "ok",
+                            "path": format!("/out/{}", i.filename), // no extension
+                            "width": 3000, "height": 2000, "bytes": 1234,
+                        })
+                    })
+                    .collect()
+            },
+            manifest_writer(dir.path()),
+        )
+        .unwrap();
+
+        let written: Manifest = serde_json::from_str(
+            &std::fs::read_to_string(result.manifest_path.unwrap()).unwrap(),
+        )
+        .unwrap();
+        let entries: Vec<&str> = written
+            .pages
+            .iter()
+            .flat_map(|p| p.photos.iter().map(|ph| ph.filename.as_str()))
+            .collect();
+        assert_eq!(
+            entries,
+            vec!["p01-z1-haaa1111", "p01-z2-hbbb2222", "p02-z1-hccc3333"],
+            "a written file must stay in the manifest even when its path names no container"
+        );
+        assert!(
+            written.pages[0].photos.iter().all(|p| p.format.is_empty()),
+            "and its container is recorded as unknown rather than guessed"
+        );
     }
 
     /// A `Vec<ExportItem>` is built from the book and handed straight to the

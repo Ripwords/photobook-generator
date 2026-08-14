@@ -70,7 +70,34 @@ export interface ExportResult {
   written: string[];
   failures: ExportFailure[];
   manifestPath: string | null;
+  /**
+   * Why `manifest.json` could not be written, when it could not be. A
+   * manifest failure never fails the export -- every file is already on disk
+   * by then -- so this is reported beside a result that still names every
+   * path written.
+   */
+  manifestError: string | null;
   format: string;
+}
+
+/**
+ * What actually happened, as one value the UI can branch on.
+ *
+ * `blocked: false` and `written: []` is neither a block nor a success: it is
+ * an export where every single item failed. Rendering that as a success
+ * ("0 files written", empty format) told the user their book exported when
+ * nothing did, so the four cases are enumerated here rather than derived at
+ * three separate places in a template.
+ */
+export type ExportOutcome = "blocked" | "failed" | "partial" | "written";
+
+export function exportOutcome(result: ExportResult): ExportOutcome {
+  if (result.blocked) return "blocked";
+  if (result.written.length === 0) return "failed";
+  // A manifest that could not be written is a partial success too: the files
+  // are there, but the record of what went where is not.
+  if (result.failures.length > 0 || result.manifestError !== null) return "partial";
+  return "written";
 }
 
 export interface ExportSummary {

@@ -15,5 +15,6 @@
     { "filename": "p04-z2-ef567890", "message": "could not decode: /photos/bad.raw" }
   ],
   "manifestPath": "/Users/jj/Desktop/photobook-export/manifest.json",
+  "manifestError": null,
   "format": "jpg"
 }
