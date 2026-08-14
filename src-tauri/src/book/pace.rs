@@ -11,7 +11,7 @@
 //! the pool of page-halves rather than from whole spread templates.
 
 use crate::book::crop::choose_crop;
-use crate::book::cull::{cull, Override, Overrides, Photo};
+use crate::book::cull::{cull, Overrides, Photo};
 use crate::book::pack::{buildable_sizes, pack, Capacity, Group, IncludeOverflow};
 use crate::book::score::{best_spread, rejects, slot_aspect};
 use crate::geometry::{Rect, Side};
@@ -564,6 +564,7 @@ pub fn repace(book: &mut Book, lib: &Library, photos: &[Photo], w: &Weights) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::book::cull::Override;
     use crate::book::cull::{Face, PaletteColor};
 
     // --- fixture library -------------------------------------------------
@@ -950,6 +951,90 @@ mod tests {
 
         assert_eq!(err, BookError::IncludedNotPlaced { paths: vec!["/photos/p005.jpg".into()] });
         assert!(err.to_string().contains("/photos/p005.jpg"), "{err}");
+    }
+
+    /// **Capacity trimming would have dropped this photo, and the book still
+    /// contains it.**
+    ///
+    /// The end-to-end counterpart of
+    /// `pack_never_drops_an_included_photo_when_trimming_to_capacity`: that
+    /// one asserts on `pack`'s groups, this one on the printed pages, which
+    /// is the artefact the property is actually about. There are more photos
+    /// than the book holds, the included photo is the WORST in the set by the
+    /// comparator the trim uses (aesthetic 0, sharpness 0), and the
+    /// un-overridden run is asserted to drop it first -- so nothing but the
+    /// override can put it on a page.
+    #[test]
+    fn pace_keeps_an_included_photo_capacity_trimming_would_have_dropped() {
+        let lib = fixture_library();
+        let capacity = Capacity::from_library(20, &lib).max_photos;
+        let mut photos = fixture_photos(capacity + 12);
+        // The weakest photo in the set, by both keys the trim ranks on.
+        photos[5].aesthetic_pct = 0;
+        photos[5].sharpness_pct = 0;
+        photos[5].is_utility = false;
+        photos[5].near_dup_cluster = 5000;
+
+        let before = assemble(&photos, 20, &lib, &Weights::default(), 42, &Overrides::new())
+            .expect("no overrides");
+        assert!(
+            before.dropped > 0,
+            "fixture must actually overflow the book, or nothing is trimmed"
+        );
+        assert!(
+            !placed_paths(&before, &photos).contains(&"/photos/p005.jpg".to_string()),
+            "fixture: the trim must drop this photo without an override, or the test is inert"
+        );
+
+        let after = assemble(
+            &photos,
+            20,
+            &lib,
+            &Weights::default(),
+            42,
+            &overrides(&[("hash-005", Override::Include)]),
+        )
+        .expect("one included photo is far inside capacity");
+
+        assert!(
+            placed_paths(&after, &photos).contains(&"/photos/p005.jpg".to_string()),
+            "the photo the user asked for was trimmed away: {:?}",
+            placed_paths(&after, &photos)
+        );
+    }
+
+    /// The post-condition must name EVERY photo it could not place, not the
+    /// first one it noticed. A message listing one file when two are missing
+    /// sends the user round the exclude-and-retry loop once per photo.
+    ///
+    /// Two unplaceable includes, and the list is asserted in full and in
+    /// path order -- a fixture with one missing photo cannot tell a complete
+    /// list from a `find()`.
+    #[test]
+    fn pace_names_every_included_photo_it_could_not_place_not_just_the_first() {
+        let lib = fixture_library();
+        let mut photos = fixture_photos(24);
+        for i in [5usize, 11] {
+            photos[i].width = 300;
+            photos[i].height = 225;
+        }
+
+        let err = assemble(
+            &photos,
+            20,
+            &lib,
+            &Weights::default(),
+            42,
+            &overrides(&[("hash-005", Override::Include), ("hash-011", Override::Include)]),
+        )
+        .expect_err("neither photo can be laid out");
+
+        assert_eq!(
+            err,
+            BookError::IncludedNotPlaced {
+                paths: vec!["/photos/p005.jpg".into(), "/photos/p011.jpg".into()]
+            }
+        );
     }
 
     /// An empty override map must leave the assembled book byte-identical to

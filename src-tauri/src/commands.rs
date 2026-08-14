@@ -59,6 +59,26 @@ pub fn hash_file(path: &Path) -> std::io::Result<String> {
 #[derive(Default)]
 pub struct AppState {
     pub pool: Mutex<SidecarPool>,
+    /// The photo set the contact sheet is currently showing, parsed once at
+    /// the end of `analyze_folder`.
+    ///
+    /// **This exists to keep the override toggle cheap.** Without it, every
+    /// click has to ship the whole analysed array up to Rust so the verdict
+    /// can be recomputed -- and those records carry faces (14-point lip
+    /// contours), palettes, saliency boxes and EXIF, which measures around
+    /// 2.5 KB per photo. A 1000-photo folder is then a ~10 MB upload per
+    /// click, per command, which is not a slow feature, it is an unusable
+    /// one. With the set cached here the toggle sends only the override map
+    /// and gets back a list of surviving paths: tens of KB either way,
+    /// independent of what a record carries.
+    ///
+    /// Lifetime is deliberately tied to the webview's own copy rather than
+    /// managed: both live in this process and both are lost together (a
+    /// reload clears `useAnalysis`'s summary at the same moment it would
+    /// invalidate this). So an empty cache means "nothing has been analysed
+    /// in this session", which the readers report rather than paper over --
+    /// silently answering from a stale set would judge the wrong photos.
+    pub photos: Mutex<Vec<Photo>>,
 }
 
 /// Wire-compatible counterpart of `AnalyzedPhoto`/`AnalysisSummary` in
@@ -238,11 +258,7 @@ pub(crate) fn finalize_photos(mut ok: Vec<serde_json::Value>) -> Vec<serde_json:
         }
     }
 
-    // No overrides here: `finalize_photos` runs while the analysis is still
-    // finishing, before the contact sheet exists, so there is nothing the
-    // user can have decided yet. Their decisions are applied later, by
-    // `apply_photo_overrides`, through this same function's stamping.
-    stamp_kept(&mut ok, &Overrides::new());
+    stamp_kept(&mut ok);
     ok
 }
 
@@ -274,11 +290,15 @@ pub(crate) fn finalize_photos(mut ok: Vec<serde_json::Value>) -> Vec<serde_json:
 /// A record `from_features` cannot parse (a missing `path`, `hash`, `width`
 /// or `height`) is stamped `kept: false`, which is honest: the book builder
 /// would skip that photo for the same reason.
-pub(crate) fn stamp_kept(ok: &mut [serde_json::Value], overrides: &Overrides) {
+pub(crate) fn stamp_kept(ok: &mut [serde_json::Value]) {
     let parsed: Vec<crate::book::cull::Photo> =
         ok.iter().filter_map(crate::book::cull::from_features).collect();
+    // No overrides: this runs while the analysis is still finishing, before
+    // the contact sheet exists, so there is nothing the user can have decided
+    // yet. Their decisions are applied afterwards by `kept_paths`, through
+    // the same `cull`.
     let kept: std::collections::HashSet<String> =
-        crate::book::cull::cull(&parsed, overrides).into_iter().map(|p| p.path).collect();
+        kept_paths(&parsed, &Overrides::new()).into_iter().collect();
 
     for features in ok.iter_mut() {
         let survives = features["path"].as_str().is_some_and(|p| kept.contains(p));
@@ -634,6 +654,19 @@ pub async fn analyze_folder(
         {
             log::warn!("failed to show completion notification: {err}");
         }
+    }
+
+    // Cached BEFORE the summary is handed over, so the first override toggle
+    // cannot race the analysis that produced the photos it names. A parse
+    // failure here is not fatal: it costs the cheap override path, not the
+    // analysis, and `photos_from_records` reports the same failure loudly at
+    // the point a book is actually generated.
+    match photos_from_records(&ok) {
+        Ok(parsed) => match app.state::<AppState>().photos.lock() {
+            Ok(mut cache) => *cache = parsed,
+            Err(err) => log::warn!("photo cache is poisoned, overrides will be slow: {err}"),
+        },
+        Err(err) => log::warn!("cannot cache the analysed photo set: {err}"),
     }
 
     let summary = AnalysisSummary {
@@ -1251,8 +1284,7 @@ fn write_manifest_file(output_dir: &Path, manifest: &Manifest) -> Result<String,
     Ok(path.to_string_lossy().into_owned())
 }
 
-/// Re-stamps `kept` on every analysed record, honouring the user's own
-/// include/exclude decisions.
+/// The photos that survive culling under the user's own decisions, by path.
 ///
 /// **This exists so that no second copy of the culling rule appears in the
 /// webview.** The overrides are made on the contact sheet, long after
@@ -1261,38 +1293,69 @@ fn write_manifest_file(output_dir: &Path, manifest: &Manifest) -> Result<String,
 /// marker, and the keeper count must move. The webview could compute that
 /// itself in two lines, and that is precisely the mistake Phase 2 spent a
 /// task undoing: `book::cull::cull` is the single authority, so the toggle
-/// goes DOWN to Rust and the answer comes back stamped. `keepers()` in
-/// TypeScript stays a filter on the flag, with no rule of its own.
+/// goes DOWN to Rust and the answer comes back. `keepers()` in TypeScript
+/// stays a filter on the `kept` flag, with no rule of its own.
 ///
-/// Returns the same records, in the same order, with only `kept` changed.
+/// **It returns the verdict, not the records.** An earlier version took the
+/// whole analysed array and handed it back re-stamped, which is ~2.5 KB per
+/// photo in each direction -- around 20 MB of round trip per click on a
+/// 1000-photo folder. The photo set is cached in `AppState` at the end of
+/// `analyze_folder` instead, so the request is the override map alone and
+/// the response is a list of paths.
+///
+/// **Paths, not hashes.** A content hash is NOT unique within one analysis --
+/// two byte-identical files in a folder share one -- so a hash-keyed verdict
+/// would mark both copies kept when `cull` kept only one of them. `path` is
+/// unique per record here (`analyze_folder` walks one directory, and
+/// `lookup_cache` rewrites every cached record's path to the current one
+/// precisely so two identical files never share a path), which is why
+/// `stamp_kept` and `pace::assemble` both key on it too. The OVERRIDES are
+/// hash-keyed, because a decision is about the photograph; the VERDICT is
+/// path-keyed, because it is about the file.
+pub(crate) fn kept_paths(photos: &[Photo], overrides: &Overrides) -> Vec<String> {
+    crate::book::cull::cull(photos, overrides).into_iter().map(|p| p.path).collect()
+}
+
+/// The analysed photo set cached by the last `analyze_folder` in this
+/// session, or an error naming the remedy.
+fn cached_photos(app: &AppHandle) -> Result<Vec<Photo>, String> {
+    let state = app.state::<AppState>();
+    let photos = state
+        .photos
+        .lock()
+        .map_err(|e| format!("the analysed photo set is unreadable: {e}"))?;
+    if photos.is_empty() {
+        return Err("No analysed photos are loaded -- analyse a folder first.".into());
+    }
+    Ok(photos.clone())
+}
+
 #[tauri::command]
 pub async fn apply_photo_overrides(
-    mut photos: Vec<serde_json::Value>,
+    app: AppHandle,
     overrides: Overrides,
-) -> Result<Vec<serde_json::Value>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        stamp_kept(&mut photos, &overrides);
-        photos
-    })
-    .await
-    .map_err(|e| e.to_string())
+) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || Ok(kept_paths(&cached_photos(&app)?, &overrides)))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// How long a book would be, and what each length costs.
 ///
-/// Takes the analysed photo records the webview already holds rather than
-/// re-reading the folder: percentiles and cluster ids are whole-set
-/// derivations computed once by `finalize_photos` and never persisted, so
-/// the webview's copy is the only place they exist.
+/// Reads the photo set cached by `analyze_folder` rather than taking it from
+/// the webview: this is re-run on every override toggle, and re-uploading
+/// several megabytes of feature records to answer "how many keepers now?" is
+/// what made the toggle unusable on a real folder. `generate_book` still
+/// takes the array, because it runs once and is the call that must not depend
+/// on a cache being warm.
 #[tauri::command]
 pub async fn recommend_book(
     app: AppHandle,
-    photos: Vec<serde_json::Value>,
     overrides: Option<Overrides>,
 ) -> Result<BookRecommendation, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let lib = load_library(&app)?;
-        let parsed = photos_from_records(&photos)?;
+        let parsed = cached_photos(&app)?;
         Ok(recommend(&parsed, &lib, &overrides.unwrap_or_default()))
     })
     .await
@@ -2194,27 +2257,30 @@ mod tests {
         assert_eq!(finalized[1]["kept"], true, "higher capture quality wins the tie");
     }
 
-    /// **The toggle reaches Rust and comes back stamped.**
+    /// **The toggle reaches Rust, and the verdict comes back from it.**
     ///
-    /// `apply_photo_overrides` is the whole mechanism that keeps the contact
-    /// sheet honest without giving the webview a second copy of the culling
-    /// rule. Asserted through `stamp_kept`, which is the command's entire
-    /// body (the command itself only wraps it in `spawn_blocking`).
+    /// `kept_paths` is the whole body of `apply_photo_overrides` (the command
+    /// only adds the `AppState` lookup and `spawn_blocking`), and it is the
+    /// single thing standing between this feature and a second copy of the
+    /// culling rule in the webview.
     ///
-    /// Every arm at once, on ONE call: an excluded winner loses its stamp, an
-    /// included loser gains one, and an untouched photo keeps whatever the
-    /// engine gave it. A fixture exercising one arm cannot tell "the
-    /// overrides were applied" from "the records were rebuilt from scratch".
+    /// Every arm at once, from ONE call: an excluded winner drops out of the
+    /// verdict, an included loser appears in it, and an untouched photo keeps
+    /// whatever the engine gave it. A fixture exercising one arm cannot tell
+    /// "the overrides were applied" from "the engine was re-run".
     #[test]
-    fn stamps_kept_from_the_users_own_overrides_rather_than_the_engine_alone() {
-        let mut records = finalize_photos(vec![
+    fn kept_paths_answers_from_the_users_own_overrides_rather_than_the_engine_alone() {
+        let records = finalize_photos(vec![
             cullable("/p/a.jpg", 100, 0.9, 9.0, None, false), // wins its burst
             cullable("/p/b.jpg", 100, 0.1, 1.0, None, false), // loses its burst
             cullable("/p/c.jpg", 4095, 0.5, 5.0, None, false), // uncontested
         ]);
-        assert_eq!(records[0]["kept"], true, "fixture: a wins without an override");
-        assert_eq!(records[1]["kept"], false, "fixture: b loses without an override");
-        assert_eq!(records[2]["kept"], true, "fixture: c is uncontested");
+        let photos = photos_from_records(&records).unwrap();
+        assert_eq!(
+            kept_paths(&photos, &Overrides::new()),
+            vec!["/p/a.jpg", "/p/c.jpg"],
+            "fixture: without an override a wins, b loses, c is uncontested"
+        );
 
         let overrides: Overrides = [
             ("hash-/p/a.jpg".to_string(), crate::book::cull::Override::Exclude),
@@ -2222,35 +2288,52 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        stamp_kept(&mut records, &overrides);
 
-        assert_eq!(records[0]["kept"], false, "the excluded winner must lose its keeper mark");
-        assert_eq!(records[1]["kept"], true, "the included loser must gain one");
-        assert_eq!(records[2]["kept"], true, "and an untouched photo is unaffected");
-        assert_eq!(records[0]["path"], "/p/a.jpg", "order and identity are preserved");
-        assert_eq!(records[2]["path"], "/p/c.jpg");
+        assert_eq!(
+            kept_paths(&photos, &overrides),
+            vec!["/p/b.jpg", "/p/c.jpg"],
+            "the excluded winner must go, the included loser must arrive, c is unaffected"
+        );
     }
 
-    /// Re-stamping with no overrides must restore the engine's own verdict,
-    /// not freeze whatever the last override run produced -- "set it back to
-    /// automatic" has to actually undo.
+    /// Clearing a decision must restore the engine's own verdict, not freeze
+    /// whatever the last override run produced -- "back to automatic" has to
+    /// actually undo.
     #[test]
-    fn stamps_kept_back_to_the_engine_verdict_when_an_override_is_cleared() {
-        let mut records = finalize_photos(vec![
+    fn kept_paths_returns_to_the_engine_verdict_when_an_override_is_cleared() {
+        let records = finalize_photos(vec![
             cullable("/p/a.jpg", 100, 0.9, 9.0, None, false),
             cullable("/p/b.jpg", 100, 0.1, 1.0, None, false),
         ]);
-        let excluded: Overrides =
-            [("hash-/p/a.jpg".to_string(), crate::book::cull::Override::Exclude)]
-                .into_iter()
-                .collect();
-        stamp_kept(&mut records, &excluded);
-        assert_eq!(records[0]["kept"], false, "precondition: the override took effect");
+        let photos = photos_from_records(&records).unwrap();
+        let mut overrides = Overrides::new();
+        overrides.set("hash-/p/a.jpg", crate::book::cull::Override::Exclude);
+        assert_eq!(kept_paths(&photos, &overrides), vec!["/p/b.jpg"], "precondition");
 
-        stamp_kept(&mut records, &Overrides::new());
+        overrides.set("hash-/p/a.jpg", crate::book::cull::Override::Auto);
 
-        assert_eq!(records[0]["kept"], true, "clearing the override must restore the verdict");
-        assert_eq!(records[1]["kept"], false);
+        assert_eq!(kept_paths(&photos, &overrides), vec!["/p/a.jpg"]);
+    }
+
+    /// The verdict is keyed by PATH, not by content hash, and this is the
+    /// case that forces it: two byte-identical files in one folder share a
+    /// hash, `cull` keeps only one of them (same phash -> same near-duplicate
+    /// cluster), and a hash-keyed verdict would mark BOTH copies kept.
+    #[test]
+    fn kept_paths_names_one_of_two_byte_identical_files_not_both() {
+        let records = finalize_photos(vec![
+            cullable("/p/orig.jpg", 100, 0.9, 9.0, None, false),
+            cullable("/p/copy.jpg", 100, 0.9, 9.0, None, false),
+        ]);
+        let mut photos = photos_from_records(&records).unwrap();
+        // Same bytes -> same content hash, different paths. `cullable` derives
+        // the hash from the path, so it is forced here.
+        photos[0].hash = "identical-bytes".into();
+        photos[1].hash = "identical-bytes".into();
+
+        let kept = kept_paths(&photos, &Overrides::new());
+
+        assert_eq!(kept.len(), 1, "one near-duplicate survives, not both: {kept:?}");
     }
 
     #[test]
