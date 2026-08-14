@@ -232,11 +232,47 @@ forgotten decision is invisible.
 - `vitest.config.ts` now aliases `~` to `app/`. Without it, no file under
   `app/` that imports `~/types/...` could be unit-tested at all.
 
-**Known cost, not yet measured:** every override toggle ships the full analysed
-photo array to Rust and back. That array carries faces, palettes and saliency
-boxes, so a folder of several hundred photos is a multi-megabyte round trip per
-click. It is in-process IPC and was fine on fixtures; measure it at the
-real-photo run and cache the parsed set in `AppState` if it bites.
+**The toggle is cheap, and `AppState` is why.** `AppState.photos` holds the
+parsed `Vec<Photo>` from the end of `analyze_folder`, so
+`apply_photo_overrides` and `recommend_book` take only the override map --
+the first returns the surviving PATHS, not re-stamped records. Sending the
+records instead was ~2.5 KB per photo, three uploads per click (the toggle
+plus two `recommend_book` watchers that both fired), i.e. ~10 MB per click on
+a 1000-photo folder. Measured after: 10.9 KB at 200 photos, 26.6 KB at 500,
+52.8 KB at 1000 — roughly 180x smaller and, unlike before, near-independent of
+what a feature record carries.
+
+*Overrides are hash-keyed; the verdict is path-keyed.* A decision is about the
+photograph, so it follows the bytes. The verdict is about the file, and a
+content hash is **not** unique within one analysis — two byte-identical files
+share one, and `cull` keeps only one of them, so a hash-keyed verdict would
+mark both copies kept. `stamp_kept` and `pace::assemble` key on path for
+exactly this reason.
+
+*An empty cache is reported, never papered over.* Its lifetime is tied to the
+webview's own copy rather than managed: both live in this process, and a
+reload loses `useAnalysis`'s summary at the same moment it would invalidate
+the cache.
+
+**The contact sheet is not virtualized.** It renders every analysed photo so
+the include control has something to act on, but 500 photos is 500 tiles,
+re-patched on every toggle. `showsLeftOutByDefault` turns the "show the N left
+out" switch off above **200** photos. If a real folder makes even the keeper
+grid slow, virtualize it — do not go back to hiding the left-out photos, which
+makes the feature unusable.
+
+**A reopened project's selection is visible and editable.** The panel states
+it (`selectionLabel`) and offers "Edit the selection", which re-analyses the
+project's own folder (all features-cache hits, no Vision work) and restores
+the saved decisions through the same Rust round trip a fresh click uses.
+Returning `overrides` over the wire and rendering nothing was the same
+"persisted but unreachable from the UI" defect that started this line of work.
+
+**Watch `photoSetId`, never the photos array.** `usePhotoOverrides` replaces
+`photos` on every toggle. `GenerateBook`'s reset branch discards the generated
+book, the opened project, the output directory, a typed name and a chosen page
+length — keyed on the array, it did all five on every click. `photoSetId`
+bumps once per analysis and is the identity to watch.
 
 ### What Phase 3 and 4 can assume already exists
 
