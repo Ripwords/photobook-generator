@@ -1,20 +1,25 @@
 # PhotobookGen — Project Status
 
-**Last updated:** 2026-08-12
-**Branch:** `feat/phase-1-analysis-pipeline` (52+ commits ahead of `master`, not yet merged)
+**Last updated:** 2026-08-14
+**Branch:** `feat/phase-2-layout-engine` (not yet merged)
 
 This document exists so a new agent can pick the project up without re-deriving what
-was already learned. Read it before touching code. The two authoritative documents are:
+was already learned. Read it before touching code. The authoritative documents are:
 
-- `docs/superpowers/specs/2026-08-12-photobook-generator-design.md` — the design and its
-  constraints. Still accurate.
+- `docs/superpowers/specs/2026-08-12-photobook-generator-design.md` — the overall design
+  and its constraints. Still accurate, **except** for the export design, which was
+  deliberately revised mid-Phase-2 (see "Phase 2" below).
 - `docs/superpowers/plans/2026-08-12-phase-1-analysis-pipeline.md` — the Phase 1 plan.
   **Sections of it are wrong and carry `⚠️ SUPERSEDED` warnings.** Heed them; following the
   original text reintroduces two real bugs.
 
 A blow-by-blow record of every fix round, ruling, and deferred finding is in
-`.superpowers/sdd/2026-08-12-phase-1-analysis-pipeline/progress.md` (git-ignored, local
-only). It is long but it is where the reasoning lives.
+`.superpowers/sdd/2026-08-12-phase-1-analysis-pipeline/progress.md` and
+`.superpowers/sdd/2026-08-14-phase-2-export-revision/` (git-ignored, local only). They are
+long but they are where the reasoning lives.
+
+**If you read only one section, read "Phase 2 open items" — every entry there is a real,
+deliberately-parked decision that this file is the only surviving record of.**
 
 ---
 
@@ -52,9 +57,11 @@ thumbnails, chapter dividers and burst-size badges.
 | Swift sidecar | `sidecar/Sources/PhotobookEngine/` | NDJSON over stdin/stdout, standalone CLI, testable with `cat fixtures.ndjson \| ./PhotobookEngine` |
 | Rust backend | `src-tauri/src/` | `commands.rs` `db.rs` `cluster.rs` `ranking.rs` `sidecar.rs` `protocol.rs` |
 | Nuxt UI | `app/` | `pages/index.vue`, `components/PhotoTile.vue`, `composables/useAnalysis.ts`, `types/features.ts` |
-| Template library | `templates/` | 40 spread templates + validator at `tests/templates.test.ts` |
+| Template library | `templates/` | Spread templates + validator at `tests/templates.test.ts`. Was 40 at end of Phase 1; **now 36** — see the Print geometry section. |
 
-**Test counts at last run:** 425 TypeScript, 74 Rust, 71 Swift. All green, lint clean.
+**Test counts at last run (2026-08-14, end of Phase 2):** 496 TypeScript, 300 Rust unit
+(3 ignored — they read the real `templates/` directory) plus 2 harness'd and 4
+`harness = false` integration binaries, 130 Swift. All green, lint clean.
 **Release build works:** `bun tauri build --bundles app` produces `PhotobookGen.app`.
 
 ### Unplanned additions beyond the plan
@@ -74,17 +81,323 @@ thumbnails, chapter dividers and burst-size badges.
 
 ---
 
+---
+
+## Current state: Phase 2 is complete
+
+Built across two plans and sixteen reviewed tasks. The app now turns an analysed folder
+into files you can upload to a printer.
+
+**Working end to end:** analyse a folder → pick a page count (the app recommends the
+smallest SKU that fits, and says how many keepers each length would drop) → generate →
+pre-flight → export. Generating **saves the project**; exporting writes one cropped image
+file per placement.
+
+| Stage | Where | What it does |
+|---|---|---|
+| Cull | `book::cull::cull` | Drops utility images, keeps one winner per near-duplicate cluster. **The single authority** — see below. |
+| Pack | `book::pack` | Chapter-aware grouping into buildable group sizes; drops the lowest aesthetic percentiles when keepers exceed capacity. |
+| Score | `book::score` | Scores each template against a group: aspect fit, saliency and face-area retention, hero match, resolution headroom, palette harmony, variety. Hard rejections for a face in the gutter, a face outside the safe margin, and sub-`MIN_DPI` resolution. |
+| Crop | `book::crop::choose_crop` | Deterministic saliency- and face-aware crop window, normalised 0…1 of the photo's **oriented** frame. |
+| Pace | `book::pace::assemble` | Lays groups into pages, keeps both halves of a spread on one template, falls back to a smaller page half rather than blanking a page. |
+| Pre-flight | `book::preflight` | Blocks and warnings before anything is written. |
+| Export | `export.rs` → `Sidecar` → `Exporter.swift` | Builds `ExportItem`s, ships them over NDJSON, the sidecar crops and re-encodes. |
+| Persist | `project.rs`, `db.rs` | Saves and reopens a project. |
+
+### The export design was revised mid-phase — read this before changing it
+
+**The app exports the user's own photographs, cropped. It does not composite.**
+
+The original design rendered a full-page canvas per page with photos positioned on it.
+That was abandoned deliberately (`f0ecc20 docs: revise export design to ship the user's
+own images`), and the reasoning is load-bearing: compositing re-encodes the photograph
+into a flattened page, so the book prints **a picture of a picture**. A photobook's whole
+value is that it reproduces the camera's own image. Decode, crop, re-encode, write —
+nothing else. There are **no composites and no transparent PNGs** anywhere in the output.
+
+**Format rule** (`Exporter.outputFormat`): a **lossy source (JPEG, HEIC, HEIF, WebP)
+exports as JPEG at quality 0.95**; a **lossless source (PNG, TIFF, RAW) exports as PNG**.
+Re-encoding a camera JPEG to PNG inflates it roughly fivefold without recovering quality
+already lost; encoding a RAW-derived crop to JPEG introduces the first generation of loss
+for no reason. An unrecognised container falls to PNG, because PNG never adds a generation
+of loss the source did not already have. The container is sniffed from the file via
+ImageIO, not guessed from the extension. Rust's `export::predicted_format` mirrors the
+rule from the extension alone, for the manifest only — the `ExportRecord` the sidecar
+returns is always the authority on what was actually written.
+
+**Colour:** output is sRGB with an embedded ICC profile, converted (redrawn into an sRGB
+context), never reinterpreted. `CGImage.copy(colorSpace:)` would be cheaper but it
+reinterprets the samples, shifting every colour on a wide-gamut source.
+
+**Orientation before cropping.** `ImageLoader.loadOriented` applies EXIF orientation during
+the decode, so the crop window always resolves against the *displayed* image. Cropping
+stored pixels and orienting afterwards crops the wrong region of every portrait photo, and
+the result does not look broken — it is just the wrong part of the picture.
+
+**Filename collisions fail, they do not overwrite or uniquify.** Names come from the layout
+engine (`p{page:02}-z{z}-{hash8}`), so a collision is an upstream bug. A silently renamed
+file in a print upload is worse than a reported failure, because it looks like it worked.
+
+### Pixajoy's published limits, now enforced
+
+| Rule | Where | Severity |
+|---|---|---|
+| **200 DPI floor** | `book::score::MIN_DPI`, imported (not restated) by `book::preflight` | Hard rejection in scoring; **Block** in pre-flight |
+| 300 DPI target | `WARN_DPI_CEILING` | **Warn** band only — not a second floor |
+| **0.125" safe margin** | `geometry::SAFE_MARGIN_IN` / `in_safe_margin` | A face outside it rejects the template |
+| **No face in the gutter** | `geometry::clear_of_gutter`, `book::score` | Hard rejection |
+| Source file still exists | `book::preflight` | **Block** |
+| Free disk space | `book::preflight::available_bytes` (`statfs`) | **Block** |
+
+### One culling authority (was two)
+
+`book::cull::cull` decides which photo survives, and it is now the **only** implementation
+of that rule anywhere. Two others existed and are gone: Rust's `count_keepers` hand-rolled
+it (it delegates now), and TypeScript's `keepers()` re-derived it in the webview.
+
+That second one was a genuine user-visible defect, not mere duplication: Rust breaks a
+sharpness tie on **face capture quality** and only then on aesthetic, while TypeScript went
+straight from sharpness to aesthetic. On any burst where two frames tied on sharpness, the
+contact sheet could show one survivor and the exported book contain another — differing in
+both count and identity.
+
+The webview could not fix this by copying the rule more carefully, because `AnalyzedPhoto`
+does not carry the `captureQuality` the tie-break reads. So Rust sends the **answer**:
+`commands::stamp_kept` runs `cull` over the finalized records and stamps each with `kept`,
+and `keepers()` is now a filter on that flag with no ranking of its own. **Do not
+reintroduce a second copy of this rule; send this one's verdict instead.**
+
+### What Phase 3 and 4 can assume already exists
+
+- **Projects persist and reopen.** `projects`, `project_photos`, `project_exports` tables;
+  `Project`, `ProjectSummary`, `ExportRecord` in `project.rs`; commands `recommend_book`,
+  `generate_book`, `export_book`, `list_projects`, `open_project`, `reveal_in_finder`.
+  Generating saves; you do not need to add a save step.
+- **The photo set is persisted by content hash**, not by path, so a saved book stays
+  exportable after files move (`62faefe`). Rows come back ordered by `position`, which
+  `Placement::photo_index` indexes into.
+- **`Book` is serialisable and round-trips** (`pace::Book`, with `seed` and `dropped`).
+- **A manifest** (`book::manifest`) describes every page and placement, including blank
+  pages, which are kept in the list rather than dropped.
+- **Pre-flight is a pure core** (`preflight_core`) plus a thin I/O shell, so Phase 3 can
+  re-run it on an edited book without touching the filesystem — with one caveat noted in
+  the open items below.
+- **Geometry predicates are property-tested** (`geometry.rs`), so a canvas editor can snap
+  against `in_trim`, `in_safe_margin` and `clear_of_gutter` rather than inventing its own.
+
+---
+
+## Phase 2 open items
+
+Every one of these is real. Each was found during Phase 2, deliberately parked with a
+ruling rather than forgotten, and **this file is the only place it survives.** None of them
+blocks the phase; several block a later one, and those say so.
+
+### 1. The gutter-saliency penalty does not exist
+
+The spec promises a **penalty** for saliency falling in the gutter. Only the other half is
+implemented: a face in the gutter is a hard rejection (`book::score`, `clear_of_gutter`),
+and there is a test — `score_does_not_reject_generic_saliency_in_the_gutter_strip` —
+pinning that generic saliency is deliberately *not* a rejection. But no `Weights` field
+implements the graded penalty either. `Weights` is exactly: `aspect_fit`,
+`saliency_retention`, `face_area_retention`, `hero_match`, `resolution_headroom`,
+`palette_harmony`, `variety`.
+
+**Ruling: implement it or correct the spec — do not leave the spec claiming a term the
+scorer does not have.** Either is defensible; the mismatch is not.
+
+### 2. `palette_harmony` is effectively inert
+
+It computes hue as `atan2(b, r)` over **sRGB**, not the Oklab hue the spec asks for. Its
+circular-variance floor is about **0.707**, and at weight `0.2` it therefore contributes
+roughly **1% of a spread's score** — it can essentially never change which template wins.
+
+**Ruling: parked pending real-photo calibration.** Fixing the colour space without
+measuring is guesswork; the term does no harm while inert. Do not spend effort here before
+the real-photo run below.
+
+### 3. The seed never reaches spread selection — **know this before planning Phase 3**
+
+`assemble(photos, pages, lib, w, seed)` passes `seed` only to `single_page` → `best_single`
+→ `tie_break`. **`best_spread` takes no seed at all.** The seed therefore influences only
+the two single pages (the first and last), never any of the middle spreads.
+
+The spec's "regenerate this spread advances the seed" is consequently **unimplementable for
+middle spreads as the code stands** — advancing the seed would change nothing. `Book.seed`
+is persisted, so the data model is ready; the plumbing is not.
+
+**Ruling: parked, but it is a Phase 3 blocker, not a Phase 2 one.** Phase 3's spread-level
+"regenerate" control must either thread the seed through `best_spread` or pick a different
+regeneration mechanism. Decide before planning, not during.
+
+### 4. `choose_group_size` front-loads, and full 1–6 coverage made it worse
+
+Re-checked on 2026-08-14 now that the library covers every group size 1–6. **The problem is
+not fixed; it is more pronounced.** Because `1` is buildable, `is_decomposable(rest)` is
+true for every remainder, so the function always returns the **largest** fitting size.
+Measured directly against `choose_group_size` with `buildable = {1,2,3,4,5,6}`:
+
+```
+photos=30 slots=9  -> groups=[6,6,6,6,6]     spreads_used=5  blank_spreads=4
+photos=24 slots=9  -> groups=[6,6,6,6]       spreads_used=4  blank_spreads=5
+photos=14 slots=9  -> groups=[6,6,2]         spreads_used=3  blank_spreads=6
+photos=40 slots=19 -> groups=[6,6,6,6,6,6,4] spreads_used=7  blank_spreads=12
+```
+
+Photos are packed six to a spread until they run out, and every remaining slot in the
+chapter is left blank. The blank spread at pages 18–19 of the golden fixture
+(`src-tauri/tests/fixtures/book-20.json`) is this, though note the golden runs against a
+*frozen* in-test library, not `templates/`.
+
+A blank spread is a legitimate pacing device (`pace::BLANK_TEMPLATE_ID`, spec 5.1), which
+is why this is not a bug in the strict sense. But "all the photos at the front, then
+silence" is not pacing.
+
+**Ruling: parked, needs a distribution rule rather than a greedy one.** The natural fix is
+to spread groups evenly across available slots rather than take the maximum each time.
+Judge it against real photos, not the fixtures.
+
+### 5. RAW is uncovered end to end, and cannot be closed synthetically
+
+There is **no test anywhere** that exercises a RAW file through analysis or export. This is
+not an oversight. macOS has **no writable RAW type** — nothing in ImageIO can author one —
+so any fixture this repo could generate would be a renamed JPEG, which would test the
+extension-matching path and nothing else while *looking* like RAW coverage. That is worse
+than no coverage.
+
+`Exporter.outputFormat` handles RAW by conformance to `public.camera-raw-image` (which
+catches vendor subtypes such as `com.sony.arw-raw-image`), and the rule is unit-tested as a
+pure function against `UTType`s. The decode path is not.
+
+**Ruling: only closable at a real-photo run with actual camera RAW files.** Do not
+manufacture a fixture.
+
+### 6. Persistence is plumbed but only half-reachable from the UI
+
+The backend supports exporting **any** saved project: `list_projects`, `open_project` and
+`export_book` all exist and work. The UI calls `list_projects` (`useBook.ts`) but never
+`open_project`, so in practice **Export is only offered for the book generated in the
+current session.** Quit the app and the saved project cannot be exported again without
+regenerating it.
+
+**Ruling: parked as a Phase 3 UI concern.** The plumbing needs no work; only the screen
+does.
+
+### 7. Two constants are chosen, not measured
+
+- **Crop-bounds tolerance `1e-6`** (`Exporter.cropRect`) — matched to Rust's containment
+  epsilon loosened by three orders of magnitude, so an f64 round-trip landing at
+  `1.0 + 2e-16` is absorbed while a real out-of-range value still reports. Reasoned, not
+  measured.
+- **`EXPORT_BATCH_SIZE = 8`** and **`timeout_for`** (`sidecar.rs`) — export reuses
+  analysis's timeout scale (`10s + 3s/photo`) on the argument that an export decodes the
+  same images. Nobody has timed an export.
+
+**Ruling: fine until the real-photo run says otherwise.** Both are the kind of number that
+only real data can justify.
+
+### 8. The `ORDER BY position` guard is weaker than it looks
+
+`db.rs` selects project photos with `ORDER BY position ASC` and a comment explaining that
+it is not cosmetic, since `Placement::photo_index` indexes into that order. **But deleting
+the clause is inert**: the composite primary key already causes SQLite to return the rows
+in position order. The test therefore only catches a *wrong-column* substitution, not a
+dropped `ORDER BY`.
+
+**Ruling: documented rather than fixed.** The clause is still correct to keep — relying on
+an index's incidental ordering is not a contract — but do not read the passing test as
+proof that removing it would be caught.
+
+### 9. `preflight_core`'s doc comment is wrong about I/O
+
+It says "No I/O", and it performs one `Path::exists()` per placement (the moved-source-file
+Block check). Minor, but it matters to Phase 3: the "pure core" is not actually callable in
+a hot loop or off-disk. Either move the existence check out to the shell or correct the
+comment.
+
+### 10. Culling is fully reconciled — nothing remains
+
+Recorded here because the ledger asked for whatever Step 2 concluded. The two culling
+authorities are now one (see "One culling authority" above); `keepers()` carries no rule,
+and Rust's verdict travels on the wire as `AnalyzedPhoto.kept`. **Nothing is outstanding on
+this item.**
+
+---
+
+## The outstanding verification — NOT done, and not fakeable
+
+**Nobody has generated a real book from real photos and uploaded a page to Pixajoy.**
+
+This is the only step that would prove Phase 2 actually works. Everything above proves the
+parts behave as specified against fixtures. It requires a human with a folder of their own
+photographs and a Pixajoy account, and it was **not** performed. It was not simulated, and
+no synthetic stand-in was substituted — doing so would produce a green tick over an
+unverified pipeline, which is the exact failure mode this document exists to prevent.
+
+**Exactly what closes it:**
+
+1. Run the app against a real photo folder. Generate a book. Export it.
+2. Upload one page's files to Pixajoy's editor.
+3. **Confirm the picker accepts the exported format.** This is still an open question:
+   Pixajoy's published guidance says nothing about accepted file formats, so whether it
+   takes JPEG *and* PNG is unknown. The export rule sends PNG for every lossless source
+   (including all RAW), so if the picker rejects PNG, the format rule needs revisiting —
+   not the crop pipeline.
+4. While there, settle the still-open Phase 1 items that need real photos: RAW/HEIC
+   throughput, the whole face code path, and Pixajoy's page-count semantics.
+
+Until that is done, treat Phase 2 as "complete and internally verified", not "proven".
+
+---
+
+## On tests in this project — the warning that matters most
+
+Phase 1 shipped eight tests that passed under a broken implementation. **Phase 2 found and
+fixed nine more decorative fixtures and four inert prescribed mutations** — tests written
+into detailed plans by agents that believed they were sound, which would have passed with
+the feature deleted.
+
+That is thirteen more in one phase. It is the single most useful thing this document
+carries forward, so treat it as a standing rule rather than a historical note:
+
+- **Do not trust that a test tests what it says.** Break the thing deliberately and confirm
+  the test notices.
+- **Mutation-check anything load-bearing and paste the evidence** into the commit message.
+  Every load-bearing test added in Phase 2 has such a proof attached.
+- **A test that passes with the feature deleted is worse than no test**, because it reads
+  as protection.
+
+The recurring shapes, all of which appeared for real:
+
+| Shape | Example |
+|---|---|
+| A fixture where the property under test is already true of the input | An ordering test whose input was already sorted |
+| A fixture where an earlier key decides the outcome, so later keys are never reached | A culling tie-break test where sharpness already picked the winner, so the capture-quality and aesthetic arms were untested |
+| A boundary test using a value nowhere near the boundary | |
+| A symmetric fixture that survives a swap | A square image, which makes `height/width == 1` and hides every aspect bug |
+| A round-trip that cannot detect a symmetric error | Serialise-then-deserialise with the *same* struct round-trips a wrong rename perfectly; only asserting literal wire bytes catches it |
+| A degenerate value that "passes" a guard via NaN propagation | A zero-width box; use a negative width |
+| Uniqueness that rides on the wrong axis | Filenames "unique by page+z" tested with a fixture that also varied the hash per photo |
+
+**The single wire test.** `src-tauri/tests/export_roundtrip.rs` is the only test that drives
+both sides of the Rust↔Swift export wire against each other. Every other export test judges
+one side against a *copy* of the contract. Keep it that way, and keep its fixtures
+non-square with asymmetric crops — a drifted key name otherwise degrades into "every photo
+failed" with the cause reported nowhere, and the sidecar's own message is only the opaque
+`malformed request`.
+
+---
+
 ## What is NOT built
 
-Phases 2 through 5 of the design. Each needs its own spec-then-plan cycle; do not start
+Phases 3 through 5 of the design. Each needs its own spec-then-plan cycle; do not start
 implementing from the design doc alone.
 
 | Phase | Scope | Blocked on |
 |---|---|---|
-| **2** | Layout engine + colour-managed export. Scores the 40 templates against photo features, picks a layout per spread, renders 300 DPI spreads. **This is the phase that first produces an uploadable book.** | Nothing. Next thing to do. |
-| **3** | Spread preview UI + spread-level controls (regenerate, swap, lock, reject) | Phase 2 |
+| **3** | Spread preview UI + spread-level controls (regenerate, swap, lock, reject) | Nothing — but **read the seed item in "Phase 2 open items" first**, because "regenerate this spread" is not currently implementable for middle spreads. |
 | **4** | Canvas editor: drag/resize/crop with snapping to the margin guides | Phase 3 |
-| **5** | AI SDK v7 + DeepSeek chat agent driving the layout tools | Phases 2-4 |
+| **5** | AI SDK v7 + DeepSeek chat agent driving the layout tools | Phases 3-4 |
 
 ### Requested, not yet specced: multiple source folders
 
@@ -117,8 +430,9 @@ Also explicitly deferred:
 - **SigLIP 2 zero-shot mood axes.** Needs a Core ML conversion, a designed
   evidence-grounded vocabulary, and measurement against ~200 real photos. The design doc
   names it the weakest signal in the pipeline; everything works without it.
-- **Palette harmony scoring** (Matsuda hue templates). Belongs with the Phase 2 scorer
-  that consumes it.
+- **Palette harmony scoring** (Matsuda hue templates). A `palette_harmony` term now exists
+  in the Phase 2 scorer, but it is **not** the Matsuda-template scoring this line meant and
+  it is effectively inert — see Phase 2 open item 2.
 - **GPS location clustering.** Only time-gap event clustering exists.
 - **Same-person face clustering.** Blocked on licensing: InsightFace/ArcFace is
   non-commercial research-only including its auto-downloaded weights. Face *detection* is
@@ -196,7 +510,7 @@ runtime and is not in the files.
 | **Minimum print DPI** | **200** (Pixajoy's published minimum; 300 is their recommended target, treated as a warn band, not a second floor). `book::score::MIN_DPI`, imported (not restated) by `book::preflight`. |
 | **Safe margin** | **0.125"** (1/8") — Pixajoy's published guidance: keep anything important clear of the edge by this much, on top of the trim inset. `geometry::SAFE_MARGIN_IN` / `in_safe_margin`. **Do not confuse with the "Safe area" row above** — that row is the TRIM rectangle (the `BLEED_IN` inset alone); the safe margin is trim inset by a FURTHER 0.125" on every edge except the fold, where the gutter dead band already governs. |
 
-### Page structure (confirmed by the user, 2026-08-13) — and a template gap
+### Page structure (confirmed by the user, 2026-08-13) — template gap now closed
 
 A book is **not** simply N/2 spreads. The first and last pages are **single pages facing
 the inside covers**, not halves of a spread:
@@ -212,12 +526,12 @@ the inside covers**, not halves of a spread:
 
 This corrects the earlier working assumption of "20 pages = 10 spreads".
 
-**⚠️ Gap: there are no single-page templates.** All 40 in `templates/` are spread
-templates at 22.394" × 8.894". A single page is a different canvas — about
-**11.197" × 8.894"** (trim 11" × 8.5", bleed 0.197" on the outer, top and bottom edges,
-and a **bound inner edge** that needs gutter treatment rather than bleed). Phase 2 needs a
-small second template set for these, and the packer must treat the first and last pages as
-structurally distinct rather than as spread halves.
+**✅ Closed in Phase 2.** There is still no separate single-page template *file* set, and
+none is needed: `templates.rs` **decomposes** each spread template into two `PageLayout`s
+(a left half and a right half), and `pace::single_page` builds the first and last pages
+from that half-pool. Fold-spanning slots are forbidden by the validator precisely so this
+decomposition is always clean (`31afe4d` removed 21 templates that were unbuildable under
+that rule). The packer does treat the first and last pages as structurally distinct.
 
 **Template contract, validator-enforced:** `rect` values are normalised to the spread
 canvas, but **`aspect_pref` is a real-world (inch) aspect ratio**, not the normalised rect
@@ -226,21 +540,24 @@ mis-score every slot. Verified numerically: 102 of 103 slots have their real-wor
 inside their declared range; zero have their normalised ratio inside it.
 
 Every template is **exact-count** (`min_photos == max_photos == slots.length`), so the
-Phase 2 packer selects templates by photo count rather than fitting a range.
+packer selects templates by photo count rather than fitting a range.
 
-**Coverage gaps the Phase 2 packer will hit** (measured across all 40):
+**Coverage as of end of Phase 2 — the gaps are closed.** The library is now **36 spread
+templates** plus `weights.json` and a `README.md`:
 
-| Photos per template | 1 | 2 | 3 | 4 | **5** | 6 |
+| Photos per template | 1 | 2 | 3 | 4 | 5 | 6 |
 |---|---|---|---|---|---|---|
-| Templates available | 11 | 10 | 10 | 6 | **0** | 3 |
+| Templates available | 8 | 6 | 6 | 7 | **4** | 5 |
 
-- **There are no 5-photo templates.** Since templates are exact-count, the packer cannot
-  put five photos on a spread at all. It must either avoid leaving a group of five, or the
-  library needs a few 5-ups authored.
-- **Pacing material is lopsided.** Density is 14 sparse / 22 medium / **4 dense**; energy is
-  21 calm / 8 lively / 11 neutral. A pacing pass that alternates density has very little to
-  reach for at the dense end, and the same 4 templates would recur.
-- **No single-page templates**, per the page-structure section above.
+Two commits got here: `31afe4d` removed 21 templates whose slots straddled the fold (they
+could not decompose into page halves), and `77c5005` authored page-subdivision layouts
+closing the 4/5/6-up gaps. The ignored test
+`templates_real_library_covers_every_group_size_from_one_to_six` asserts this against the
+real directory — run it with `cargo test -- --ignored`.
+
+**Note the side effect:** with every size 1–6 buildable, `choose_group_size` now always
+takes 6. See open item 4 above — closing the coverage gap made the front-loading worse, not
+better.
 
 ---
 
@@ -255,6 +572,16 @@ Be precise about this. Several things look verified and are not.
 - The Swift↔Rust wire format, pinned from both sides. Swift side uses
   `JSONSerialization` rather than its own `Decodable`, so a shared key-name typo cannot
   pass.
+- **The export wire, driven end to end against the real sidecar binary**
+  (`src-tauri/tests/export_roundtrip.rs`). A real `ExportRequest` goes down stdin as one
+  NDJSON line; the cropped files are then read back **off disk** and their container and
+  pixel dimensions parsed from their own bytes, not taken from the sidecar's own
+  `ExportRecord`. Mutation-verified against four separate breakages: a renamed
+  `sourcePath`, swapped `cropW`/`cropH` renames, a swapped width/height in
+  `Exporter.cropRect`, and a forced-JPEG `outputFormat`. Note that `ExportItem` on the
+  Swift side uses a *synthesised* `Codable`, unlike the analyze path — so a key-name typo
+  there fails the whole request with the opaque message `malformed request`, and this test
+  is the only thing that surfaces it.
 - `analyze_batches` returns exactly one record per input path under retry, total failure,
   and wrong-count responses — asserted by *offset*, with the path encoded in each record.
 - The tokio starvation fix, via an integration test on a **1-worker-thread runtime**
@@ -287,6 +614,13 @@ Be precise about this. Several things look verified and are not.
    access, and blind-clicking a live desktop was correctly refused). The gating logic and
    non-fatal failure path are unit-tested; the banner itself has never been seen. Grant
    permission on first run and confirm.
+7. **Whether Pixajoy's picker accepts JPEG *and* PNG.** Their published guidance says
+   nothing about accepted formats. The export rule sends PNG for every lossless source,
+   including all RAW, so a picker that takes only JPEG would force the format rule to be
+   revisited. See "The outstanding verification" above.
+8. **An actual generated book, exported and uploaded.** Phase 2 has never produced output
+   that a human has looked at or a printer has accepted. This is the big one — see "The
+   outstanding verification" above.
 
 ---
 
@@ -374,11 +708,9 @@ beside it. The design calls for the OS keychain, read from Rust.
 - `AnalysisSummary.photos` is `Vec<serde_json::Value>` with no compile-time link to the
   TypeScript `AnalyzedPhoto`. A field rename on either side is a silent `undefined`.
   Consider generated types before Phase 2 widens this boundary.
-- **`count_keepers` in Rust duplicates `keepers()` in TypeScript.** Both decide which
-  photo survives a near-duplicate cluster, in two languages, with no shared definition.
-  The Rust copy exists only to put a number in the completion notification. If the culling
-  rule changes in one and not the other, the notification quietly disagrees with the
-  screen. Worth collapsing to one authority when Phase 2 touches culling.
+- ~~`count_keepers` in Rust duplicates `keepers()` in TypeScript.~~ **Fixed in Phase 2** —
+  `book::cull::cull` is the single authority and its verdict travels on the wire as
+  `AnalyzedPhoto.kept`. See "One culling authority" above.
 - `.oxlintrc.json` enables only `correctness` and `suspicious`, so `no-explicit-any` is
   off and the "never use `any`" convention rests on discipline.
 - No `typecheck` script; `nuxi typecheck` and `vue-tsc` both fail on environment issues.
@@ -407,11 +739,15 @@ beside it. The design calls for the OS keychain, read from Rust.
 
 ## Immediate next steps
 
-1. **Run the app against your own photos.** This settles items 1–3 in the unverified list
-   at once, and item 2 (the `outerLips` count) can silently disable smile detection
-   library-wide.
-2. **Answer the Pixajoy page-count question** — 30 seconds in their editor.
-3. **Spec and plan Phase 2** (layout engine + export). The 40 templates and the geometry
-   are ready; the scorer, the packer and the Core Graphics renderer are not. End of Phase 2
-   is the first point at which this project produces an actual printable book, which makes
-   it the highest-value thing remaining.
+1. **Generate a real book from your own photos and upload one page to Pixajoy.** This is
+   the outstanding verification described above, and it is by far the highest-value thing
+   remaining — it is the only thing that would turn "Phase 2 is internally verified" into
+   "Phase 2 works". It settles, in one sitting: whether the picker accepts JPEG and PNG,
+   RAW and HEIC throughput, the whole face code path, Pixajoy's page-count semantics, and
+   whether the front-loaded pacing (open item 4) is actually as bad as it measures.
+2. **Answer the Pixajoy page-count question** — 30 seconds in their editor, while you are
+   there.
+3. **Decide the seed question before planning Phase 3** (open item 3). "Regenerate this
+   spread" cannot be built as specified until the seed reaches `best_spread`.
+4. **Rule on the gutter-saliency penalty** (open item 1): implement it, or correct the
+   spec. Do not leave the spec promising a term the scorer does not have.
