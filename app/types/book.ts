@@ -247,6 +247,91 @@ export function lastExportLabel(project: ProjectListItem): string {
   return `${last.fileCount} ${last.format} ${files} in ${last.outputDir}`;
 }
 
+/**
+ * Date-only, formatted in UTC so it reads the same regardless of the
+ * machine's local timezone -- unlike `lastExportLabel` above, this is shown
+ * on the home page's project picker before any book state exists, where
+ * there is no other context (file count, format) to anchor the reader.
+ * `null` for a project that has never been exported, so the caller decides
+ * how to say so rather than this baking in one wording.
+ */
+export function lastExportedOn(project: ProjectListItem): string | null {
+  return project.lastExport ? new Date(project.lastExport.at * 1000).toISOString().slice(0, 10) : null;
+}
+
+/**
+ * The book-scoped fields that must always move together: which book was
+ * generated in THIS session, which saved project was opened from disk
+ * instead, its export report, and the output folder chosen for it.
+ *
+ * Exactly one of `generated`/`activeProject` is meant to be non-null at a
+ * time. This is the fix for the bug the whole "reopen a saved project"
+ * feature exists for: the backend has always supported exporting any saved
+ * project, but the UI only ever gated the Export button on
+ * `generated?.projectId` -- the book generated in the CURRENT session -- so
+ * quitting the app made every previously saved project unexportable again
+ * without regenerating it. Adding `open_project` naively, by setting its own
+ * ref alongside the untouched `generated` ref, would reintroduce the same
+ * shape of bug one level down: generate a book, then open a different saved
+ * project, and Export would still be wired to the FIRST book's id. The two
+ * functions below are the single place that decides which one wins, so
+ * `useBook.ts` never has to remember to clear the other one by hand.
+ */
+export interface BookState {
+  generated: GeneratedBook | null;
+  activeProject: ProjectDetail | null;
+  exportResult: ExportResult | null;
+  outputDir: string | null;
+}
+
+// Assigned straight into refs on every transition, so -- like
+// `initialStreamState` and `initialExportProgress` -- it must never be
+// mutated in place.
+export const initialBookState: BookState = Object.freeze({
+  generated: null,
+  activeProject: null,
+  exportResult: null,
+  outputDir: null,
+});
+
+/**
+ * A book generated in this session supersedes any project opened from disk,
+ * and its stale export report goes with it -- but the chosen output folder
+ * is carried over, not cleared. Regenerating (picking a different page
+ * length for the SAME analysed folder) is the one path that produces
+ * several `GeneratedBook`s in a row without the user ever leaving the
+ * "results" screen, and re-asking them to pick the output folder on every
+ * regenerate would be a genuine regression, not a safety measure -- unlike
+ * `outputDir` surviving a *project switch*, which is exactly the mixing this
+ * feature exists to prevent (see `withOpenedProject` below).
+ */
+export function withGeneratedBook(state: BookState, generated: GeneratedBook): BookState {
+  return { generated, activeProject: null, exportResult: null, outputDir: state.outputDir };
+}
+
+/**
+ * A project opened from disk supersedes anything generated in this session.
+ * Unlike `withGeneratedBook`, `outputDir` is cleared too: opening a project
+ * is a genuine switch to a different book (never a re-run of the one just
+ * displayed), so a folder chosen for whatever was current before should not
+ * be silently reused for it.
+ */
+export function withOpenedProject(project: ProjectDetail): BookState {
+  return { generated: null, activeProject: project, exportResult: null, outputDir: null };
+}
+
+/**
+ * The project id "Export" should target, or `null` if there is nothing to
+ * export yet. Reads `generated` first: if a caller somehow leaves both set
+ * (which the two functions above are written specifically to prevent), the
+ * more recently generated book is the more likely intent.
+ */
+export function resolveExportProjectId(
+  state: Pick<BookState, "generated" | "activeProject">,
+): number | null {
+  return state.generated?.projectId ?? state.activeProject?.id ?? null;
+}
+
 export function projectDetailLabel(project: ProjectDetail): string {
   const exports =
     project.exports.length === 0

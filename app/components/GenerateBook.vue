@@ -5,16 +5,23 @@ import {
   generatedLabel,
   lastExportLabel,
   optionFor,
+  projectDetailLabel,
   recommendedOption,
   revealTarget,
   summarizeExport,
 } from "~/types/book";
 import type { AnalyzedPhoto } from "~/types/features";
 
-const { photos, folder } = defineProps<{
-  /** The analysed photos, exactly as Rust sent them -- see `useBook`. */
-  photos: AnalyzedPhoto[];
-  folder: string;
+const {
+  photos = [],
+  folder = null,
+  openProjectId = null,
+} = defineProps<{
+  /** The analysed photos, exactly as Rust sent them -- see `useBook`. Omitted when this is mounted to view a project opened from disk rather than a freshly analysed folder. */
+  photos?: AnalyzedPhoto[];
+  folder?: string | null;
+  /** A saved project to load on mount, without analysing anything -- see `useBook`'s `openProject`. */
+  openProjectId?: number | null;
 }>();
 
 // `toRef` rather than passing the props straight through: `useBook` holds
@@ -26,6 +33,7 @@ const folderRef = toRef<string | null>(() => folder);
 const {
   recommendation,
   generated,
+  activeProject,
   exportResult,
   progress,
   projects,
@@ -34,6 +42,7 @@ const {
   error,
   refreshRecommendation,
   generate,
+  openProject,
   pickOutputDir,
   exportBook,
   loadProjects,
@@ -41,7 +50,7 @@ const {
   reveal,
 } = useBook(photosRef, folderRef);
 
-const name = ref(defaultProjectName(folder));
+const name = ref(defaultProjectName(folder ?? ""));
 /**
  * `null` only before the first recommendation arrives -- the watcher below
  * seeds it with the recommended length, so the control is never rendered
@@ -49,6 +58,14 @@ const name = ref(defaultProjectName(folder));
  * choosing from nothing.
  */
 const chosenPages = ref<number | null>(null);
+
+/**
+ * The "pick a length and generate" flow needs an analysed photo set to
+ * recommend against -- it is hidden entirely (rather than rendered disabled)
+ * when this component is showing a project opened straight from disk, since
+ * there is nothing to regenerate it from.
+ */
+const canGenerate = computed(() => photos.length > 0);
 
 const pages = computed(() => chosenPages.value ?? recommendation.value?.recommendedPages ?? null);
 const chosenOption = computed(() => {
@@ -75,6 +92,13 @@ const exportPercent = computed(() =>
     ? Math.round((progress.value.completed / progress.value.total) * 100)
     : 0,
 );
+/** The "Generated and saved" panel's heading: the loaded project's own name, or the name the user is generating one under. */
+const panelTitle = computed(() => activeProject.value?.name ?? name.value);
+/** The panel's subheading: the loaded project's counts and export history, or what THIS generation just produced. */
+const panelSubtitle = computed(() => {
+  if (activeProject.value) return projectDetailLabel(activeProject.value);
+  return generated.value ? generatedLabel(generated.value) : "";
+});
 
 // The recommendation depends on the whole analysed set, so it is refreshed
 // whenever that set changes -- including the first render, hence `immediate`.
@@ -83,14 +107,14 @@ const exportPercent = computed(() =>
 watch(
   () => photos,
   () => {
-    // Everything below belongs to the PREVIOUS folder: a generated book, the
-    // output directory chosen for it, and its export report. Carrying any of
-    // them across would leave an "Export" button wired to a book built from
-    // photos that are no longer on screen.
+    // Everything below belongs to the PREVIOUS folder (or opened project): a
+    // generated book, an opened project, the output directory chosen for it,
+    // and its export report. Carrying any of them across would leave an
+    // "Export" button wired to a book that is no longer on screen.
     reset();
-    name.value = defaultProjectName(folder);
+    name.value = defaultProjectName(folder ?? "");
     chosenPages.value = null;
-    void refreshRecommendation();
+    if (canGenerate.value) void refreshRecommendation();
   },
   { immediate: true },
 );
@@ -106,12 +130,16 @@ function onGenerate() {
 
 onMounted(() => {
   void loadProjects();
+  // Runs AFTER the `photos` watcher's `reset()` above (which fires
+  // synchronously during setup, before `onMounted`), so this is never
+  // clobbered by it.
+  if (openProjectId !== null) void openProject(openProjectId);
 });
 </script>
 
 <template>
   <section class="space-y-6">
-    <div class="flex flex-wrap items-end gap-4">
+    <div v-if="canGenerate" class="flex flex-wrap items-end gap-4">
       <UFormField label="Book name" class="w-64">
         <UInput v-model="name" :disabled="busy" placeholder="Untitled photobook" />
       </UFormField>
@@ -142,7 +170,7 @@ onMounted(() => {
       length is a purchase decision, and "26 keepers, 24 fit" is the only
       thing that makes the two SKUs distinguishable.
     -->
-    <p v-if="recommendation" class="text-sm text-muted">
+    <p v-if="canGenerate && recommendation" class="text-sm text-muted">
       <span class="font-mono tabular-nums text-default">{{ recommendation.keeperCount }}</span>
       keepers ·
       <template v-if="chosenOption">
@@ -178,12 +206,16 @@ onMounted(() => {
       :ui="{ description: 'break-words' }"
     />
 
-    <!-- Generated and saved: from here the book survives a quit. -->
-    <div v-if="generated" class="space-y-4 rounded-lg border border-default p-4">
+    <!--
+      Generated and saved, OR opened from disk -- either way the book
+      already survived a quit, and export works identically for both. See
+      `panelTitle`/`panelSubtitle` for which one is showing.
+    -->
+    <div v-if="generated || activeProject" class="space-y-4 rounded-lg border border-default p-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="space-y-1">
-          <h3 class="text-sm font-medium text-highlighted">{{ name }}</h3>
-          <p class="text-sm text-muted">{{ generatedLabel(generated) }}</p>
+          <h3 class="text-sm font-medium text-highlighted">{{ panelTitle }}</h3>
+          <p class="text-sm text-muted">{{ panelSubtitle }}</p>
         </div>
         <div class="flex items-center gap-2">
           <UButton
@@ -327,14 +359,31 @@ onMounted(() => {
         <li
           v-for="project in projects"
           :key="project.id"
-          class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-lg border border-default px-3 py-2"
+          class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-lg border border-default px-3 py-2"
         >
           <span class="text-sm text-default">{{ project.name }}</span>
-          <span class="text-xs text-muted">
-            <span class="font-mono tabular-nums">{{ project.pageCount }}</span> pages ·
-            <span class="font-mono tabular-nums">{{ project.photoCount }}</span> photos ·
-            {{ lastExportLabel(project) }}
-          </span>
+          <div class="flex items-center gap-3">
+            <span class="text-xs text-muted">
+              <span class="font-mono tabular-nums">{{ project.pageCount }}</span> pages ·
+              <span class="font-mono tabular-nums">{{ project.photoCount }}</span> photos ·
+              {{ lastExportLabel(project) }}
+            </span>
+            <!--
+              Reopens a SAVED project without re-analysing anything: this is
+              what makes it possible to export a book from a previous session
+              without paying for another Vision pass over the same folder.
+            -->
+            <UButton
+              icon="i-lucide-folder-open"
+              color="neutral"
+              variant="ghost"
+              size="xs"
+              :disabled="busy"
+              @click="openProject(project.id)"
+            >
+              Open
+            </UButton>
+          </div>
         </li>
       </ul>
     </div>

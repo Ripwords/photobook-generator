@@ -4,18 +4,24 @@ import { describe, expect, it } from "vitest";
 import {
   applyExportEvent,
   blockingMessages,
-  exportOutcome,
   defaultProjectName,
+  exportOutcome,
   generatedLabel,
+  initialBookState,
   initialExportProgress,
+  lastExportedOn,
   lastExportLabel,
   optionFor,
   projectDetailLabel,
   recommendedOption,
+  resolveExportProjectId,
   revealTarget,
   summarizeExport,
   warningMessages,
+  withGeneratedBook,
+  withOpenedProject,
   type BookRecommendation,
+  type BookState,
   type ExportEvent,
   type ExportResult,
   type GeneratedBook,
@@ -247,5 +253,132 @@ describe("defaultProjectName", () => {
 
   it("falls back to a generic name for an empty path", () => {
     expect(defaultProjectName("")).toBe("Untitled photobook");
+  });
+});
+
+/**
+ * `BookState` is what `useBook.ts` assigns into its refs whenever the
+ * "current book" changes -- generating one in this session, or opening a
+ * saved one from disk. This is the fix for the bug this whole feature exists
+ * for: reopening a saved project used to be unreachable from the UI at all,
+ * and the naive fix (adding an `open_project` call that sets its own ref
+ * alongside the existing `generated` ref) would leave BOTH populated at
+ * once, so a screen that later generated a fresh book would still export
+ * whichever project id happened to be exported last. These functions are
+ * the single place that decides which of the two "wins".
+ */
+describe("book state transitions", () => {
+  const generated = fixture<GeneratedBook>("generated-book.json");
+  const project = fixture<ProjectDetail>("project-detail.json");
+
+  it("prefers the generated book over an opened project if a caller somehow leaves both set", () => {
+    expect(
+      resolveExportProjectId({ generated: { ...generated, projectId: 1 }, activeProject: { ...project, id: 2 } }),
+    ).toBe(1);
+  });
+
+  it("has nothing to export before anything is generated or opened", () => {
+    expect(initialBookState.generated).toBeNull();
+    expect(initialBookState.activeProject).toBeNull();
+    expect(resolveExportProjectId(initialBookState)).toBeNull();
+  });
+
+  it("generating a book targets that book for export", () => {
+    const state = withGeneratedBook(initialBookState, generated);
+    expect(resolveExportProjectId(state)).toBe(generated.projectId);
+  });
+
+  it("opening a project targets that project for export", () => {
+    const state = withOpenedProject(project);
+    expect(resolveExportProjectId(state)).toBe(project.id);
+  });
+
+  /**
+   * The regression this whole file exists to prevent: opening a project
+   * must not leave a PREVIOUSLY generated book's id (or its export
+   * report / output folder) sitting alongside it. A `useBook` that just
+   * set `activeProject` on `open_project` success -- without also clearing
+   * `generated` -- would pass this project's OWN fixture-derived checks
+   * above, since those never generate anything first.
+   */
+  it("opening a project clears whatever was generated in this session", () => {
+    const generatedState = withGeneratedBook(initialBookState, generated);
+    const opened = withOpenedProject({ ...project, id: 99 });
+    expect(opened.generated).toBeNull();
+    expect(opened.exportResult).toBeNull();
+    expect(opened.outputDir).toBeNull();
+    // Exporting after this transition targets the OPENED project (99), not
+    // the generated book's own id.
+    expect(resolveExportProjectId(opened)).toBe(99);
+    expect(resolveExportProjectId(generatedState)).not.toBe(99);
+  });
+
+  it("generating a fresh book clears a previously opened project", () => {
+    const openedState = withOpenedProject(project);
+    const generated2 = withGeneratedBook(openedState, { ...generated, projectId: 42 });
+    expect(generated2.activeProject).toBeNull();
+    expect(generated2.exportResult).toBeNull();
+    // Exporting after this transition targets the GENERATED book (42), not
+    // the opened project's own id.
+    expect(resolveExportProjectId(generated2)).toBe(42);
+  });
+
+  /**
+   * `outputDir` is the one field that deliberately does NOT reset on every
+   * `withGeneratedBook` call: regenerating (a different page length for the
+   * SAME analysed folder) should not make the user re-pick where to export
+   * to. `withOpenedProject`, in contrast, always clears it -- that path is a
+   * genuine switch to a different book, so a folder chosen for whatever was
+   * showing before must not be silently reused.
+   */
+  it("carries the output folder across a regenerate, but not across opening a different project", () => {
+    const withDir: BookState = { ...initialBookState, outputDir: "/Users/jj/Desktop/export" };
+
+    const regenerated = withGeneratedBook(withDir, { ...generated, projectId: 11 });
+    expect(regenerated.outputDir).toBe("/Users/jj/Desktop/export");
+
+    const opened = withOpenedProject(project);
+    expect(opened.outputDir).toBeNull();
+  });
+
+  /**
+   * The exact hazard called out in the task: switching between a loaded
+   * project and a fresh analysis, in either order, repeatedly, must never
+   * leave one project's fields mixed with another's. Simulated here as the
+   * sequence `useBook` would actually produce -- each transition reads the
+   * PREVIOUS state, exactly as `currentBookState()` feeds it in `useBook.ts`.
+   */
+  it("never mixes fields across repeated switches in either order", () => {
+    let state = initialBookState;
+
+    state = withGeneratedBook(state, { ...generated, projectId: 1 });
+    expect(resolveExportProjectId(state)).toBe(1);
+
+    state = withOpenedProject({ ...project, id: 2 });
+    expect(resolveExportProjectId(state)).toBe(2);
+    expect(state.generated).toBeNull();
+
+    state = withOpenedProject({ ...project, id: 3 });
+    expect(resolveExportProjectId(state)).toBe(3);
+
+    state = withGeneratedBook(state, { ...generated, projectId: 4 });
+    expect(resolveExportProjectId(state)).toBe(4);
+    expect(state.activeProject).toBeNull();
+
+    state = withGeneratedBook(state, { ...generated, projectId: 5 });
+    expect(resolveExportProjectId(state)).toBe(5);
+    expect(state.activeProject).toBeNull();
+  });
+});
+
+describe("lastExportedOn", () => {
+  const projects = fixture<ProjectListItem[]>("project-list.json");
+
+  it("reads the date of the most recent export, in UTC so it is stable across machines", () => {
+    expect(lastExportedOn(projects[0]!)).toBe("2025-08-13");
+  });
+
+  it("returns null for a project that has never been exported", () => {
+    expect(lastExportedOn(projects[1]!)).toBeNull();
   });
 });

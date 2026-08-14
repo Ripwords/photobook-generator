@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { lastExportedOn } from "~/types/book";
 import { basename, burstSizes, groupByEvent, keepers, pickHero } from "~/types/features";
 
 const {
@@ -13,11 +14,31 @@ const {
   retry,
 } = useAnalysis();
 
-type ViewState = "entry" | "running" | "error" | "no-images" | "no-analyzed" | "results";
+// Read once here so the home page can offer a saved project without forcing
+// a folder pick first -- the whole point of persistence is skipping a
+// re-analysis of a folder that was already scanned.
+const { projects, refresh: refreshProjects } = useProjects();
+onMounted(() => {
+  void refreshProjects();
+});
+
+/** Which saved project the user picked from the list below, or `null` if none. */
+const selectedProjectId = ref<number | null>(null);
+
+// A fresh analysis supersedes whatever was selected: without this, finishing
+// analysis after picking a folder from the "entry" screen (while a project
+// was still selected) would keep showing that project's panel instead of the
+// newly analysed folder's results.
+watch(folder, () => {
+  selectedProjectId.value = null;
+});
+
+type ViewState = "entry" | "running" | "error" | "no-images" | "no-analyzed" | "results" | "project";
 
 const state = computed<ViewState>(() => {
   if (running.value) return "running";
   if (error.value) return "error";
+  if (selectedProjectId.value !== null) return "project";
   if (!summary.value) return "entry";
   if (summary.value.total === 0) return "no-images";
   if (summary.value.photos.length === 0) return "no-analyzed";
@@ -84,22 +105,70 @@ const remainingSkeletonCount = computed(() =>
     </header>
 
     <main class="flex-1 overflow-y-auto p-6">
-      <UEmpty
-        v-if="state === 'entry'"
-        icon="i-lucide-images"
-        title="Choose a photo folder to begin"
-        description="PhotobookGen analyzes every photo in a folder on this Mac: sharpness, faces, color palette, and Apple's aesthetic model. It groups burst shots and events, then ranks each photo against the rest of the folder so you can see what's worth printing."
-        :actions="[
-          {
-            label: 'Choose photo folder',
-            icon: 'i-lucide-folder-open',
-            color: 'primary',
-            loading: running,
-            onClick: pickFolderAndAnalyze,
-          },
-        ]"
-        class="mx-auto mt-16 max-w-lg"
-      />
+      <div v-if="state === 'entry'" class="mx-auto mt-16 max-w-lg space-y-8">
+        <!--
+          Saved projects, offered ahead of the folder picker: analysing a
+          folder runs Apple Vision over every photo in it, so reopening one
+          already analysed in a past session must not force that work again.
+        -->
+        <div v-if="projects.length > 0" class="space-y-3">
+          <h2 class="text-sm font-medium text-highlighted">Saved photobooks</h2>
+          <ul class="space-y-2">
+            <li
+              v-for="project in projects"
+              :key="project.id"
+              class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-lg border border-default px-3 py-2"
+            >
+              <div class="space-y-0.5">
+                <p class="text-sm text-default">{{ project.name }}</p>
+                <p class="text-xs text-muted">
+                  <span class="font-mono tabular-nums">{{ project.pageCount }}</span> pages ·
+                  {{ basename(project.sourceFolder) }} ·
+                  <template v-if="lastExportedOn(project)"
+                    >exported {{ lastExportedOn(project) }}</template
+                  >
+                  <template v-else>not exported yet</template>
+                </p>
+              </div>
+              <UButton
+                icon="i-lucide-folder-open"
+                color="neutral"
+                variant="outline"
+                size="sm"
+                @click="selectedProjectId = project.id"
+              >
+                Open
+              </UButton>
+            </li>
+          </ul>
+        </div>
+
+        <UEmpty
+          icon="i-lucide-images"
+          title="Choose a photo folder to begin"
+          description="PhotobookGen analyzes every photo in a folder on this Mac: sharpness, faces, color palette, and Apple's aesthetic model. It groups burst shots and events, then ranks each photo against the rest of the folder so you can see what's worth printing."
+          :actions="[
+            {
+              label: 'Choose photo folder',
+              icon: 'i-lucide-folder-open',
+              color: 'primary',
+              loading: running,
+              onClick: pickFolderAndAnalyze,
+            },
+          ]"
+        />
+      </div>
+
+      <section v-else-if="state === 'project'" class="mx-auto max-w-3xl">
+        <!--
+          Keyed by the project id: `openProjectId` is only read once, in
+          `GenerateBook`'s `onMounted`, so a `key` guarantees a fresh
+          component instance (and therefore a fresh `useBook`) if this ever
+          becomes reachable for a second project without an unmount in
+          between, rather than silently keeping the first project on screen.
+        -->
+        <GenerateBook :key="selectedProjectId" :open-project-id="selectedProjectId" />
+      </section>
 
       <div v-else-if="state === 'running'" class="space-y-6">
         <div class="max-w-sm space-y-2">
@@ -212,7 +281,7 @@ const remainingSkeletonCount = computed(() =>
           only in the results state, since all of it operates on the fully
           ranked set -- `summary.photos`, exactly as Rust sent it.
         -->
-        <GenerateBook v-if="folder" :photos="summary.photos" :folder="folder" />
+        <GenerateBook v-if="folder" :photos="summary.photos" :folder />
 
         <UEmpty
           v-if="eventGroups.length === 0"

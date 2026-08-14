@@ -2,13 +2,18 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   applyExportEvent,
+  initialBookState,
   initialExportProgress,
+  resolveExportProjectId,
+  withGeneratedBook,
+  withOpenedProject,
   type BookRecommendation,
+  type BookState,
   type ExportEvent,
   type ExportProgress,
   type ExportResult,
   type GeneratedBook,
-  type ProjectListItem,
+  type ProjectDetail,
 } from "~/types/book";
 import type { AnalyzedPhoto } from "~/types/features";
 
@@ -32,12 +37,35 @@ import type { AnalyzedPhoto } from "~/types/features";
 export function useBook(photos: Ref<AnalyzedPhoto[]>, folder: Ref<string | null>) {
   const recommendation = ref<BookRecommendation | null>(null);
   const generated = ref<GeneratedBook | null>(null);
+  /** A saved project opened from disk via `openProject` -- see `BookState`'s doc comment for why this and `generated` are never both non-null. */
+  const activeProject = ref<ProjectDetail | null>(null);
   const exportResult = ref<ExportResult | null>(null);
   const progress = ref<ExportProgress>(initialExportProgress);
-  const projects = ref<ProjectListItem[]>([]);
+  const { projects, refresh: loadProjects } = useProjects();
   const outputDir = ref<string | null>(null);
   const busy = ref(false);
   const error = ref<string | null>(null);
+
+  /** The four ref values above, read as one `BookState` snapshot. */
+  function currentBookState(): BookState {
+    return {
+      generated: generated.value,
+      activeProject: activeProject.value,
+      exportResult: exportResult.value,
+      outputDir: outputDir.value,
+    };
+  }
+
+  /** The project id "Export" targets -- see `resolveExportProjectId`'s doc comment. */
+  const exportProjectId = computed(() => resolveExportProjectId(currentBookState()));
+
+  /** Assigns a `BookState` transition into the refs above, all at once. */
+  function applyBookState(next: BookState) {
+    generated.value = next.generated;
+    activeProject.value = next.activeProject;
+    exportResult.value = next.exportResult;
+    outputDir.value = next.outputDir;
+  }
 
   async function guard<T>(work: () => Promise<T>): Promise<T | null> {
     busy.value = true;
@@ -65,14 +93,30 @@ export function useBook(photos: Ref<AnalyzedPhoto[]>, folder: Ref<string | null>
     await guard(async () => {
       // Generation SAVES: the returned id is a row that already exists, so
       // quitting here cannot lose the book.
-      generated.value = await invoke<GeneratedBook>("generate_book", {
+      const result = await invoke<GeneratedBook>("generate_book", {
         photos: photos.value,
         pages,
         name,
         sourceFolder: folder.value,
       });
-      exportResult.value = null;
+      // Supersedes anything previously opened from disk -- see
+      // `withGeneratedBook`'s doc comment. The current `outputDir` is
+      // threaded through deliberately: it survives a regenerate.
+      applyBookState(withGeneratedBook(currentBookState(), result));
       await loadProjects();
+    });
+  }
+
+  /**
+   * Loads a saved project without touching the analyser: no photos are sent
+   * and nothing here calls `analyze_folder`, so opening a project never
+   * re-runs Vision. Supersedes anything generated in this session -- see
+   * `withOpenedProject`'s doc comment.
+   */
+  async function openProject(id: number) {
+    await guard(async () => {
+      const project = await invoke<ProjectDetail>("open_project", { id });
+      applyBookState(withOpenedProject(project));
     });
   }
 
@@ -82,8 +126,8 @@ export function useBook(photos: Ref<AnalyzedPhoto[]>, folder: Ref<string | null>
   }
 
   async function exportBook() {
-    const projectId = generated.value?.projectId;
-    if (projectId === undefined || !outputDir.value) return;
+    const projectId = exportProjectId.value;
+    if (projectId === null || !outputDir.value) return;
 
     progress.value = initialExportProgress;
     const onEvent = new Channel<ExportEvent>();
@@ -112,23 +156,18 @@ export function useBook(photos: Ref<AnalyzedPhoto[]>, folder: Ref<string | null>
     progress.value = { ...progress.value, running: false };
   }
 
-  async function loadProjects() {
-    projects.value = await invoke<ProjectListItem[]>("list_projects");
-  }
-
   /**
-   * Clears everything derived from one analysed set. Called when the photos
-   * change: a generated book, a chosen output folder and an export report
-   * all belong to the folder they were made from, and carrying any of them
-   * across to a different folder means offering to export a book against
-   * photos that are no longer on screen.
+   * Clears everything derived from one analysed set OR one opened project.
+   * Called when the photos change: a generated book, an opened project, a
+   * chosen output folder and an export report all belong to whichever
+   * folder or project they were made from, and carrying any of them across
+   * to a different folder means offering to export a book against photos
+   * that are no longer on screen.
    */
   function reset() {
     recommendation.value = null;
-    generated.value = null;
-    exportResult.value = null;
+    applyBookState(initialBookState);
     progress.value = initialExportProgress;
-    outputDir.value = null;
     error.value = null;
   }
 
@@ -139,7 +178,9 @@ export function useBook(photos: Ref<AnalyzedPhoto[]>, folder: Ref<string | null>
   return {
     recommendation,
     generated,
+    activeProject,
     exportResult,
+    exportProjectId,
     progress,
     projects,
     outputDir,
@@ -147,6 +188,7 @@ export function useBook(photos: Ref<AnalyzedPhoto[]>, folder: Ref<string | null>
     error,
     refreshRecommendation,
     generate,
+    openProject,
     pickOutputDir,
     exportBook,
     loadProjects,
