@@ -257,3 +257,19 @@ writeQuadrants("export-quadrants.png", width: 1200, height: 800,
 writeQuadrants("export-p3.jpg", width: 1200, height: 800,
                type: .jpeg, orientation: 1,
                space: CGColorSpace(name: CGColorSpace.displayP3)!)
+
+// HEIC is the default iPhone format and so is plausibly the commonest real
+// input this app will ever see, yet nothing else in this repo exercises it.
+// The specific untested assumption these two close is that
+// `kCGImagePropertyPixelWidth`/`Height` report the FULL dimensions for HEIC:
+// if they under-reported, `ImageLoader.loadOriented` would pass a too-small
+// `kCGImageSourceThumbnailMaxPixelSize` and silently downscale the print
+// file, with nothing to notice.
+//
+// The orientation-6 variant additionally covers HEIC's own trap -- container
+// `irot`/`imir` and EXIF orientation can disagree, and only
+// `kCGImageSourceCreateThumbnailWithTransform` reconciles them.
+writeQuadrants("export-quadrants.heic", width: 1200, height: 800,
+               type: .heic, orientation: 1, space: sRGB)
+writeQuadrants("export-quadrants-rot90.heic", width: 1200, height: 800,
+               type: .heic, orientation: 6, space: sRGB)

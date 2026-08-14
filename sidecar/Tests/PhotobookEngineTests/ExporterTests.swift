@@ -40,18 +40,29 @@ private func exporterSamplePixel(_ path: String, x: Int, y: Int) -> (r: Int, g: 
     guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
           let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
     var px = [UInt8](repeating: 0, count: 4)
-    guard let ctx = CGContext(
-        data: &px, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
-        space: CGColorSpace(name: CGColorSpace.sRGB)!,
-        bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
-    ) else { return nil }
-    // Translate so display pixel (x, y) lands in the 1x1 context. CGContext's
-    // origin is bottom-left, hence the height flip on y.
-    ctx.draw(image, in: CGRect(
-        x: -CGFloat(x), y: -CGFloat(image.height - 1 - y),
-        width: CGFloat(image.width), height: CGFloat(image.height)
-    ))
-    return (Int(px[0]), Int(px[1]), Int(px[2]))
+    // `withUnsafeMutableBytes`, NOT `&px`. The inout-to-pointer conversion is
+    // only guaranteed valid for the duration of the call it appears in, and
+    // the CGContext outlives that call -- so `&px` would hand the context a
+    // pointer it is not entitled to keep. Every crop-region assertion in this
+    // file runs through this helper, which makes it exactly the wrong place
+    // to rely on something that merely happens to work: if it ever
+    // misbehaved, the tests guarding the print-visible bugs are the ones that
+    // would go quiet.
+    return px.withUnsafeMutableBytes { raw -> (r: Int, g: Int, b: Int)? in
+        guard let base = raw.baseAddress, let ctx = CGContext(
+            data: base, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+        ) else { return nil }
+        // Translate so display pixel (x, y) lands in the 1x1 context.
+        // CGContext's origin is bottom-left, hence the height flip on y.
+        ctx.draw(image, in: CGRect(
+            x: -CGFloat(x), y: -CGFloat(image.height - 1 - y),
+            width: CGFloat(image.width), height: CGFloat(image.height)
+        ))
+        let bytes = raw.bindMemory(to: UInt8.self)
+        return (Int(bytes[0]), Int(bytes[1]), Int(bytes[2]))
+    }
 }
 
 /// JPEG at q0.95 reproduces a flat colour block to within a couple of levels;
@@ -276,6 +287,215 @@ private func exporterContainerType(_ path: String) -> String? {
     // Unknown container: PNG is the safe default -- it never adds a
     // generation of loss the source did not already have.
     #expect(Exporter.outputFormat(for: nil) == .png)
+}
+
+/// A silent drop to a lower quality would degrade every exported photograph
+/// with nothing failing. The encoded-size proxy cannot catch it -- measured on
+/// `export-quadrants.jpg`, q0.95 is 5340 bytes against q0.5's 4915, only 8%
+/// apart and well inside the noise of any other change. `lossyQuality` is
+/// internal and these tests use `@testable import`, so the constant itself is
+/// assertable directly, which is both exact and not brittle.
+@Test func exporterJpegQualityIsPinnedAtNinetyFive() {
+    #expect(Exporter.OutputFormat.jpeg.lossyQuality == 0.95)
+    #expect(Exporter.OutputFormat.png.lossyQuality == nil, "PNG is lossless; a quality knob would be meaningless")
+}
+
+// MARK: - HEIC, the default iPhone format
+
+/// Guards the assumption `ImageLoader.loadOriented` rests on: that
+/// `kCGImagePropertyPixelWidth`/`Height` report a HEIC's FULL dimensions. If
+/// they under-reported, `loadOriented` would pass a too-small
+/// `kCGImageSourceThumbnailMaxPixelSize` and silently downscale the print
+/// file. This runs the format rule AND the no-rescale rule end to end, on a
+/// real HEIC, rather than only through the pure decision function.
+@Test func exporterHeicSourceExportsAsJpegAtTheExactCropSize() throws {
+    let dir = exporterTempDir("heic")
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+    let records = Exporter.export(ExportRequest(outputDir: dir, items: [
+        exporterItem(exporterFixture("export-quadrants.heic"), "h-full", 0.0, 0.0, 1.0, 1.0),
+        exporterItem(exporterFixture("export-quadrants.heic"), "h-crop", 0.1, 0.2, 0.3, 0.4),
+    ]))
+    #expect(records.count == 2)
+
+    guard case .ok(let fullPath, let fullW, let fullH, _) = records[0] else {
+        Issue.record("HEIC full-frame record was not .ok: \(records[0])")
+        return
+    }
+    #expect(fullW == 1200 && fullH == 800,
+            "a HEIC full-frame export must keep the source's full resolution, got \(fullW)x\(fullH)")
+    #expect(exporterContainerType(fullPath) == UTType.jpeg.identifier,
+            "HEIC is lossy, so it must export as JPEG, got \(String(describing: exporterContainerType(fullPath)))")
+    #expect(exporterProfileName(fullPath) == "sRGB IEC61966-2.1")
+    exporterExpectColor(fullPath, x: 300, y: 200, exporterRed, "HEIC full frame top-left")
+
+    guard case .ok(_, let cropW, let cropH, _) = records[1] else {
+        Issue.record("HEIC crop record was not .ok: \(records[1])")
+        return
+    }
+    #expect(cropW == 360 && cropH == 320, "0.3x0.4 of 1200x800 is 360x320, got \(cropW)x\(cropH)")
+}
+
+/// HEIC stores orientation in the container's `irot`/`imir` as well as EXIF,
+/// and the two can disagree; only `kCGImageSourceCreateThumbnailWithTransform`
+/// reconciles them. Same construction as the JPEG orientation test: displayed
+/// top-left of an orientation-6 source is the STORED bottom-left, so colour
+/// separates orient-then-crop from crop-then-orient.
+@Test func exporterAppliesHeicOrientationBeforeCropping() throws {
+    let dir = exporterTempDir("heic-rot")
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+    let records = Exporter.export(ExportRequest(outputDir: dir, items: [
+        exporterItem(exporterFixture("export-quadrants-rot90.heic"), "hr", 0.0, 0.0, 0.5, 0.5),
+    ]))
+    guard let ok = exporterOnlyOk(records, "HEIC orientation") else { return }
+    #expect(ok.width == 400 && ok.height == 600,
+            "the oriented HEIC is 800x1200, so a quarter is 400x600; got \(ok.width)x\(ok.height)")
+    exporterExpectColor(ok.path, x: 200, y: 300, exporterBlue,
+                        "displayed top-left of an orientation-6 HEIC is the STORED bottom-left")
+}
+
+@Test func exporterHeicFixturesReallyAreHeicAndReportFullPixelDimensions() throws {
+    for name in ["export-quadrants.heic", "export-quadrants-rot90.heic"] {
+        let url = URL(fileURLWithPath: exporterFixture(name)) as CFURL
+        let source = try #require(CGImageSourceCreateWithURL(url, nil))
+        #expect(CGImageSourceGetType(source) as String? == UTType.heic.identifier, "\(name) container")
+        let props = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+        #expect(props[kCGImagePropertyPixelWidth] as? Int == 1200, "\(name) PixelWidth")
+        #expect(props[kCGImagePropertyPixelHeight] as? Int == 800, "\(name) PixelHeight")
+    }
+    // And the rotated one carries a real orientation tag on unrotated pixels,
+    // exactly as its JPEG counterpart does.
+    let url = URL(fileURLWithPath: exporterFixture("export-quadrants-rot90.heic")) as CFURL
+    let source = try #require(CGImageSourceCreateWithURL(url, nil))
+    let props = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+    #expect(props[kCGImagePropertyOrientation] as? Int == 6)
+}
+
+// MARK: - Filename collisions must not silently lose a photo
+
+/// Guards: two items whose output paths collide must not silently overwrite
+/// each other. Both would otherwise report `.ok` with the SAME path, and a
+/// 60-photo book would ship 59 files with nothing in the response naming the
+/// photo that vanished.
+@Test func exporterReportsAFilenameCollisionRatherThanOverwriting() throws {
+    let dir = exporterTempDir("collision")
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+    let src = exporterFixture("export-quadrants.jpg")
+
+    // Same filename, DIFFERENT crops -- so the surviving file's content
+    // identifies which item actually wrote it.
+    let records = Exporter.export(ExportRequest(outputDir: dir, items: [
+        exporterItem(src, "p01", 0.0, 0.0, 0.5, 0.5),   // red
+        exporterItem(src, "p01", 0.5, 0.5, 0.5, 0.5),   // yellow
+        exporterItem(src, "p02", 0.5, 0.0, 0.5, 0.5),   // green, no collision
+    ]))
+    #expect(records.count == 3)
+
+    guard case .ok(let firstPath, _, _, _) = records[0] else {
+        Issue.record("the first claimant must succeed, got \(records[0])")
+        return
+    }
+    guard case .failed(let lostName, let message) = records[1] else {
+        Issue.record("the second claimant must be reported as failed, got \(records[1])")
+        return
+    }
+    #expect(lostName == "p01")
+    #expect(message.contains("p01.jpg"), "the message must name the path collided on, got: \(message)")
+    guard case .ok = records[2] else {
+        Issue.record("a non-colliding item must be unaffected, got \(records[2])")
+        return
+    }
+
+    // The first item's content survives intact -- the loser did not truncate
+    // or replace it.
+    exporterExpectColor(firstPath, x: 300, y: 200, exporterRed, "first claimant's content")
+
+    // And exactly two files exist, not three and not one.
+    let written = try FileManager.default.contentsOfDirectory(atPath: dir).sorted()
+    #expect(written == ["p01.jpg", "p02.jpg"], "directory contained \(written)")
+}
+
+/// The claim is on the RESOLVED path, so the same stem from a lossy and a
+/// lossless source is not a collision: they become `p01.jpg` and `p01.png`
+/// and both survive. A stem-level check would wrongly fail one of them.
+@Test func exporterSameStemFromDifferentFormatsIsNotACollision() throws {
+    let dir = exporterTempDir("stem")
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+    let records = Exporter.export(ExportRequest(outputDir: dir, items: [
+        exporterItem(exporterFixture("export-quadrants.jpg"), "p01", 0.0, 0.0, 0.5, 0.5),
+        exporterItem(exporterFixture("export-quadrants.png"), "p01", 0.0, 0.0, 0.5, 0.5),
+    ]))
+    #expect(records.count == 2)
+    for record in records {
+        guard case .ok = record else {
+            Issue.record("expected .ok, got \(record)")
+            continue
+        }
+    }
+    let written = try FileManager.default.contentsOfDirectory(atPath: dir).sorted()
+    #expect(written == ["p01.jpg", "p01.png"], "directory contained \(written)")
+}
+
+/// Re-exporting a book over a previous run's output must still overwrite --
+/// "regenerate" is expected to replace what is there. The collision check is
+/// per-request, not per-directory, and this pins that distinction.
+@Test func exporterOverwritesAPreviousRunInTheSameDirectory() throws {
+    let dir = exporterTempDir("rerun")
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+    let src = exporterFixture("export-quadrants.jpg")
+    let first = Exporter.export(ExportRequest(outputDir: dir, items: [
+        exporterItem(src, "p01", 0.0, 0.0, 0.5, 0.5),   // red
+    ]))
+    guard exporterOnlyOk(first, "first run") != nil else { return }
+
+    let second = Exporter.export(ExportRequest(outputDir: dir, items: [
+        exporterItem(src, "p01", 0.5, 0.5, 0.5, 0.5),   // yellow
+    ]))
+    guard let ok = exporterOnlyOk(second, "second run") else { return }
+    exporterExpectColor(ok.path, x: 300, y: 200, exporterYellow, "the re-export must replace the old file")
+}
+
+// MARK: - Out-of-range crop windows are reported, not absorbed
+
+/// Guards: a crop component outside 0...1 must be reported rather than
+/// silently clamped into range. Rust guarantees 0...1, so anything outside is
+/// a wiring bug -- and a clamped origin quietly shifts the window, producing a
+/// wrong-but-plausible crop of the user's photograph.
+@Test func exporterRejectsACropWindowOutsideNormalisedBounds() throws {
+    let dir = exporterTempDir("outofrange")
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+    let src = exporterFixture("export-quadrants.jpg")
+    let cases: [(String, Double, Double, Double, Double)] = [
+        ("negative-x", -0.10, 0.0, 0.5, 0.5),
+        ("negative-y", 0.0, -0.10, 0.5, 0.5),
+        ("escapes-right", 0.80, 0.0, 0.5, 0.5),
+        ("escapes-bottom", 0.0, 0.80, 0.5, 0.5),
+    ]
+    let records = Exporter.export(ExportRequest(outputDir: dir, items: cases.map {
+        exporterItem(src, $0.0, $0.1, $0.2, $0.3, $0.4)
+    }))
+    #expect(records.count == cases.count)
+    for (index, record) in records.enumerated() {
+        guard case .failed(let filename, _) = record else {
+            Issue.record("\(cases[index].0) should have been reported, got \(record)")
+            continue
+        }
+        #expect(filename == cases[index].0)
+    }
+    #expect(try FileManager.default.contentsOfDirectory(atPath: dir).isEmpty,
+            "nothing should have been written for any out-of-range window")
+}
+
+/// The tolerance exists so an f64 round-trip that lands a hair over 1.0 is
+/// absorbed as noise rather than failing a legitimate full-frame crop. This
+/// pins that the guard above did not become so strict it rejects real input.
+@Test func exporterAcceptsSubEpsilonDriftPastTheBounds() throws {
+    let dir = exporterTempDir("epsilon")
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+    let records = Exporter.export(ExportRequest(outputDir: dir, items: [
+        exporterItem(exporterFixture("export-quadrants.jpg"), "drift", -1e-12, 0.0, 1.0 + 1e-12, 1.0),
+    ]))
+    guard let ok = exporterOnlyOk(records, "sub-epsilon drift") else { return }
+    #expect(ok.width == 1200 && ok.height == 800, "got \(ok.width)x\(ok.height)")
 }
 
 // MARK: - Colour management

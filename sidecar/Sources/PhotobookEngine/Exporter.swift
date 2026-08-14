@@ -47,6 +47,8 @@ enum Exporter {
 
     enum ExportError: Error, CustomStringConvertible {
         case emptyCropWindow(String)
+        case cropWindowOutOfRange(String)
+        case duplicateOutputPath(String)
         case cropFailed
         case colorConversionFailed
         case destinationCreationFailed
@@ -55,6 +57,10 @@ enum Exporter {
         var description: String {
             switch self {
             case .emptyCropWindow(let detail): return "crop window is empty (\(detail))"
+            case .cropWindowOutOfRange(let detail):
+                return "crop window is outside the photo's normalised bounds (\(detail))"
+            case .duplicateOutputPath(let path):
+                return "another item in this export already wrote \(path)"
             case .cropFailed: return "crop window fell outside the decoded image"
             case .colorConversionFailed: return "could not convert the crop to sRGB"
             case .destinationCreationFailed: return "could not create the output file"
@@ -66,7 +72,9 @@ enum Exporter {
     /// Chooses the output container for a source's type.
     ///
     /// Pure and separated from any file access so the rule is testable for
-    /// HEIC, RAW and TIFF, none of which have a fixture in this repo.
+    /// RAW and TIFF, which have no fixture in this repo. (HEIC does --
+    /// `export-quadrants.heic` -- because it is the default iPhone format and
+    /// so plausibly the commonest real input.)
     ///
     /// `nil` (an unrecognised container) falls to PNG: PNG never adds a
     /// generation of loss the source did not already have, so it is the safe
@@ -87,6 +95,23 @@ enum Exporter {
     /// Exports every item, returning exactly one record per item, in input
     /// order. A missing or undecodable source produces a `.failed` record; it
     /// never throws out of this function and never terminates the process.
+    ///
+    /// **Filename collisions fail, they do not overwrite.** Two items whose
+    /// output paths collide would otherwise both report `.ok` with the same
+    /// path, and a 60-photo book would quietly ship 59 files with nothing in
+    /// the response saying which photo vanished — a loss the user could only
+    /// find by counting files. The first item wins (so the outcome is
+    /// deterministic and order-stable); every later claimant gets `.failed`
+    /// naming the path it collided on.
+    ///
+    /// Failing rather than uniquifying is deliberate: filenames come from the
+    /// layout engine, which numbers them by page and slot, so a collision is
+    /// an upstream bug. A silently renamed `p01-1.jpg` in a print upload is
+    /// worse than a reported failure, because it looks like it worked.
+    ///
+    /// The claim set is per-request, not per-directory: re-exporting a book
+    /// over a previous run's output must still overwrite, since "regenerate"
+    /// is expected to replace what is there.
     static func export(_ request: ExportRequest) -> [ExportRecord] {
         do {
             try FileManager.default.createDirectory(
@@ -100,13 +125,17 @@ enum Exporter {
             }
         }
 
-        return request.items.map { item in
+        var claimed = Set<String>()
+        var records: [ExportRecord] = []
+        records.reserveCapacity(request.items.count)
+        for item in request.items {
             do {
-                return try exportOne(item, outputDir: request.outputDir)
+                records.append(try exportOne(item, outputDir: request.outputDir, claimed: &claimed))
             } catch {
-                return .failed(filename: item.filename, message: describe(error))
+                records.append(.failed(filename: item.filename, message: describe(error)))
             }
         }
+        return records
     }
 
     private static func describe(_ error: Error) -> String {
@@ -118,7 +147,9 @@ enum Exporter {
         }
     }
 
-    private static func exportOne(_ item: ExportItem, outputDir: String) throws -> ExportRecord {
+    private static func exportOne(
+        _ item: ExportItem, outputDir: String, claimed: inout Set<String>
+    ) throws -> ExportRecord {
         // The autoreleasepool encloses the DECODE, not just the encode. Full
         // decompression happens inside `loadOriented`, and without a pool
         // around it the temporary surfaces accumulate for the whole batch.
@@ -129,8 +160,16 @@ enum Exporter {
             return (cropped, sourceFormat(of: item.sourcePath))
         }
 
-        let srgb = try convertToSRGB(image, format: format)
+        // Claimed BEFORE encoding, so a collision never truncates the file the
+        // first item already wrote. Note the claim is on the resolved path, so
+        // the same stem from a JPEG and a PNG source is not a collision --
+        // they become `p01.jpg` and `p01.png` and both survive.
         let path = outputPath(for: item.filename, format: format, in: outputDir)
+        guard claimed.insert(path).inserted else {
+            throw ExportError.duplicateOutputPath(path)
+        }
+
+        let srgb = try convertToSRGB(image, format: format)
         let bytes = try encode(srgb, to: path, format: format)
         return .ok(path: path, width: srgb.width, height: srgb.height, bytes: bytes)
     }
@@ -162,6 +201,13 @@ enum Exporter {
     /// `.integral` floors the origin and ceils the far edge, so floating
     /// point noise on an exact half turns a 360px window into 361px, and the
     /// extra row is content the layout engine chose to exclude.
+    ///
+    /// **Every component is validated, none is silently clamped.** An earlier
+    /// version rejected a bad width but quietly clamped a negative origin into
+    /// range, which would have let a wiring error on the Rust side shift the
+    /// crop window instead of reporting itself. Rust already guarantees
+    /// `0...1` (`book::pace` asserts it with a 1e-9 epsilon), so anything
+    /// outside that is a bug worth surfacing rather than absorbing.
     private static func cropRect(for item: ExportItem, in image: CGImage) throws -> CGRect {
         let width = Double(image.width)
         let height = Double(image.height)
@@ -173,6 +219,18 @@ enum Exporter {
         }
         guard item.cropX.isFinite, item.cropY.isFinite else {
             throw ExportError.emptyCropWindow("x=\(item.cropX) y=\(item.cropY)")
+        }
+        // Matched to Rust's own containment epsilon, loosened by three orders
+        // of magnitude so a crop that arrives as 1.0 + 2e-16 from an f64
+        // round-trip is absorbed as noise while a real out-of-range value is
+        // not. Only sub-tolerance drift is clamped away below.
+        let tolerance = 1e-6
+        guard item.cropX >= -tolerance, item.cropY >= -tolerance,
+              item.cropX + item.cropW <= 1 + tolerance,
+              item.cropY + item.cropH <= 1 + tolerance else {
+            throw ExportError.cropWindowOutOfRange(
+                "x=\(item.cropX) y=\(item.cropY) w=\(item.cropW) h=\(item.cropH)"
+            )
         }
 
         let x = (item.cropX.clamped(to: 0...1) * width).rounded()
