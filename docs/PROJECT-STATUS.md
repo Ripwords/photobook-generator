@@ -512,6 +512,73 @@ caller, not to `from_features`.
 
 ---
 
+## Layout quality: the first real-photo run, 2026-08-14
+
+The user generated a book from their own photographs and looked at it in the preview.
+Verdict: **"not bad, functional"** — the pipeline works end to end. Four quality
+complaints, in their words, each traced to a cause here. **These are the first evidence
+this project has about whether the engine produces a good book, as opposed to a valid
+one.** Nothing below is a bug; every one is a design gap.
+
+### 1. "Some pages are left blank not sure why"
+
+Two distinct causes, now distinguishable on screen because the preview shows template ids.
+
+- **Ten of the 36 templates have a page with zero photo slots**, eight of them because
+  they carry `text_zones` and Phase 2 renders no text (spec §5.4). Those pages print
+  white by construction. On screen they appear under a real template id such as
+  `03-hero-left-text-right`.
+- **`assemble` emits a blank page when no template scores for a group** — the ruling
+  being that a short book cannot be uploaded against a fixed-page SKU. These appear
+  under the id `blank`, and mean every candidate was rejected by a hard constraint
+  (face clipped, face in the gutter or safe margin, or below 200 DPI).
+
+Cheapest fix for the first: stop drawing zero-slot page-halves from `page_half_pool`
+while text is unrendered. The second needs diagnosis per occurrence.
+
+### 2. "Some facial features are too candid/unprepared/unflattering"
+
+**The engine has no expression signal whatsoever.** Vision has no expression classifier
+at any macOS version; the geometric smile proxy was measured against real faces and has
+a proven 100% false-negative rate, so it is computed and deliberately unused.
+
+What exists and is underused: Vision's **face capture quality**, which scores blur,
+exposure and pose. It is currently only a tie-break inside `cull`, and is never a
+scoring term. Promoting it to a weighted term in `score.rs` is the cheapest real
+improvement available and needs no new signal.
+
+Eyes-closed/mid-blink detection is derivable from the landmark geometry already carried,
+but it is the same shape as the smile proxy and must be measured against real faces
+before being trusted — see the smile calibration section for how that went last time.
+
+### 3. "There are too many images that are similar (too little variety) in some pages"
+
+Near-duplicate clustering is perceptual-hash based, so it only collapses near-identical
+frames. Photos of the same moment from slightly different angles are not near-duplicates
+and all survive. **There is no within-spread diversity term at all.**
+
+Worse: `palette_harmony` **rewards** hue agreement between the photos on a spread, so the
+one aesthetic term that exists actively pushes toward the sameness being complained
+about. It is already recorded as effectively inert (open item 2), which makes
+repurposing it into a diversity term cheap rather than disruptive.
+
+Signals available today with no new analysis: `phash` distance, palette distance, scene
+tags, and capture-time proximity.
+
+### 4. "Some interesting features should be highlighted rather than mixed with other images"
+
+`hero_match` places the highest-aesthetic photo in a `hero` slot, but **only within a
+group that has already been formed**. `pack` sizes groups from chapter boundaries and
+capacity alone — it knows nothing about photo merit — so a standout image can be dealt
+into a six-up.
+
+Two fixes, different sizes: bias `best_spread` toward templates with a dominant hero slot
+when a group contains a high-percentile photo (cheap, no packing change); or let merit
+influence group size in `pack`, so an exceptional photo gets a small group or a page to
+itself (the real fix, and a genuine change to the packer's contract).
+
+---
+
 ## The outstanding verification — NOT done, and not fakeable
 
 **Nobody has generated a real book from real photos and uploaded a page to Pixajoy.**
