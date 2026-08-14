@@ -25,6 +25,7 @@
 //! Phase 4 does need per-placement updates, that migration can be scoped
 //! against what Phase 4 actually turns out to require.
 
+use crate::book::cull::Overrides;
 use crate::book::pace::Book;
 use serde::{Deserialize, Serialize};
 
@@ -62,6 +63,19 @@ pub struct Project {
     /// folder hash the same, and both are real placements of what is, in
     /// pixels, the same photo.
     pub photo_hashes: Vec<String>,
+    /// The user's own include/exclude decisions, keyed by content hash --
+    /// what they asked for that differs from what the engine would have
+    /// chosen on its own.
+    ///
+    /// Persisted with the project rather than derived, because it CANNOT be
+    /// derived: the decisions are made on the contact sheet, before a project
+    /// exists, and nothing about the saved book records why a photo is in it.
+    /// A project that reopened without them would quietly revert every
+    /// decision to `Auto` and look entirely correct while doing it.
+    ///
+    /// Unordered, unlike `photo_hashes`: this is a map from hash to state and
+    /// nothing indexes into it positionally.
+    pub overrides: Overrides,
     pub exports: Vec<ExportRecord>,
 }
 

@@ -1,3 +1,4 @@
+use crate::book::cull::{Override, Overrides};
 use crate::book::pace::Book;
 use crate::project::{self, ExportRecord, Project, ProjectSummary};
 use rusqlite::{Connection, OptionalExtension};
@@ -33,6 +34,12 @@ impl Db {
         Ok(db)
     }
 
+    /// `project_photo_overrides` holds the user's own include/exclude
+    /// decisions, keyed by content hash exactly as `Overrides` is. Unordered,
+    /// unlike `project_photos`: it is a map, and nothing indexes into it
+    /// positionally. `Auto` is never stored -- it is the ABSENCE of a
+    /// decision (see `Overrides::set`), so a row for it would be a second
+    /// representation of "no decision".
     fn migrate(&self) -> rusqlite::Result<()> {
         self.conn.execute_batch(
             "PRAGMA journal_mode = WAL;
@@ -73,6 +80,12 @@ impl Db {
                  position   INTEGER NOT NULL,
                  hash       TEXT NOT NULL,
                  PRIMARY KEY (project_id, position)
+             );
+             CREATE TABLE IF NOT EXISTS project_photo_overrides (
+                 project_id INTEGER NOT NULL REFERENCES projects(id),
+                 hash       TEXT NOT NULL,
+                 state      TEXT NOT NULL,
+                 PRIMARY KEY (project_id, hash)
              );",
         )
     }
@@ -111,12 +124,20 @@ impl Db {
     /// load-bearing. Written in the same transaction as the project row, so
     /// a half-written project (a book whose photo list is missing or short)
     /// is not a state that can exist.
+    ///
+    /// `overrides` is written in that SAME transaction, for the same reason.
+    /// The user's include/exclude decisions are the only record of what they
+    /// asked for that differs from what the engine would have chosen; a
+    /// project that reopened without them would silently revert every one of
+    /// those decisions to `Auto`, which is exactly the "the analysis was
+    /// lost" failure this table exists to avoid repeating.
     pub fn save_project(
         &self,
         name: &str,
         source_folder: &str,
         book: &Book,
         photo_hashes: &[String],
+        overrides: &Overrides,
     ) -> rusqlite::Result<i64> {
         let book_json = serde_json::to_string(book)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -135,6 +156,14 @@ impl Db {
             )?;
             for (position, hash) in photo_hashes.iter().enumerate() {
                 stmt.execute(rusqlite::params![id, position as i64, hash])?;
+            }
+        }
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO project_photo_overrides (project_id, hash, state) VALUES (?1, ?2, ?3)",
+            )?;
+            for (hash, state) in overrides.iter() {
+                stmt.execute(rusqlite::params![id, hash, state.as_str()])?;
             }
         }
         tx.commit()?;
@@ -179,6 +208,29 @@ impl Db {
             .query_map(rusqlite::params![id], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
+        let mut stmt = self
+            .conn
+            .prepare("SELECT hash, state FROM project_photo_overrides WHERE project_id = ?1")?;
+        let overrides = stmt
+            .query_map(rusqlite::params![id], |row| {
+                let hash: String = row.get(0)?;
+                let token: String = row.get(1)?;
+                // An unrecognised token fails the LOAD rather than degrading
+                // to `Auto`. Silently forgetting a decision the user made is
+                // the failure this feature exists to prevent, and it would be
+                // invisible: the project would simply open with the engine's
+                // own verdict and look correct.
+                let state = Override::from_token(&token).ok_or_else(|| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        format!("unknown photo override state {token:?}").into(),
+                    )
+                })?;
+                Ok((hash, state))
+            })?
+            .collect::<rusqlite::Result<Overrides>>()?;
+
         let mut stmt = self.conn.prepare(
             "SELECT output_dir, format, file_count, exported_at
              FROM project_exports WHERE project_id = ?1 ORDER BY exported_at ASC, id ASC",
@@ -201,6 +253,7 @@ impl Db {
             updated_at,
             book,
             photo_hashes,
+            overrides,
             exports,
         }))
     }
@@ -239,8 +292,8 @@ impl Db {
         Ok(())
     }
 
-    /// Removes a project, every export row recorded against it, and its
-    /// photo list. All three deletes are explicit rather than relying on a
+    /// Removes a project, every export row recorded against it, its photo
+    /// list and the user's overrides for it. All four deletes are explicit rather than relying on a
     /// foreign-key cascade (neither child table declares
     /// `ON DELETE CASCADE`) -- the child rows must go first, since
     /// `migrate()` turns `PRAGMA foreign_keys` on for this connection and
@@ -249,6 +302,10 @@ impl Db {
     pub fn delete_project(&self, id: i64) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM project_exports WHERE project_id = ?1", rusqlite::params![id])?;
         self.conn.execute("DELETE FROM project_photos WHERE project_id = ?1", rusqlite::params![id])?;
+        self.conn.execute(
+            "DELETE FROM project_photo_overrides WHERE project_id = ?1",
+            rusqlite::params![id],
+        )?;
         self.conn.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])?;
         Ok(())
     }
@@ -257,6 +314,7 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::book::cull::Override;
     use crate::book::pace::{Book, Page, Placement};
     use crate::geometry::{Rect, Side};
 
@@ -371,7 +429,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let book = fixture_book();
 
-        let id = db.save_project("Kyoto Trip", "/Users/j/Photos/kyoto", &book, &fixture_hashes()).unwrap();
+        let id = db.save_project("Kyoto Trip", "/Users/j/Photos/kyoto", &book, &fixture_hashes(), &Overrides::new()).unwrap();
         let loaded = db.load_project(id).unwrap().expect("project should exist");
 
         assert_eq!(loaded.book, book);
@@ -395,7 +453,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let hashes = fixture_hashes();
 
-        let id = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &hashes).unwrap();
+        let id = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &hashes, &Overrides::new()).unwrap();
         let loaded = db.load_project(id).unwrap().unwrap();
 
         assert_eq!(loaded.photo_hashes, hashes);
@@ -415,7 +473,7 @@ mod tests {
         let hashes: Vec<String> =
             ["hdup", "hb11", "hdup"].iter().map(|s| s.to_string()).collect();
 
-        let id = db.save_project("Dupes", "/tmp/dupes", &fixture_book(), &hashes).unwrap();
+        let id = db.save_project("Dupes", "/tmp/dupes", &fixture_book(), &hashes, &Overrides::new()).unwrap();
 
         assert_eq!(db.load_project(id).unwrap().unwrap().photo_hashes, hashes);
     }
@@ -427,7 +485,7 @@ mod tests {
     #[test]
     fn a_project_with_no_stored_photo_list_loads_with_an_empty_one() {
         let db = Db::open_in_memory().unwrap();
-        let id = db.save_project("Legacy", "/tmp/legacy", &fixture_book(), &[]).unwrap();
+        let id = db.save_project("Legacy", "/tmp/legacy", &fixture_book(), &[], &Overrides::new()).unwrap();
 
         let loaded = db.load_project(id).unwrap().expect("the project must still load");
 
@@ -449,7 +507,7 @@ mod tests {
     fn a_failed_photo_list_write_leaves_no_half_written_project() {
         let db = Db::open_in_memory().unwrap();
         let existing =
-            db.save_project("First", "/tmp/first", &fixture_book(), &fixture_hashes()).unwrap();
+            db.save_project("First", "/tmp/first", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
         let next_id = existing + 1;
 
         db.conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
@@ -465,7 +523,7 @@ mod tests {
             db.conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0)).unwrap();
 
         let result =
-            db.save_project("Second", "/tmp/second", &fixture_book(), &fixture_hashes());
+            db.save_project("Second", "/tmp/second", &fixture_book(), &fixture_hashes(), &Overrides::new());
 
         assert!(result.is_err(), "the colliding photo-list insert must fail the save");
         let after: i64 =
@@ -477,13 +535,136 @@ mod tests {
         );
     }
 
+    /// **Overrides survive a save and a reopen.**
+    ///
+    /// They are the only record of what the user asked for that the engine
+    /// would not have chosen by itself, and nothing about the saved `Book`
+    /// encodes WHY a photo is in it -- so a project that reopened without
+    /// them would silently revert every decision to `Auto` and look correct
+    /// while doing it.
+    ///
+    /// Both states are asserted, and a hash with NO decision is asserted to
+    /// come back with none: a round trip that stored only one of the two
+    /// states, or that turned every listed hash into the same state, passes a
+    /// single-state fixture.
+    #[test]
+    fn round_trips_the_users_include_and_exclude_decisions() {
+        let db = Db::open_in_memory().unwrap();
+        let mut overrides = Overrides::new();
+        overrides.set("hz22", Override::Include);
+        overrides.set("hb33", Override::Exclude);
+        overrides.set("hf00", Override::Include);
+
+        let id = db
+            .save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &fixture_hashes(), &overrides)
+            .unwrap();
+        let loaded = db.load_project(id).unwrap().unwrap();
+
+        assert_eq!(loaded.overrides, overrides);
+        assert_eq!(loaded.overrides.get("hz22"), Override::Include);
+        assert_eq!(loaded.overrides.get("hb33"), Override::Exclude);
+        assert_eq!(loaded.overrides.get("ha11"), Override::Auto, "an untouched photo stays auto");
+        assert_eq!(loaded.overrides.len(), 3, "and nothing else was invented");
+    }
+
+    /// A project saved with no decisions at all reads back as none, not as a
+    /// failure and not as a map of `Auto` entries.
+    #[test]
+    fn a_project_with_no_overrides_loads_with_an_empty_map() {
+        let db = Db::open_in_memory().unwrap();
+        let id = db
+            .save_project("Plain", "/tmp/plain", &fixture_book(), &fixture_hashes(), &Overrides::new())
+            .unwrap();
+
+        assert!(db.load_project(id).unwrap().unwrap().overrides.is_empty());
+    }
+
+    /// An override row whose state this build does not recognise fails the
+    /// load rather than degrading to `Auto`. Silently forgetting a decision
+    /// is invisible -- the project simply opens with the engine's verdict and
+    /// looks right -- which makes it worse than refusing to open at all.
+    #[test]
+    fn an_unrecognised_override_state_fails_the_load_rather_than_reverting_to_auto() {
+        let db = Db::open_in_memory().unwrap();
+        let id = db
+            .save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &fixture_hashes(), &Overrides::new())
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO project_photo_overrides (project_id, hash, state) VALUES (?1, 'hz22', 'pin')",
+                rusqlite::params![id],
+            )
+            .unwrap();
+
+        let result = db.load_project(id);
+
+        assert!(result.is_err(), "an unknown state must not load as auto, got {result:?}");
+    }
+
+    /// The overrides go in the SAME transaction as the project row: a save
+    /// that half-succeeded would leave a book whose photo selection is
+    /// somebody else's.
+    #[test]
+    fn a_failed_override_write_leaves_no_half_written_project() {
+        let db = Db::open_in_memory().unwrap();
+        let mut overrides = Overrides::new();
+        overrides.set("hz22", Override::Include);
+        let existing = db
+            .save_project("First", "/tmp/first", &fixture_book(), &fixture_hashes(), &Overrides::new())
+            .unwrap();
+        let next_id = existing + 1;
+
+        db.conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO project_photo_overrides (project_id, hash, state) VALUES (?1, 'hz22', 'include')",
+                rusqlite::params![next_id],
+            )
+            .unwrap();
+        db.conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+
+        let result =
+            db.save_project("Second", "/tmp/second", &fixture_book(), &fixture_hashes(), &overrides);
+
+        assert!(result.is_err(), "the colliding override insert must fail the save");
+        assert!(db.load_project(next_id).unwrap().is_none(), "and roll the project row back");
+    }
+
+    #[test]
+    fn delete_project_removes_the_users_overrides_too() {
+        let db = Db::open_in_memory().unwrap();
+        let mut overrides = Overrides::new();
+        overrides.set("hz22", Override::Include);
+        let keep = db
+            .save_project("Keep", "/tmp/keep", &fixture_book(), &fixture_hashes(), &overrides)
+            .unwrap();
+        let gone = db
+            .save_project("Gone", "/tmp/gone", &fixture_book(), &fixture_hashes(), &overrides)
+            .unwrap();
+        let rows = |id: i64| -> i64 {
+            db.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM project_photo_overrides WHERE project_id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(rows(gone), 1, "sanity: the overrides were written");
+
+        db.delete_project(gone).unwrap();
+
+        assert_eq!(rows(gone), 0);
+        assert_eq!(rows(keep), 1, "and only that project's");
+    }
+
     #[test]
     fn delete_project_removes_its_photo_list_too() {
         let db = Db::open_in_memory().unwrap();
         let keep =
-            db.save_project("Keep", "/tmp/keep", &fixture_book(), &fixture_hashes()).unwrap();
+            db.save_project("Keep", "/tmp/keep", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
         let gone =
-            db.save_project("Gone", "/tmp/gone", &fixture_book(), &fixture_hashes()).unwrap();
+            db.save_project("Gone", "/tmp/gone", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
 
         let photo_rows = |id: i64| -> i64 {
             db.conn
@@ -505,7 +686,7 @@ mod tests {
     #[test]
     fn save_project_denormalises_page_and_photo_counts_for_listing() {
         let db = Db::open_in_memory().unwrap();
-        let id = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &fixture_hashes()).unwrap();
+        let id = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
 
         let summaries = db.list_projects().unwrap();
         let summary = summaries.iter().find(|s| s.id == id).unwrap();
@@ -517,8 +698,8 @@ mod tests {
     #[test]
     fn list_projects_orders_newest_updated_first() {
         let db = Db::open_in_memory().unwrap();
-        let older = db.save_project("Older", "/tmp/older", &fixture_book(), &fixture_hashes()).unwrap();
-        let newer = db.save_project("Newer", "/tmp/newer", &fixture_book(), &fixture_hashes()).unwrap();
+        let older = db.save_project("Older", "/tmp/older", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
+        let newer = db.save_project("Newer", "/tmp/newer", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
 
         // `unixepoch()` has one-second granularity, so two saves in the
         // same test can easily tie -- force a deterministic ordering
@@ -537,7 +718,7 @@ mod tests {
     #[test]
     fn record_export_appends_and_load_project_returns_them_in_order() {
         let db = Db::open_in_memory().unwrap();
-        let id = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &fixture_hashes()).unwrap();
+        let id = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
 
         db.record_export(
             id,
@@ -562,8 +743,8 @@ mod tests {
     #[test]
     fn delete_project_removes_the_project_and_its_export_rows_only() {
         let db = Db::open_in_memory().unwrap();
-        let keep = db.save_project("Keep", "/tmp/keep", &fixture_book(), &fixture_hashes()).unwrap();
-        let gone = db.save_project("Gone", "/tmp/gone", &fixture_book(), &fixture_hashes()).unwrap();
+        let keep = db.save_project("Keep", "/tmp/keep", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
+        let gone = db.save_project("Gone", "/tmp/gone", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
         db.record_export(
             gone,
             &ExportRecord { at: 0, output_dir: "/tmp/gone-out".into(), format: "jpeg".into(), file_count: 3 },
