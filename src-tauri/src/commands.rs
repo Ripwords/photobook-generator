@@ -4,6 +4,7 @@ use crate::book::pace::Book;
 use crate::book::pack::{recommend_pages, Capacity};
 use crate::book::preflight::{Finding, Severity};
 use crate::export::build_items;
+use crate::preview::BookLayout;
 use crate::project::{ExportRecord, Project};
 use crate::protocol::ExportItem;
 use crate::templates::{Library, Weights};
@@ -968,16 +969,36 @@ pub(crate) fn photos_from_records(records: &[serde_json::Value]) -> Result<Vec<P
 /// so every row goes stale at once); both produce the same instruction,
 /// because from the user's side they are the same problem.
 pub(crate) fn resolve_photos(db: &Db, hashes: &[String]) -> Result<Vec<Photo>, String> {
-    const REMEDY: &str =
-        "re-analyse the source folder, then generate the book again";
+    cached_records(db, hashes)?
+        .iter()
+        .map(|value| {
+            crate::book::cull::from_cached_features(value).ok_or_else(|| {
+                format!(
+                    "A cached photo record is missing fields the layout engine needs -- {RESOLVE_REMEDY}."
+                )
+            })
+        })
+        .collect()
+}
 
+const RESOLVE_REMEDY: &str = "re-analyse the source folder, then generate the book again";
+
+/// The raw cached feature records for a saved book's photo list, in order.
+///
+/// Split out of `resolve_photos` because the preview needs one field the
+/// layout engine does not: `thumbnailPath`. `Photo` deliberately has no such
+/// field -- nothing about assembling or exporting a book reads a thumbnail --
+/// so rather than widening `Photo` for a display concern, both callers start
+/// from the record and take what they need. See `resolve_photos` above for
+/// why a single unresolvable hash fails the whole call.
+fn cached_records(db: &Db, hashes: &[String]) -> Result<Vec<serde_json::Value>, String> {
     if hashes.is_empty() {
         return Err(format!(
-            "This book was saved without its photo list (it predates that being recorded) -- {REMEDY}."
+            "This book was saved without its photo list (it predates that being recorded) -- {RESOLVE_REMEDY}."
         ));
     }
 
-    let mut photos = Vec::with_capacity(hashes.len());
+    let mut records = Vec::with_capacity(hashes.len());
     for hash in hashes {
         let json = db
             .get_features(hash)
@@ -985,15 +1006,40 @@ pub(crate) fn resolve_photos(db: &Db, hashes: &[String]) -> Result<Vec<Photo>, S
             .ok_or_else(|| {
                 format!(
                     "This book's photos are no longer in the analysis cache \
-                     (either it was cleared, or the analyser has been updated since) -- {REMEDY}."
+                     (either it was cleared, or the analyser has been updated since) -- {RESOLVE_REMEDY}."
                 )
             })?;
-        let value: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-        photos.push(crate::book::cull::from_cached_features(&value).ok_or_else(|| {
-            format!("A cached photo record is missing fields the layout engine needs -- {REMEDY}.")
-        })?);
+        records.push(serde_json::from_str(&json).map_err(|e| e.to_string())?);
     }
-    Ok(photos)
+    Ok(records)
+}
+
+/// The same photo slice `resolve_photos` returns, paired with each photo's
+/// contact-sheet thumbnail, as the preview's `PreviewPhoto`s.
+///
+/// Order and length are preserved exactly, because
+/// `Placement::photo_index` indexes into this list. A photo whose thumbnail
+/// write failed comes back with `thumbnailPath: null` and is still present --
+/// a missing thumbnail is an empty box in the preview, never a missing
+/// placement, and dropping it would renumber every index after it.
+pub(crate) fn resolve_preview_photos(
+    db: &Db,
+    hashes: &[String],
+) -> Result<Vec<crate::preview::PreviewPhoto>, String> {
+    let records = cached_records(db, hashes)?;
+    records
+        .iter()
+        .map(|value| {
+            let photo = crate::book::cull::from_cached_features(value).ok_or_else(|| {
+                format!(
+                    "A cached photo record is missing fields the layout engine needs -- {RESOLVE_REMEDY}."
+                )
+            })?;
+            let thumbnail =
+                value["thumbnailPath"].as_str().map(std::string::ToString::to_string);
+            Ok(crate::preview::preview_photo(&photo, thumbnail))
+        })
+        .collect()
 }
 
 /// The recommended book length and what each length would cost.
@@ -1616,6 +1662,33 @@ pub async fn open_project(app: AppHandle, id: i64) -> Result<ProjectDetail, Stri
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("project {id} no longer exists"))?;
         Ok(project_detail(project))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The saved book's layout, for the read-only preview.
+///
+/// Keyed by project id and read from the database rather than taken from the
+/// webview, so it works identically for a book generated moments ago (which
+/// `generate_book` has already saved) and one reopened from disk after a
+/// restart. That symmetry is most of the feature's value: a reopened project
+/// carries its full layout, and until now nothing could show it.
+///
+/// Deliberately a SEPARATE command from `open_project` rather than a field on
+/// `ProjectDetail`: a freshly generated book never goes through
+/// `open_project` at all, so a layout hung off that type would be missing for
+/// exactly the case the user is looking at while they test.
+#[tauri::command]
+pub async fn book_layout(app: AppHandle, project_id: i64) -> Result<BookLayout, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        let project = db
+            .load_project(project_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("project {project_id} no longer exists"))?;
+        let photos = resolve_preview_photos(&db, &project.photo_hashes)?;
+        Ok(crate::preview::book_layout(project.id, &project.book, photos))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -3858,6 +3931,71 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    /// The preview's photo list is `resolve_photos` plus one field the
+    /// layout engine never reads.
+    ///
+    /// Two things it must not get wrong, and both are silent when it does.
+    /// **Order**: `photo_index` indexes this list positionally, so returning
+    /// it in hash order (which SQLite would happily do) puts a different
+    /// photograph in every slot. The hashes here are numbered BACKWARDS
+    /// against the order asked for, so sorted order is the exact reverse.
+    /// **A missing thumbnail**: the sidecar degrades a failed thumbnail write
+    /// to a null path, and dropping that photo would renumber every index
+    /// after it -- so it comes back present, with `thumbnail_path: None`.
+    #[test]
+    fn resolve_preview_photos_keeps_the_asked_for_order_and_a_photo_whose_thumbnail_is_missing() {
+        let db = Db::open_in_memory().unwrap();
+        let records: Vec<serde_json::Value> = (0..3)
+            .map(|i| {
+                let mut record = photo_record(i, false, i as u32, 0);
+                record["hash"] = format!("hash{:04}", 2 - i).into();
+                // The middle photo's thumbnail write failed.
+                if i != 1 {
+                    record["thumbnailPath"] =
+                        format!("/thumbs/hash{:04}.jpg", 2 - i).into();
+                }
+                record
+            })
+            .collect();
+        cache_records(&db, &records);
+        let asked_for: Vec<String> =
+            records.iter().map(|r| r["hash"].as_str().unwrap().to_string()).collect();
+        assert_eq!(asked_for, vec!["hash0002", "hash0001", "hash0000"], "sanity: descending");
+
+        let photos = resolve_preview_photos(&db, &asked_for).unwrap();
+
+        assert_eq!(
+            photos.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(),
+            vec!["/photos/p000.jpg", "/photos/p001.jpg", "/photos/p002.jpg"],
+            "the order asked for, not the order the hashes sort in"
+        );
+        assert_eq!(
+            photos.iter().map(|p| p.thumbnail_path.as_deref()).collect::<Vec<_>>(),
+            vec![Some("/thumbs/hash0002.jpg"), None, Some("/thumbs/hash0000.jpg")]
+        );
+        assert_eq!(photos[0].width, 4032, "oriented dimensions come through");
+        assert_eq!(photos[0].height, 3024);
+    }
+
+    /// A hash the cache no longer holds fails the whole call rather than
+    /// returning a shorter list -- the same all-or-nothing rule
+    /// `resolve_photos` has, and for the same reason: a gap renumbers every
+    /// `photo_index` after it, so the preview would show the wrong photo in
+    /// every subsequent slot with no error anywhere.
+    #[test]
+    fn resolve_preview_photos_refuses_a_hash_the_cache_no_longer_holds() {
+        let db = Db::open_in_memory().unwrap();
+        cache_records(&db, &distinct_records(2));
+
+        let err = resolve_preview_photos(
+            &db,
+            &["hash0000".to_string(), "gone".to_string(), "hash0001".to_string()],
+        )
+        .unwrap_err();
+
+        assert!(err.contains("no longer in the analysis cache"), "{err}");
     }
 
     /// **The property the review asked for**: a project saved, the app

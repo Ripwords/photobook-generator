@@ -4,6 +4,7 @@ pub mod commands;
 pub mod db;
 pub mod export;
 pub mod geometry;
+pub mod preview;
 pub mod project;
 pub mod protocol;
 pub mod ranking;
@@ -42,6 +43,7 @@ pub fn run() {
             commands::export_book,
             commands::list_projects,
             commands::open_project,
+            commands::book_layout,
             commands::delete_project,
             commands::rename_project,
             commands::reveal_in_finder,

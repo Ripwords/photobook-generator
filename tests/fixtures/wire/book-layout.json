@@ -1,0 +1,133 @@
+{
+  "droppedPhotos": 2,
+  "geometry": {
+    "gutterU": 0.017593998392426546,
+    "pageHIn": 8.894,
+    "pageWIn": 11.197,
+    "safeU": 0.011163704563722426,
+    "safeV": 0.014054418709242185,
+    "trimU": 0.017593998392426546,
+    "trimV": 0.022149763885765686
+  },
+  "pageCount": 4,
+  "pages": [
+    {
+      "blank": false,
+      "number": 1,
+      "placements": [
+        {
+          "crop": {
+            "h": 1.0,
+            "w": 0.6875,
+            "x": 0.3125,
+            "y": 0.0
+          },
+          "photoIndex": 3,
+          "slotRect": {
+            "h": 1.0,
+            "w": 0.72,
+            "x": 0.0,
+            "y": 0.0
+          },
+          "z": 1
+        }
+      ],
+      "side": "right",
+      "templateId": "12-quad-right:right"
+    },
+    {
+      "blank": false,
+      "number": 2,
+      "placements": [
+        {
+          "crop": {
+            "h": 0.75,
+            "w": 1.0,
+            "x": 0.0,
+            "y": 0.125
+          },
+          "photoIndex": 1,
+          "slotRect": {
+            "h": 0.62,
+            "w": 0.5,
+            "x": 0.06,
+            "y": 0.08
+          },
+          "z": 1
+        },
+        {
+          "crop": {
+            "h": 0.4,
+            "w": 0.5,
+            "x": 0.2,
+            "y": 0.1
+          },
+          "photoIndex": 0,
+          "slotRect": {
+            "h": 0.45,
+            "w": 0.34,
+            "x": 0.6,
+            "y": 0.31
+          },
+          "z": 2
+        }
+      ],
+      "side": "left",
+      "templateId": "03-hero-left-text-right"
+    },
+    {
+      "blank": true,
+      "number": 3,
+      "placements": [],
+      "side": "right",
+      "templateId": "03-hero-left-text-right"
+    },
+    {
+      "blank": true,
+      "number": 4,
+      "placements": [],
+      "side": "left",
+      "templateId": "blank"
+    }
+  ],
+  "photos": [
+    {
+      "hash": "hash-a",
+      "height": 3024,
+      "path": "/a.jpg",
+      "thumbnailPath": "/thumbs/hash-a.jpg",
+      "width": 4032
+    },
+    {
+      "hash": "hash-b",
+      "height": 4032,
+      "path": "/b.jpg",
+      "thumbnailPath": "/thumbs/hash-b.jpg",
+      "width": 3024
+    },
+    {
+      "hash": "hash-c",
+      "height": 4000,
+      "path": "/c.jpg",
+      "thumbnailPath": null,
+      "width": 6000
+    },
+    {
+      "hash": "hash-d",
+      "height": 3648,
+      "path": "/d.jpg",
+      "thumbnailPath": "/thumbs/hash-d.jpg",
+      "width": 5472
+    },
+    {
+      "hash": "hash-e",
+      "height": 6000,
+      "path": "/e.jpg",
+      "thumbnailPath": "/thumbs/hash-e.jpg",
+      "width": 4000
+    }
+  ],
+  "placedPhotos": 3,
+  "projectId": 7,
+  "seed": 424242
+}

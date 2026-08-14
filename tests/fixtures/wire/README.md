@@ -29,3 +29,19 @@ pins one literal hash string from both Rust and Swift.
 
 **If you change a wire type, change the fixture in the same commit -- and
 expect the other language's suite to tell you what else has to move.**
+
+## Two exceptions worth knowing about
+
+- **`book-layout.json`'s Rust half lives in `src-tauri/src/preview.rs`**, not
+  in `commands.rs`, so it can reuse the `Book` fixture that module's other
+  tests already build. Its TypeScript half is `tests/preview.test.ts`. The
+  contract is otherwise identical.
+- **`book-layout.json` is the only fixture carrying an irrational float**
+  (`PreviewGeometry`, which is `0.197 / 11.197` and friends straight out of
+  `geometry.rs`). serde_json's *default* float parser is the fast approximate
+  one -- the `float_roundtrip` feature is not enabled -- so reading the fixture
+  back lands up to one ULP from the constant that wrote it. That test
+  therefore serialises to TEXT and parses BOTH sides with the same parser,
+  comparing the JSON text rather than two f64s. Every other fixture holds
+  integers and short decimals and compares `to_value` directly; do not copy
+  the text round-trip into those.
