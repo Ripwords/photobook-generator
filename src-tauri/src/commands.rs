@@ -2315,25 +2315,61 @@ mod tests {
         assert_eq!(kept_paths(&photos, &overrides), vec!["/p/a.jpg"]);
     }
 
-    /// The verdict is keyed by PATH, not by content hash, and this is the
-    /// case that forces it: two byte-identical files in one folder share a
-    /// hash, `cull` keeps only one of them (same phash -> same near-duplicate
-    /// cluster), and a hash-keyed verdict would mark BOTH copies kept.
+    /// **The verdict is keyed by PATH, not by content hash.**
+    ///
+    /// Two byte-identical files in one folder share a hash, `cull` keeps only
+    /// one of them (same phash -> same near-duplicate cluster), and a
+    /// hash-keyed verdict would then mark BOTH copies kept on the contact
+    /// sheet -- the sheet would show a photo surviving that the book does not
+    /// contain.
+    ///
+    /// **Asserted on CONTENT, not on length.** An earlier version of this
+    /// test asserted only `kept.len() == 1`, which is true whichever field is
+    /// extracted -- the cluster contest already collapses the pair to one
+    /// winning `Photo`, so `.map(|p| p.hash)` passed it. It could not
+    /// distinguish the two keyings, which is the single thing it exists to
+    /// prove. The fixture now makes path and hash textually distinguishable
+    /// for every photo and pins the whole returned vector:
+    ///
+    /// * path-keyed (correct): `["/p/copy.jpg", "/p/third.jpg"]`
+    /// * hash-keyed (the bug):  `["identical-bytes", "hash-/p/third.jpg"]`
+    ///
+    /// The third photo is not decoration: with only the identical pair, a
+    /// hash-keyed result is a one-element vector whose single value differs
+    /// from the correct one only in spelling, and any assertion loose enough
+    /// to tolerate "either survivor may win the tie" would tolerate the hash
+    /// too. The third photo's hash and path differ from each other AND from
+    /// the pair's, so the vector as a whole is unambiguous.
     #[test]
-    fn kept_paths_names_one_of_two_byte_identical_files_not_both() {
+    fn kept_paths_names_the_surviving_file_by_path_not_by_content_hash() {
         let records = finalize_photos(vec![
             cullable("/p/orig.jpg", 100, 0.9, 9.0, None, false),
             cullable("/p/copy.jpg", 100, 0.9, 9.0, None, false),
+            cullable("/p/third.jpg", 4095, 0.5, 5.0, None, false),
         ]);
         let mut photos = photos_from_records(&records).unwrap();
-        // Same bytes -> same content hash, different paths. `cullable` derives
-        // the hash from the path, so it is forced here.
-        photos[0].hash = "identical-bytes".into();
-        photos[1].hash = "identical-bytes".into();
+        // Byte-identical files: one content hash, two paths. `cullable`
+        // derives the hash from the path, so sameness is forced here.
+        for photo in &mut photos {
+            if photo.path != "/p/third.jpg" {
+                photo.hash = "identical-bytes".into();
+            }
+        }
+        // The fixture is only capable of telling the two keyings apart if no
+        // photo's path equals its hash.
+        assert!(
+            photos.iter().all(|p| p.path != p.hash),
+            "fixture: path and hash must be textually distinguishable"
+        );
 
         let kept = kept_paths(&photos, &Overrides::new());
 
-        assert_eq!(kept.len(), 1, "one near-duplicate survives, not both: {kept:?}");
+        assert_eq!(
+            kept,
+            vec!["/p/copy.jpg", "/p/third.jpg"],
+            "the verdict must name FILES; a hash-keyed one would say \
+             [\"identical-bytes\", \"hash-/p/third.jpg\"] and mark both copies kept"
+        );
     }
 
     #[test]
