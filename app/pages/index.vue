@@ -7,11 +7,14 @@ import {
   keepers,
   overrideFor,
   pickHero,
+  showsLeftOutByDefault,
   type AnalyzedPhoto,
   type PhotoOverride,
+  type PhotoOverrides,
 } from "~/types/features";
 
 const {
+  analyze,
   summary,
   running,
   error,
@@ -64,8 +67,10 @@ const analysed = computed<AnalyzedPhoto[]>(() => summary.value?.photos ?? []);
 const {
   overrides,
   photos,
+  photoSetId,
   error: overrideError,
   setOverride,
+  restore,
 } = usePhotoOverrides(analysed);
 
 const kept = computed(() => keepers(photos.value));
@@ -77,8 +82,16 @@ const kept = computed(() => keepers(photos.value));
  * only the keepers, which made a photo the engine dropped invisible -- and a
  * photo you cannot see is one you cannot ask for. The include control has
  * nothing to act on without this.
+ *
+ * Off above `LEFT_OUT_SHOWN_BY_DEFAULT_UP_TO`, because the grid is not
+ * virtualized: a 500-photo folder would render 500 tiles and re-patch all of
+ * them on every toggle. Re-evaluated per analysed SET, not per toggle, so it
+ * never fights a choice the user just made.
  */
 const showLeftOut = ref(true);
+watch(photoSetId, () => {
+  showLeftOut.value = showsLeftOutByDefault(analysed.value.length);
+});
 const visiblePhotos = computed(() => (showLeftOut.value ? photos.value : kept.value));
 const eventGroups = computed(() => groupByEvent(visiblePhotos.value));
 const burstMap = computed<Map<number, number>>(() => burstSizes(photos.value));
@@ -97,6 +110,21 @@ const leftOutCount = computed(() => photos.value.length - kept.value.length);
 
 function onSetOverride(photo: AnalyzedPhoto, decision: PhotoOverride) {
   void setOverride(photo.hash, decision);
+}
+
+/**
+ * Re-analyse a reopened project's own folder and restore the decisions it was
+ * saved with, so they become visible and editable on the contact sheet.
+ *
+ * Order matters: `analyze` replaces the photo set, and that resets the
+ * override map by design (a hash-keyed decision must not survive into a
+ * different folder). `restore` therefore runs after it has resolved, never
+ * before.
+ */
+async function onEditSelection(payload: { sourceFolder: string; overrides: PhotoOverrides }) {
+  selectedProjectId.value = null;
+  await analyze(payload.sourceFolder);
+  await restore(payload.overrides);
 }
 const folderLabel = computed(() => (folder.value ? basename(folder.value) : "the selected folder"));
 
@@ -205,7 +233,11 @@ const remainingSkeletonCount = computed(() =>
           becomes reachable for a second project without an unmount in
           between, rather than silently keeping the first project on screen.
         -->
-        <GenerateBook :key="selectedProjectId" :open-project-id="selectedProjectId" />
+        <GenerateBook
+          :key="selectedProjectId"
+          :open-project-id="selectedProjectId"
+          @edit-selection="onEditSelection"
+        />
       </section>
 
       <div v-else-if="state === 'running'" class="space-y-6">
@@ -337,7 +369,14 @@ const remainingSkeletonCount = computed(() =>
           re-stamped by Rust for the user's own overrides. `overrides` rides
           along so `generate_book` can persist the decisions with the project.
         -->
-        <GenerateBook v-if="folder" :photos :overrides :folder />
+        <GenerateBook
+          v-if="folder"
+          :photos
+          :overrides
+          :photo-set-id="photoSetId"
+          :folder
+          @edit-selection="onEditSelection"
+        />
 
         <UEmpty
           v-if="eventGroups.length === 0"

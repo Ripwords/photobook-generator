@@ -8,6 +8,7 @@ import {
   includeOverflowLabel,
   optionFor,
   projectDetailLabel,
+  selectionLabel,
   recommendedOption,
   revealTarget,
   summarizeExport,
@@ -17,6 +18,7 @@ import type { AnalyzedPhoto, PhotoOverrides } from "~/types/features";
 const {
   photos = [],
   overrides = {},
+  photoSetId = 0,
   folder = null,
   openProjectId = null,
 } = defineProps<{
@@ -24,9 +26,20 @@ const {
   photos?: AnalyzedPhoto[];
   /** The user's own include/exclude decisions, persisted with the project by `generate_book`. */
   overrides?: PhotoOverrides;
+  /**
+   * Identity of the analysed SET, bumped once per analysis and never per
+   * override -- see `usePhotoOverrides.photoSetId`. Watched instead of
+   * `photos`, whose array identity changes on every toggle.
+   */
+  photoSetId?: number;
   folder?: string | null;
   /** A saved project to load on mount, without analysing anything -- see `useBook`'s `openProject`. */
   openProjectId?: number | null;
+}>();
+
+const emit = defineEmits<{
+  /** The user wants to edit a reopened project's photo selection: re-analyse its folder, then restore these decisions. */
+  editSelection: [payload: { sourceFolder: string; overrides: PhotoOverrides }];
 }>();
 
 // `toRef` rather than passing the props straight through: `useBook` holds
@@ -109,17 +122,33 @@ const exportPercent = computed(() =>
 /** The "Generated and saved" panel's heading: the loaded project's own name, or the name the user is generating one under. */
 const panelTitle = computed(() => activeProject.value?.name ?? name.value);
 /** The panel's subheading: the loaded project's counts and export history, or what THIS generation just produced. */
+/**
+ * The decisions a reopened project was generated with, or `null`. Shown so
+ * they are visible at all -- returning them over the wire and rendering
+ * nothing is the same "persisted but unreachable" defect this feature exists
+ * to fix.
+ */
+const restoredSelection = computed(() =>
+  activeProject.value ? selectionLabel(activeProject.value) : null,
+);
+
 const panelSubtitle = computed(() => {
   if (activeProject.value) return projectDetailLabel(activeProject.value);
   return generated.value ? generatedLabel(generated.value) : "";
 });
 
-// The recommendation depends on the whole analysed set, so it is refreshed
-// whenever that set changes -- including the first render, hence `immediate`.
-// The chosen length resets with it: a length picked against one folder's
-// keeper count is not a decision the user made about a different folder.
+// A DIFFERENT ANALYSED SET -- not a different array.
+//
+// This used to watch `photos`, which `usePhotoOverrides` replaces on every
+// toggle: clicking include on one photo therefore threw away the generated
+// book, the opened project, the chosen output folder, the export report, a
+// name the user had typed, and a page length they had chosen, silently
+// reverting a 40-page book to the recommended 20. `photoSetId` changes once
+// per analysis, which is the actual question being asked here.
+//
+// `immediate` so the first render is covered.
 watch(
-  () => photos,
+  () => photoSetId,
   () => {
     // Everything below belongs to the PREVIOUS folder (or opened project): a
     // generated book, an opened project, the output directory chosen for it,
@@ -133,9 +162,12 @@ watch(
   { immediate: true },
 );
 
-// The overrides change what the book contains, so they change both the
-// keeper count and whether a length can hold every photo the user asked for.
-// The chosen length is NOT reset here (unlike a folder change): the user is
+// The overrides change what the book contains, so they change both the keeper
+// count and whether a length can hold every photo the user asked for. This is
+// the ONLY refresh a toggle triggers -- the watcher above used to fire on the
+// same click, sending the whole analysed array twice per click.
+//
+// Nothing else is touched: no reset, no name, no page length. The user is
 // refining a selection, not starting over.
 watch(
   () => overrides,
@@ -260,8 +292,35 @@ onMounted(() => {
         <div class="space-y-1">
           <h3 class="text-sm font-medium text-highlighted">{{ panelTitle }}</h3>
           <p class="text-sm text-muted">{{ panelSubtitle }}</p>
+          <p v-if="restoredSelection" class="flex items-center gap-1.5 text-xs text-muted">
+            <UIcon name="i-lucide-hand" class="size-3 shrink-0" />
+            <span>{{ restoredSelection }}</span>
+          </p>
         </div>
         <div class="flex items-center gap-2">
+          <!--
+            Reopening a project restores its decisions, but they cannot be
+            EDITED without the photos they refer to -- and a saved project is
+            deliberately reopened without re-running Vision. This re-analyses
+            the project's own folder (every photo is a features-cache hit, so
+            no Vision work) and hands the decisions back to the contact sheet.
+          -->
+          <UButton
+            v-if="activeProject && restoredSelection"
+            icon="i-lucide-square-pen"
+            color="neutral"
+            variant="outline"
+            size="sm"
+            :disabled="busy"
+            @click="
+              emit('editSelection', {
+                sourceFolder: activeProject.sourceFolder,
+                overrides: activeProject.overrides,
+              })
+            "
+          >
+            Edit the selection
+          </UButton>
           <UButton
             icon="i-lucide-folder-output"
             color="neutral"

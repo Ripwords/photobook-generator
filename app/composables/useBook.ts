@@ -92,8 +92,11 @@ export function useBook(
 
   async function refreshRecommendation() {
     await guard(async () => {
+      // No photos: Rust reads the set cached by `analyze_folder`. This runs
+      // on every override toggle, and re-uploading several megabytes of
+      // feature records to answer "how many keepers now?" is what made the
+      // toggle unusable on a real folder.
       recommendation.value = await invoke<BookRecommendation>("recommend_book", {
-        photos: photos.value,
         overrides: overrides.value,
       });
     });
