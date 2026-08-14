@@ -1,10 +1,10 @@
-use crate::book::cull::Photo;
+use crate::book::cull::{Overrides, Photo};
 use crate::book::manifest::{manifest, Manifest};
 use crate::book::pace::Book;
 use crate::book::pack::{recommend_pages, Capacity};
 use crate::book::preflight::{Finding, Severity};
 use crate::export::build_items;
-use crate::project::ExportRecord;
+use crate::project::{ExportRecord, Project};
 use crate::protocol::ExportItem;
 use crate::templates::{Library, Weights};
 use crate::{cluster, db::Db, ranking, sidecar::SidecarPool};
@@ -238,7 +238,11 @@ pub(crate) fn finalize_photos(mut ok: Vec<serde_json::Value>) -> Vec<serde_json:
         }
     }
 
-    stamp_kept(&mut ok);
+    // No overrides here: `finalize_photos` runs while the analysis is still
+    // finishing, before the contact sheet exists, so there is nothing the
+    // user can have decided yet. Their decisions are applied later, by
+    // `apply_photo_overrides`, through this same function's stamping.
+    stamp_kept(&mut ok, &Overrides::new());
     ok
 }
 
@@ -270,11 +274,11 @@ pub(crate) fn finalize_photos(mut ok: Vec<serde_json::Value>) -> Vec<serde_json:
 /// A record `from_features` cannot parse (a missing `path`, `hash`, `width`
 /// or `height`) is stamped `kept: false`, which is honest: the book builder
 /// would skip that photo for the same reason.
-fn stamp_kept(ok: &mut [serde_json::Value]) {
+pub(crate) fn stamp_kept(ok: &mut [serde_json::Value], overrides: &Overrides) {
     let parsed: Vec<crate::book::cull::Photo> =
         ok.iter().filter_map(crate::book::cull::from_features).collect();
     let kept: std::collections::HashSet<String> =
-        crate::book::cull::cull(&parsed).into_iter().map(|p| p.path).collect();
+        crate::book::cull::cull(&parsed, overrides).into_iter().map(|p| p.path).collect();
 
     for features in ok.iter_mut() {
         let survives = features["path"].as_str().is_some_and(|p| kept.contains(p));
@@ -315,7 +319,11 @@ pub(crate) fn should_notify(elapsed: Duration, window_focused: bool) -> bool {
 pub(crate) fn count_keepers(photos: &[serde_json::Value]) -> usize {
     let parsed: Vec<crate::book::cull::Photo> =
         photos.iter().filter_map(crate::book::cull::from_features).collect();
-    crate::book::cull::cull(&parsed).len()
+    // No overrides: this counts the ENGINE's verdict for the completion
+    // notification, which fires the moment analysis finishes -- before the
+    // contact sheet has been shown, so before the user can have made a
+    // decision about anything on it.
+    crate::book::cull::cull(&parsed, &Overrides::new()).len()
 }
 
 /// Result of consulting the cache for a batch of candidate paths.
@@ -681,6 +689,10 @@ pub struct PageOption {
     /// How many keepers this length would leave out. The number the user is
     /// actually deciding on.
     pub dropped_photos: usize,
+    /// How many photos the user explicitly marked `Include` that this length
+    /// cannot hold. Non-zero means this length cannot be generated at all --
+    /// see `book::pack::IncludeOverflow`.
+    pub included_over_capacity: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -689,6 +701,10 @@ pub struct BookRecommendation {
     /// Survivors of `book::cull::cull` -- utility images dropped, one photo
     /// per near-duplicate cluster. NOT the raw analysed count.
     pub keeper_count: usize,
+    /// How many of these photos the user explicitly marked `Include`. Zero
+    /// when they have made no decisions, which is every book generated before
+    /// this feature existed.
+    pub included_count: usize,
     pub recommended_pages: u32,
     pub options: Vec<PageOption>,
 }
@@ -779,6 +795,10 @@ pub struct ProjectDetail {
     pub photo_count: usize,
     pub dropped_photos: usize,
     pub seed: u64,
+    /// The include/exclude decisions this book was generated with, so
+    /// reopening a project restores them rather than quietly reverting every
+    /// one to `Auto`.
+    pub overrides: Overrides,
     pub exports: Vec<ExportSummary>,
 }
 
@@ -932,8 +952,13 @@ pub(crate) fn resolve_photos(db: &Db, hashes: &[String]) -> Result<Vec<Photo>, S
 }
 
 /// The recommended book length and what each length would cost.
-pub(crate) fn recommend(photos: &[Photo], lib: &Library) -> BookRecommendation {
-    let keeper_count = crate::book::cull::cull(photos).len();
+pub(crate) fn recommend(
+    photos: &[Photo],
+    lib: &Library,
+    overrides: &Overrides,
+) -> BookRecommendation {
+    let keeper_count = crate::book::cull::cull(photos, overrides).len();
+    let included_count = overrides.included_in(photos);
     let options = PAGE_OPTIONS
         .iter()
         .map(|&pages| {
@@ -944,11 +969,17 @@ pub(crate) fn recommend(photos: &[Photo], lib: &Library) -> BookRecommendation {
                 // Saturating: a book with room to spare drops nothing, and an
                 // unsigned wrap-around here would report a colossal number.
                 dropped_photos: keeper_count.saturating_sub(capacity.max_photos),
+                // The figure that decides whether this length can be built at
+                // all. `dropped_photos` above is a cost the user accepts; this
+                // one is a refusal, because the engine will not choose which
+                // of their own picks to discard.
+                included_over_capacity: included_count.saturating_sub(capacity.max_photos),
             }
         })
         .collect();
     BookRecommendation {
         keeper_count,
+        included_count,
         recommended_pages: recommend_pages(keeper_count, lib),
         options,
     }
@@ -1005,15 +1036,20 @@ pub(crate) fn generate_and_save(
     photos: &[Photo],
     lib: &Library,
     weights: &Weights,
+    overrides: &Overrides,
 ) -> Result<GeneratedBook, String> {
-    let book = crate::book::pace::assemble(photos, meta.pages, lib, weights, meta.seed);
+    // `assemble` refuses rather than returning a book that lost a photo the
+    // user explicitly asked for. Surfaced as a command error, with the
+    // numbers they need to fix it -- see `book::pack::IncludeOverflow`.
+    let book = crate::book::pace::assemble(photos, meta.pages, lib, weights, meta.seed, overrides)
+        .map_err(|e| e.to_string())?;
     // The hash of EVERY photo the book was assembled against, in that
     // slice's order -- `Placement::photo_index` indexes it positionally.
     // This is what makes the project exportable after a restart; see
     // `Project::photo_hashes`.
     let photo_hashes: Vec<String> = photos.iter().map(|p| p.hash.clone()).collect();
     let project_id = db
-        .save_project(meta.name, meta.source_folder, &book, &photo_hashes)
+        .save_project(meta.name, meta.source_folder, &book, &photo_hashes, overrides)
         .map_err(|e| e.to_string())?;
     Ok(GeneratedBook {
         project_id,
@@ -1215,6 +1251,33 @@ fn write_manifest_file(output_dir: &Path, manifest: &Manifest) -> Result<String,
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// Re-stamps `kept` on every analysed record, honouring the user's own
+/// include/exclude decisions.
+///
+/// **This exists so that no second copy of the culling rule appears in the
+/// webview.** The overrides are made on the contact sheet, long after
+/// `analyze_folder` stamped its verdict, and the sheet has to show their
+/// effect immediately -- a photo the user includes must gain the keeper
+/// marker, and the keeper count must move. The webview could compute that
+/// itself in two lines, and that is precisely the mistake Phase 2 spent a
+/// task undoing: `book::cull::cull` is the single authority, so the toggle
+/// goes DOWN to Rust and the answer comes back stamped. `keepers()` in
+/// TypeScript stays a filter on the flag, with no rule of its own.
+///
+/// Returns the same records, in the same order, with only `kept` changed.
+#[tauri::command]
+pub async fn apply_photo_overrides(
+    mut photos: Vec<serde_json::Value>,
+    overrides: Overrides,
+) -> Result<Vec<serde_json::Value>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        stamp_kept(&mut photos, &overrides);
+        photos
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// How long a book would be, and what each length costs.
 ///
 /// Takes the analysed photo records the webview already holds rather than
@@ -1225,11 +1288,12 @@ fn write_manifest_file(output_dir: &Path, manifest: &Manifest) -> Result<String,
 pub async fn recommend_book(
     app: AppHandle,
     photos: Vec<serde_json::Value>,
+    overrides: Option<Overrides>,
 ) -> Result<BookRecommendation, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let lib = load_library(&app)?;
         let parsed = photos_from_records(&photos)?;
-        Ok(recommend(&parsed, &lib))
+        Ok(recommend(&parsed, &lib, &overrides.unwrap_or_default()))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1244,12 +1308,19 @@ pub async fn generate_book(
     name: String,
     source_folder: String,
     seed: Option<u64>,
+    // `overrides` carries the user's own include/exclude decisions, held in
+    // webview state from the moment they are made on the contact sheet until
+    // this call -- which is what finally gives them somewhere durable to
+    // live. `None` from a caller that has none means an empty map.
+    overrides: Option<Overrides>,
 ) -> Result<GeneratedBook, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let lib = load_library(&app)?;
         let weights = load_weights(&app);
         let parsed = photos_from_records(&photos)?;
-        let pages = pages.unwrap_or_else(|| recommend_pages(crate::book::cull::cull(&parsed).len(), &lib));
+        let overrides = overrides.unwrap_or_default();
+        let pages =
+            pages.unwrap_or_else(|| recommend_pages(crate::book::cull::cull(&parsed, &overrides).len(), &lib));
         // A seed the caller did not pin is taken from the clock, so
         // "generate again" genuinely re-rolls the tie-breaks instead of
         // rebuilding the identical book; it is then persisted with the book,
@@ -1262,7 +1333,7 @@ pub async fn generate_book(
         });
         let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
         let meta = NewProject { name: &name, source_folder: &source_folder, pages, seed };
-        generate_and_save(&db, &meta, &parsed, &lib, &weights)
+        generate_and_save(&db, &meta, &parsed, &lib, &weights, &overrides)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1426,6 +1497,40 @@ pub async fn list_projects(app: AppHandle) -> Result<Vec<ProjectListItem>, Strin
     .map_err(|e| e.to_string())?
 }
 
+/// A loaded `Project` as the webview's `ProjectDetail`.
+///
+/// Extracted from the command body rather than written inline for the reason
+/// this codebase extracts `finalize_photos`, `lookup_cache` and `percentiles`:
+/// `open_project` needs a live `AppHandle`, so nothing inside it is reachable
+/// from a unit test. The mapping is not clerical -- `overrides` is the user's
+/// own photo selection, and dropping it here would silently revert every
+/// decision they made to `Auto` while the reopened project still looked
+/// entirely correct.
+pub(crate) fn project_detail(project: Project) -> ProjectDetail {
+    ProjectDetail {
+        id: project.id,
+        name: project.name,
+        source_folder: project.source_folder,
+        created_at: project.created_at,
+        updated_at: project.updated_at,
+        page_count: project.book.pages.len(),
+        photo_count: placement_total(&project.book),
+        dropped_photos: project.book.dropped,
+        seed: project.book.seed,
+        overrides: project.overrides,
+        exports: project
+            .exports
+            .into_iter()
+            .map(|record| ExportSummary {
+                at: record.at,
+                output_dir: record.output_dir,
+                format: record.format,
+                file_count: record.file_count,
+            })
+            .collect(),
+    }
+}
+
 /// One saved project in full, for reopening it.
 #[tauri::command]
 pub async fn open_project(app: AppHandle, id: i64) -> Result<ProjectDetail, String> {
@@ -1435,27 +1540,7 @@ pub async fn open_project(app: AppHandle, id: i64) -> Result<ProjectDetail, Stri
             .load_project(id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("project {id} no longer exists"))?;
-        Ok(ProjectDetail {
-            id: project.id,
-            name: project.name,
-            source_folder: project.source_folder,
-            created_at: project.created_at,
-            updated_at: project.updated_at,
-            page_count: project.book.pages.len(),
-            photo_count: placement_total(&project.book),
-            dropped_photos: project.book.dropped,
-            seed: project.book.seed,
-            exports: project
-                .exports
-                .into_iter()
-                .map(|record| ExportSummary {
-                    at: record.at,
-                    output_dir: record.output_dir,
-                    format: record.format,
-                    file_count: record.file_count,
-                })
-                .collect(),
-        })
+        Ok(project_detail(project))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2109,6 +2194,65 @@ mod tests {
         assert_eq!(finalized[1]["kept"], true, "higher capture quality wins the tie");
     }
 
+    /// **The toggle reaches Rust and comes back stamped.**
+    ///
+    /// `apply_photo_overrides` is the whole mechanism that keeps the contact
+    /// sheet honest without giving the webview a second copy of the culling
+    /// rule. Asserted through `stamp_kept`, which is the command's entire
+    /// body (the command itself only wraps it in `spawn_blocking`).
+    ///
+    /// Every arm at once, on ONE call: an excluded winner loses its stamp, an
+    /// included loser gains one, and an untouched photo keeps whatever the
+    /// engine gave it. A fixture exercising one arm cannot tell "the
+    /// overrides were applied" from "the records were rebuilt from scratch".
+    #[test]
+    fn stamps_kept_from_the_users_own_overrides_rather_than_the_engine_alone() {
+        let mut records = finalize_photos(vec![
+            cullable("/p/a.jpg", 100, 0.9, 9.0, None, false), // wins its burst
+            cullable("/p/b.jpg", 100, 0.1, 1.0, None, false), // loses its burst
+            cullable("/p/c.jpg", 4095, 0.5, 5.0, None, false), // uncontested
+        ]);
+        assert_eq!(records[0]["kept"], true, "fixture: a wins without an override");
+        assert_eq!(records[1]["kept"], false, "fixture: b loses without an override");
+        assert_eq!(records[2]["kept"], true, "fixture: c is uncontested");
+
+        let overrides: Overrides = [
+            ("hash-/p/a.jpg".to_string(), crate::book::cull::Override::Exclude),
+            ("hash-/p/b.jpg".to_string(), crate::book::cull::Override::Include),
+        ]
+        .into_iter()
+        .collect();
+        stamp_kept(&mut records, &overrides);
+
+        assert_eq!(records[0]["kept"], false, "the excluded winner must lose its keeper mark");
+        assert_eq!(records[1]["kept"], true, "the included loser must gain one");
+        assert_eq!(records[2]["kept"], true, "and an untouched photo is unaffected");
+        assert_eq!(records[0]["path"], "/p/a.jpg", "order and identity are preserved");
+        assert_eq!(records[2]["path"], "/p/c.jpg");
+    }
+
+    /// Re-stamping with no overrides must restore the engine's own verdict,
+    /// not freeze whatever the last override run produced -- "set it back to
+    /// automatic" has to actually undo.
+    #[test]
+    fn stamps_kept_back_to_the_engine_verdict_when_an_override_is_cleared() {
+        let mut records = finalize_photos(vec![
+            cullable("/p/a.jpg", 100, 0.9, 9.0, None, false),
+            cullable("/p/b.jpg", 100, 0.1, 1.0, None, false),
+        ]);
+        let excluded: Overrides =
+            [("hash-/p/a.jpg".to_string(), crate::book::cull::Override::Exclude)]
+                .into_iter()
+                .collect();
+        stamp_kept(&mut records, &excluded);
+        assert_eq!(records[0]["kept"], false, "precondition: the override took effect");
+
+        stamp_kept(&mut records, &Overrides::new());
+
+        assert_eq!(records[0]["kept"], true, "clearing the override must restore the verdict");
+        assert_eq!(records[1]["kept"], false);
+    }
+
     #[test]
     fn stamps_kept_false_on_utility_images() {
         let finalized = finalize_photos(vec![
@@ -2716,7 +2860,7 @@ mod tests {
         ];
         let photos = photos_from_records(&records).unwrap();
 
-        let rec = recommend(&photos, &lib);
+        let rec = recommend(&photos, &lib, &Overrides::new());
 
         assert_eq!(rec.keeper_count, 2, "one utility dropped, one near-duplicate collapsed");
     }
@@ -2726,7 +2870,7 @@ mod tests {
         let lib = fixture_library();
         let photos = photos_from_records(&distinct_records(200)).unwrap();
 
-        let rec = recommend(&photos, &lib);
+        let rec = recommend(&photos, &lib, &Overrides::new());
 
         assert_eq!(rec.keeper_count, 200);
         for option in &rec.options {
@@ -2747,7 +2891,7 @@ mod tests {
         let lib = fixture_library();
         let photos = photos_from_records(&distinct_records(3)).unwrap();
 
-        let rec = recommend(&photos, &lib);
+        let rec = recommend(&photos, &lib, &Overrides::new());
 
         assert!(rec.options.iter().all(|o| o.dropped_photos == 0), "{:?}", rec.options);
     }
@@ -2761,23 +2905,66 @@ mod tests {
         let twenty = crate::book::pack::Capacity::from_library(20, &lib).max_photos;
 
         let fits = photos_from_records(&distinct_records(twenty)).unwrap();
-        assert_eq!(recommend(&fits, &lib).recommended_pages, 20);
+        assert_eq!(recommend(&fits, &lib, &Overrides::new()).recommended_pages, 20);
 
         let overflows = photos_from_records(&distinct_records(twenty + 1)).unwrap();
-        assert_eq!(recommend(&overflows, &lib).recommended_pages, 40);
+        assert_eq!(recommend(&overflows, &lib, &Overrides::new()).recommended_pages, 40);
     }
 
     #[test]
     fn recommend_offers_every_page_length_the_user_can_choose_between() {
         let lib = fixture_library();
         let photos = photos_from_records(&distinct_records(5)).unwrap();
-        let rec = recommend(&photos, &lib);
+        let rec = recommend(&photos, &lib, &Overrides::new());
         let offered: Vec<u32> = rec.options.iter().map(|o| o.pages).collect();
         assert_eq!(offered, PAGE_OPTIONS.to_vec());
         assert!(
             offered.contains(&rec.recommended_pages),
             "the recommended length must be one the user can actually pick: {offered:?}"
         );
+    }
+
+    /// The recommendation is what the user reads BEFORE pressing generate, so
+    /// it has to tell them a length they cannot build is a length they cannot
+    /// build -- otherwise their only feedback is a failed generation.
+    ///
+    /// `includedCount` counts over the PHOTO SET, not over the override map:
+    /// a decision about a photo that is not in this folder must not inflate
+    /// the number on screen. The fixture includes one such stray hash.
+    #[test]
+    fn recommend_reports_how_many_photos_the_user_asked_for_and_where_they_do_not_fit() {
+        let lib = fixture_library();
+        let twenty = crate::book::pack::Capacity::from_library(20, &lib).max_photos;
+        let forty = crate::book::pack::Capacity::from_library(40, &lib).max_photos;
+        assert!(forty > twenty + 3, "fixture: the two lengths must differ enough to distinguish");
+        let records = distinct_records(twenty + 3);
+        let photos = photos_from_records(&records).unwrap();
+        let mut overrides: Overrides = photos
+            .iter()
+            .map(|p| (p.hash.clone(), crate::book::cull::Override::Include))
+            .collect();
+        overrides.set("a-hash-from-another-folder", crate::book::cull::Override::Include);
+
+        let rec = recommend(&photos, &lib, &overrides);
+
+        assert_eq!(rec.included_count, twenty + 3, "the stray hash must not be counted");
+        let twenty_option = rec.options.iter().find(|o| o.pages == 20).unwrap();
+        let forty_option = rec.options.iter().find(|o| o.pages == 40).unwrap();
+        assert_eq!(twenty_option.included_over_capacity, 3, "20 pages cannot hold them");
+        assert_eq!(forty_option.included_over_capacity, 0, "40 pages can");
+    }
+
+    /// With no decisions made, both new figures are zero -- the shape every
+    /// book generated before this feature existed reports.
+    #[test]
+    fn recommend_reports_no_included_photos_when_the_user_has_decided_nothing() {
+        let lib = fixture_library();
+        let photos = photos_from_records(&distinct_records(5)).unwrap();
+
+        let rec = recommend(&photos, &lib, &Overrides::new());
+
+        assert_eq!(rec.included_count, 0);
+        assert!(rec.options.iter().all(|o| o.included_over_capacity == 0), "{:?}", rec.options);
     }
 
     // --- `split_findings`: Blocks and Warns are not interchangeable -------
@@ -2817,7 +3004,7 @@ mod tests {
         let photos = photos_from_records(&distinct_records(12)).unwrap();
 
         let meta = NewProject { name: "Japan 2026", source_folder: "/photos", pages: 20, seed: 7 };
-        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default()).unwrap();
+        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
 
         let loaded = db
             .load_project(generated.project_id)
@@ -2834,6 +3021,113 @@ mod tests {
         );
     }
 
+    /// **Overrides survive the save, and come back on reopen.**
+    ///
+    /// The full round trip the user actually experiences: decisions made on
+    /// the contact sheet, carried into `generate_book`, and read back out of
+    /// the database by the same path `open_project` uses. Without this they
+    /// would be lost exactly the way the analysis used to be -- and
+    /// invisibly, because the reopened project would simply show the engine's
+    /// own verdict and look entirely correct.
+    ///
+    /// Both states are asserted, plus an untouched photo: a round trip that
+    /// stored one state, or collapsed both into the same one, passes a
+    /// single-state fixture.
+    #[test]
+    fn generating_a_book_persists_the_users_own_include_and_exclude_decisions() {
+        let db = Db::open_in_memory().unwrap();
+        let lib = fixture_library();
+        let records = distinct_records(12);
+        let photos = photos_from_records(&records).unwrap();
+        let mut overrides = Overrides::new();
+        overrides.set(photos[3].hash.clone(), crate::book::cull::Override::Include);
+        overrides.set(photos[9].hash.clone(), crate::book::cull::Override::Exclude);
+
+        let meta = NewProject { name: "Japan 2026", source_folder: "/photos", pages: 20, seed: 7 };
+        let generated =
+            generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &overrides).unwrap();
+
+        let loaded = db.load_project(generated.project_id).unwrap().expect("saved project");
+        assert_eq!(loaded.overrides, overrides, "reopening must restore what the user chose");
+        assert_eq!(
+            loaded.overrides.get(&photos[3].hash),
+            crate::book::cull::Override::Include
+        );
+        assert_eq!(
+            loaded.overrides.get(&photos[9].hash),
+            crate::book::cull::Override::Exclude
+        );
+        assert_eq!(
+            loaded.overrides.get(&photos[0].hash),
+            crate::book::cull::Override::Auto,
+            "an untouched photo must come back untouched"
+        );
+    }
+
+    /// **Reopening a project hands the user's own decisions back to the
+    /// webview.**
+    ///
+    /// `open_project` needs a live `AppHandle`, so this drives the mapping it
+    /// delegates to, against a project read back out of a real database --
+    /// the full save-and-reopen path minus the IPC hop. Dropping `overrides`
+    /// in that mapping is invisible without this: the reopened project shows
+    /// the engine's own verdict, which is a perfectly plausible book.
+    #[test]
+    fn reopening_a_project_returns_the_users_own_include_and_exclude_decisions() {
+        let db = Db::open_in_memory().unwrap();
+        let lib = fixture_library();
+        let photos = photos_from_records(&distinct_records(12)).unwrap();
+        let mut overrides = Overrides::new();
+        overrides.set(photos[3].hash.clone(), crate::book::cull::Override::Include);
+        overrides.set(photos[9].hash.clone(), crate::book::cull::Override::Exclude);
+        let meta = NewProject { name: "Japan 2026", source_folder: "/photos", pages: 20, seed: 7 };
+        let generated =
+            generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &overrides).unwrap();
+
+        let detail = project_detail(db.load_project(generated.project_id).unwrap().unwrap());
+
+        assert_eq!(detail.id, generated.project_id);
+        assert_eq!(detail.overrides, overrides, "the decisions must survive the reopen");
+        assert_eq!(
+            detail.overrides.get(&photos[3].hash),
+            crate::book::cull::Override::Include
+        );
+        assert_eq!(
+            detail.overrides.get(&photos[9].hash),
+            crate::book::cull::Override::Exclude
+        );
+    }
+
+    /// Generation REFUSES rather than quietly building a book that is missing
+    /// photos the user explicitly asked for. The message carries the three
+    /// numbers they need to act: how many they picked, how many fit, how many
+    /// over.
+    #[test]
+    fn generating_a_book_too_short_for_the_included_photos_fails_with_the_numbers_to_fix_it() {
+        let db = Db::open_in_memory().unwrap();
+        let lib = fixture_library();
+        let capacity = crate::book::pack::Capacity::from_library(20, &lib).max_photos;
+        let records = distinct_records(capacity + 4);
+        let photos = photos_from_records(&records).unwrap();
+        let overrides: Overrides = photos
+            .iter()
+            .map(|p| (p.hash.clone(), crate::book::cull::Override::Include))
+            .collect();
+
+        let meta = NewProject { name: "Too many", source_folder: "/photos", pages: 20, seed: 7 };
+        let err = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &overrides)
+            .expect_err("a book that cannot hold every explicit choice must not be built");
+
+        assert!(err.contains(&(capacity + 4).to_string()), "{err}");
+        assert!(err.contains(&capacity.to_string()), "{err}");
+        assert!(err.contains("Exclude 4"), "{err}");
+        assert_eq!(
+            db.list_projects().unwrap().len(),
+            0,
+            "and nothing may be saved: a refused generation must leave no project behind"
+        );
+    }
+
     #[test]
     fn a_generated_project_shows_up_in_the_project_list_under_the_id_it_returned() {
         let db = Db::open_in_memory().unwrap();
@@ -2841,7 +3135,7 @@ mod tests {
         let photos = photos_from_records(&distinct_records(12)).unwrap();
 
         let meta = NewProject { name: "Japan 2026", source_folder: "/photos", pages: 20, seed: 7 };
-        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default()).unwrap();
+        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
 
         let listed = db.list_projects().unwrap();
         assert_eq!(listed.len(), 1);
@@ -2856,7 +3150,7 @@ mod tests {
         let photos = photos_from_records(&distinct_records(30)).unwrap();
 
         let meta = NewProject { name: "b", source_folder: "/photos", pages: 40, seed: 3 };
-        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default()).unwrap();
+        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
 
         assert_eq!(generated.page_count, 40);
         assert_eq!(generated.seed, 3);
@@ -2879,7 +3173,7 @@ mod tests {
     fn expected_photo_count_reconstructs_the_slice_the_book_was_built_against() {
         let lib = fixture_library();
         let photos = photos_from_records(&distinct_records(12)).unwrap();
-        let book = crate::book::pace::assemble(&photos, 20, &lib, &Weights::default(), 5);
+        let book = crate::book::pace::assemble(&photos, 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("no overrides");
 
         assert_eq!(expected_photo_count(&book), 12);
     }
@@ -3139,16 +3433,59 @@ mod tests {
     fn book_recommendation_serialises_exactly_the_keys_the_webview_reads() {
         let value = BookRecommendation {
             keeper_count: 26,
+            included_count: 3,
             recommended_pages: 20,
             options: vec![
-                PageOption { pages: 20, capacity_photos: 24, dropped_photos: 2 },
-                PageOption { pages: 40, capacity_photos: 54, dropped_photos: 0 },
+                PageOption {
+                    pages: 20,
+                    capacity_photos: 24,
+                    dropped_photos: 2,
+                    included_over_capacity: 0,
+                },
+                PageOption {
+                    pages: 40,
+                    capacity_photos: 54,
+                    dropped_photos: 0,
+                    included_over_capacity: 0,
+                },
             ],
         };
         assert_eq!(
             serde_json::to_value(&value).unwrap(),
             wire_fixture("book-recommendation.json")
         );
+    }
+
+    /// `Overrides` crosses this boundary in BOTH directions -- up to Rust on
+    /// every override toggle and on generation, back down inside
+    /// `ProjectDetail` when a project is reopened -- so both directions are
+    /// pinned against the same committed fixture.
+    ///
+    /// A key-name change is not the hazard here (the keys are content
+    /// hashes); the STATE SPELLING is. Rust writes it from
+    /// `#[serde(rename_all = "lowercase")]`, SQLite from `Override::as_str`,
+    /// and TypeScript from its own union type, and nothing but this fixture
+    /// makes those three agree.
+    #[test]
+    fn photo_overrides_cross_the_wire_as_the_states_the_webview_writes() {
+        let fixture = wire_fixture("photo-overrides.json");
+        let value: Overrides = [
+            ("a1b2c3d4".to_string(), crate::book::cull::Override::Include),
+            ("e5f6a7b8".to_string(), crate::book::cull::Override::Exclude),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(serde_json::to_value(&value).unwrap(), fixture, "Rust -> webview");
+        assert_eq!(
+            serde_json::from_value::<Overrides>(fixture).unwrap(),
+            value,
+            "webview -> Rust"
+        );
+        // The same spelling SQLite stores, asserted against the same fixture
+        // rather than against a second literal that could drift from it.
+        assert_eq!(crate::book::cull::Override::Include.as_str(), "include");
+        assert_eq!(crate::book::cull::Override::Exclude.as_str(), "exclude");
     }
 
     #[test]
@@ -3271,6 +3608,12 @@ mod tests {
             photo_count: 24,
             dropped_photos: 2,
             seed: 424242,
+            overrides: [
+                ("a1b2c3d4".to_string(), crate::book::cull::Override::Include),
+                ("e5f6a7b8".to_string(), crate::book::cull::Override::Exclude),
+            ]
+            .into_iter()
+            .collect(),
             exports: vec![ExportSummary {
                 at: 1_755_103_600,
                 output_dir: "/Users/jj/Desktop/photobook-export".into(),
@@ -3341,7 +3684,7 @@ mod tests {
             let meta =
                 NewProject { name: "Japan", source_folder: "/photos", pages: 20, seed: 11 };
             let generated =
-                generate_and_save(&db, &meta, &photos, &lib, &Weights::default()).unwrap();
+                generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
             let book = db.load_project(generated.project_id).unwrap().unwrap().book;
             (generated.project_id, crate::export::build_items(&book, &photos))
         }; // every handle dropped here -- this is the "quit".
@@ -3370,7 +3713,7 @@ mod tests {
         let photos = photos_from_records(&records).unwrap();
         let meta = NewProject { name: "b", source_folder: "/photos", pages: 20, seed: 2 };
 
-        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default()).unwrap();
+        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
 
         let expected: Vec<String> = photos.iter().map(|p| p.hash.clone()).collect();
         let mut sorted = expected.clone();

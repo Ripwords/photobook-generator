@@ -1,8 +1,19 @@
 {
   "keeperCount": 26,
+  "includedCount": 3,
   "recommendedPages": 20,
   "options": [
-    { "pages": 20, "capacityPhotos": 24, "droppedPhotos": 2 },
-    { "pages": 40, "capacityPhotos": 54, "droppedPhotos": 0 }
+    {
+      "pages": 20,
+      "capacityPhotos": 24,
+      "droppedPhotos": 2,
+      "includedOverCapacity": 0
+    },
+    {
+      "pages": 40,
+      "capacityPhotos": 54,
+      "droppedPhotos": 0,
+      "includedOverCapacity": 0
+    }
   ]
 }
