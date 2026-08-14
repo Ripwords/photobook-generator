@@ -36,6 +36,7 @@ impl Db {
     fn migrate(&self) -> rusqlite::Result<()> {
         self.conn.execute_batch(
             "PRAGMA journal_mode = WAL;
+             PRAGMA foreign_keys = ON;
              CREATE TABLE IF NOT EXISTS features (
                  hash             TEXT PRIMARY KEY,
                  path             TEXT NOT NULL,
@@ -191,9 +192,9 @@ impl Db {
     /// Removes a project and every export row recorded against it. Both
     /// deletes are explicit rather than relying on a foreign-key cascade
     /// (`project_exports.project_id` has no `ON DELETE CASCADE`) -- the
-    /// export rows must go first, since this bundled SQLite enforces
-    /// `PRAGMA foreign_keys` by default and would otherwise reject the
-    /// delete of a `projects` row with export rows still referencing it.
+    /// export rows must go first, since `migrate()` turns
+    /// `PRAGMA foreign_keys` on for this connection and would otherwise
+    /// reject deleting a `projects` row that export rows still reference.
     pub fn delete_project(&self, id: i64) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM project_exports WHERE project_id = ?1", rusqlite::params![id])?;
         self.conn.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])?;
@@ -206,7 +207,6 @@ mod tests {
     use super::*;
     use crate::book::pace::{Book, Page, Placement};
     use crate::geometry::{Rect, Side};
-    use crate::project::ExportRecord;
 
     /// Two pages, two placements per page, distinct non-round `z` values,
     /// and `slot_rect`/`crop` rects that differ from each other AND carry
@@ -271,6 +271,34 @@ mod tests {
         db.migrate().unwrap();
 
         assert_eq!(db.get_features("abc").unwrap().unwrap(), r#"{"v":1}"#);
+    }
+
+    #[test]
+    fn migrate_turns_foreign_key_enforcement_on_for_the_connection() {
+        let db = Db::open_in_memory().unwrap();
+
+        // A `PRAGMA foreign_keys` statement is a silent no-op if issued
+        // inside a transaction, so this reads the pragma back rather than
+        // just trusting that the statement was written into migrate().
+        let fk: i64 = db.conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+
+        assert_eq!(fk, 1, "foreign_keys must read ON after migrate() has run");
+    }
+
+    #[test]
+    fn foreign_keys_reject_an_export_row_for_a_project_that_does_not_exist() {
+        let db = Db::open_in_memory().unwrap();
+
+        let result = db.conn.execute(
+            "INSERT INTO project_exports (project_id, output_dir, format, file_count)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![999_i64, "/tmp/orphan", "jpeg", 1_i64],
+        );
+
+        assert!(
+            result.is_err(),
+            "inserting an export row against a non-existent project_id must be rejected, got {result:?}"
+        );
     }
 
     #[test]
