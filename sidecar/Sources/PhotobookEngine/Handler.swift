@@ -81,6 +81,17 @@ func handle(line: String) -> Response {
             return Response(id: request.id, result: .calibrated(
                 Calibrator.calibrate(paths: paths)
             ))
+        case .export:
+            guard let export = request.export else {
+                // Deliberately an error, not `.exported([])`. An empty result
+                // is indistinguishable from "nothing to export" and would
+                // make a wiring bug on the Rust side look like a successful
+                // no-op run.
+                return Response(id: request.id, result: .error(
+                    ErrorResult(message: "export request is missing its `export` payload")
+                ))
+            }
+            return Response(id: request.id, result: .exported(Exporter.export(export)))
         }
     }
     let id = (try? decoder.decode(RequestEnvelope.self, from: Data(line.utf8)))?.id ?? "unknown"

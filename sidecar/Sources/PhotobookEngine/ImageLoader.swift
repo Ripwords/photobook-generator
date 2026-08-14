@@ -87,4 +87,50 @@ enum ImageLoader {
         }
         return LoadResult(image: full, usedFullDecodeFallback: true)
     }
+
+    /// Decodes the source at its FULL native resolution with EXIF orientation
+    /// applied. Used by `Exporter`, which must not downscale: the exported
+    /// crop is the file the user sends to print, so every source pixel inside
+    /// the crop window has to survive.
+    ///
+    /// This deliberately goes through the same
+    /// `CGImageSourceCreateThumbnailAtIndex` + `...WithTransform` path as
+    /// `loadThumbnailDetailed` above rather than
+    /// `CGImageSourceCreateImageAtIndex`. `CreateImageAtIndex` returns the
+    /// STORED pixels and ignores orientation entirely, which would leave the
+    /// caller to re-derive the transform by hand -- and hand-derived
+    /// transforms read EXIF only, so they miss HEIC's container `irot`/`imir`
+    /// (which can disagree with EXIF). `...WithTransform` reconciles both.
+    ///
+    /// `kCGImageSourceThumbnailMaxPixelSize` is set to the source's own long
+    /// edge, read from its properties. ImageIO never upscales, so this is a
+    /// no-downscale request rather than a resize; omitting the key entirely
+    /// also works today but is undocumented, and pinning it to the measured
+    /// source size makes "no rescaling" explicit instead of incidental.
+    ///
+    /// Callers must wrap this in an `autoreleasepool` -- full decompression
+    /// happens here, and a worker thread has no pool of its own.
+    static func loadOriented(path: String) throws -> CGImage {
+        let url = URL(fileURLWithPath: path) as CFURL
+        guard let source = CGImageSourceCreateWithURL(url, nil) else {
+            throw LoadError.unreadable(path)
+        }
+
+        var options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let width = props[kCGImagePropertyPixelWidth] as? Int,
+           let height = props[kCGImagePropertyPixelHeight] as? Int,
+           max(width, height) > 0 {
+            options[kCGImageSourceThumbnailMaxPixelSize] = max(width, height)
+        }
+
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            throw LoadError.decodeFailed(path)
+        }
+        return image
+    }
 }
