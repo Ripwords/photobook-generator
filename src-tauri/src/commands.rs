@@ -886,8 +886,14 @@ pub(crate) fn photos_from_records(records: &[serde_json::Value]) -> Result<Vec<P
 /// pre-flight need -- `path`, `hash`, `width`/`height`, `faces`,
 /// `saliencyBox` -- are all in the stored record. The percentile and cluster
 /// fields are not (they are whole-set derivations `finalize_photos` never
-/// persists), which is fine: nothing downstream of assembly reads them.
-/// `from_features` defaults them to 0.
+/// persists), which is fine: nothing downstream of assembly reads them --
+/// pre-flight and the exporter neither cull, rank nor chapter.
+///
+/// Hence `from_cached_features` rather than `from_features`: this is the ONE
+/// call site where those fields are legitimately missing, so it is the one
+/// place that says so. Everywhere else an absent `nearDupCluster` collapses
+/// the whole book to a single photo, and `from_features` now refuses the
+/// record instead.
 ///
 /// **All or nothing.** A single unresolvable hash fails the call. Returning
 /// a shorter list would renumber every `photo_index` after the gap, and the
@@ -918,7 +924,7 @@ pub(crate) fn resolve_photos(db: &Db, hashes: &[String]) -> Result<Vec<Photo>, S
                 )
             })?;
         let value: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-        photos.push(crate::book::cull::from_features(&value).ok_or_else(|| {
+        photos.push(crate::book::cull::from_cached_features(&value).ok_or_else(|| {
             format!("A cached photo record is missing fields the layout engine needs -- {REMEDY}.")
         })?);
     }
@@ -2052,6 +2058,11 @@ mod tests {
             "sharpness": sharpness,
             "exif": { "captureDate": null },
             "faces": faces,
+            // Swift emits both unconditionally and `from_features` now
+            // requires the keys, so a fixture standing in for a real record
+            // must carry them even where the assertions never read them.
+            "faceAreaFraction": 0.0,
+            "palette": [],
         })
     }
 
@@ -2424,12 +2435,15 @@ mod tests {
     /// Builds a full-shaped feature record, not the minimal
     /// `{isUtility, nearDupCluster, sharpnessPct, aestheticPct}` this fixture
     /// used before `count_keepers` delegated to `book::cull`.
-    /// `book::cull::from_features` requires `path`/`hash`/`width`/`height`
-    /// (every real record from `finalize_photos` has them; only a hand-built
-    /// test fixture could omit them) -- a record missing them is silently
-    /// dropped by `from_features`'s `filter_map`, so the old minimal shape
-    /// would count zero keepers regardless of the values below. A counter
-    /// keeps `path`/`hash` unique per call so distinct photos in one test
+    /// `book::cull::from_features` requires every field whose absence would
+    /// change the printed book -- `path`/`hash`/`width`/`height`,
+    /// `isUtility`, both percentiles, both cluster ids, and the `faces`,
+    /// `faceAreaFraction` and `palette` keys (every real record from
+    /// `finalize_photos` has them; only a hand-built test fixture could omit
+    /// one). A record missing any of them is silently dropped by
+    /// `from_features`'s `filter_map`, so an incomplete fixture would count
+    /// zero keepers regardless of the values below. A counter keeps
+    /// `path`/`hash` unique per call so distinct photos in one test
     /// don't collide.
     /// Percentiles are passed as INTEGERS, not floats. `from_features` reads
     /// `sharpnessPct`/`aestheticPct` with `as_u64()`, and `serde_json` stores
@@ -2454,6 +2468,10 @@ mod tests {
             "height": 3024,
             "isUtility": is_utility,
             "nearDupCluster": cluster,
+            // Every candidate in one chapter: `count_keepers` culls, and
+            // culling does not read the event cluster -- but the record must
+            // still carry it, because a real one always does.
+            "eventCluster": 0,
             "sharpnessPct": sharpness,
             "aestheticPct": aesthetic,
             "faces": [],

@@ -61,57 +61,130 @@ fn rect_from(v: &serde_json::Value) -> Option<Rect> {
     Some(Rect::new(a[0].as_f64()?, a[1].as_f64()?, a[2].as_f64()?, a[3].as_f64()?))
 }
 
-/// Builds a `Photo` from one finalized feature record. Returns `None` when a
-/// required field is missing or the wrong type, which the caller reports as
-/// a skipped photo rather than failing the whole book.
+/// Whether a record is expected to carry the WHOLE-SET derivations --
+/// `nearDupCluster`, `eventCluster`, `aestheticPct`, `sharpnessPct` -- that
+/// `commands::finalize_photos` stamps once every photo in the folder has been
+/// seen.
+///
+/// Two callers, two genuinely different contracts, and conflating them is
+/// what made the old parser dangerous. See `from_features` and
+/// `from_cached_features`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Derived {
+    /// The record came from `finalize_photos` (directly, or round-tripped
+    /// through the webview). Absence is a pipeline bug, not a data shape.
+    Required,
+    /// The record came straight out of the SQLite features cache, which
+    /// stores Swift's per-photo record verbatim. The derivations were never
+    /// persisted, so their absence is the expected, correct state.
+    AbsentByDesign,
+}
+
+/// Builds a `Photo` from one FINALIZED feature record -- the output of
+/// `commands::finalize_photos`, whether read back directly or round-tripped
+/// through the webview and handed to `recommend_book`/`generate_book`.
+///
+/// Strict on purpose. Every field it reads is one whose absence changes the
+/// printed book while raising nothing anywhere, so `None` (which the callers
+/// turn into a skipped photo or a failed command) is the only honest answer:
+///
+/// * `nearDupCluster` absent -> every photo lands in cluster 0 and `cull`
+///   keeps exactly ONE photo for the entire book;
+/// * `faces` absent -> every gutter and safe-margin rejection in the scorer
+///   and in pre-flight goes inert, and crops re-centre off the subject. That
+///   reaches print wrong;
+/// * `faceAreaFraction`, `palette`, `aestheticPct`, `sharpnessPct`,
+///   `isUtility`, `eventCluster` absent -> scoring, ranking, chaptering or
+///   utility-filtering silently degrade to a constant.
+///
+/// A missing KEY is distinguished from an empty VALUE throughout: `faces: []`
+/// and `palette: []` are real answers (a photo with no people in it, an image
+/// Vision found no dominant colours in) and are accepted; a missing `faces`
+/// key is not. `saliencyBox` is the one field that may legitimately be
+/// ABSENT -- Swift declares it `[Double]?` and `encodeIfPresent` omits it
+/// entirely when Vision returns no attention box, which happens on real
+/// images -- so it stays `Option<Rect>`.
+///
+/// This is why `AnalyzedPhoto` in `app/types/features.ts` is dangerous to
+/// reshape: it declares none of these engine-only keys, so a `.map()` in the
+/// webview type-checks while dropping them. It now fails loudly here instead
+/// of quietly producing a one-photo book.
 pub fn from_features(v: &serde_json::Value) -> Option<Photo> {
+    parse_features(v, Derived::Required)
+}
+
+/// As `from_features`, but for a record read straight out of the features
+/// cache, where the whole-set derivations are KNOWN to be absent:
+/// `finalize_photos` stamps them onto its return value and never writes them
+/// back to SQLite (`commands::gather` caches the raw sidecar `features`
+/// object).
+///
+/// They are zeroed here rather than merely tolerated by the shared parser, so
+/// that `from_features` can stay strict for every other caller. Zeroing is
+/// safe only because nothing on this path reads them: `resolve_photos` feeds
+/// pre-flight and the exporter, neither of which culls, ranks or chapters --
+/// the book was assembled long before, and is reloaded whole from the project
+/// row. Any future caller that culls must use `from_features`.
+pub fn from_cached_features(v: &serde_json::Value) -> Option<Photo> {
+    parse_features(v, Derived::AbsentByDesign)
+}
+
+fn parse_features(v: &serde_json::Value, derived: Derived) -> Option<Photo> {
+    // The KEY must be present and an array; `[]` is a real answer (a photo
+    // with nobody in it) and must not be confused with "faces never ran".
     let faces: Vec<Face> = v["faces"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|f| {
-                    Some(Face {
-                        box_: rect_from(&f["box"])?,
-                        capture_quality: f["captureQuality"].as_f64(),
-                    })
-                })
-                .collect()
+        .as_array()?
+        .iter()
+        .map(|f| {
+            Some(Face {
+                box_: rect_from(&f["box"])?,
+                capture_quality: f["captureQuality"].as_f64(),
+            })
         })
-        .unwrap_or_default();
+        .collect::<Option<Vec<Face>>>()?;
 
     let capture_quality = faces
         .iter()
         .filter_map(|f| f.capture_quality)
         .max_by(|a, b| a.total_cmp(b));
 
-    let palette = v["palette"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|c| {
-                    Some(PaletteColor {
-                        r: c["r"].as_f64()?,
-                        g: c["g"].as_f64()?,
-                        b: c["b"].as_f64()?,
-                        weight: c["weight"].as_f64()?,
-                    })
-                })
-                .collect()
+    let palette: Vec<PaletteColor> = v["palette"]
+        .as_array()?
+        .iter()
+        .map(|c| {
+            Some(PaletteColor {
+                r: c["r"].as_f64()?,
+                g: c["g"].as_f64()?,
+                b: c["b"].as_f64()?,
+                weight: c["weight"].as_f64()?,
+            })
         })
-        .unwrap_or_default();
+        .collect::<Option<Vec<PaletteColor>>>()?;
+
+    // `Required` demands the key; `AbsentByDesign` reads it if it happens to
+    // be there and otherwise zeroes it.
+    let whole_set = |key: &str| -> Option<u64> {
+        match derived {
+            Derived::Required => v[key].as_u64(),
+            Derived::AbsentByDesign => Some(v[key].as_u64().unwrap_or(0)),
+        }
+    };
 
     Some(Photo {
         path: v["path"].as_str()?.to_string(),
         hash: v["hash"].as_str()?.to_string(),
         width: v["width"].as_u64()? as u32,
         height: v["height"].as_u64()? as u32,
-        is_utility: v["isUtility"].as_bool().unwrap_or(false),
-        aesthetic_pct: v["aestheticPct"].as_u64().unwrap_or(0) as u8,
-        sharpness_pct: v["sharpnessPct"].as_u64().unwrap_or(0) as u8,
-        near_dup_cluster: v["nearDupCluster"].as_u64().unwrap_or(0) as u32,
-        event_cluster: v["eventCluster"].as_u64().unwrap_or(0) as u32,
+        is_utility: v["isUtility"].as_bool()?,
+        aesthetic_pct: whole_set("aestheticPct")? as u8,
+        sharpness_pct: whole_set("sharpnessPct")? as u8,
+        near_dup_cluster: whole_set("nearDupCluster")? as u32,
+        event_cluster: whole_set("eventCluster")? as u32,
         faces,
-        face_area_fraction: v["faceAreaFraction"].as_f64().unwrap_or(0.0),
+        face_area_fraction: v["faceAreaFraction"].as_f64()?,
+        // The ONE field that may legitimately be absent: Vision returns no
+        // attention box on some images and Swift's `encodeIfPresent` then
+        // omits the key entirely.
         saliency_box: rect_from(&v["saliencyBox"]),
         palette,
         capture_quality,
@@ -315,5 +388,121 @@ mod tests {
         let p = from_features(&v).expect("well-formed record");
         assert!(p.saliency_box.is_none());
         assert_eq!(p.capture_quality, None);
+    }
+
+    /// A complete finalized record, as the only fixture the strictness tests
+    /// below mutate. Every key here is one whose absence changes the book.
+    fn full_record() -> serde_json::Value {
+        serde_json::json!({
+            "path": "/p/a.jpg", "hash": "abc", "width": 4032, "height": 3024,
+            "isUtility": false, "aestheticPct": 80, "sharpnessPct": 60,
+            "nearDupCluster": 2, "eventCluster": 1,
+            "faces": [{"box":[0.1,0.2,0.3,0.4],"captureQuality":0.7}],
+            "faceAreaFraction": 0.12,
+            "saliencyBox": [0.2,0.1,0.5,0.6],
+            "palette": [{"r":0.5,"g":0.2,"b":0.1,"weight":0.6}]
+        })
+    }
+
+    fn without(key: &str) -> serde_json::Value {
+        let mut v = full_record();
+        v.as_object_mut().unwrap().remove(key).unwrap_or_else(|| panic!("{key} not in fixture"));
+        v
+    }
+
+    /// Every field whose ABSENCE would silently corrupt the printed book,
+    /// one assertion each. These all used to `unwrap_or_default()`, so the
+    /// record parsed and the damage surfaced only in the finished book:
+    /// no `nearDupCluster` and `cull` keeps one photo for twenty pages; no
+    /// `faces` and every gutter/safe-margin rejection goes inert and crops
+    /// re-centre off the subject.
+    #[test]
+    fn cull_from_features_rejects_a_record_missing_a_book_critical_field() {
+        assert!(from_features(&full_record()).is_some(), "the fixture itself must parse");
+        for key in [
+            "path",
+            "hash",
+            "width",
+            "height",
+            "isUtility",
+            "aestheticPct",
+            "sharpnessPct",
+            "nearDupCluster",
+            "eventCluster",
+            "faces",
+            "faceAreaFraction",
+            "palette",
+        ] {
+            assert!(
+                from_features(&without(key)).is_none(),
+                "a record with no `{key}` must be refused, not defaulted"
+            );
+        }
+    }
+
+    /// The distinction the strictness must NOT flatten: an empty array is a
+    /// real answer (nobody in the photo, no dominant colours), a missing key
+    /// is a broken pipeline. Only the key is required.
+    #[test]
+    fn cull_from_features_accepts_empty_faces_and_palette_but_not_absent_ones() {
+        let mut v = full_record();
+        v["faces"] = serde_json::json!([]);
+        v["palette"] = serde_json::json!([]);
+        let p = from_features(&v).expect("empty is a real answer");
+        assert!(p.faces.is_empty());
+        assert!(p.palette.is_empty());
+        assert_eq!(p.capture_quality, None);
+
+        assert!(from_features(&without("faces")).is_none());
+        assert!(from_features(&without("palette")).is_none());
+    }
+
+    /// A face entry without a `box` used to be dropped from the list by
+    /// `filter_map`, so a photo with three faces could arrive carrying two
+    /// and nothing would say so. Swift declares `box` non-optional, so the
+    /// only way to see one is corruption -- refuse the record.
+    #[test]
+    fn cull_from_features_rejects_a_face_with_no_box_rather_than_dropping_it() {
+        let mut v = full_record();
+        v["faces"] = serde_json::json!([
+            {"box":[0.1,0.2,0.3,0.4],"captureQuality":0.7},
+            {"captureQuality":0.9}
+        ]);
+        assert!(from_features(&v).is_none());
+    }
+
+    /// `saliencyBox` is the one field Swift may legitimately omit --
+    /// `[Double]?` plus `encodeIfPresent`, and Vision really does return no
+    /// attention box on some images. Requiring it would refuse valid photos.
+    #[test]
+    fn cull_from_features_still_accepts_a_record_with_no_saliency_box() {
+        let p = from_features(&without("saliencyBox")).expect("absent saliency is legitimate");
+        assert!(p.saliency_box.is_none());
+    }
+
+    /// The export path reads Swift's record straight out of SQLite, where the
+    /// whole-set derivations were never written. That record must still
+    /// parse -- through the constructor that says so -- while the strict one
+    /// refuses it.
+    #[test]
+    fn cull_from_cached_features_accepts_a_record_without_the_whole_set_derivations() {
+        let mut v = full_record();
+        for key in ["aestheticPct", "sharpnessPct", "nearDupCluster", "eventCluster"] {
+            v.as_object_mut().unwrap().remove(key);
+        }
+        assert!(from_features(&v).is_none(), "the strict parser must refuse it");
+        let p = from_cached_features(&v).expect("the cache shape is legitimate here");
+        assert_eq!(p.near_dup_cluster, 0);
+        assert_eq!(p.aesthetic_pct, 0);
+    }
+
+    /// `from_cached_features` relaxes ONLY the derivations. A cached record
+    /// with no `faces` key is still broken, and export reads faces.
+    #[test]
+    fn cull_from_cached_features_is_still_strict_about_swift_emitted_fields() {
+        assert!(from_cached_features(&without("faces")).is_none());
+        assert!(from_cached_features(&without("faceAreaFraction")).is_none());
+        assert!(from_cached_features(&without("isUtility")).is_none());
+        assert!(from_cached_features(&without("width")).is_none());
     }
 }

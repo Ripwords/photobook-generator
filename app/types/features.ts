@@ -44,6 +44,18 @@ export interface PartialAnalyzedPhoto {
  * A fully-ranked photo: `PartialAnalyzedPhoto` plus the whole-set
  * derivations that only exist once `analyze_folder` has seen every photo in
  * the folder (Rust's `finalize_photos`, delivered in `AnalysisEvent.Done`).
+ *
+ * **This interface is a VIEW, not the whole object.** The runtime record also
+ * carries engine-only keys the UI has no use for and this type deliberately
+ * does not declare -- `faces`, `faceAreaFraction`, `saliencyBox`, `palette`.
+ * `recommend_book` and `generate_book` are handed these objects verbatim and
+ * Rust reads those keys off them, so an array of `AnalyzedPhoto` must be
+ * FORWARDED, never rebuilt: a `.map()` that reshapes to the declared fields
+ * type-checks and drops the rest. Rust's `book::cull::from_features` now
+ * refuses such a record outright (before, it defaulted the missing keys and
+ * the book came out with one photo in it, silently), so the failure is a
+ * command error rather than a wrong book -- but the rule is still "pass the
+ * object through untouched".
  */
 export interface AnalyzedPhoto extends PartialAnalyzedPhoto {
   aestheticPct: number;
