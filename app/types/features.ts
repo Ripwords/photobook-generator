@@ -83,6 +83,67 @@ export interface AnalyzedPhoto extends PartialAnalyzedPhoto {
   kept: boolean;
 }
 
+/**
+ * What the USER said about a photo, overriding the engine's own verdict.
+ * Mirrors Rust's `book::cull::Override`, which serialises lowercase.
+ *
+ * `"auto"` is the default and is never stored: Rust's `Overrides::set`
+ * removes the entry rather than recording it, so "no decision" has exactly
+ * one representation on both sides. Setting a photo back to `"auto"` here
+ * therefore DELETES its key -- see `withOverride` below.
+ */
+export type PhotoOverride = "auto" | "include" | "exclude";
+
+/**
+ * Every decision the user has made, keyed by CONTENT HASH -- the same key
+ * Rust's `Overrides` uses, and the same key a project's photo list uses, so a
+ * decision survives a file being renamed or moved.
+ *
+ * Held in webview state from the moment it is made on the contact sheet until
+ * `generate_book` persists it. That is a deliberate consequence of WHERE the
+ * decisions are made: there is no project to attach them to until the book is
+ * generated.
+ */
+export type PhotoOverrides = Record<string, PhotoOverride>;
+
+/** The decision recorded for a photo, or `"auto"` when none has been made. */
+export function overrideFor(overrides: PhotoOverrides, hash: string): PhotoOverride {
+  return overrides[hash] ?? "auto";
+}
+
+/**
+ * The overrides map with one decision changed, as a NEW object -- the map is
+ * held in a `ref` and replaced rather than mutated, the same convention
+ * `applyAnalysisEvent` follows.
+ *
+ * `"auto"` deletes the key rather than storing it, mirroring Rust's
+ * `Overrides::set`. Storing it would create a second representation of "no
+ * decision" that every comparison and every persisted row would then have to
+ * treat as equal to its absence.
+ */
+export function withOverride(
+  overrides: PhotoOverrides,
+  hash: string,
+  state: PhotoOverride,
+): PhotoOverrides {
+  const next = { ...overrides };
+  if (state === "auto") {
+    delete next[hash];
+  } else {
+    next[hash] = state;
+  }
+  return next;
+}
+
+/**
+ * What clicking a toggle should set the photo to: pressing the state it is
+ * already in returns it to `"auto"`, so the two buttons are toggles rather
+ * than a one-way trip with no way back.
+ */
+export function toggledOverride(current: PhotoOverride, pressed: Exclude<PhotoOverride, "auto">): PhotoOverride {
+  return current === pressed ? "auto" : pressed;
+}
+
 /** Type guard distinguishing a still-streaming tile from a fully-ranked one. */
 export function isRanked(photo: PartialAnalyzedPhoto | AnalyzedPhoto): photo is AnalyzedPhoto {
   return "aestheticPct" in photo;

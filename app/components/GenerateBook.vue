@@ -4,21 +4,26 @@ import {
   exportOutcome,
   generatedLabel,
   lastExportLabel,
+  canGenerateAt,
+  includeOverflowLabel,
   optionFor,
   projectDetailLabel,
   recommendedOption,
   revealTarget,
   summarizeExport,
 } from "~/types/book";
-import type { AnalyzedPhoto } from "~/types/features";
+import type { AnalyzedPhoto, PhotoOverrides } from "~/types/features";
 
 const {
   photos = [],
+  overrides = {},
   folder = null,
   openProjectId = null,
 } = defineProps<{
   /** The analysed photos, exactly as Rust sent them -- see `useBook`. Omitted when this is mounted to view a project opened from disk rather than a freshly analysed folder. */
   photos?: AnalyzedPhoto[];
+  /** The user's own include/exclude decisions, persisted with the project by `generate_book`. */
+  overrides?: PhotoOverrides;
   folder?: string | null;
   /** A saved project to load on mount, without analysing anything -- see `useBook`'s `openProject`. */
   openProjectId?: number | null;
@@ -29,6 +34,7 @@ const {
 // would go stale the moment the user analyses a different folder.
 const photosRef = toRef(() => photos);
 const folderRef = toRef<string | null>(() => folder);
+const overridesRef = toRef(() => overrides);
 
 const {
   recommendation,
@@ -48,7 +54,7 @@ const {
   loadProjects,
   reset,
   reveal,
-} = useBook(photosRef, folderRef);
+} = useBook(photosRef, folderRef, overridesRef);
 
 const name = ref(defaultProjectName(folder ?? ""));
 /**
@@ -82,7 +88,15 @@ const pageItems = computed(() =>
   (recommendation.value?.options ?? []).map((option) => ({
     label: `${option.pages} pages`,
     value: option.pages,
+    // Not merely expensive -- unbuildable. The engine refuses to choose which
+    // of the user's own picks to discard, so generating at this length fails
+    // rather than producing a shorter book.
+    disabled: !canGenerateAt(option),
   })),
+);
+/** Why the chosen length cannot be generated, or `null` when it can. */
+const overflowMessage = computed(() =>
+  chosenOption.value ? includeOverflowLabel(chosenOption.value) : null,
 );
 const counts = computed(() => (exportResult.value ? summarizeExport(exportResult.value) : null));
 const outcome = computed(() => (exportResult.value ? exportOutcome(exportResult.value) : null));
@@ -119,12 +133,23 @@ watch(
   { immediate: true },
 );
 
+// The overrides change what the book contains, so they change both the
+// keeper count and whether a length can hold every photo the user asked for.
+// The chosen length is NOT reset here (unlike a folder change): the user is
+// refining a selection, not starting over.
+watch(
+  () => overrides,
+  () => {
+    if (canGenerate.value) void refreshRecommendation();
+  },
+);
+
 watch(recommendation, (next) => {
   if (next && chosenPages.value === null) chosenPages.value = next.recommendedPages;
 });
 
 function onGenerate() {
-  if (pages.value === null) return;
+  if (pages.value === null || overflowMessage.value !== null) return;
   void generate(name.value, pages.value);
 }
 
@@ -158,7 +183,7 @@ onMounted(() => {
         icon="i-lucide-book-open"
         color="primary"
         :loading="busy"
-        :disabled="busy || !recommendation"
+        :disabled="busy || !recommendation || overflowMessage !== null"
         @click="onGenerate"
       >
         Generate book
@@ -172,7 +197,11 @@ onMounted(() => {
     -->
     <p v-if="canGenerate && recommendation" class="text-sm text-muted">
       <span class="font-mono tabular-nums text-default">{{ recommendation.keeperCount }}</span>
-      keepers ·
+      keepers<template v-if="recommendation.includedCount > 0">
+        (<span class="font-mono tabular-nums text-default">{{ recommendation.includedCount }}</span>
+        you picked)</template
+      >
+      ·
       <template v-if="chosenOption">
         <span class="font-mono tabular-nums text-default">{{ chosenOption.capacityPhotos }}</span>
         fit in
@@ -195,6 +224,21 @@ onMounted(() => {
         pages
       </template>
     </p>
+
+    <!--
+      A length that cannot hold every photo the user explicitly asked for is
+      a refusal, not a cost -- so it is stated separately from
+      "N would be left out" and it disables the button. The engine will not
+      choose which of their own picks to discard.
+    -->
+    <UAlert
+      v-if="overflowMessage"
+      icon="i-lucide-triangle-alert"
+      color="warning"
+      variant="subtle"
+      title="This length cannot hold everything you picked"
+      :description="`${overflowMessage}. Exclude some photos, or choose a longer book.`"
+    />
 
     <UAlert
       v-if="error"

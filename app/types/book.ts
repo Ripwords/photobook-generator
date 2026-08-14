@@ -22,6 +22,8 @@
  * encodes a decision worth pinning.
  */
 
+import type { PhotoOverrides } from "~/types/features";
+
 /** Mirrors `book::preflight::Severity`, which serialises lowercase. */
 export type FindingSeverity = "block" | "warn";
 
@@ -39,11 +41,20 @@ export interface PageOption {
   pages: number;
   capacityPhotos: number;
   droppedPhotos: number;
+  /**
+   * How many photos the user explicitly marked "include" that this length
+   * cannot hold. Non-zero means this length cannot be generated at all --
+   * the engine refuses rather than choosing which of the user's own picks to
+   * discard (Rust's `book::pack::IncludeOverflow`).
+   */
+  includedOverCapacity: number;
 }
 
 export interface BookRecommendation {
   /** Survivors of culling, not the raw analysed count. */
   keeperCount: number;
+  /** How many of the analysed photos the user explicitly marked "include". */
+  includedCount: number;
   recommendedPages: number;
   options: PageOption[];
 }
@@ -128,6 +139,12 @@ export interface ProjectDetail {
   photoCount: number;
   droppedPhotos: number;
   seed: number;
+  /**
+   * The include/exclude decisions this book was generated with. Restored on
+   * reopen so a saved project does not quietly revert every one of them to
+   * "auto" -- which would look entirely correct while being wrong.
+   */
+  overrides: PhotoOverrides;
   exports: ExportSummary[];
 }
 
@@ -177,6 +194,29 @@ export function applyExportEvent(state: ExportProgress, event: ExportEvent): Exp
     case "progress":
       return { running: true, completed: event.completed, total: event.total };
   }
+}
+
+/**
+ * Whether a page length can be generated at all: a length that cannot hold
+ * every photo the user explicitly asked for is not a choice, it is a
+ * refusal, and offering it as selectable means the user's only feedback is a
+ * failed generation.
+ *
+ * Deliberately NOT the same question as `droppedPhotos > 0`, which is a cost
+ * the user is allowed to accept.
+ */
+export function canGenerateAt(option: PageOption): boolean {
+  return option.includedOverCapacity === 0;
+}
+
+/**
+ * The sentence shown against a length the included photos overflow. Mirrors
+ * the wording of Rust's `IncludeOverflow` message, which is what the user
+ * would see if they generated anyway.
+ */
+export function includeOverflowLabel(option: PageOption): string | null {
+  if (option.includedOverCapacity === 0) return null;
+  return `${option.includedOverCapacity} more photo${option.includedOverCapacity === 1 ? "" : "s"} marked to include than a ${option.pages}-page book holds`;
 }
 
 /** The option for a given page length, or `undefined` if it was not offered. */
