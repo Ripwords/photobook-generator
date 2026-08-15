@@ -571,8 +571,16 @@ It was deliberately **not** done in `feat/phase-2-completion`, and the reasoning
 keeping: `apportion_slots` is the most delicate function in the packer — it carries the
 `Include`-protection guarantees and the D'Hondt fairness that `pace::assemble`'s
 post-condition depends on — and `pack`'s contract had already been changed twice in that
-branch, each change surfacing a defect that only a whole-library sweep caught. Every photo
-is placed today, so what remains is pacing, not data loss.
+branch, each change surfacing a defect that only a whole-library sweep caught.
+
+**Corrected 2026-08-15 — the reasoning above used to end "Every photo is placed today, so
+what remains is pacing, not data loss." That is false and the correction matters.** It is
+true only over the keeper range the 18-book sweep below actually measured (10–51
+keepers). From about **41 keepers upward in a 20-page book, photos ARE lost** — up to 6 of
+64 — and blank pages stay at zero throughout, so this is a *different* mechanism from the
+one item 12 describes: every slot is filled and the photos are stranded *inside* chapters.
+The full 40..=64 sweep is **open item 14**. What remains here is still pacing; data loss is
+item 14's problem, not this one's.
 
 **The same floor already cost three photos once, in this branch.** The first sweep measured
 471 of 474 keepers placed against a pre-branch 474. Mechanism: the band collapses to
@@ -599,6 +607,81 @@ every template and already knows both rectangles; this is a cheap guard that doe
 Related, from the same review and deliberately left alone: template `20`'s four panes sit
 exactly on `GUTTER_X0`/`GUTTER_X1` with zero margin, passing only via `clear_of_gutter`'s
 epsilon. A higher-precision re-derivation of the gutter constants would flip them.
+
+### 14. Photos are silently lost from ~41 keepers upward, and the UI reports zero dropped
+
+Added 2026-08-15. **Read this before trusting any "every photo is placed" statement in this
+file.** It is a sibling of item 12, not the same defect: item 12 produces BLANK PAGES in
+sparse books; this one produces LOST PHOTOS in crowded books, with **zero blank pages
+throughout**. Every slot is filled; the photos are stranded *inside* chapters.
+
+**Measured** — real `templates/` library, 20 pages, `pace::assemble`, seed 7, one synthetic
+photo per keeper (no utility photos, unique near-dup cluster, so keepers == input):
+
+| keepers | placed | lost | blank pages |   | keepers | placed | lost | blank pages |
+|---:|---:|---:|---:|---|---:|---:|---:|---:|
+| 40 | 40 | 0 | 0 | | 53 | 52 | **1** | 0 |
+| 41 | 40 | **1** | 0 | | 54 | 52 | **2** | 0 |
+| 42 | 40 | **2** | 0 | | 55 | 52 | **3** | 0 |
+| 43 | 43 | 0 | 0 | | 56 | 52 | **4** | 0 |
+| 44 | 44 | 0 | 0 | | 57 | 52 | **5** | 0 |
+| 45 | 45 | 0 | 0 | | 58 | 56 | **2** | 0 |
+| 46 | 46 | 0 | 0 | | 59 | 57 | **2** | 0 |
+| 47 | 46 | **1** | 0 | | 60 | 57 | **3** | 0 |
+| 48 | 48 | 0 | 0 | | 61 | 57 | **4** | 0 |
+| 49 | 49 | 0 | 0 | | 62 | 57 | **5** | 0 |
+| 50 | 50 | 0 | 0 | | 63 | 58 | **5** | 0 |
+| 51 | 50 | **1** | 0 | | 64 | 58 | **6** | 0 |
+| 52 | 51 | **1** | 0 | |    |    |   |   |
+
+**Nothing in the 2026-08-15 fix wave changed a single figure in that table.** It is the
+state of `feat/phase-2-completion` as it stands. Do not read it as a post-fix improvement;
+there was no improvement, and the reason is below.
+
+**Two mechanisms, and they compound.**
+
+1. **`Buildable::from_library`'s `single` set is side-blind.** It reads
+   `Library::page_half_pool()`, which pools BOTH sides, while `pace::best_single` filters by
+   `l.side == side` and `pace::assemble` places the opening single on the RIGHT and the
+   closing single on the LEFT. On the real library LEFT halves offer `{1,2,3,4}` and RIGHT
+   `{1,2,3,4,5}`, so the union's `5` is a size the CLOSING slot cannot build: `pack` cuts a
+   `(5, Single)` closing group, `best_single` falls back to a 4-slot left half, and
+   `pace::strongest` silently trims one photo. Knock-on:
+   `Capacity::from_buildable` reads `single_hi = 5`, so
+   `Capacity::from_library(20, lib).max_photos` reports **64** when the true ceiling is
+   **63** (9 × 6 spread + a right-hand 5 opening + a left-hand 4 closing). `commands.rs`'
+   `dropped_photos` is `keeper_count.saturating_sub(max_photos)` — so **at 64 keepers the UI
+   reports 0 dropped for a book that drops 6.**
+2. **The item-12 floor, in the other direction.** In the rows above where `pack`'s group
+   sum is already below the keeper count (52–57, 60–62), the loss is chapters arriving at a
+   slot they cannot fill. Same slot-kind-blind `union_bounds()` floor as item 12.
+
+**A fix was implemented, measured, and REVERTED. Do not re-attempt it.** The candidate was
+to derive `single` from the INTERSECTION of the two sides (`{1,2,3,4}`) rather than the
+union, on the theory that it is strictly conservative. **It is not**, because the union is
+not uniformly an overclaim — `5` is unbuildable for the *closing* slot but genuinely
+buildable for the *opening* one. Measured on the real library:
+
+* page 1 really does lay out five photos on `25-six-up-mosaic-hero-five:right`. Under the
+  intersection it drops to four — a real photo lost that the library could print.
+* `max_photos` falls to **62**, an UNDERclaim against the true 63, so `pack`'s capacity trim
+  pre-emptively discards keepers at 63 and 64 that previously reached the page.
+* over the 40..=64 table above: 24 counts unchanged, **1 worse** (63: 5 lost → 6), 0 better.
+* over 4 synthetic chapter shapes × 3 seeds at 60..=64 keepers: **3 of the 4 shapes lose 1–2
+  photos per book**, none gains one.
+
+Its one real merit was accounting integrity — under the intersection, `pack`'s group sum
+equals what reaches the page, so no loss is hidden in `pace::strongest`. That is not worth a
+net loss of photos.
+
+**The correct fix is a per-SIDE single set:** `Buildable::single_left` and `single_right`,
+each single slot measured against the side it actually prints on, with `Capacity` summing
+`right_hi + left_hi` instead of `2 × single_hi`. That removes the unbuildable closing `5`,
+keeps the buildable opening `5`, and makes `max_photos` read the true **63** — all three,
+which no single-set variant can do. It is a change to `pack`'s contract and wants its own
+sweep. The warning block on `Buildable::from_library` in `src-tauri/src/book/pack.rs` carries
+the same conclusion at the code, so the next reader cannot re-run the rejected experiment by
+accident.
 
 ---
 
@@ -640,7 +723,15 @@ comparing the pre-branch commit `6a40c63` against the branch:
 | pages naming a REAL template and holding zero placements | **78** | **0** |
 | pages named `blank` | 6 | **45** |
 | **total white pages** | **84** | **45** |
-| photos placed / keepers | 474 / 474 | **474 / 474** |
+| photos placed / keepers | 474 / 474 | **474 / 474** (over THIS sweep's range only — see below) |
+
+**The `474 / 474` row is range-limited, and reading it as a book-wide invariant is wrong.**
+Those six photo counts (12, 20, 25, 30, 40, 60 input photos) cull to **10, 17, 21, 25, 34
+and 51 keepers** — 158 per seed, 474 across the three. Over that range every keeper is placed, and that is all the row licenses. Swept
+independently at 40..=64 keepers the same engine loses up to **6 of 64**, with zero blank
+pages the whole way — see **open item 14**, which carries the per-count table. A 20-page
+book with 42–64 keepers is an ordinary case, and the real-photo run that motivated this
+branch was in it.
 
 **Read that precisely.** The STRUCTURAL blank page is eliminated entirely, 78 → 0: size 1 is
 banned from the spread region and the two multi-photo templates with an empty half were
@@ -650,7 +741,8 @@ to 2 × 1 + 9 × 2 = 20, so books with 11–19 keepers now blank the slots they 
 Before the branch those same books were filled with 1-photo spread templates — each of which
 printed a blank half anyway, which is why the net still falls. **This is not "blank pages
 eliminated."** It is 84 → 45 white pages out of 360, 23% → 12.5%, with every keeper still
-placed and one known remaining cause.
+placed **at the 10–51 keeper counts this sweep covers** (photos ARE lost from ~41 keepers
+upward — open item 14) and one known remaining cause of white pages.
 
 That cause is **open item 12**: `apportion_slots` hands a chapter more slots than it can
 fill, because it sizes against a floor of 1 taken from the single-page set. Fixing it would
