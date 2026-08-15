@@ -178,6 +178,28 @@ pub fn clear_of_gutter(rect: &Rect, side: Side) -> bool {
     }
 }
 
+/// The gutter dead band on `side`, as a page-normalised rect spanning the
+/// full page height.
+///
+/// `clear_of_gutter` expresses the same strip as a comparison against
+/// `GUTTER_U`. Both read that ONE constant: a second hand-typed copy of the
+/// band is exactly the duplicated-authority problem culling already had to
+/// fix, and the spread-canvas form of these numbers is different again.
+pub fn gutter_band(side: Side) -> Rect {
+    match side {
+        Side::Left => Rect::new(1.0 - GUTTER_U, 0.0, GUTTER_U, 1.0),
+        Side::Right => Rect::new(0.0, 0.0, GUTTER_U, 1.0),
+    }
+}
+
+/// Area of `rect` (page-normalised, on `side`) falling inside that band.
+///
+/// The graded counterpart to `clear_of_gutter`, which answers yes/no --
+/// the right shape for a rejection and the wrong one for a penalty.
+pub fn gutter_overlap_area(rect: &Rect, side: Side) -> f64 {
+    rect.intersect(&gutter_band(side)).map_or(0.0, |i| i.area())
+}
+
 /// True when every declared bleed edge actually reaches past the page
 /// boundary. A slot that declares bleed but stops short leaves a white
 /// sliver after trimming.
@@ -322,6 +344,28 @@ mod tests {
     fn geometry_clear_of_gutter_uses_the_opposite_edge_on_a_right_page() {
         assert!(clear_of_gutter(&Rect::new(GUTTER_U, 0.4, 0.2, 0.2), Side::Right));
         assert!(!clear_of_gutter(&Rect::new(GUTTER_U - 1e-6, 0.4, 0.2, 0.2), Side::Right));
+    }
+
+    /// The graded helper and the boolean one must describe the SAME strip. Two
+    /// definitions of the gutter that drift apart would let the scorer penalise
+    /// a rect pre-flight considers clear, on both sides of the fold.
+    #[test]
+    fn geometry_gutter_overlap_agrees_with_clear_of_gutter() {
+        for side in [Side::Left, Side::Right] {
+            // A tall, NARROW rect swept across the page: square or full-width
+            // fixtures make the two agree trivially.
+            for step in 0..200 {
+                let x = step as f64 / 200.0;
+                let rect = Rect::new(x, 0.25, 0.004, 0.5);
+                let clear = clear_of_gutter(&rect, side);
+                let overlap = gutter_overlap_area(&rect, side);
+                assert_eq!(
+                    clear,
+                    overlap <= 1e-9,
+                    "{side:?} disagreed at x={x}: clear={clear}, overlap={overlap}"
+                );
+            }
+        }
     }
 
     #[test]

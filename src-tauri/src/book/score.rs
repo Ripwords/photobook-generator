@@ -6,7 +6,9 @@
 
 use crate::book::crop::choose_crop;
 use crate::book::cull::Photo;
-use crate::geometry::{clear_of_gutter, in_safe_margin, Rect, Side, PAGE_H_IN, PAGE_W_IN};
+use crate::geometry::{
+    clear_of_gutter, gutter_overlap_area, in_safe_margin, Rect, Side, PAGE_H_IN, PAGE_W_IN,
+};
 use crate::templates::{Role, Slot, SpreadTemplate, Weights};
 
 /// Pixajoy's published minimum: below this, print is visibly soft and no
@@ -163,6 +165,40 @@ fn face_quality(photo: &Photo) -> f64 {
     photo.capture_quality.map_or(0.5, |q| q.clamp(0.0, 1.0))
 }
 
+/// Penalty for generic salient content falling in the gutter dead band, in
+/// [0,1] where 1.0 is "none of it is in the crease".
+///
+/// The spec's split, and the reason this is not a rejection: a FACE in the
+/// dead strip is a hard rejection, but generic salient content there is
+/// only a penalty -- otherwise no slot could ever run flush to the fold and
+/// half the library would be unusable.
+///
+/// Only the part of the saliency box that SURVIVES the crop is measured.
+/// Unlike a face, a saliency box is never a hard constraint, so it can be
+/// legitimately partial, and judging the whole declared box would penalise
+/// a crop that already removed the offending part. Pre-flight's own
+/// gutter-saliency WARN makes the same choice.
+///
+/// Neutral at 1.0 with no saliency box: absence of a signal is not evidence
+/// of a bad placement.
+fn gutter_saliency(photo: &Photo, crop: &Rect, slot: &Slot, side: Side) -> f64 {
+    let Some(visible) = photo.saliency_box.and_then(|s| s.intersect(crop)) else {
+        return 1.0;
+    };
+    let Some(mapped) = face_in_page(&visible, crop, slot) else {
+        return 1.0;
+    };
+    let area = mapped.area();
+    if area <= 0.0 {
+        return 1.0;
+    }
+    // Graded, not binary: half a saliency box in the crease is half as bad
+    // as all of it. `clear_of_gutter` answers yes/no, which is the right
+    // shape for a rejection and the wrong one for a penalty.
+    let in_band = gutter_overlap_area(&mapped, side);
+    (1.0 - (in_band / area)).clamp(0.0, 1.0)
+}
+
 /// Rewards the highest-aesthetic photo landing in a `hero` slot.
 fn hero_match(photo: &Photo, slot: &Slot, best_aesthetic: u8) -> f64 {
     match slot.role {
@@ -257,7 +293,8 @@ pub fn score_spread(
             + w.face_area_retention * face_area_retention(photo, &crop)
             + w.face_quality * face_quality(photo)
             + w.hero_match * hero_match(photo, slot, best_aesthetic)
-            + w.resolution_headroom * resolution_headroom(photo, &crop, slot);
+            + w.resolution_headroom * resolution_headroom(photo, &crop, slot)
+            + w.gutter_saliency * gutter_saliency(photo, &crop, slot, *side);
     }
 
     // Spread-global terms, added once rather than per slot.
@@ -803,6 +840,126 @@ mod tests {
             score_spread(&t, &[&good], &[0], None, &inert),
             "the term must be inert at its shipped weight of 0.0"
         );
+    }
+
+    /// Generic salient content in the gutter is a PENALTY, never a rejection --
+    /// otherwise no slot could ever run flush to the fold. A saliency box
+    /// straddling the dead band must score below one clear of it, and both must
+    /// still produce a score at all.
+    ///
+    /// The box coordinates (1/16, 3/16, 13/16 ...) are deliberately exact
+    /// binary fractions, not the rounder 0.05/0.75 an author would reach for
+    /// first. `Rect::intersect` recomputes width as `right() - x`, and with
+    /// an inexact x (0.05 or 0.75 are not exact in f64) that recomputation
+    /// can land 1 ULP away from the original width depending on x's
+    /// magnitude -- verified by instrumenting `saliency_retention` on the
+    /// 0.05/0.75 fixture, which produced 1.0 exactly for one candidate and
+    /// 0.9999999999999998 for the other. That 1-ULP drift is invisible here
+    /// (this test only asserts `<`) but is exactly what breaks the
+    /// companion `assert_eq!` in the weighted test below, and it has
+    /// nothing to do with `gutter_saliency` -- it is a pre-existing property
+    /// of `saliency_retention` (weight 0.8, non-zero by default) that this
+    /// fixture must not accidentally exercise.
+    #[test]
+    fn score_gutter_saliency_penalises_without_rejecting() {
+        let slot = full_left_page_slot();
+        let mut clear = photo(4000, 3000);
+        // Well away from the fold, in the photo's own normalised coordinates.
+        clear.saliency_box = Some(Rect::new(0.0625, 0.30, 0.1875, 0.30));
+
+        let mut in_gutter = photo(4000, 3000);
+        // Flush to the photo's own right edge, which maps into the dead band.
+        in_gutter.saliency_box = Some(Rect::new(0.8125, 0.30, 0.1875, 0.30));
+
+        let crop_clear = choose_crop(&clear, slot_aspect(&slot));
+        let crop_gutter = choose_crop(&in_gutter, slot_aspect(&slot));
+
+        // Prove the mapped rects land where the term needs them to: one
+        // clearing the dead band entirely, one genuinely straddling it. See
+        // the report for these numbers.
+        let mapped_clear = face_in_page(
+            &clear.saliency_box.unwrap().intersect(&crop_clear).unwrap(),
+            &crop_clear,
+            &slot,
+        )
+        .unwrap();
+        let mapped_gutter = face_in_page(
+            &in_gutter.saliency_box.unwrap().intersect(&crop_gutter).unwrap(),
+            &crop_gutter,
+            &slot,
+        )
+        .unwrap();
+        let band_start = 1.0 - crate::geometry::GUTTER_U;
+        eprintln!(
+            "mapped_clear = {mapped_clear:?} (right={}), mapped_gutter = {mapped_gutter:?} (right={}), band_start={band_start}",
+            mapped_clear.right(),
+            mapped_gutter.right()
+        );
+        assert!(
+            mapped_clear.right() < band_start,
+            "clear fixture must not reach the dead band: right={}, band_start={band_start}",
+            mapped_clear.right()
+        );
+        assert!(
+            mapped_gutter.x < band_start && mapped_gutter.right() > band_start,
+            "gutter fixture must straddle the dead band: x={}, right={}, band_start={band_start}",
+            mapped_gutter.x,
+            mapped_gutter.right()
+        );
+
+        let g_clear = gutter_saliency(&clear, &crop_clear, &slot, Side::Left);
+        let g_gutter = gutter_saliency(&in_gutter, &crop_gutter, &slot, Side::Left);
+
+        assert!(
+            g_gutter < g_clear,
+            "saliency in the gutter must score lower: {g_gutter} vs {g_clear}"
+        );
+        assert!((0.0..=1.0).contains(&g_gutter) && (0.0..=1.0).contains(&g_clear));
+
+        // And it must remain a penalty, not a rejection.
+        assert!(
+            rejects(&in_gutter, &crop_gutter, &slot, Side::Left).is_none(),
+            "generic saliency in the gutter must not reject the candidate"
+        );
+    }
+
+    /// A photo with no saliency box scores neutrally: absence of a signal is
+    /// not evidence of a bad placement, the same rule saliency_retention uses.
+    #[test]
+    fn score_gutter_saliency_is_neutral_without_a_saliency_box() {
+        let slot = full_left_page_slot();
+        let mut p = photo(4000, 3000);
+        p.saliency_box = None;
+        let crop = choose_crop(&p, slot_aspect(&slot));
+        assert_eq!(gutter_saliency(&p, &crop, &slot, Side::Left), 1.0);
+    }
+
+    /// The term must reach the total; shipped weight is 0.0.
+    ///
+    /// Same exact-binary-fraction box coordinates as
+    /// `score_gutter_saliency_penalises_without_rejecting`, for the same
+    /// reason: with the inert weight, EVERY other term must be bit-identical
+    /// between the two candidates so the `assert_eq!` below isolates
+    /// `gutter_saliency` (weight 0.0, contributes exactly 0.0 regardless of
+    /// its own value) rather than tripping on 1-ULP noise from
+    /// `saliency_retention` (weight 0.8) recomputing width via subtraction.
+    #[test]
+    fn score_gutter_saliency_changes_the_spread_total_when_weighted() {
+        let t = one_slot_template();
+        let mut clear = photo(4000, 3000);
+        clear.saliency_box = Some(Rect::new(0.0625, 0.30, 0.1875, 0.30));
+        let mut in_gutter = photo(4000, 3000);
+        in_gutter.saliency_box = Some(Rect::new(0.8125, 0.30, 0.1875, 0.30));
+
+        let w = Weights { gutter_saliency: 1.0, ..Weights::default() };
+        let a = score_spread(&t, &[&clear], &[0], None, &w).expect("scores");
+        let b = score_spread(&t, &[&in_gutter], &[0], None, &w).expect("scores");
+        assert!(a > b, "gutter_saliency never reached the total: {a} vs {b}");
+
+        let inert = Weights::default();
+        let ia = score_spread(&t, &[&clear], &[0], None, &inert).expect("scores");
+        let ib = score_spread(&t, &[&in_gutter], &[0], None, &inert).expect("scores");
+        assert_eq!(ia, ib, "the term must be inert at its shipped weight of 0.0");
     }
 
     #[test]

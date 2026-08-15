@@ -250,6 +250,7 @@ tunable without a rebuild.
 | Resolution headroom | Effective DPI at slot size, above the 200 floor (§4.2), saturating at 300 |
 | Palette harmony | Oklab hue spread across the spread's photos — deferred out of Phase 1 |
 | Variety | Penalise reusing or mirroring the previous spread's template |
+| Gutter saliency | Fraction of the surviving saliency box falling in the gutter dead band (§4.2's penalty half) |
 
 **Text room is removed** — Phase 2 renders no text (§5.4).
 
