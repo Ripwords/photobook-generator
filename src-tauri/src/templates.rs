@@ -451,4 +451,40 @@ mod tests {
         );
         assert!(margin > 0, "the library must still offer matted pages");
     }
+
+    /// A spread template with all of its slots on one page half prints the
+    /// other half white, every single time it is chosen. For the eight
+    /// 1-photo templates that is structural -- one photo cannot fill two
+    /// halves -- and `pack` handles them by never cutting a 1-photo group for
+    /// a spread slot. For every LARGER template it is an authoring mistake,
+    /// and there is nothing downstream that can rescue it.
+    ///
+    /// This is a structural, whole-library check rather than an assembly-level
+    /// one on purpose. `pace_no_printed_page_names_a_real_template_and_holds_nothing_in_the_real_library`
+    /// only sees templates the packer actually picks, and it picks 17 of 36:
+    /// reverting `20-four-up-windowpane` to its all-on-the-left form leaves
+    /// that test green, because `48-four-up-hero-plus-three-margin` outscores
+    /// it at every size-4 group in the fixture. A guard that depends on a
+    /// scorer's preferences is not a guard on the library.
+    #[test]
+    fn templates_real_library_multi_photo_spreads_use_both_page_halves() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../templates");
+        let lib = Library::load(&dir).expect("the real library must decompose");
+
+        for t in &lib.spreads {
+            if t.photo_count() <= 1 {
+                continue;
+            }
+            assert!(
+                !t.left.slots.is_empty() && !t.right.slots.is_empty(),
+                "`{}` holds {} photos but puts {} slot(s) on the left half and {} on the \
+                 right: the empty half prints white on every book that chooses it, and \
+                 unlike a 1-photo template it has enough photos not to have to",
+                t.id,
+                t.photo_count(),
+                t.left.slots.len(),
+                t.right.slots.len()
+            );
+        }
+    }
 }

@@ -679,6 +679,56 @@ mod tests {
         "density": "sparse", "energy": "lively"
     }"#;
 
+    /// Two templates whose declared `density` is a one-to-one function of
+    /// their slot count -- 2 -> Sparse, 3 -> Medium -- so that "the assembled
+    /// book shows two densities" is provably the same claim as "the packer
+    /// built two different group sizes". Both fill both page halves, so no
+    /// choice between them can print white.
+    ///
+    /// The buckets are not invented: the real library declares `Sparse` at
+    /// size 2 (`42-two-up-fold-flush-bleed`,
+    /// `43-two-up-bleed-left-inset-right`) and `Medium` at size 3 (all six).
+    ///
+    /// Buildable spread sizes are `{2, 3}` -- deliberately the SAME set as
+    /// `frozen_library()`, which holds a 1-photo template that `pack` may no
+    /// longer cut a spread group for, plus 2-photo and 3-photo ones. The only
+    /// difference from the frozen library is the density LABEL on the 2-up,
+    /// which is the whole point: on both libraries `assemble` produces spreads
+    /// of `[2,2,2,2,2,2,3,3,3]`, so the packer was never converging. The
+    /// frozen library simply labels sizes 2 and 3 both `Medium` and cannot
+    /// express the variety the packer already has.
+    ///
+    /// A third, `Dense` size-4 template was tried and left out on evidence,
+    /// not to buy a green test. Adding one makes `union_bounds().1` 4 instead
+    /// of 3, and measured on the same 30 photos and seed that changes the
+    /// assembled book from 24 placed / 6 dropped / spreads `[2,2,2,2,2,2,3,3,3]`
+    /// to 22 placed / 8 dropped / spreads `[2,2,2,2,2,2,2,2,2]` -- a library
+    /// that can build BIGGER spreads places FEWER photos and converges. That
+    /// is an apportionment question in `pack`, not a template one, and it is
+    /// recorded here rather than hidden behind a fixture chosen to avoid it.
+    const D2_TWO_UP_SPARSE: &str = r#"{
+        "id": "d2-two-up-sparse",
+        "slots": [
+            {"rect":[0.06,0.12,0.36,0.76],"role":"support","bleed":[],"aspect_pref":[1.03,1.36]},
+            {"rect":[0.58,0.12,0.36,0.76],"role":"support","bleed":[],"aspect_pref":[1.03,1.36]}
+        ],
+        "text_zones": [],
+        "min_photos": 2, "max_photos": 2,
+        "density": "sparse", "energy": "calm"
+    }"#;
+
+    const D3_THREE_UP_MEDIUM: &str = r#"{
+        "id": "d3-three-up-medium",
+        "slots": [
+            {"rect":[0.04,0.06,0.42,0.88],"role":"hero","bleed":[],"aspect_pref":[1.03,1.37]},
+            {"rect":[0.56,0.06,0.4,0.42],"role":"support","bleed":[],"aspect_pref":[2.0,2.8]},
+            {"rect":[0.56,0.52,0.4,0.42],"role":"support","bleed":[],"aspect_pref":[2.0,2.8]}
+        ],
+        "text_zones": [],
+        "min_photos": 3, "max_photos": 3,
+        "density": "medium", "energy": "neutral"
+    }"#;
+
     fn library_from(files: &[(&str, &str)]) -> Library {
         let dir = tempfile::tempdir().unwrap();
         for (name, json) in files {
@@ -699,6 +749,13 @@ mod tests {
         ])
     }
 
+    fn density_by_size_library() -> Library {
+        library_from(&[
+            ("d2.json", D2_TWO_UP_SPARSE),
+            ("d3.json", D3_THREE_UP_MEDIUM),
+        ])
+    }
+
     /// The frozen five, copied from the real library. Goldens read THIS, never
     /// `templates/`: Task 13 authors 15-20 more templates and every golden
     /// would churn on that commit.
@@ -706,6 +763,15 @@ mod tests {
         let dir =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/templates");
         Library::load(&dir).expect("the frozen fixture library must decompose")
+    }
+
+    /// The library that actually ships. Goldens must never read this (see
+    /// `frozen_library` above), but a property that is the whole point of a
+    /// change has to be asserted against the real thing or it is only ever
+    /// asserted about a fixture nobody prints.
+    fn real_library() -> Library {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../templates");
+        Library::load(&dir).expect("the real template library must decompose")
     }
 
     // --- fixture photos --------------------------------------------------
@@ -1574,11 +1640,11 @@ mod tests {
     /// assertion is therefore on the CONJUNCTION -- a real id AND no
     /// placements -- which is the only shape that catches it.
     ///
-    /// Scoped to the fixture and frozen libraries, deliberately. The real
-    /// `templates/` library still holds two MULTI-photo templates with an
-    /// empty page half (`20-four-up-windowpane`,
-    /// `45-three-up-mosaic-margin-left`), so a real-library version of this
-    /// cannot pass until Task 4 rebalances them; Task 4 adds it.
+    /// Scoped to the fixture and frozen libraries. The real-library version
+    /// lives in `pace_no_printed_page_names_a_real_template_and_holds_nothing_in_the_real_library`
+    /// below: it could not pass until Task 4 rebalanced
+    /// `20-four-up-windowpane` and `45-three-up-mosaic-hero-right`, the two
+    /// MULTI-photo templates whose empty page half was an authoring choice.
     #[test]
     fn pace_no_printed_page_names_a_real_template_and_holds_nothing() {
         for (name, lib) in [("frozen", frozen_library()), ("fixture", fixture_library())] {
@@ -1596,6 +1662,48 @@ mod tests {
                             page.template_id
                         );
                     }
+                }
+            }
+        }
+    }
+
+    /// The same property, against the library that actually ships.
+    ///
+    /// This is the guard for the whole point of Tasks 3 and 4, and until now
+    /// it existed only against fixtures -- which is exactly the shape that
+    /// lets a defect live on in the product while every test stays green. The
+    /// fixture libraries hold no template with an empty page half at all, so
+    /// the fixture-scoped version above cannot fail for that reason no matter
+    /// what `templates/` contains.
+    ///
+    /// Two things have to hold for this to pass, and they are the two changes:
+    /// `pack` must not cut a 1-photo group for a spread slot (Task 3 -- the
+    /// eight 1-photo spread templates leave one page half empty by
+    /// construction, so choosing one prints white), and no MULTI-photo
+    /// template may leave a half empty (Task 4 -- `20-four-up-windowpane` and
+    /// `45-three-up-mosaic-hero-right` did, by authoring choice). Reverting
+    /// either change turns this red.
+    ///
+    /// Not `#[ignore]`d: the real-library tests in `templates.rs` are plain
+    /// `#[test]`s, having been deliberately un-ignored because `bun run
+    /// test:rust` passes no `--ignored` and there is no CI, so an ignored
+    /// guard on the authored library runs nowhere at all.
+    #[test]
+    fn pace_no_printed_page_names_a_real_template_and_holds_nothing_in_the_real_library() {
+        let lib = real_library();
+        for n in [12, 20, 25, 30, 40, 60] {
+            for seed in [1, 7, 1234] {
+                let book =
+                    assemble(&fixture_photos(n), 20, &lib, &Weights::default(), seed, &Overrides::new())
+                        .expect("the real library must place every included photo");
+                for (i, page) in book.pages.iter().enumerate() {
+                    assert!(
+                        page.template_id == BLANK_TEMPLATE_ID || !page.placements.is_empty(),
+                        "real lib, {n} photos, seed {seed}: page {} names `{}` and holds \
+                         nothing -- it prints white",
+                        i + 1,
+                        page.template_id
+                    );
                 }
             }
         }
@@ -1633,42 +1741,105 @@ mod tests {
         );
     }
 
-    /// Density is a strict function of slot count across this library
-    /// (1 -> sparse, 2..4 -> medium, 6 -> dense). If the packer converges every
-    /// group on the same size then every spread has the same density, and
-    /// `repace` cannot vary an axis the packer has already flattened -- however
-    /// well `repace` is written. So the variation has to exist in the assembled
-    /// book, not merely in `pack`'s own unit tests.
-    ///
-    /// Measured on the frozen library, the one copied from the real `templates/`
-    /// directory, because that is the library whose density buckets the rule
-    /// above describes.
+    /// If the packer converges every group on the same size then every spread
+    /// has the same density, and `repace` cannot vary an axis the packer has
+    /// already flattened -- however well `repace` is written. So the variation
+    /// has to exist in the assembled book, not merely in `pack`'s own unit
+    /// tests.
     ///
     /// Asserted on the `density` the library itself declares for each spread's
     /// chosen template, NOT on the raw photo counts. Counts are the wrong
-    /// measure: 2, 3 and 4 are all `medium` here, so a book of 2s and 3s has
-    /// two distinct counts and exactly one density, and a count-based assertion
-    /// passes while the axis is still flat. Measured: aiming every slot at the
-    /// bare share gives this fixture spreads of `[2,2,2,2,2,3,3,2,2]` -- two
-    /// counts, one density -- which is precisely the failure this test exists
-    /// to catch.
+    /// measure: in the real library 2, 3 and 4 are all reachable as `Medium`,
+    /// so a book of 2s and 3s can have two distinct counts and exactly one
+    /// density, and a count-based assertion passes while the axis is still
+    /// flat.
+    ///
+    /// **Measured on a library built for this test, where density is a
+    /// one-to-one function of slot count (2 -> Sparse, 3 -> Medium).** That
+    /// bijection is asserted below rather than assumed,
+    /// because the whole test rests on it: it is what makes "two densities
+    /// appeared" equivalent to "two group sizes appeared", so the assertion
+    /// cannot be satisfied by a book that converged on one size and merely
+    /// picked two differently-labelled templates at it.
+    ///
+    /// It used to run on `frozen_library()`, and Task 3 had to `#[ignore]` it
+    /// there. That library holds five templates -- one 1-photo `Sparse` and
+    /// four `Medium` at sizes 2 and 3 -- so once `pack` stopped cutting
+    /// 1-photo groups for spread slots, every buildable spread was `Medium`
+    /// and the axis was flat by construction. Rebalancing `20-four-up-windowpane`
+    /// and `45-three-up-mosaic-hero-right` could not fix that: both are
+    /// `Medium`, and neither is in the frozen library, which is a fixture
+    /// directory and not `templates/`. Measured on the alternative: copying a
+    /// real `Sparse` 2-up (`43-two-up-bleed-left-inset-right`) into the frozen
+    /// fixtures does make this pass, but it re-baselines
+    /// `pace_golden_twenty_page_book`, and it would let the assertion be met
+    /// by two size-2 spreads with different labels -- weaker than what is
+    /// asserted here. The packer was never the problem: on the frozen library
+    /// it already produced spreads of both size 2 and size 3.
     ///
     /// Filling every slot is the harder constraint and is asserted first, so
     /// this can never be satisfied by buying variety with a blank spread.
-    /// **IGNORED until Task 4.** Banning size 1 from the spread region (a
-    /// 1-photo spread template prints a blank half) removed `Sparse` from
-    /// every spread this library can build, and 2, 3 and 4 are all `Medium`
-    /// here -- so the declared-density axis is genuinely flat and no fixture
-    /// of this shape can make it vary. Deliberately NOT re-baselined onto
-    /// photo counts: [2,2,3] has three counts and one density, so a
-    /// count-based assertion would pass while the axis this test exists to
-    /// protect is still flat. Task 4 rebalances two templates to restore
-    /// density variety at sizes 3 and 4; un-ignore it there.
+    ///
+    /// **Mutation-checked.** Deleting the deliberate density swing in `pack`
+    /// (`swing = 0`) turns this red with `densities {"Sparse"} from photo
+    /// counts [2,2,2,2,2,2,2,2,2]`. It only does so because of the fixture
+    /// below: on `fixture_photos(30)` the same mutation left the test GREEN,
+    /// because 25 keepers in odd-sized chapters make a size-3 group
+    /// arithmetically unavoidable, so the assertion held whatever the packer
+    /// preferred. An assertion that cannot fail for the reason it names is
+    /// worse than none, so the fixture was rebuilt until the mutation bit.
     #[test]
-    #[ignore = "no density variety is buildable until Task 4 rebalances the templates"]
     fn pace_spread_density_varies_across_a_book_rather_than_converging() {
-        let lib = frozen_library();
-        let book = assemble(&fixture_photos(30), 20, &lib, &Weights::default(), 1234, &Overrides::new()).expect("the fixture must place every included photo");
+        let lib = density_by_size_library();
+
+        let mut density_of_size: BTreeMap<usize, String> = BTreeMap::new();
+        for t in &lib.spreads {
+            let d = format!("{:?}", t.density);
+            if let Some(prev) = density_of_size.insert(t.photo_count(), d.clone()) {
+                assert_eq!(
+                    prev, d,
+                    "two size-{} templates declare different densities, so this library \
+                     can no longer prove size variety from density variety",
+                    t.photo_count()
+                );
+            }
+        }
+        let labels: BTreeSet<&String> = density_of_size.values().collect();
+        assert_eq!(
+            labels.len(),
+            density_of_size.len(),
+            "density must be one-to-one with slot count for this test to mean anything: \
+             {density_of_size:?}"
+        );
+
+        // 22 keepers over 11 slots, in chapters of 8, 8 and 6 -- every one of
+        // them EVEN. A book of nothing but 2s is therefore exactly buildable
+        // and strands nobody, so the `strands` guard inside `choose_group_size`
+        // has no reason to force a 3. That is the whole point of the fixture:
+        // with `fixture_photos(30)` the keeper count is 25 and odd chapters
+        // make a size-3 group arithmetically unavoidable, so this assertion
+        // held no matter what the packer preferred -- measured, by deleting
+        // the density swing in `pack` and by forcing `choose_group_size` to
+        // take the smallest feasible size every time. Both left the test
+        // green. On this fixture, deleting the swing turns it red.
+        let mut photos = fixture_photos(26);
+        let mut keeper = 0usize;
+        for p in photos.iter_mut() {
+            p.event_cluster = if p.is_utility {
+                1
+            } else {
+                let c = match keeper {
+                    0..=7 => 1,
+                    8..=15 => 2,
+                    _ => 3,
+                };
+                keeper += 1;
+                c
+            };
+        }
+        assert_eq!(keeper, 22, "fixture: 26 photos less the utility ones");
+
+        let book = assemble(&photos, 20, &lib, &Weights::default(), 1234, &Overrides::new()).expect("the fixture must place every included photo");
         let spreads = (book.pages.len() - 2) / 2;
         let per_spread: Vec<usize> = (0..spreads)
             .map(|s| book.pages[1 + 2 * s].placements.len() + book.pages[2 + 2 * s].placements.len())
