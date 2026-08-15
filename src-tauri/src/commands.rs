@@ -271,7 +271,13 @@ pub(crate) fn finalize_photos(mut ok: Vec<serde_json::Value>) -> Vec<serde_json:
         }
     }
 
-    stamp_kept(&mut ok);
+    let refused = stamp_kept(&mut ok);
+    if refused > 0 {
+        log::warn!(
+            "{refused} analysed photo(s) were unparseable and are marked not-kept; \
+             the book will not contain them"
+        );
+    }
     ok
 }
 
@@ -303,9 +309,16 @@ pub(crate) fn finalize_photos(mut ok: Vec<serde_json::Value>) -> Vec<serde_json:
 /// A record `from_features` cannot parse (a missing `path`, `hash`, `width`
 /// or `height`) is stamped `kept: false`, which is honest: the book builder
 /// would skip that photo for the same reason.
-pub(crate) fn stamp_kept(ok: &mut [serde_json::Value]) {
+///
+/// Returns how many records `from_features` REFUSED. A refusal is not a
+/// benign skip: the photo comes back `kept: false`, which is
+/// indistinguishable from the engine having culled it, so the count has to
+/// reach someone who can report it.
+pub(crate) fn stamp_kept(ok: &mut [serde_json::Value]) -> usize {
     let parsed: Vec<crate::book::cull::Photo> =
         ok.iter().filter_map(crate::book::cull::from_features).collect();
+    let refused = ok.len() - parsed.len();
+
     // No overrides: this runs while the analysis is still finishing, before
     // the contact sheet exists, so there is nothing the user can have decided
     // yet. Their decisions are applied afterwards by `kept_paths`, through
@@ -317,6 +330,7 @@ pub(crate) fn stamp_kept(ok: &mut [serde_json::Value]) {
         let survives = features["path"].as_str().is_some_and(|p| kept.contains(p));
         features["kept"] = survives.into();
     }
+    refused
 }
 
 /// Minimum wall-clock time `analyze_folder` must take before its completion
@@ -349,14 +363,19 @@ pub(crate) fn should_notify(elapsed: Duration, window_focused: bool) -> bool {
 /// -- this one and TypeScript's `keepers()` -- and nothing kept them in
 /// agreement. The notification is now guaranteed to report the same number
 /// the book is built from.
-pub(crate) fn count_keepers(photos: &[serde_json::Value]) -> usize {
+///
+/// Returns `(keepers, refused)`. See `stamp_kept` on why the refusal count
+/// is returned rather than swallowed: an undercounted notification is
+/// indistinguishable from a folder with fewer good photos in it.
+pub(crate) fn count_keepers(photos: &[serde_json::Value]) -> (usize, usize) {
     let parsed: Vec<crate::book::cull::Photo> =
         photos.iter().filter_map(crate::book::cull::from_features).collect();
+    let refused = photos.len() - parsed.len();
     // No overrides: this counts the ENGINE's verdict for the completion
     // notification, which fires the moment analysis finishes -- before the
     // contact sheet has been shown, so before the user can have made a
     // decision about anything on it.
-    crate::book::cull::cull(&parsed, &Overrides::new()).len()
+    (crate::book::cull::cull(&parsed, &Overrides::new()).len(), refused)
 }
 
 /// Result of consulting the cache for a batch of candidate paths.
@@ -653,11 +672,14 @@ pub async fn analyze_folder(
         .unwrap_or(true); // Can't determine focus -> assume focused, so we err toward silence rather than a spurious notification.
 
     if should_notify(started.elapsed(), window_focused) {
-        let body = format!(
-            "{} photos analysed, {} keepers",
-            ok.len(),
-            count_keepers(&ok)
-        );
+        let (keepers, refused) = count_keepers(&ok);
+        if refused > 0 {
+            log::warn!(
+                "{refused} analysed photo(s) were unparseable and are excluded from the \
+                 keeper count in this notification"
+            );
+        }
+        let body = format!("{} photos analysed, {} keepers", ok.len(), keepers);
         if let Err(err) = app
             .notification()
             .builder()
@@ -2556,7 +2578,9 @@ mod tests {
         ]);
         let stamped = finalized.iter().filter(|f| f["kept"] == true).count();
 
-        assert_eq!(stamped, count_keepers(&finalized));
+        let (keepers, refused) = count_keepers(&finalized);
+        assert_eq!(refused, 0, "fixture: every record here is parseable");
+        assert_eq!(stamped, keepers);
         // A fixture where nothing is culled would make the equality above
         // hold trivially (every photo kept, on both sides).
         assert!(
@@ -2578,6 +2602,59 @@ mod tests {
             finalized[0]["kept"], false,
             "an unparseable record is not kept, and says so explicitly"
         );
+    }
+
+    /// A genuinely complete, `from_features`-parseable record, keyed by
+    /// caller-supplied `path`/`hash` so two calls in one test don't collide.
+    /// Carries every field `book::cull::from_features` requires --
+    /// `path`/`hash`/`width`/`height`, `isUtility`, both percentiles, both
+    /// cluster ids, and the `faces`/`faceAreaFraction`/`palette` keys --
+    /// plus `sceneTags`, which real records always carry even though
+    /// `from_features` never reads it. Distinct from `kept_candidate` above,
+    /// which is shaped for culling-outcome tests (utility/cluster/tie-break
+    /// knobs) rather than for pinning down "this record parses".
+    fn full_feature_record(path: &str, hash: &str) -> serde_json::Value {
+        serde_json::json!({
+            "path": path,
+            "hash": hash,
+            "width": 4032,
+            "height": 3024,
+            "isUtility": false,
+            "aestheticPct": 50,
+            "sharpnessPct": 50,
+            "nearDupCluster": 0,
+            "eventCluster": 0,
+            "faces": [],
+            "faceAreaFraction": 0.0,
+            "palette": [],
+            "sceneTags": [],
+        })
+    }
+
+    /// A record `from_features` refuses is currently skipped in silence here:
+    /// the photo comes back `kept: false` with nothing reported anywhere. That
+    /// is the invisible failure the strictness was added to prevent, so the
+    /// count of refusals must reach the caller.
+    #[test]
+    fn stamp_kept_reports_how_many_records_it_could_not_parse() {
+        let mut records = vec![
+            // A complete, parseable record.
+            full_feature_record("/a.jpg", "ha"),
+            // Missing `faces` entirely -- a missing KEY, not an empty array,
+            // which `from_features` refuses because every gutter and
+            // safe-margin rejection would otherwise go inert.
+            serde_json::json!({
+                "path": "/b.jpg", "hash": "hb", "width": 4000, "height": 3000,
+                "isUtility": false, "aestheticPct": 50, "sharpnessPct": 50,
+                "nearDupCluster": 1, "eventCluster": 0,
+                "faceAreaFraction": 0.0, "palette": []
+            }),
+        ];
+
+        let refused = stamp_kept(&mut records);
+
+        assert_eq!(refused, 1, "one record was unparseable and must be reported");
+        assert_eq!(records[1]["kept"], serde_json::json!(false));
     }
 
     // --- `partial_photo`: projects a full features record down to the
@@ -2863,11 +2940,12 @@ mod tests {
     /// `isUtility`, both percentiles, both cluster ids, and the `faces`,
     /// `faceAreaFraction` and `palette` keys (every real record from
     /// `finalize_photos` has them; only a hand-built test fixture could omit
-    /// one). A record missing any of them is silently dropped by
-    /// `from_features`'s `filter_map`, so an incomplete fixture would count
-    /// zero keepers regardless of the values below. A counter keeps
-    /// `path`/`hash` unique per call so distinct photos in one test
-    /// don't collide.
+    /// one). A record missing any of them is dropped by `count_keepers`'s own
+    /// `filter_map` over `from_features` -- no longer silently, since
+    /// `count_keepers` now returns the refusal count alongside the keeper
+    /// count -- but an incomplete fixture would still under-count keepers
+    /// regardless of the values below. A counter keeps `path`/`hash` unique
+    /// per call so distinct photos in one test don't collide.
     /// Percentiles are passed as INTEGERS, not floats. `from_features` reads
     /// `sharpnessPct`/`aestheticPct` with `as_u64()`, and `serde_json` stores
     /// a float literal as an F64 variant whose `as_u64()` is `None` -- so a
@@ -2905,13 +2983,13 @@ mod tests {
 
     #[test]
     fn empty_input_has_no_keepers() {
-        assert_eq!(count_keepers(&[]), 0);
+        assert_eq!(count_keepers(&[]), (0, 0));
     }
 
     #[test]
     fn utility_photos_are_never_keepers() {
         let photos = vec![kept_candidate(true, 0, 100, 100)];
-        assert_eq!(count_keepers(&photos), 0);
+        assert_eq!(count_keepers(&photos), (0, 0));
     }
 
     #[test]
@@ -2921,7 +2999,7 @@ mod tests {
             kept_candidate(false, 0, 20, 0), // sharper, same cluster -> wins
             kept_candidate(false, 1, 5, 0),  // different cluster -> also kept
         ];
-        assert_eq!(count_keepers(&photos), 2);
+        assert_eq!(count_keepers(&photos), (2, 0));
     }
 
     #[test]
@@ -2933,7 +3011,28 @@ mod tests {
         // Still one keeper per cluster regardless of which one wins; the
         // count itself doesn't reveal the tie-break, but this at least
         // pins that a tie doesn't produce two keepers.
-        assert_eq!(count_keepers(&photos), 1);
+        assert_eq!(count_keepers(&photos), (1, 0));
+    }
+
+    /// A record `count_keepers` cannot parse must not vanish uncounted: the
+    /// completion notification would otherwise undercount with no trace of
+    /// why. `full_feature_record` supplies the parseable baseline; this test
+    /// adds one record missing `faces` (a missing KEY, not `[]`, which
+    /// `from_features` refuses).
+    #[test]
+    fn count_keepers_reports_how_many_records_it_could_not_parse() {
+        let mut photos = vec![full_feature_record("/a.jpg", "ha")];
+        photos.push(serde_json::json!({
+            "path": "/b.jpg", "hash": "hb", "width": 4000, "height": 3000,
+            "isUtility": false, "aestheticPct": 50, "sharpnessPct": 50,
+            "nearDupCluster": 1, "eventCluster": 0,
+            "faceAreaFraction": 0.0, "palette": []
+        }));
+
+        let (keepers, refused) = count_keepers(&photos);
+
+        assert_eq!(refused, 1, "one record was unparseable and must be reported");
+        assert_eq!(keepers, 1, "the parseable record is still counted");
     }
 
     // ================================================================
