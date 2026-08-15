@@ -250,13 +250,23 @@ pub fn score_spread(
 /// Enumerates every eligible template and every assignment, returning the
 /// best. Brute force: at most 6! = 720 assignments over box arithmetic with
 /// no pixels touched.
+///
+/// Exact ties are broken by the SEED, the same way `pace::best_single` does
+/// it. Breaking them on template id instead was deterministic but seed-blind,
+/// which left "regenerate this spread advances the seed" unimplementable for
+/// every middle spread: advancing the seed changed nothing.
+///
+/// Exact equality is the definition of the tie the seed exists to break;
+/// anything looser would let the seed override a real preference.
 pub fn best_spread<'a>(
     templates: &[&'a SpreadTemplate],
     photos: &[&Photo],
     previous: Option<&str>,
     w: &Weights,
+    seed: u64,
 ) -> Option<(&'a SpreadTemplate, Vec<usize>, f64)> {
-    let mut best: Option<(&SpreadTemplate, Vec<usize>, f64)> = None;
+    let mut best = f64::NEG_INFINITY;
+    let mut tied: Vec<(&SpreadTemplate, Vec<usize>)> = Vec::new();
 
     for t in templates {
         if t.photo_count() != photos.len() {
@@ -266,18 +276,26 @@ pub fn best_spread<'a>(
             let Some(score) = score_spread(t, photos, &assignment, previous, w) else {
                 continue;
             };
-            let better = match &best {
-                None => true,
-                // Ties break on template id so the result is stable across
-                // runs and machines, never on iteration order.
-                Some((bt, _, bs)) => score > *bs || (score == *bs && t.id < bt.id),
-            };
-            if better {
-                best = Some((t, assignment, score));
+            if score > best {
+                best = score;
+                tied.clear();
+                tied.push((t, assignment));
+            } else if score == best {
+                tied.push((t, assignment));
             }
         }
     }
-    best
+
+    if tied.is_empty() {
+        return None;
+    }
+    // Sorted by template id before indexing, so the candidate ORDER is a
+    // total order over the inputs rather than enumeration order -- the seed
+    // picks among candidates, it does not depend on how they were found.
+    tied.sort_by(|(a, ai), (b, bi)| a.id.cmp(&b.id).then(ai.cmp(bi)));
+    let pick = crate::book::pace::tie_break(seed, tied.len());
+    let (template, assignment) = tied.swap_remove(pick);
+    Some((template, assignment, best))
 }
 
 /// All permutations of `0..n`, in lexicographic order so enumeration is
@@ -721,16 +739,25 @@ mod tests {
         let tiny = photo(60, 40);
         let refs: Vec<&SpreadTemplate> = lib.iter().collect();
         let photos = vec![&tiny, &tiny];
-        assert!(best_spread(&refs, &photos, None, &Weights::default()).is_none());
+        assert!(best_spread(&refs, &photos, None, &Weights::default(), 0).is_none());
     }
 
     /// The tie-break has to be REACHED to be tested. Two templates with
     /// identical geometry score identically on the same photos, so only the
-    /// id rule can decide. Asserting BOTH presentation orders is what makes
-    /// this load-bearing: "keep the first" passes one order, "keep the last"
-    /// passes the other, and only a tie-break on the id passes both.
+    /// tie-break rule can decide. Asserting BOTH presentation orders is what
+    /// makes this load-bearing: "keep the first" passes one order, "keep the
+    /// last" passes the other, and only a tie-break independent of
+    /// enumeration order passes both.
+    ///
+    /// The winner is no longer pinned to the lexicographically smallest id --
+    /// `best_spread` now sorts tied candidates by id and hands the SEED the
+    /// choice, the same way `pace::best_single` already does, so that
+    /// "regenerate this spread" has something to advance. What must still
+    /// hold is that presentation order never decides it: the same seed must
+    /// pick the same winner regardless of which order the candidates arrive
+    /// in.
     #[test]
-    fn score_best_spread_breaks_ties_on_template_id_not_iteration_order() {
+    fn score_best_spread_breaks_ties_on_the_seed_not_iteration_order() {
         let mut early = fixture_library().remove(0);
         early.id = "aaa-first".into();
         let mut late = fixture_library().remove(0);
@@ -743,12 +770,12 @@ mod tests {
         let forward: Vec<&SpreadTemplate> = vec![&early, &late];
         let backward: Vec<&SpreadTemplate> = vec![&late, &early];
         let (a, a_assign, a_score) =
-            best_spread(&forward, &photos, None, &Weights::default()).unwrap();
-        let (b, _, b_score) = best_spread(&backward, &photos, None, &Weights::default()).unwrap();
+            best_spread(&forward, &photos, None, &Weights::default(), 7).unwrap();
+        let (b, _, b_score) =
+            best_spread(&backward, &photos, None, &Weights::default(), 7).unwrap();
 
         assert_eq!(a_score, b_score, "the fixture must actually reach a tie");
-        assert_eq!(a.id, "aaa-first");
-        assert_eq!(b.id, "aaa-first", "iteration order must not decide the winner");
+        assert_eq!(a.id, b.id, "iteration order must not decide the winner; the seed does");
         assert_eq!(a_assign, vec![0, 1], "and the winner is still the best assignment");
     }
 

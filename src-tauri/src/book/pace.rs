@@ -69,7 +69,7 @@ pub struct Book {
 /// random source, which is what makes regeneration feel like browsing
 /// alternatives instead of rolling dice -- and what makes golden files
 /// possible at all.
-fn tie_break(seed: u64, n: usize) -> usize {
+pub(crate) fn tie_break(seed: u64, n: usize) -> usize {
     if n == 0 {
         return 0;
     }
@@ -255,10 +255,11 @@ fn spread_pages<'a>(
     lib: &'a Library,
     w: &Weights,
     previous: Option<&str>,
+    seed: u64,
 ) -> Option<(&'a SpreadTemplate, [Page; 2])> {
     let refs: Vec<&Photo> = group.photos.iter().map(|&i| &photos[i]).collect();
     let eligible = lib.spreads_with(group.photos.len());
-    let (template, assignment, _) = best_spread(&eligible, &refs, previous, w)?;
+    let (template, assignment, _) = best_spread(&eligible, &refs, previous, w, seed)?;
     Some((template, rebuild(template, &assignment, &group.photos, photos)))
 }
 
@@ -402,7 +403,7 @@ pub fn assemble(
     // The middle: true spreads, two pages each.
     let mut previous: Option<String> = None;
     for s in 0..spread_count {
-        match middle.get(s).and_then(|g| spread_pages(g, photos, lib, w, previous.as_deref())) {
+        match middle.get(s).and_then(|g| spread_pages(g, photos, lib, w, previous.as_deref(), seed)) {
             Some((template, [left, right])) => {
                 previous = Some(template.id.clone());
                 out.push(left);
@@ -435,7 +436,7 @@ pub fn assemble(
     }
 
     let mut book = Book { pages: out, seed, dropped: 0 };
-    repace(&mut book, lib, photos, w);
+    repace(&mut book, lib, photos, w, seed);
 
     // Counted from what actually survived into the book, after repacing, so
     // no accounting can drift out of step with the pages.
@@ -517,7 +518,7 @@ fn spread_template<'a>(book: &Book, lib: &'a Library, s: usize) -> Option<&'a Sp
 /// would leave a page naming one template while carrying another's rects,
 /// which is unrenderable -- and it would skip the hard constraints, which the
 /// new template's slots have not been checked against.
-pub fn repace(book: &mut Book, lib: &Library, photos: &[Photo], w: &Weights) {
+pub fn repace(book: &mut Book, lib: &Library, photos: &[Photo], w: &Weights, seed: u64) {
     let spread_count = book.pages.len().saturating_sub(2) / 2;
 
     for s in 2..spread_count {
@@ -558,7 +559,8 @@ pub fn repace(book: &mut Book, lib: &Library, photos: &[Photo], w: &Weights) {
 
         let refs: Vec<&Photo> = indices.iter().map(|&i| &photos[i]).collect();
         let previous = a.id.as_str();
-        let Some((template, assignment, _)) = best_spread(&candidates, &refs, Some(previous), w)
+        let Some((template, assignment, _)) =
+            best_spread(&candidates, &refs, Some(previous), w, seed)
         else {
             continue;
         };
@@ -587,6 +589,8 @@ mod tests {
     // `f7`'s right half) exists so that an exact scoring tie is reachable at
     // all -- without it the seed would have nothing to break and every
     // determinism test would pass under an implementation that ignored it.
+    // `f8` is `f3`'s geometric clone for the same reason, one level up: a
+    // tie between two whole SPREAD templates, not just two page halves.
     //
     // Density, energy and edge treatment all vary WITHIN a photo count. In
     // the real library they do not: density is currently a function of photo
@@ -617,6 +621,33 @@ mod tests {
 
     const F3_TWO_UP_BLEED: &str = r#"{
         "id": "f3-two-up-bleed",
+        "slots": [
+            {"rect":[0.0,0.0,0.46,1.0],"role":"hero","bleed":["left","top","bottom"],
+             "aspect_pref":[1.1,1.5]},
+            {"rect":[0.56,0.1,0.38,0.8],"role":"support","bleed":[],"aspect_pref":[1.0,1.4]}
+        ],
+        "text_zones": [],
+        "min_photos": 2, "max_photos": 2,
+        "density": "medium", "energy": "lively"
+    }"#;
+
+    /// A geometric CLONE of `f3-two-up-bleed`: identical slot rects, roles,
+    /// bleed edges and aspect preferences, in the identical left-then-right
+    /// order, so `ordered_slots` produces the same terms in the same order
+    /// for any assignment and the two templates' scores are not merely equal
+    /// but computed by the identical sequence of floating-point operations --
+    /// a genuine bit-exact tie, not one that happens to round the same way.
+    /// Only the id (and, to avoid asserting a degenerate two-template pool
+    /// elsewhere, the density label) differs.
+    ///
+    /// This is the spread-level counterpart of the `f5`/`f7` trick above: the
+    /// fixture library had no exact tie between two SPREAD templates until
+    /// this one was added -- verified by running
+    /// `pace_uses_the_seed_to_break_a_tie_between_middle_spreads` before this
+    /// template existed, which failed with every seed choosing
+    /// `f3-two-up-bleed` outright.
+    const F8_TWO_UP_BLEED_CLONE: &str = r#"{
+        "id": "f8-two-up-bleed-clone",
         "slots": [
             {"rect":[0.0,0.0,0.46,1.0],"role":"hero","bleed":["left","top","bottom"],
              "aspect_pref":[1.1,1.5]},
@@ -746,6 +777,7 @@ mod tests {
             ("f5.json", F5_THREE_UP_HERO_LEFT),
             ("f6.json", F6_THREE_UP_HERO_RIGHT),
             ("f7.json", F7_THREE_UP_HERO_LEFT_ALT),
+            ("f8.json", F8_TWO_UP_BLEED_CLONE),
         ])
     }
 
@@ -1938,7 +1970,7 @@ mod tests {
             "fixture must start out flat: {before:?}"
         );
 
-        repace(&mut book, &fixture_library(), &photos, &w);
+        repace(&mut book, &fixture_library(), &photos, &w, 9);
         let after: Vec<String> = book.pages.iter().map(|p| p.template_id.clone()).collect();
         assert_ne!(before, after, "repace left a fully flat book untouched");
 
@@ -1971,7 +2003,7 @@ mod tests {
         let photos = fixture_photos(24);
         let w = Weights::default();
         let mut book = assemble(&photos, 20, &flat, &w, 9, &Overrides::new()).expect("the fixture must place every included photo");
-        repace(&mut book, &lib, &photos, &w);
+        repace(&mut book, &lib, &photos, &w, 9);
 
         let mut swapped = 0;
         for page in &book.pages {
@@ -2001,7 +2033,7 @@ mod tests {
         let photos = fixture_photos(24);
         let w = Weights::default();
         let mut book = assemble(&photos, 20, &flat, &w, 9, &Overrides::new()).expect("the fixture must place every included photo");
-        repace(&mut book, &fixture_library(), &photos, &w);
+        repace(&mut book, &fixture_library(), &photos, &w, 9);
         for s in 0..(book.pages.len() - 2) / 2 {
             let left = &book.pages[1 + 2 * s];
             let right = &book.pages[2 + 2 * s];
@@ -2010,6 +2042,33 @@ mod tests {
                 "spread {s} straddles two templates"
             );
         }
+    }
+
+    /// `best_spread` broke ties on template id alone, so the seed reached only
+    /// the first and last pages and never a middle spread. "Regenerate this
+    /// spread" is unimplementable until it does.
+    ///
+    /// The assertion is that SOME seed produces a different middle spread --
+    /// not that a particular one does. A test pinning one seed to one template
+    /// id would pass under an implementation that ignores the seed and simply
+    /// happens to agree on that value.
+    #[test]
+    fn pace_uses_the_seed_to_break_a_tie_between_middle_spreads() {
+        let lib = fixture_library();
+        let photos = fixture_photos(30);
+        let chosen: Vec<String> = [1u64, 9, 1234, 77, 5150]
+            .into_iter()
+            .map(|seed| {
+                let book = assemble(&photos, 20, &lib, &Weights::default(), seed, &Overrides::new())
+                    .expect("the fixture must place every included photo");
+                // Page 1 is a single; the first MIDDLE spread is page index 1.
+                book.pages[1].template_id.clone()
+            })
+            .collect();
+        assert!(
+            chosen.iter().collect::<std::collections::BTreeSet<_>>().len() > 1,
+            "the seed never changed a middle spread: {chosen:?}"
+        );
     }
 
     // --- golden -----------------------------------------------------------

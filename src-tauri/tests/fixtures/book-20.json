@@ -45,32 +45,9 @@
       "template_id": "07-two-up-symmetric-margin",
       "placements": [
         {
-          "photo_index": 4,
-          "slot_rect": {
-            "x": 0.08,
-            "y": 0.08,
-            "w": 0.84,
-            "h": 0.84
-          },
-          "crop": {
-            "x": 0.030353796566974012,
-            "y": 0.0,
-            "w": 0.8392924068660519,
-            "h": 1.0
-          },
-          "z": 1
-        }
-      ]
-    },
-    {
-      "number": 3,
-      "side": "right",
-      "template_id": "07-two-up-symmetric-margin",
-      "placements": [
-        {
           "photo_index": 5,
           "slot_rect": {
-            "x": 0.08000000000000007,
+            "x": 0.08,
             "y": 0.08,
             "w": 0.84,
             "h": 0.84
@@ -86,14 +63,60 @@
       ]
     },
     {
+      "number": 3,
+      "side": "right",
+      "template_id": "07-two-up-symmetric-margin",
+      "placements": [
+        {
+          "photo_index": 4,
+          "slot_rect": {
+            "x": 0.08000000000000007,
+            "y": 0.08,
+            "w": 0.84,
+            "h": 0.84
+          },
+          "crop": {
+            "x": 0.030353796566974012,
+            "y": 0.0,
+            "w": 0.8392924068660519,
+            "h": 1.0
+          },
+          "z": 1
+        }
+      ]
+    },
+    {
       "number": 4,
       "side": "left",
       "template_id": "08-two-up-symmetric-bleed-outer",
       "placements": [
         {
-          "photo_index": 6,
+          "photo_index": 8,
           "slot_rect": {
             "x": 0.0,
+            "y": 0.0,
+            "w": 0.982406,
+            "h": 1.0
+          },
+          "crop": {
+            "x": 0.0,
+            "y": 0.09679545404930162,
+            "w": 1.0,
+            "h": 0.6064090919013968
+          },
+          "z": 1
+        }
+      ]
+    },
+    {
+      "number": 5,
+      "side": "right",
+      "template_id": "08-two-up-symmetric-bleed-outer",
+      "placements": [
+        {
+          "photo_index": 6,
+          "slot_rect": {
+            "x": 0.01759400000000011,
             "y": 0.0,
             "w": 0.982406,
             "h": 1.0
@@ -109,60 +132,14 @@
       ]
     },
     {
-      "number": 5,
-      "side": "right",
-      "template_id": "08-two-up-symmetric-bleed-outer",
-      "placements": [
-        {
-          "photo_index": 8,
-          "slot_rect": {
-            "x": 0.01759400000000011,
-            "y": 0.0,
-            "w": 0.982406,
-            "h": 1.0
-          },
-          "crop": {
-            "x": 0.0,
-            "y": 0.09679545404930162,
-            "w": 1.0,
-            "h": 0.6064090919013968
-          },
-          "z": 1
-        }
-      ]
-    },
-    {
       "number": 6,
       "side": "left",
       "template_id": "07-two-up-symmetric-margin",
       "placements": [
         {
-          "photo_index": 9,
-          "slot_rect": {
-            "x": 0.08,
-            "y": 0.08,
-            "w": 0.84,
-            "h": 0.84
-          },
-          "crop": {
-            "x": 0.0,
-            "y": 0.0,
-            "w": 0.9442039577243084,
-            "h": 1.0
-          },
-          "z": 1
-        }
-      ]
-    },
-    {
-      "number": 7,
-      "side": "right",
-      "template_id": "07-two-up-symmetric-margin",
-      "placements": [
-        {
           "photo_index": 10,
           "slot_rect": {
-            "x": 0.08000000000000007,
+            "x": 0.08,
             "y": 0.08,
             "w": 0.84,
             "h": 0.84
@@ -178,37 +155,37 @@
       ]
     },
     {
-      "number": 8,
-      "side": "left",
-      "template_id": "08-two-up-symmetric-bleed-outer",
+      "number": 7,
+      "side": "right",
+      "template_id": "07-two-up-symmetric-margin",
       "placements": [
         {
-          "photo_index": 11,
+          "photo_index": 9,
           "slot_rect": {
-            "x": 0.0,
-            "y": 0.0,
-            "w": 0.982406,
-            "h": 1.0
+            "x": 0.08000000000000007,
+            "y": 0.08,
+            "w": 0.84,
+            "h": 0.84
           },
           "crop": {
             "x": 0.0,
-            "y": 0.09679545404930162,
-            "w": 1.0,
-            "h": 0.6064090919013968
+            "y": 0.0,
+            "w": 0.9442039577243084,
+            "h": 1.0
           },
           "z": 1
         }
       ]
     },
     {
-      "number": 9,
-      "side": "right",
+      "number": 8,
+      "side": "left",
       "template_id": "08-two-up-symmetric-bleed-outer",
       "placements": [
         {
           "photo_index": 12,
           "slot_rect": {
-            "x": 0.01759400000000011,
+            "x": 0.0,
             "y": 0.0,
             "w": 0.982406,
             "h": 1.0
@@ -224,37 +201,37 @@
       ]
     },
     {
-      "number": 10,
-      "side": "left",
-      "template_id": "07-two-up-symmetric-margin",
+      "number": 9,
+      "side": "right",
+      "template_id": "08-two-up-symmetric-bleed-outer",
       "placements": [
         {
-          "photo_index": 13,
+          "photo_index": 11,
           "slot_rect": {
-            "x": 0.08,
-            "y": 0.08,
-            "w": 0.84,
-            "h": 0.84
+            "x": 0.01759400000000011,
+            "y": 0.0,
+            "w": 0.982406,
+            "h": 1.0
           },
           "crop": {
-            "x": 0.05035379656697403,
-            "y": 0.0,
-            "w": 0.8392924068660519,
-            "h": 1.0
+            "x": 0.0,
+            "y": 0.09679545404930162,
+            "w": 1.0,
+            "h": 0.6064090919013968
           },
           "z": 1
         }
       ]
     },
     {
-      "number": 11,
-      "side": "right",
+      "number": 10,
+      "side": "left",
       "template_id": "07-two-up-symmetric-margin",
       "placements": [
         {
           "photo_index": 15,
           "slot_rect": {
-            "x": 0.08000000000000007,
+            "x": 0.08,
             "y": 0.08,
             "w": 0.84,
             "h": 0.84
@@ -270,12 +247,35 @@
       ]
     },
     {
+      "number": 11,
+      "side": "right",
+      "template_id": "07-two-up-symmetric-margin",
+      "placements": [
+        {
+          "photo_index": 13,
+          "slot_rect": {
+            "x": 0.08000000000000007,
+            "y": 0.08,
+            "w": 0.84,
+            "h": 0.84
+          },
+          "crop": {
+            "x": 0.05035379656697403,
+            "y": 0.0,
+            "w": 0.8392924068660519,
+            "h": 1.0
+          },
+          "z": 1
+        }
+      ]
+    },
+    {
       "number": 12,
       "side": "left",
       "template_id": "08-two-up-symmetric-bleed-outer",
       "placements": [
         {
-          "photo_index": 16,
+          "photo_index": 17,
           "slot_rect": {
             "x": 0.0,
             "y": 0.0,
@@ -283,10 +283,10 @@
             "h": 1.0
           },
           "crop": {
-            "x": 0.037737051870174676,
-            "y": 0.0,
-            "w": 0.8245258962596506,
-            "h": 1.0
+            "x": 0.0,
+            "y": 0.09679545404930162,
+            "w": 1.0,
+            "h": 0.6064090919013968
           },
           "z": 1
         }
@@ -298,7 +298,7 @@
       "template_id": "08-two-up-symmetric-bleed-outer",
       "placements": [
         {
-          "photo_index": 17,
+          "photo_index": 16,
           "slot_rect": {
             "x": 0.01759400000000011,
             "y": 0.0,
@@ -306,10 +306,10 @@
             "h": 1.0
           },
           "crop": {
-            "x": 0.0,
-            "y": 0.09679545404930162,
-            "w": 1.0,
-            "h": 0.6064090919013968
+            "x": 0.037737051870174676,
+            "y": 0.0,
+            "w": 0.8245258962596506,
+            "h": 1.0
           },
           "z": 1
         }
@@ -468,7 +468,7 @@
       "template_id": "35-portrait-triptych-hero-left",
       "placements": [
         {
-          "photo_index": 25,
+          "photo_index": 27,
           "slot_rect": {
             "x": 0.15999999999999992,
             "y": 0.05,
@@ -477,14 +477,14 @@
           },
           "crop": {
             "x": 0.0,
-            "y": 0.009045670715370213,
+            "y": 0.04414569045537925,
             "w": 1.0,
-            "h": 0.7819086585692596
+            "h": 0.6950299187282307
           },
           "z": 1
         },
         {
-          "photo_index": 27,
+          "photo_index": 25,
           "slot_rect": {
             "x": 0.15999999999999992,
             "y": 0.51,
@@ -493,9 +493,9 @@
           },
           "crop": {
             "x": 0.0,
-            "y": 0.04414569045537925,
+            "y": 0.009045670715370213,
             "w": 1.0,
-            "h": 0.6950299187282307
+            "h": 0.7819086585692596
           },
           "z": 2
         }
