@@ -249,6 +249,94 @@ fn palette_harmony(photos: &[&Photo]) -> f64 {
     ((sx / n).hypot(sy / n)).clamp(0.0, 1.0)
 }
 
+/// How unlike each other the photos on one spread are, in [0,1].
+///
+/// The complaint this answers: "there are too many images that are similar
+/// in some pages". Near-duplicate clustering is perceptual-hash based, so it
+/// only collapses near-IDENTICAL frames; two photos of the same moment from
+/// slightly different angles are not near-duplicates and both survive.
+///
+/// Three components, each normalised to [0,1] and combined with EQUAL
+/// weight. Equal weighting is a starting point, not a claim -- the three are
+/// not commensurable and no measurement exists to weight them against each
+/// other. Sub-weights are a tuning question; if one component turns out to
+/// dominate, the fix is to measure it, not to guess a ratio.
+///
+/// `phash` would be the most direct signal and is deliberately absent: it is
+/// stripped before the webview because JavaScript loses precision above
+/// 2^53, and re-widening the wire is a larger change than this term
+/// justifies.
+///
+/// Neutral at 0.5 for fewer than two photos: one photo on a spread is not
+/// "undiverse", the question does not apply.
+fn spread_diversity(photos: &[&Photo]) -> f64 {
+    if photos.len() < 2 {
+        return 0.5;
+    }
+    let mut total = 0.0;
+    let mut pairs = 0.0;
+    for i in 0..photos.len() {
+        for j in (i + 1)..photos.len() {
+            total += pair_distance(photos[i], photos[j]);
+            pairs += 1.0;
+        }
+    }
+    if pairs == 0.0 {
+        return 0.5;
+    }
+    (total / pairs).clamp(0.0, 1.0)
+}
+
+/// Mean of the three pairwise distances, each in [0,1].
+fn pair_distance(a: &Photo, b: &Photo) -> f64 {
+    (scene_tag_distance(a, b) + palette_distance(a, b) + capture_gap_distance(a, b)) / 3.0
+}
+
+/// Jaccard distance over scene tags. Two photos with no tags at all are
+/// neither similar nor different on this axis, so they score neutrally
+/// rather than identical -- an empty-vs-empty comparison is an absent
+/// signal, not agreement.
+fn scene_tag_distance(a: &Photo, b: &Photo) -> f64 {
+    use std::collections::BTreeSet;
+    let sa: BTreeSet<&str> = a.scene_tags.iter().map(String::as_str).collect();
+    let sb: BTreeSet<&str> = b.scene_tags.iter().map(String::as_str).collect();
+    if sa.is_empty() && sb.is_empty() {
+        return 0.5;
+    }
+    let union = sa.union(&sb).count() as f64;
+    if union == 0.0 {
+        return 0.5;
+    }
+    1.0 - (sa.intersection(&sb).count() as f64 / union)
+}
+
+/// Euclidean distance between the dominant colours, normalised by the
+/// longest possible distance in the unit RGB cube (sqrt(3)).
+///
+/// Plain sRGB, matching what `Metrics.palette` actually produces -- the
+/// same crude space `palette_harmony` reads, and for the same reason: this
+/// is not a perceptual distance and does not claim to be.
+fn palette_distance(a: &Photo, b: &Photo) -> f64 {
+    let (Some(ca), Some(cb)) = (a.palette.first(), b.palette.first()) else {
+        return 0.5;
+    };
+    let d = ((ca.r - cb.r).powi(2) + (ca.g - cb.g).powi(2) + (ca.b - cb.b).powi(2)).sqrt();
+    (d / 3.0_f64.sqrt()).clamp(0.0, 1.0)
+}
+
+/// Capture-time gap, saturating at one hour: photos minutes apart are the
+/// same moment, photos hours apart are not. Beyond an hour the axis carries
+/// no more information, and event clustering has already separated the
+/// chapters.
+fn capture_gap_distance(a: &Photo, b: &Photo) -> f64 {
+    const SATURATE_SECONDS: f64 = 3600.0;
+    let (Some(ta), Some(tb)) = (a.captured_at, b.captured_at) else {
+        return 0.5;
+    };
+    let gap = (ta - tb).abs() as f64;
+    (gap / SATURATE_SECONDS).clamp(0.0, 1.0)
+}
+
 /// Penalises repeating the immediately preceding template.
 fn variety(template_id: &str, previous: Option<&str>) -> f64 {
     match previous {
@@ -299,6 +387,7 @@ pub fn score_spread(
 
     // Spread-global terms, added once rather than per slot.
     total += w.palette_harmony * palette_harmony(photos);
+    total += w.spread_diversity * spread_diversity(photos);
     total += w.variety * variety(&t.id, previous);
 
     Some(total)
@@ -679,6 +768,80 @@ mod tests {
         let repeat =
             score_spread(t, &photos, &[0, 1], Some(&t.id), &Weights::default()).unwrap();
         assert!(fresh > repeat, "variety must penalise an immediate repeat");
+    }
+
+    /// Three photos that share every signal must score LOWER than three that
+    /// share none. The fixture varies all three components at once, so the
+    /// assertion holds regardless of how they are weighted against each other.
+    #[test]
+    fn score_spread_diversity_separates_a_varied_spread_from_a_samey_one() {
+        let mut same: Vec<Photo> = (0..3).map(|_| photo(4000, 3000)).collect();
+        for p in &mut same {
+            p.scene_tags = vec!["beach".into(), "sunset".into()];
+            p.captured_at = Some(1_700_000_000);
+            p.palette = vec![PaletteColor { r: 0.9, g: 0.4, b: 0.1, weight: 1.0 }];
+        }
+
+        let mut varied: Vec<Photo> = (0..3).map(|_| photo(4000, 3000)).collect();
+        varied[0].scene_tags = vec!["beach".into()];
+        varied[1].scene_tags = vec!["forest".into()];
+        varied[2].scene_tags = vec!["city".into()];
+        varied[0].captured_at = Some(1_700_000_000);
+        varied[1].captured_at = Some(1_700_050_000);
+        varied[2].captured_at = Some(1_700_100_000);
+        varied[0].palette = vec![PaletteColor { r: 0.9, g: 0.1, b: 0.1, weight: 1.0 }];
+        varied[1].palette = vec![PaletteColor { r: 0.1, g: 0.9, b: 0.1, weight: 1.0 }];
+        varied[2].palette = vec![PaletteColor { r: 0.1, g: 0.1, b: 0.9, weight: 1.0 }];
+
+        let same_refs: Vec<&Photo> = same.iter().collect();
+        let varied_refs: Vec<&Photo> = varied.iter().collect();
+
+        let s = spread_diversity(&same_refs);
+        let v = spread_diversity(&varied_refs);
+        assert!(v > s, "a varied spread must outscore a samey one: {v} vs {s}");
+        assert!((0.0..=1.0).contains(&s) && (0.0..=1.0).contains(&v));
+    }
+
+    /// Fewer than two photos, or no signal at all, is neutral rather than zero
+    /// -- a single photo on a spread is not "undiverse", the question simply
+    /// does not apply.
+    #[test]
+    fn score_spread_diversity_is_neutral_without_enough_to_compare() {
+        let one = photo(4000, 3000);
+        assert_eq!(spread_diversity(&[&one]), 0.5);
+        assert_eq!(spread_diversity(&[]), 0.5);
+    }
+
+    /// The term must reach the spread total. Shipped weight is 0.0, so a test
+    /// against the shipped weights would pass with the body deleted.
+    #[test]
+    fn score_spread_diversity_changes_the_spread_total_when_weighted() {
+        let t = two_slot_template();
+        let mut a = photo(4000, 3000);
+        let mut b = photo(4000, 3000);
+        a.scene_tags = vec!["beach".into()];
+        b.scene_tags = vec!["beach".into()];
+        a.captured_at = Some(1_700_000_000);
+        b.captured_at = Some(1_700_000_000);
+
+        let mut c = photo(4000, 3000);
+        let mut d = photo(4000, 3000);
+        c.scene_tags = vec!["beach".into()];
+        d.scene_tags = vec!["city".into()];
+        c.captured_at = Some(1_700_000_000);
+        d.captured_at = Some(1_700_100_000);
+
+        let w = Weights { spread_diversity: 1.0, ..Weights::default() };
+        let samey = score_spread(&t, &[&a, &b], &[0, 1], None, &w).expect("scores");
+        let varied = score_spread(&t, &[&c, &d], &[0, 1], None, &w).expect("scores");
+        assert!(varied > samey, "spread_diversity never reached the total");
+
+        let inert = Weights::default();
+        assert_eq!(
+            score_spread(&t, &[&a, &b], &[0, 1], None, &inert),
+            score_spread(&t, &[&c, &d], &[0, 1], None, &inert),
+            "the term must be inert at its shipped weight of 0.0"
+        );
     }
 
     // --- the four soft terms the brief left with no behavioural test.
@@ -1099,5 +1262,38 @@ mod tests {
             density: Density::Medium,
             energy: Energy::Calm,
         }]
+    }
+
+    /// Two photos, one slot per page half, both non-square and both
+    /// resolving comfortably above the 200 DPI floor for a 4000x3000 photo.
+    /// Used to isolate `spread_diversity`, a spread-global term, from
+    /// per-slot terms without pulling in the asymmetric hero/support shape
+    /// `fixture_library` uses for other purposes.
+    fn two_slot_template() -> SpreadTemplate {
+        SpreadTemplate {
+            id: "fx-two-slot".into(),
+            left: PageLayout {
+                side: Side::Left,
+                edge_treatment: EdgeTreatment::Margin,
+                slots: vec![Slot {
+                    rect: Rect::new(0.1, 0.2, 0.7, 0.35),
+                    role: Role::Hero,
+                    bleed: Vec::<BleedEdge>::new(),
+                    aspect_pref: (2.2, 2.6),
+                }],
+            },
+            right: PageLayout {
+                side: Side::Right,
+                edge_treatment: EdgeTreatment::Margin,
+                slots: vec![Slot {
+                    rect: Rect::new(0.15, 0.15, 0.7, 0.35),
+                    role: Role::Support,
+                    bleed: Vec::<BleedEdge>::new(),
+                    aspect_pref: (2.2, 2.6),
+                }],
+            },
+            density: Density::Medium,
+            energy: Energy::Calm,
+        }
     }
 }
