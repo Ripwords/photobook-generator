@@ -375,6 +375,7 @@ pub fn assemble(
                 .filter_map(|&i| by_path.get(kept[i].path.as_str()).copied())
                 .collect(),
             event_cluster: g.event_cluster,
+            slot: g.slot,
         })
         .collect();
 

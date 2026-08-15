@@ -148,11 +148,46 @@ pub fn recommend_pages(keeper_count: usize, lib: &Library) -> u32 {
     }
 }
 
+/// Which kind of slot a group was cut to fill.
+///
+/// A book is 2 single PAGES facing the inside covers plus (N-2)/2 spreads,
+/// and the two kinds do not hold the same number of photos: a single page is
+/// one page-half, a spread is two. `pack` therefore has to size them
+/// differently, and `pace::assemble` has to place them accordingly -- which
+/// it cannot do from position alone, because when photos run out `pack`
+/// produces fewer groups than there are slots and the last group it cut is
+/// then NOT the closing single.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotKind {
+    /// The first or last page of the book: one page-half.
+    Single,
+    /// Any of the (N-2)/2 spreads between them: two page-halves.
+    Spread,
+}
+
+/// Which kind of slot sits at `index`, in a book of `slots` slots.
+///
+/// Slot 0 and slot `slots - 1` are the two single pages facing the inside
+/// covers; everything between them is a spread. Extracted rather than
+/// written inline because more than one caller needs the answer, and two
+/// copies of the rule deciding which slot is a single is the same
+/// duplicated-authority defect `book::cull` already had to consolidate.
+fn slot_kind_at(index: usize, slots: usize) -> SlotKind {
+    if index == 0 || index + 1 == slots {
+        SlotKind::Single
+    } else {
+        SlotKind::Spread
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Group {
     /// Indices into the photo slice handed to `pack`.
     pub photos: Vec<usize>,
     pub event_cluster: u32,
+    /// The kind of slot this group was SIZED for. Set by `pack`; read by
+    /// `pace::assemble` to decide where it goes.
+    pub slot: SlotKind,
 }
 
 /// Walks chapters in chronological order, cutting each into buildable
@@ -299,9 +334,16 @@ pub fn pack(
             let swing = if groups.len() % 2 == 0 { -1 } else { 1 };
             match choose_group_size(remaining, buildable, slots_left, swing) {
                 Some(take) => {
+                    // `groups.len()` is the GLOBAL slot index -- it counts
+                    // across chapters, not within one -- which is exactly
+                    // what the swing above already relies on. Slot 0 and
+                    // slot `slots - 1` are the two single pages; everything
+                    // between them is a spread.
+                    let kind = slot_kind_at(groups.len(), slots);
                     groups.push(Group {
                         photos: members[i..i + take].to_vec(),
                         event_cluster: cluster,
+                        slot: kind,
                     });
                     i += take;
                     slots_left -= 1;
@@ -1110,6 +1152,27 @@ mod tests {
         let groups = pack(&photos, &c, &sizes(), &Overrides::new()).expect("the fixture must fit the included photos");
         let clusters: Vec<u32> = groups.iter().map(|g| g.event_cluster).collect();
         assert_eq!(clusters, vec![1, 2, 3]);
+    }
+
+    /// The book's first and last slots are single PAGES facing the inside
+    /// covers; everything between them is a spread. `pack` must say which is
+    /// which, because `pace::assemble` cannot correctly re-derive it from
+    /// position once the two kinds hold different numbers of photos.
+    #[test]
+    fn pack_tags_the_first_and_last_group_as_single_pages() {
+        // 30 photos, one chapter, 20 pages -> 2 singles + 9 spreads = 11 slots.
+        let photos: Vec<Photo> =
+            (0..30).map(|i| photo(&format!("/p{i:02}.jpg"), 0, 50)).collect();
+        let capacity = Capacity::from_sizes(20, &[1, 2, 3, 4, 5, 6]);
+        let groups =
+            pack(&photos, &capacity, &[1, 2, 3, 4, 5, 6], &Overrides::new()).expect("packs");
+
+        assert_eq!(groups.len(), 11, "11 slots should yield 11 groups");
+        assert_eq!(groups[0].slot, SlotKind::Single, "group 0 fills the opening page");
+        assert_eq!(groups[10].slot, SlotKind::Single, "group 10 fills the closing page");
+        for (i, g) in groups.iter().enumerate().take(10).skip(1) {
+            assert_eq!(g.slot, SlotKind::Spread, "group {i} fills a spread");
+        }
     }
 
     #[test]
