@@ -234,6 +234,14 @@ fn resolution_headroom(photo: &Photo, crop: &Rect, slot: &Slot) -> f64 {
 /// Hence the deliberately low default weight: it is the fuzziest term in
 /// the scorer, it is uncalibrated, and zeroing its weight must leave a
 /// usable book. Recalibrating it in a real hue space is deferred.
+///
+/// **Directly opposed to `palette_distance`, one third of `spread_diversity`.**
+/// This term rewards hue AGREEMENT on a spread; that one rewards colour
+/// DIFFERENCE, off the same `palette` field in the same crude sRGB space, and
+/// both are added into the same total. They cancel in part. That is coherent
+/// today only because `spread_diversity` ships at weight 0.0; raising it
+/// partially cancels `palette_harmony`, so the two must be tuned together and
+/// never one at a time.
 fn palette_harmony(photos: &[&Photo]) -> f64 {
     let hues: Vec<f64> = photos
         .iter()
@@ -316,6 +324,13 @@ fn scene_tag_distance(a: &Photo, b: &Photo) -> f64 {
 /// Plain sRGB, matching what `Metrics.palette` actually produces -- the
 /// same crude space `palette_harmony` reads, and for the same reason: this
 /// is not a perceptual distance and does not claim to be.
+///
+/// **Directly opposed to `palette_harmony`.** That term rewards hue AGREEMENT
+/// across a spread; this one rewards colour DIFFERENCE, off the same `palette`
+/// field, and both land in the same weighted sum. They cancel in part. The sum
+/// is coherent today only because `spread_diversity` ships at weight 0.0 --
+/// raising it partially cancels `palette_harmony`, so tune the two together
+/// and never one at a time.
 fn palette_distance(a: &Photo, b: &Photo) -> f64 {
     let (Some(ca), Some(cb)) = (a.palette.first(), b.palette.first()) else {
         return 0.5;
