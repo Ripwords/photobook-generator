@@ -1362,7 +1362,13 @@ mod tests {
             &Overrides::new(),
         )
         .expect("no includes in the fixture");
-        for g in groups.iter().filter(|g| g.slot == SlotKind::Single) {
+        let singles: Vec<&Group> =
+            groups.iter().filter(|g| g.slot == SlotKind::Single).collect();
+        assert!(
+            !singles.is_empty(),
+            "fixture must produce at least one single-page group, or the pin below is vacuous"
+        );
+        for g in singles {
             assert!(
                 g.photos.len() <= largest_half,
                 "pack over-filled a single page again: {} photos into a half of {largest_half}",
@@ -1552,6 +1558,78 @@ mod tests {
         assert!(
             book.pages.iter().all(|p| p.template_id != BLANK_TEMPLATE_ID),
             "25 keepers over 11 slots must leave no blank page"
+        );
+    }
+
+    /// **I2: the headline outcome of the per-slot-kind change, asserted.**
+    ///
+    /// A page that names a REAL template and holds nothing prints white. That
+    /// is the defect this whole change exists to remove, and until this test
+    /// existed the property lived only in a re-baselineable golden -- so the
+    /// next `UPDATE_GOLDEN=1` would have accepted its return in silence.
+    ///
+    /// A `BLANK_TEMPLATE_ID` check does NOT cover this and never did: the two
+    /// blank pages this change removed were `03-hero-left-text-right`, a real
+    /// 1-photo spread template whose other half is empty by construction. The
+    /// assertion is therefore on the CONJUNCTION -- a real id AND no
+    /// placements -- which is the only shape that catches it.
+    ///
+    /// Scoped to the fixture and frozen libraries, deliberately. The real
+    /// `templates/` library still holds two MULTI-photo templates with an
+    /// empty page half (`20-four-up-windowpane`,
+    /// `45-three-up-mosaic-margin-left`), so a real-library version of this
+    /// cannot pass until Task 4 rebalances them; Task 4 adds it.
+    #[test]
+    fn pace_no_printed_page_names_a_real_template_and_holds_nothing() {
+        for (name, lib) in [("frozen", frozen_library()), ("fixture", fixture_library())] {
+            for n in [12, 20, 25, 30, 40, 60] {
+                for seed in [1, 7, 1234] {
+                    let book =
+                        assemble(&fixture_photos(n), 20, &lib, &Weights::default(), seed, &Overrides::new())
+                            .expect("the fixture must place every included photo");
+                    for (i, page) in book.pages.iter().enumerate() {
+                        assert!(
+                            page.template_id == BLANK_TEMPLATE_ID || !page.placements.is_empty(),
+                            "{name} lib, {n} photos, seed {seed}: page {} names `{}` and holds \
+                             nothing -- it prints white",
+                            i + 1,
+                            page.template_id
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// **C1 at the assembly level.** A chapter of one photo cannot fill a
+    /// spread, and `pack` walks slots in order, so before sub-spread chapters
+    /// were merged an `Include` on such a photo failed the ENTIRE book with
+    /// `IncludedNotPlaced` -- whose advice, "choose a longer book", cannot
+    /// help, because a longer SKU adds spreads and never singles. The user was
+    /// given an instruction that could not work.
+    #[test]
+    fn pace_assembles_a_book_whose_included_photo_is_alone_in_its_chapter() {
+        let lib = fixture_library();
+        let mut photos = fixture_photos(31);
+        // 20 photos in cluster 0, one alone in cluster 1, 10 in cluster 2.
+        for (i, p) in photos.iter_mut().enumerate() {
+            p.is_utility = false;
+            p.event_cluster = match i {
+                0..=19 => 0,
+                20 => 1,
+                _ => 2,
+            };
+        }
+        photos[20].path = "/photos/solo.jpg".into();
+        let solo = photos[20].hash.clone();
+        let overrides: Overrides = [(solo, Override::Include)].into_iter().collect();
+
+        let book = assemble(&photos, 20, &lib, &Weights::default(), 5, &overrides)
+            .expect("a lone included photo must not fail the whole book");
+
+        assert!(
+            placed_indices(&book).contains(&20),
+            "the included photo alone in its chapter was not placed"
         );
     }
 

@@ -47,7 +47,6 @@ pub struct Capacity {
     pub pages: u32,
     pub singles: u32,
     pub spreads: u32,
-    pub min_photos: usize,
     pub max_photos: usize,
 }
 
@@ -75,16 +74,20 @@ impl Capacity {
     /// A book is 2 single pages plus (N-2)/2 spreads, each kind bounded by
     /// its own set. Written once so `from_sizes` and `from_library` cannot
     /// drift apart -- they differ only in where the `Buildable` came from.
-    fn from_buildable(pages: u32, b: &Buildable) -> Capacity {
+    ///
+    /// Public so a caller holding a `Buildable` it built itself -- the tests
+    /// in this module do -- can measure the capacity of THAT set rather than
+    /// of one reconstructed from a plain list, which is how the two used to
+    /// disagree.
+    pub fn from_buildable(pages: u32, b: &Buildable) -> Capacity {
         let singles = 2u32;
         let spreads = (pages.saturating_sub(2)) / 2;
-        let (single_lo, single_hi) = bounds_of(&b.single);
-        let (spread_lo, spread_hi) = bounds_of(&b.spread);
+        let (_, single_hi) = bounds_of(&b.single);
+        let (_, spread_hi) = bounds_of(&b.spread);
         Capacity {
             pages,
             singles,
             spreads,
-            min_photos: spreads as usize * spread_lo + singles as usize * single_lo,
             max_photos: spreads as usize * spread_hi + singles as usize * single_hi,
         }
     }
@@ -177,6 +180,14 @@ fn slot_kind_at(index: usize, slots: usize) -> SlotKind {
     }
 }
 
+/// The fewest photos a SPREAD slot may be cut to.
+///
+/// A spread is two page halves and the validator forbids a slot from spanning
+/// the fold, so a spread laid out from one photo has that photo on one half
+/// and nothing on the other -- a page that prints white. Two is the fewest
+/// that can put something on both halves.
+const SPREAD_MIN_PHOTOS: usize = 2;
+
 /// The group sizes each kind of slot may be cut to.
 ///
 /// One book-wide set is wrong in both directions. A SPREAD cannot take 1:
@@ -195,23 +206,36 @@ pub struct Buildable {
 }
 
 impl Buildable {
-    /// Derived from the loaded library, never hardcoded. The real library is
-    /// currently 1..=6 for spreads, so `spread` comes out 2..=6 today, but a
-    /// future template changes that and `buildable_sizes` is the one place
-    /// that answers the question.
+    /// Derived from the loaded library, never hardcoded, and BOTH sets are
+    /// derived: `single` from the slot counts the page halves actually have,
+    /// `spread` from the spread templates' photo counts less the sub-minimum
+    /// ones. Neither is a contiguous range invented from a maximum -- a range
+    /// claims the library can build every count below the largest, which is a
+    /// claim only the library itself can make.
     pub fn from_library(lib: &Library) -> Buildable {
-        let largest_half =
-            lib.page_half_pool().iter().map(|p| p.slots.len()).max().unwrap_or(1);
-        Buildable::from_sizes(&buildable_sizes(lib), largest_half)
+        let halves: std::collections::BTreeSet<usize> =
+            lib.page_half_pool().iter().map(|p| p.slots.len()).filter(|&n| n > 0).collect();
+        Buildable {
+            single: halves.into_iter().collect(),
+            spread: buildable_sizes(lib)
+                .into_iter()
+                .filter(|&s| s >= SPREAD_MIN_PHOTOS)
+                .collect(),
+        }
     }
 
     /// As `from_library`, but from a plain list of spread sizes plus the
-    /// largest page half -- so the tests in this module can run without
-    /// loading template files from disk.
+    /// largest page half -- so the callers that have no `Library` (chiefly
+    /// `recommend_pages_with`) can still get a figure.
+    ///
+    /// This one DOES invent `1 ..= largest_half` for the singles, and that is
+    /// its documented weakness: it presumes a page half exists at every count
+    /// up to the largest, which only the library can confirm. Anything holding
+    /// a real `Library` must use `from_library` above.
     pub fn from_sizes(spread_sizes: &[usize], largest_half: usize) -> Buildable {
         Buildable {
             single: (1..=largest_half.max(1)).collect(),
-            spread: spread_sizes.iter().copied().filter(|&s| s >= 2).collect(),
+            spread: spread_sizes.iter().copied().filter(|&s| s >= SPREAD_MIN_PHOTOS).collect(),
         }
     }
 
@@ -325,6 +349,8 @@ pub fn pack(
         chapters.retain(|_, v| !v.is_empty());
     }
 
+    let chapters = merge_sub_spread_chapters(chapters, spread_minimum(buildable));
+
     let mut groups = Vec::new();
     let slots = capacity.spreads as usize + capacity.singles as usize;
 
@@ -335,6 +361,14 @@ pub fn pack(
     let counts: Vec<usize> = chapters.values().map(Vec::len).collect();
     let wants: Vec<usize> =
         chapters.values().map(|b| b.iter().filter(|&&i| wanted(i)).count()).collect();
+    // The union bounds, deliberately: `apportion_slots` divides slot COUNTS
+    // across chapters and uses these only as "fewest slots that hold all its
+    // photos" and "most slots it could fill". A chapter CAN legitimately fill
+    // a slot with one photo -- the two single pages take one -- so narrowing
+    // the divisor to the spread minimum under-allots and strands the tail of a
+    // chapter that would have fitted. Handing out a slot a chapter cannot fill
+    // is instead caught where it belongs, in the feasible band, which knows
+    // which kinds those slots actually are.
     let (smallest, largest) = buildable.union_bounds();
     let allowance = apportion_slots(&counts, &wants, slots, smallest, largest);
 
@@ -390,16 +424,9 @@ pub fn pack(
             // two single pages; everything between them is a spread.
             let index = groups.len();
             let kind = slot_kind_at(index, slots);
-            let (later_smallest, later_largest) =
-                lookahead_bounds(index, slots_left, slots, buildable);
-            match choose_group_size(
-                remaining,
-                buildable.for_kind(kind),
-                later_smallest,
-                later_largest,
-                slots_left,
-                swing,
-            ) {
+            let look = lookahead(index, slots_left, slots, buildable);
+            match choose_group_size(remaining, buildable.for_kind(kind), &look, slots_left, swing)
+            {
                 Some(take) => {
                     groups.push(Group {
                         photos: members[i..i + take].to_vec(),
@@ -421,6 +448,76 @@ pub fn pack(
     }
 
     Ok(groups)
+}
+
+/// The fewest photos any spread in this library can be built from, floored at
+/// 1 so an empty or malformed spread set cannot make every chapter "too
+/// small" and collapse the book into one chapter.
+fn spread_minimum(buildable: &Buildable) -> usize {
+    buildable.spread.iter().copied().filter(|&s| s > 0).min().unwrap_or(1)
+}
+
+/// Folds every chapter holding fewer photos than a spread can be built from
+/// into the next chapter chronologically (the last such run joins the final
+/// chapter, there being no next one).
+///
+/// **Why this does not violate "a group never spans two chapters".** That rule
+/// exists so a chapter boundary never falls in the MIDDLE of a spread, where
+/// it reads as an accident rather than a decision. A chapter too small to
+/// occupy a spread at all has no interior boundary to protect: there is no
+/// arrangement in which it gets a spread of its own, so the only question is
+/// whether its photos appear in the book beside their chronological
+/// neighbours, or not at all.
+///
+/// Without this, they did not appear at all, and the failure was worse than a
+/// silent drop in three compounding ways:
+///
+/// * the chapter was apportioned a slot it could never fill, so the slot was
+///   spent and the book lost a spread as well as the photos;
+/// * `pack` walks slots in order and a chapter that places nothing does not
+///   advance the global slot index, so EVERY later small chapter faced the
+///   same spread slot and failed identically -- twelve one-photo chapters into
+///   eleven slots placed one photo in total;
+/// * an `Include` on such a photo failed the whole book with
+///   `IncludedNotPlaced`, whose advice ("choose a longer book") cannot help,
+///   because a longer SKU adds spreads and never singles.
+///
+/// Merging removes the cause of all three rather than papering over any of
+/// them. Chapters are visited in cluster order, which is chronological, and
+/// the fold is forward, so a stray photo joins the chapter it precedes.
+fn merge_sub_spread_chapters(
+    chapters: std::collections::BTreeMap<u32, Vec<usize>>,
+    spread_min: usize,
+) -> std::collections::BTreeMap<u32, Vec<usize>> {
+    if spread_min <= 1 {
+        return chapters;
+    }
+    let first = match chapters.keys().next() {
+        Some(&k) => k,
+        None => return chapters,
+    };
+    let mut out: std::collections::BTreeMap<u32, Vec<usize>> = std::collections::BTreeMap::new();
+    let mut carry: Vec<usize> = Vec::new();
+    for (cluster, mut members) in chapters {
+        members.append(&mut carry);
+        if members.len() < spread_min {
+            carry = members;
+        } else {
+            out.insert(cluster, members);
+        }
+    }
+    if !carry.is_empty() {
+        // Nothing followed the final run. It joins the last chapter that DID
+        // reach the minimum; if no chapter did, the whole book is one chapter,
+        // which the two single pages can still open and close.
+        match out.iter_mut().next_back() {
+            Some((_, last)) => last.append(&mut carry),
+            None => {
+                out.insert(first, carry);
+            }
+        }
+    }
+    out
 }
 
 /// How many spread slots each chapter may cut groups from, given the whole
@@ -524,63 +621,74 @@ fn apportion_slots(
     out
 }
 
+/// What the slots AFTER this one can hold, and what they can be built from.
+///
+/// `least` and `most` are SUMS over the following slots of each one's own
+/// smallest and largest buildable size -- not one slot's bounds multiplied by
+/// the count. The distinction is load-bearing once the two kinds of slot have
+/// different sets: a chapter ending `spread, spread, closing single` has
+/// following capacities of 2..=3, 2..=3 and 1..=2, whose true total is 5..=8.
+/// Taking the minimum (1) and maximum (3) across all of them and multiplying
+/// gives 3..=9, which is wide enough to let a slot take two photos when it
+/// had to take three -- and the chapter then arrives at the closing single
+/// holding more than one page half can hold, and strands a photo. Measured:
+/// that is exactly how an `Include` alone in its chapter was still being
+/// dropped after the chapters were merged.
+struct Lookahead {
+    /// Every size any following slot can be built from, deduplicated. What the
+    /// REMAINDER has to decompose into.
+    sizes: Vec<usize>,
+    /// Fewest photos the following slots can hold between them.
+    least: usize,
+    /// Most photos the following slots can hold between them.
+    most: usize,
+}
+
+/// The `Lookahead` over the slots after `index`, given the book has `slots` of
+/// them in total and this chapter holds `slots_left` including the current
+/// one. Which kind sits where is `slot_kind_at`'s answer, not re-derived here:
+/// one definition of "slot 0 and slot `slots - 1` are singles" is the whole
+/// reason that function exists.
+///
+/// Empty when nothing follows, which is the honest answer: at the last slot
+/// the band collapses onto `remaining`, and a non-zero remainder IS stranded.
+fn lookahead(index: usize, slots_left: usize, slots: usize, buildable: &Buildable) -> Lookahead {
+    let later = slots_left.saturating_sub(1);
+    let mut sizes: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    let (mut least, mut most) = (0usize, 0usize);
+    for i in (index + 1)..=(index + later) {
+        let set = buildable.for_kind(slot_kind_at(i, slots));
+        sizes.extend(set.iter().copied().filter(|&s| s > 0));
+        let (lo, hi) = bounds_of(set);
+        least += lo;
+        most += hi;
+    }
+    Lookahead { sizes: sizes.into_iter().collect(), least, most }
+}
+
 /// The least and most this slot may take without stranding a photo or
 /// leaving a later slot with nothing to hold.
 ///
-/// * take fewer than `lo` and the `slots_left - 1` slots after it cannot
-///   hold the rest even at `later_largest` each, so a photo is dropped;
+/// * take fewer than `lo` and the slots after it cannot hold the rest even at
+///   their largest, so a photo is dropped;
 /// * take more than `hi` and there are not enough photos left to give every
-///   later slot even `later_smallest`, so a slot comes out blank.
+///   later slot even its smallest, so a slot comes out blank.
 ///
 /// Both saturate at zero, which is the honest answer when there are simply
 /// fewer photos than slots -- there the band collapses towards the smallest
 /// group and the leftover slots are blank because the photos ran out, not
 /// because an earlier slot was greedy.
 ///
-/// The lookahead bounds are passed in rather than derived from this slot's
-/// own buildable set, because the slots that FOLLOW may be a different kind:
-/// a chapter's last slot can be the book's closing single, whose set starts
-/// at 1, while every slot before it is a spread whose set starts at 2. Using
-/// this slot's own bounds for the lookahead would mis-state the band by one
-/// photo at exactly the position where it matters.
-fn feasible_band(
-    remaining: usize,
-    later_smallest: usize,
-    later_largest: usize,
-    slots_left: usize,
-) -> (usize, usize) {
-    let later = slots_left.saturating_sub(1);
-    let lo = remaining.saturating_sub(later_largest.saturating_mul(later));
-    let hi = remaining.saturating_sub(later_smallest.saturating_mul(later));
+/// The bounds come from the slots that FOLLOW rather than from this slot's own
+/// set, because the slots that follow may be a different kind: a chapter's
+/// last slot can be the book's closing single, whose set starts at 1, while
+/// every slot before it is a spread whose set starts at 2. Using this slot's
+/// own bounds for the lookahead mis-states the band at exactly the position
+/// where it matters.
+fn feasible_band(remaining: usize, look: &Lookahead) -> (usize, usize) {
+    let lo = remaining.saturating_sub(look.most);
+    let hi = remaining.saturating_sub(look.least);
     (lo.min(hi), hi)
-}
-
-/// The bounds over the slots that come AFTER `index`, given the book has
-/// `slots` of them in total. Which kind sits where is `slot_kind_at`'s
-/// answer, not re-derived here: one definition of "slot 0 and slot
-/// `slots - 1` are singles" is the whole reason that function exists.
-fn lookahead_bounds(
-    index: usize,
-    slots_left: usize,
-    slots: usize,
-    buildable: &Buildable,
-) -> (usize, usize) {
-    let later = slots_left.saturating_sub(1);
-    if later == 0 {
-        // Nothing follows, so the band collapses to [remaining, remaining]
-        // regardless of what these are.
-        return (1, 1);
-    }
-    let mut smallest = usize::MAX;
-    let mut largest = 0usize;
-    for i in (index + 1)..=(index + later) {
-        let set = buildable.for_kind(slot_kind_at(i, slots));
-        for &s in set.iter().filter(|&&s| s > 0) {
-            smallest = smallest.min(s);
-            largest = largest.max(s);
-        }
-    }
-    (if smallest == usize::MAX { 1 } else { smallest }, largest.max(1))
 }
 
 /// A buildable size for `remaining`, aimed at this chapter's FAIR SHARE of
@@ -605,9 +713,9 @@ fn lookahead_bounds(
 ///
 /// 1. inside the feasible band, so neither a photo nor a slot is lost to a
 ///    stylistic preference -- this outranks everything below it;
-/// 2. a remainder that is itself fully decomposable, checked exhaustively
-///    (not a one-step lookahead) so a gapped buildable set like {3,5} cannot
-///    slip an unreachable remainder past the check;
+/// 2. a remainder that is itself fully decomposable BY THE SLOTS THAT FOLLOW,
+///    checked exhaustively (not a one-step lookahead) so a gapped buildable
+///    set like {3,5} cannot slip an unreachable remainder past the check;
 /// 3. nearest to the aim;
 /// 4. the larger size, so an aim sitting exactly between two buildable sizes
 ///    rounds up rather than trailing photos into a later slot.
@@ -618,8 +726,7 @@ fn lookahead_bounds(
 fn choose_group_size(
     remaining: usize,
     own_buildable: &[usize],
-    later_smallest: usize,
-    later_largest: usize,
+    look: &Lookahead,
     slots_left: usize,
     swing: i64,
 ) -> Option<usize> {
@@ -629,7 +736,10 @@ fn choose_group_size(
 
     // `(2r + s) / 2s` is `r / s` rounded half up, in integer arithmetic.
     let share = (2 * remaining + slots_left) / (2 * slots_left);
-    let (lo, hi) = feasible_band(remaining, later_smallest, later_largest, slots_left);
+    // Both the band and the stranding guard below are questions about the
+    // slots that FOLLOW this one -- they are what has to hold the remainder --
+    // so both read `look` rather than this slot's own set.
+    let (lo, hi) = feasible_band(remaining, look);
     // The aim is deliberately NOT clamped into the band. Clamping it would
     // enforce the band a second time, and a second enforcement of the same
     // rule is one no test can distinguish from the first -- measured: with
@@ -644,7 +754,7 @@ fn choose_group_size(
     own_buildable.iter().copied().filter(|&s| s > 0 && s <= remaining).min_by_key(|&size| {
         let rest = remaining - size;
         let outside = usize::from(size < lo || size > hi);
-        let strands = usize::from(rest != 0 && !is_decomposable(rest, own_buildable));
+        let strands = usize::from(rest != 0 && !is_decomposable(rest, &look.sizes));
         (outside, strands, aim.abs_diff(size), std::cmp::Reverse(size))
     })
 }
@@ -690,23 +800,36 @@ mod tests {
         vec![1, 2, 3, 4, 5, 6]
     }
 
-    /// A `Buildable` from a plain list of SPREAD sizes, taking the largest
-    /// page half to be the largest spread size. That is an OVER-estimate --
-    /// a single page is one page-half and cannot hold a whole spread's worth
-    /// -- but it is the same over-estimate the old book-wide slice made, so
-    /// the fixtures below keep the capacities their assertions were written
-    /// against and only the per-slot-kind behaviour moves.
-    fn buildable_for(spread_sizes: &[usize]) -> Buildable {
-        Buildable::from_sizes(spread_sizes, spread_sizes.iter().copied().max().unwrap_or(1))
+    /// A `Buildable` from one plain list of sizes a fixture library declares
+    /// it can build.
+    ///
+    /// Both sets are drawn from that list and NOTHING is invented: the singles
+    /// are the declared sizes as they stand, the spreads are the ones that can
+    /// fill both halves. Deliberately not `Buildable::from_sizes`, which fills
+    /// the singles with `1 ..= largest` -- against a declared `{2,3}` that
+    /// yields a single set containing 1, and `pack` was measured emitting a
+    /// group of one photo under a library declared to build only 2s and 3s.
+    /// A fixture must not be able to build a size its own declaration denies.
+    fn buildable_for(sizes: &[usize]) -> Buildable {
+        Buildable {
+            single: sizes.iter().copied().filter(|&s| s > 0).collect(),
+            spread: sizes.iter().copied().filter(|&s| s >= SPREAD_MIN_PHOTOS).collect(),
+        }
     }
 
-    /// `Capacity` under the same convention as `buildable_for` above.
-    fn capacity_for(pages: u32, spread_sizes: &[usize]) -> Capacity {
-        Capacity::from_sizes(
-            pages,
-            spread_sizes,
-            spread_sizes.iter().copied().max().unwrap_or(1),
-        )
+    /// The capacity of exactly the set `buildable_for` yields, so the two can
+    /// never disagree about what the fixture library can build.
+    fn capacity_for(pages: u32, sizes: &[usize]) -> Capacity {
+        Capacity::from_buildable(pages, &buildable_for(sizes))
+    }
+
+    /// A `Lookahead` over `n` following slots that all draw from `sizes`.
+    /// `later(&[], 0)` is "nothing follows", where the band collapses onto
+    /// `remaining` and any remainder is stranded.
+    fn later(sizes: &[usize], n: usize) -> Lookahead {
+        let (lo, hi) = bounds_of(sizes);
+        let usable: Vec<usize> = sizes.iter().copied().filter(|&s| s > 0).collect();
+        Lookahead { sizes: usable, least: lo * n, most: hi * n }
     }
 
     fn group_sizes(groups: &[Group]) -> Vec<usize> {
@@ -917,18 +1040,17 @@ mod tests {
     /// arm no test enters.
     #[test]
     fn pack_reports_no_size_rather_than_one_the_library_cannot_build() {
-        // The lookahead bounds are now explicit. Here every later slot draws
-        // from the same {3,5} set as this one, so they are that set's own
-        // bounds -- which is exactly what the function used to derive for
-        // itself, so these three cases are unchanged in substance.
-        assert_eq!(choose_group_size(2, &[3, 5], 3, 5, 1, 0), None, "nothing in {{3,5}} covers 2");
+        // The following slots are now explicit: `later(&[], 0)` where this is
+        // the last slot (nothing follows, so the band collapses onto
+        // `remaining`), and n slots drawing from {3,5} where more follow.
+        assert_eq!(choose_group_size(2, &[3, 5], &later(&[], 0), 1, 0), None, "nothing in {{3,5}} covers 2");
         assert_eq!(
-            choose_group_size(2, &[3, 5], 3, 5, 4, -1),
+            choose_group_size(2, &[3, 5], &later(&[3, 5], 3), 4, -1),
             None,
             "nor with slots still to fill"
         );
         assert_eq!(
-            choose_group_size(3, &[3, 5], 3, 5, 1, 0),
+            choose_group_size(3, &[3, 5], &later(&[], 0), 1, 0),
             Some(3),
             "3 is covered, and must be"
         );
@@ -940,7 +1062,7 @@ mod tests {
         // Asserted here rather than through `pack`, whose only gapped-set
         // fixture is decided by the band before the guard is ever consulted.
         assert_eq!(
-            choose_group_size(5, &[3, 5], 3, 5, 2, 0),
+            choose_group_size(5, &[3, 5], &later(&[3, 5], 1), 2, 0),
             Some(5),
             "taking 3 would strand a remainder of 2 that {{3,5}} cannot build"
         );
@@ -948,11 +1070,11 @@ mod tests {
 
     #[test]
     fn pack_never_chooses_a_zero_sized_group() {
-        // `{0}` has no usable size at all, so its lookahead bounds floor at
-        // (1, 1) -- what `bounds_of` returns for it.
-        assert_eq!(choose_group_size(4, &[0], 1, 1, 2, 0), None, "0 is not a group size");
+        // `{0}` has no usable size at all, so its bounds floor at (1, 1) --
+        // what `bounds_of` returns for it.
+        assert_eq!(choose_group_size(4, &[0], &later(&[0], 1), 2, 0), None, "0 is not a group size");
         assert_eq!(
-            choose_group_size(4, &[0, 3], 3, 3, 2, 0),
+            choose_group_size(4, &[0, 3], &later(&[0, 3], 1), 2, 0),
             Some(3),
             "0 must not out-rank a real size"
         );
@@ -1147,13 +1269,8 @@ mod tests {
         let gapped = vec![3, 5];
         let photos: Vec<Photo> =
             (0..7).map(|i| photo(&format!("/p{i}.jpg"), 0, 50)).collect();
-        // Built by hand, not by `Buildable::from_sizes`: that fills the single
-        // set with `1 ..= largest_half`, which presumes a page half exists at
-        // every count up to the largest. This fixture's whole point is a
-        // library with GAPS, so its halves are the gapped counts too.
-        let b = Buildable { single: gapped.clone(), spread: gapped.clone() };
         let c = capacity_for(20, &gapped);
-        let groups = pack(&photos, &c, &b, &Overrides::new()).expect("the fixture must fit the included photos");
+        let groups = pack(&photos, &c, &buildable_for(&gapped), &Overrides::new()).expect("the fixture must fit the included photos");
 
         for g in &groups {
             assert!(gapped.contains(&g.photos.len()),
@@ -1253,6 +1370,16 @@ mod tests {
             photos.len(),
             "fixture: all ten photos must be placed or the mixing has nowhere to show"
         );
+        // The cut points are the whole argument here -- 2 and 3 are chosen so
+        // no flat cut can land on the chapter boundary at 5 -- so a group of
+        // any OTHER size falsifies the rationale before the mixing check even
+        // runs. It was measured emitting [1, 2, 2, 2, 3] while the single set
+        // was being invented as `1 ..= largest`.
+        assert!(
+            groups.iter().all(|g| buildable.contains(&g.photos.len())),
+            "a group outside the declared set {buildable:?}: {:?}",
+            group_sizes(&groups)
+        );
         for g in &groups {
             let clusters: std::collections::BTreeSet<u32> =
                 g.photos.iter().map(|&i| photos[i].event_cluster).collect();
@@ -1330,6 +1457,61 @@ mod tests {
         for (i, g) in groups.iter().enumerate().take(10).skip(1) {
             assert_eq!(g.slot, SlotKind::Spread, "group {i} fills a spread");
         }
+    }
+
+    /// **C1: a chapter too small to occupy a spread must not cost the user
+    /// their photo, nor the book its assembly.**
+    ///
+    /// A spread slot cannot be cut to one photo. A chapter holding exactly one
+    /// is therefore unplaceable wherever it lands but slot 0 or slot N-1, and
+    /// `pack` walks slots in order -- so before the merge below, `/solo.jpg`
+    /// came back unplaced and `pace::assemble` failed the whole book with
+    /// "choose a longer book", advice that cannot help: a longer SKU adds
+    /// spreads, never singles.
+    ///
+    /// Measured shape, from the review: 20 photos in cluster 0, one in
+    /// cluster 1, 10 in cluster 2, with the singleton explicitly included.
+    #[test]
+    fn pack_places_a_singleton_chapter_the_user_asked_for() {
+        let mut photos: Vec<Photo> =
+            (0..20).map(|i| photo(&format!("/c0p{i:02}.jpg"), 0, 50)).collect();
+        photos.push(photo("/solo.jpg", 1, 50));
+        photos.extend((0..10).map(|i| photo(&format!("/c2p{i:02}.jpg"), 2, 50)));
+        let c = capacity_for(20, &full());
+
+        let groups = pack(&photos, &c, &buildable_for(&full()), &include(&["/solo.jpg"]))
+            .expect("one include is well inside capacity");
+
+        assert!(
+            placed_paths(&photos, &groups).contains(&"/solo.jpg".to_string()),
+            "a one-photo chapter the user asked for was dropped: {:?}",
+            by_path(&photos, &groups)
+        );
+    }
+
+    /// **C1, the cascade.** Twelve one-photo chapters into 11 slots used to
+    /// place ONE photo in total: the first chapter took slot 0 (a single, which
+    /// can hold one), every later chapter faced slot 1 (a spread, which cannot),
+    /// failed, and left `groups.len()` -- the global slot index -- exactly where
+    /// it was, so the next chapter repeated the identical futile attempt.
+    ///
+    /// Merging sub-spread chapters removes the cause rather than papering over
+    /// the symptom: twelve singletons become six chapters of two, and every
+    /// photo is placed.
+    #[test]
+    fn pack_does_not_strand_every_chapter_when_one_cannot_fill_its_slot() {
+        let photos: Vec<Photo> =
+            (0..12).map(|i| photo(&format!("/p{i:02}.jpg"), i, 50)).collect();
+        let c = capacity_for(20, &full());
+
+        let groups = pack(&photos, &c, &buildable_for(&full()), &Overrides::new()).expect("no includes");
+
+        assert_eq!(
+            placed_paths(&photos, &groups).len(),
+            12,
+            "12 photos over 11 slots must all be placed: {:?}",
+            group_sizes(&groups)
+        );
     }
 
     /// A 1-photo spread template has one slot, and the validator forbids a slot

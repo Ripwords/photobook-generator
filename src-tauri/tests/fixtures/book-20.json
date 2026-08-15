@@ -442,21 +442,21 @@
     {
       "number": 18,
       "side": "left",
-      "template_id": "07-two-up-symmetric-margin",
+      "template_id": "35-portrait-triptych-hero-left",
       "placements": [
         {
-          "photo_index": 25,
+          "photo_index": 26,
           "slot_rect": {
-            "x": 0.08,
-            "y": 0.08,
-            "w": 0.84,
-            "h": 0.84
+            "x": 0.1,
+            "y": 0.04,
+            "w": 0.6,
+            "h": 0.92
           },
           "crop": {
-            "x": 0.05035379656697403,
+            "x": 0.0,
             "y": 0.0,
-            "w": 0.8392924068660519,
-            "h": 1.0
+            "w": 1.0,
+            "h": 0.9134678931856748
           },
           "z": 1
         }
@@ -465,44 +465,60 @@
     {
       "number": 19,
       "side": "right",
-      "template_id": "07-two-up-symmetric-margin",
+      "template_id": "35-portrait-triptych-hero-left",
       "placements": [
         {
-          "photo_index": 26,
+          "photo_index": 25,
           "slot_rect": {
-            "x": 0.08000000000000007,
-            "y": 0.08,
-            "w": 0.84,
-            "h": 0.84
+            "x": 0.15999999999999992,
+            "y": 0.05,
+            "w": 0.64,
+            "h": 0.42
           },
           "crop": {
             "x": 0.0,
-            "y": 0.10213003483075822,
+            "y": 0.009045670715370213,
             "w": 1.0,
-            "h": 0.5957399303384836
+            "h": 0.7819086585692596
           },
           "z": 1
+        },
+        {
+          "photo_index": 27,
+          "slot_rect": {
+            "x": 0.15999999999999992,
+            "y": 0.51,
+            "w": 0.64,
+            "h": 0.42
+          },
+          "crop": {
+            "x": 0.0,
+            "y": 0.04414569045537925,
+            "w": 1.0,
+            "h": 0.6950299187282307
+          },
+          "z": 2
         }
       ]
     },
     {
       "number": 20,
       "side": "left",
-      "template_id": "07-two-up-symmetric-margin:left",
+      "template_id": "35-portrait-triptych-hero-left:left",
       "placements": [
         {
-          "photo_index": 27,
+          "photo_index": 29,
           "slot_rect": {
-            "x": 0.08,
-            "y": 0.08,
-            "w": 0.84,
-            "h": 0.84
+            "x": 0.1,
+            "y": 0.04,
+            "w": 0.6,
+            "h": 0.92
           },
           "crop": {
-            "x": 0.02121932077683497,
+            "x": 0.0,
             "y": 0.0,
-            "w": 0.9442039577243084,
-            "h": 1.0
+            "w": 1.0,
+            "h": 0.9134678931856748
           },
           "z": 1
         }
@@ -510,5 +526,5 @@
     }
   ],
   "seed": 1234,
-  "dropped": 7
+  "dropped": 6
 }
