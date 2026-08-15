@@ -428,10 +428,12 @@ mod tests {
         assert_eq!(w.hero_prominence, 0.0);
     }
 
-    /// A typo'd weight name must FAIL rather than read as 0.0. Silently
-    /// treating `pallete_harmony` as an unknown key and leaving the real term
-    /// at its default is exactly the invisible failure this project keeps
-    /// finding.
+    /// A misspelled weight name must FAIL rather than read as 0.0. The fixture
+    /// carries every required field spelled CORRECTLY and adds one extra key, so
+    /// the only thing that can reject it is `deny_unknown_fields` -- an earlier
+    /// version of this test used a misspelling that also omitted the required
+    /// field it was misspelling, and so passed on the missing field whether or
+    /// not the attribute was present.
     #[test]
     fn templates_weights_reject_an_unknown_key() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -439,14 +441,14 @@ mod tests {
         std::fs::write(
             &path,
             r#"{"aspect_fit":1.0,"saliency_retention":0.8,"face_area_retention":1.2,
-                "hero_match":0.6,"resolution_headroom":0.4,"pallete_harmony":0.2,
-                "variety":0.5}"#,
+                "hero_match":0.6,"resolution_headroom":0.4,"palette_harmony":0.2,
+                "variety":0.5,"pallete_harmony":0.9}"#,
         )
         .expect("write");
 
         assert!(
             Weights::load(&path).is_err(),
-            "a misspelled weight name must be an error, not a silent zero"
+            "an unknown weight name must be an error, not a silent zero"
         );
     }
 
