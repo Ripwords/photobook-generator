@@ -69,13 +69,13 @@ pub struct Finding {
     pub message: String,
 }
 
-/// Reads the real world: source files on disk (via the exists-check inside
-/// the pure core) and free space on `output_dir`'s volume. Placements are
-/// treated as declaring no bleed, since a `Placement` does not itself carry
-/// the slot's bleed array -- only the originating template does, and this
-/// wrapper has no template to consult. A caller that has the template (and
-/// therefore the real bleed array) should call `preflight_with_bleed`
-/// directly.
+/// Reads the real world: source files on disk (via `missing_sources`, the
+/// one filesystem read pre-flight's shell performs) and free space on
+/// `output_dir`'s volume. Placements are treated as declaring no bleed,
+/// since a `Placement` does not itself carry the slot's bleed array -- only
+/// the originating template does, and this wrapper has no template to
+/// consult. A caller that has the template (and therefore the real bleed
+/// array) should call `preflight_with_bleed` directly.
 pub fn preflight(book: &Book, photos: &[Photo], output_dir: &Path) -> Vec<Finding> {
     let bleed = vec![Vec::new(); placement_count(book)];
     preflight_with_bleed(book, photos, output_dir, &bleed)
@@ -97,7 +97,8 @@ pub fn preflight_with_bleed(
     bleed: &[Vec<BleedEdge>],
 ) -> Vec<Finding> {
     let available = available_bytes(output_dir);
-    preflight_core(book, photos, bleed, available)
+    let missing = missing_sources(book, photos);
+    preflight_core(book, photos, bleed, available, &missing)
 }
 
 /// As `preflight`, but with the available disk space supplied explicitly
@@ -110,11 +111,29 @@ pub fn preflight_with_space(
     available_bytes: u64,
 ) -> Vec<Finding> {
     let bleed = vec![Vec::new(); placement_count(book)];
-    preflight_core(book, photos, &bleed, available_bytes)
+    let missing = missing_sources(book, photos);
+    preflight_core(book, photos, &bleed, available_bytes, &missing)
 }
 
 fn placement_count(book: &Book) -> usize {
     book.pages.iter().map(|p| p.placements.len()).sum()
+}
+
+/// The one filesystem read pre-flight's shell performs on behalf of the
+/// core: which placed photos are no longer at their analysed path.
+///
+/// Built once over the distinct paths in the book rather than once per
+/// placement, so a photo used twice is statted once.
+fn missing_sources(book: &Book, photos: &[Photo]) -> std::collections::BTreeSet<String> {
+    book.pages
+        .iter()
+        .flat_map(|p| p.placements.iter())
+        .filter_map(|pl| photos.get(pl.photo_index))
+        .map(|photo| photo.path.clone())
+        .collect::<std::collections::BTreeSet<String>>()
+        .into_iter()
+        .filter(|path| !Path::new(path).exists())
+        .collect()
 }
 
 /// True when `inner` (in the photo's own normalised coordinates) is fully
@@ -152,12 +171,20 @@ fn map_into_page(inner: &Rect, crop: &Rect, slot_rect: &Rect) -> Option<Rect> {
     ))
 }
 
-/// The pure core: every check in spec 5.6 over already-known data. No I/O.
+/// The pure core: every check in spec 5.6 over already-known data.
+///
+/// Genuinely no I/O. Both facts it cannot compute -- free disk space and
+/// which source files have moved -- are ARGUMENTS, so Phase 3 can re-run
+/// this on an edited book in a loop without touching the filesystem. That
+/// is the whole reason the core/shell split exists; it previously did one
+/// `Path::exists()` per placement and the doc comment claiming otherwise
+/// was wrong.
 fn preflight_core(
     book: &Book,
     photos: &[Photo],
     bleed: &[Vec<BleedEdge>],
     available_bytes: u64,
+    missing: &std::collections::BTreeSet<String>,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut placement_idx = 0usize;
@@ -169,8 +196,10 @@ fn preflight_core(
 
             let Some(photo) = photos.get(pl.photo_index) else { continue };
 
-            // Source file moved or deleted since analysis -- BLOCK.
-            if !Path::new(&photo.path).exists() {
+            // Source file moved or deleted since analysis -- BLOCK. Decided
+            // by the caller, which is the only part of pre-flight that may
+            // read a disk.
+            if missing.contains(&photo.path) {
                 findings.push(Finding {
                     severity: Severity::Block,
                     page: page.number,
@@ -389,6 +418,23 @@ mod tests {
     /// boundary exactly rather than somewhere near it.
     fn px_for_dpi(dpi: f64) -> u32 {
         (dpi * clean_slot().w * PAGE_W_IN).round() as u32
+    }
+
+    /// A non-square photo at `path`, sized well clear of `MIN_DPI`/
+    /// `WARN_DPI_CEILING` in `clean_slot` (400 DPI, same margin the other
+    /// fixtures in this module use), so a test using it exercises only
+    /// whatever it's actually testing rather than tripping the DPI checks.
+    fn preflight_photo(path: &str) -> Photo {
+        let mut p = photo(px_for_dpi(400.0), px_for_dpi(400.0) * 2 / 3);
+        p.path = path.into();
+        p
+    }
+
+    /// A single-placement book in `clean_slot`, on a LEFT page, with a crop
+    /// that keeps the whole frame -- the same fixture `book_with` builds,
+    /// named for callers that don't need to vary the slot/crop/side.
+    fn one_placement_book() -> Book {
+        book_with(clean_slot(), full_crop(), Side::Left)
     }
 
     fn tempdir() -> tempfile::TempDir {
@@ -671,6 +717,35 @@ mod tests {
         let findings = preflight(&book, &[p], dir.path());
         assert!(findings.iter().any(|f| f.severity == Severity::Block
             && f.message.contains("no longer exists")), "got {findings:?}");
+    }
+
+    /// The pure core must decide from its arguments alone. Handed a photo whose
+    /// path does not exist on disk but which is NOT in the missing set, it must
+    /// raise no moved-source finding -- proving it consulted the argument
+    /// rather than the filesystem.
+    #[test]
+    fn preflight_core_reads_the_missing_set_not_the_filesystem() {
+        let book = one_placement_book();
+        let photos = vec![preflight_photo("/definitely/not/on/disk.jpg")];
+        let bleed = vec![Vec::new(); 1];
+
+        let findings =
+            preflight_core(&book, &photos, &bleed, u64::MAX, &std::collections::BTreeSet::new());
+
+        assert!(
+            !findings.iter().any(|f| f.message.contains("no longer exists")),
+            "the core touched the filesystem instead of reading the missing set: {findings:?}"
+        );
+
+        let missing: std::collections::BTreeSet<String> =
+            ["/definitely/not/on/disk.jpg".to_string()].into_iter().collect();
+        let findings = preflight_core(&book, &photos, &bleed, u64::MAX, &missing);
+        assert!(
+            findings.iter().any(|f| {
+                f.severity == Severity::Block && f.message.contains("no longer exists")
+            }),
+            "a path in the missing set must still Block: {findings:?}"
+        );
     }
 
     #[test]
