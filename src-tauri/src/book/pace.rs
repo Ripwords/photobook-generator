@@ -12,7 +12,7 @@
 
 use crate::book::crop::choose_crop;
 use crate::book::cull::{cull, Overrides, Photo};
-use crate::book::pack::{buildable_sizes, pack, Capacity, Group, IncludeOverflow};
+use crate::book::pack::{buildable_sizes, pack, Capacity, Group, IncludeOverflow, SlotKind};
 use crate::book::score::{best_spread, rejects, slot_aspect};
 use crate::geometry::{Rect, Side};
 use crate::templates::{EdgeTreatment, Library, PageLayout, SpreadTemplate, Weights};
@@ -383,13 +383,22 @@ pub fn assemble(
     let spread_count = (pages.saturating_sub(2) / 2) as usize;
     let mut out: Vec<Page> = Vec::with_capacity(pages as usize);
 
-    // Page 1: a single, facing the inside front cover.
-    out.push(single_page(Side::Right, groups.first(), &pool, photos, seed));
-
-    // The middle: true spreads, two pages each. The first and last groups are
-    // spoken for by the single pages.
+    // Placed by the packer's OWN tag, not by position. When photos run out,
+    // `pack` produces fewer groups than there are slots, and the last group it
+    // cut is then a middle spread -- placing it on a page half regardless is
+    // what used to let `strongest` silently trim it.
+    let n = groups.len();
+    let opening = groups.first().filter(|g| g.slot == SlotKind::Single);
+    let closing = (n > 1)
+        .then(|| &groups[n - 1])
+        .filter(|g| g.slot == SlotKind::Single);
     let middle: Vec<&Group> =
-        groups.iter().skip(1).take(groups.len().saturating_sub(2)).collect();
+        groups.iter().filter(|g| g.slot == SlotKind::Spread).collect();
+
+    // Page 1: a single, facing the inside front cover.
+    out.push(single_page(Side::Right, opening, &pool, photos, seed));
+
+    // The middle: true spreads, two pages each.
     let mut previous: Option<String> = None;
     for s in 0..spread_count {
         match middle.get(s).and_then(|g| spread_pages(g, photos, lib, w, previous.as_deref())) {
@@ -407,10 +416,8 @@ pub fn assemble(
         }
     }
 
-    // The final page: a single, facing the inside back cover. Only when there
-    // is a group the opening page did not already take.
-    let last = if groups.len() > 1 { groups.last() } else { None };
-    out.push(single_page(Side::Left, last, &pool, photos, seed));
+    // The final page: a single, facing the inside back cover.
+    out.push(single_page(Side::Left, closing, &pool, photos, seed));
 
     // Odd or degenerate page counts are not real SKUs, but the promise is
     // exactly `pages` pages, so honour it either way.
@@ -1149,6 +1156,31 @@ mod tests {
         assert!(
             intact.pages.iter().all(|p| p.template_id != BLANK_TEMPLATE_ID),
             "fixture check: 36 photos fill all 11 slots, so only the failure blanks"
+        );
+    }
+
+    /// When there are fewer photos than slots, `pack` produces fewer groups
+    /// than the book has slots, so the last group it cut was sized for a
+    /// SPREAD. Placing it on the closing page-half regardless means
+    /// `pace::strongest` silently trims photos off it; the honest outcome is a
+    /// blank closing page, which is what a reader can actually see and act on.
+    #[test]
+    fn pace_leaves_the_closing_page_blank_when_the_packer_ran_out_of_groups() {
+        let lib = fixture_library();
+        // Far fewer photos than the 11 slots a 20-page book has, so `pack`
+        // cannot fill every slot and the final group it cuts is a middle
+        // spread, not the closing single.
+        let photos = fixture_photos(4);
+        let book = assemble(&photos, 20, &lib, &Weights::default(), 7, &Overrides::new())
+            .expect("the fixture must place every included photo");
+
+        let last = book.pages.last().expect("a 20-page book has a last page");
+        assert_eq!(last.number, 20);
+        assert!(
+            last.placements.is_empty(),
+            "the closing page must be blank rather than hold a spread-sized group, \
+             but it carried {} placements",
+            last.placements.len()
         );
     }
 
