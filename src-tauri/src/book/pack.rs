@@ -1489,6 +1489,37 @@ mod tests {
         );
     }
 
+    /// **The merge's last resort: a book with fewer photos than one spread.**
+    ///
+    /// Every chapter is then below the spread minimum, so every one of them
+    /// carries forward and NO chapter is ever inserted into the output --
+    /// `merge_sub_spread_chapters` reaches its final `carry` with nothing to
+    /// append it to. The arm that handles that reinstates the photos as a
+    /// chapter of their own; without it they are silently discarded and the
+    /// book comes out empty, which is the worst outcome available for a
+    /// one-photo book. Slot 0 is a single page and can hold exactly this.
+    ///
+    /// Probed: `placed=1 sizes=[1]` with the arm, `placed=0 sizes=[]` without.
+    #[test]
+    fn pack_places_the_only_photo_in_a_book_too_small_for_a_spread() {
+        let photos = vec![photo("/only.jpg", 0, 50)];
+        let c = capacity_for(20, &full());
+
+        let groups = pack(&photos, &c, &buildable_for(&full()), &Overrides::new()).expect("no includes");
+
+        assert_eq!(
+            placed_paths(&photos, &groups),
+            vec!["/only.jpg".to_string()],
+            "the only photo in the book was discarded: sizes {:?}",
+            group_sizes(&groups)
+        );
+        assert_eq!(
+            groups[0].slot,
+            SlotKind::Single,
+            "one photo belongs on the opening single page, the only slot that can hold it"
+        );
+    }
+
     /// **C1, the cascade.** Twelve one-photo chapters into 11 slots used to
     /// place ONE photo in total: the first chapter took slot 0 (a single, which
     /// can hold one), every later chapter faced slot 1 (a spread, which cannot),
@@ -1558,4 +1589,3 @@ mod tests {
         assert!(!kept.contains(&0), "lowest aesthetic must be dropped");
     }
 }
-
