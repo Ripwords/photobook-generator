@@ -337,6 +337,57 @@ fn capture_gap_distance(a: &Photo, b: &Photo) -> f64 {
     (gap / SATURATE_SECONDS).clamp(0.0, 1.0)
 }
 
+/// How much room the template gives its hero slot, scaled by how much this
+/// group has a standout photo to put there. In [0,1].
+///
+/// The complaint: "some interesting features should be highlighted rather
+/// than mixed with other images". `hero_match` already rewards the best
+/// photo landing in a hero slot, but only WITHIN a group that has already
+/// been formed -- `pack` knows nothing about merit, so a standout can be
+/// dealt into a six-up and get a sixth of a spread.
+///
+/// This biases which template a formed group gets. It does NOT change how
+/// groups are formed; letting merit influence group size is a real change to
+/// `pack`'s contract and is deliberately deferred until this has been
+/// measured against a real book.
+///
+/// Neutral at 0.5 when the group is flat, so the term is silent rather than
+/// pushing toward big slots generally: it exists to give a standout room,
+/// not to prefer dominant templates as a matter of taste.
+fn hero_prominence(t: &SpreadTemplate, photos: &[&Photo]) -> f64 {
+    if photos.len() < 2 {
+        return 0.5;
+    }
+    let mut pcts: Vec<f64> = photos.iter().map(|p| p.aesthetic_pct as f64).collect();
+    pcts.sort_by(|a, b| b.total_cmp(a));
+    let rest = &pcts[1..];
+    let rest_mean = rest.iter().sum::<f64>() / rest.len() as f64;
+    // How far the best photo clears the others, as a fraction of the
+    // percentile scale. Zero when the group is flat.
+    let standout = ((pcts[0] - rest_mean) / 100.0).clamp(0.0, 1.0);
+    if standout == 0.0 {
+        return 0.5;
+    }
+
+    let slots: Vec<&Slot> =
+        t.left.slots.iter().chain(t.right.slots.iter()).collect();
+    let total: f64 = slots.iter().map(|s| s.rect.area()).sum();
+    if total <= 0.0 {
+        return 0.5;
+    }
+    let hero_area: f64 = slots
+        .iter()
+        .filter(|s| s.role == Role::Hero)
+        .map(|s| s.rect.area())
+        .sum();
+    // An even split of n slots gives each 1/n; anything above that is
+    // genuine dominance. Normalised so a single full-spread hero reads 1.0.
+    let even_share = 1.0 / slots.len() as f64;
+    let dominance = ((hero_area / total - even_share) / (1.0 - even_share)).clamp(0.0, 1.0);
+
+    (0.5 + 0.5 * standout * dominance).clamp(0.0, 1.0)
+}
+
 /// Penalises repeating the immediately preceding template.
 fn variety(template_id: &str, previous: Option<&str>) -> f64 {
     match previous {
@@ -388,6 +439,7 @@ pub fn score_spread(
     // Spread-global terms, added once rather than per slot.
     total += w.palette_harmony * palette_harmony(photos);
     total += w.spread_diversity * spread_diversity(photos);
+    total += w.hero_prominence * hero_prominence(t, photos);
     total += w.variety * variety(&t.id, previous);
 
     Some(total)
@@ -844,6 +896,69 @@ mod tests {
         );
     }
 
+    /// When a group holds a standout photo, a template whose hero slot dominates
+    /// the spread should beat one whose slots are all the same size. When the
+    /// group is flat, the two should be indistinguishable -- the term is about
+    /// giving a STANDOUT room, not about preferring big slots generally.
+    #[test]
+    fn score_hero_prominence_prefers_a_dominant_hero_only_for_a_standout_group() {
+        let dominant = hero_dominant_template();
+        let even = even_three_up_template();
+
+        let mut standout: Vec<Photo> = (0..3).map(|_| photo(4000, 3000)).collect();
+        standout[0].aesthetic_pct = 99;
+        standout[1].aesthetic_pct = 40;
+        standout[2].aesthetic_pct = 38;
+
+        let flat: Vec<Photo> = (0..3)
+            .map(|_| {
+                let mut p = photo(4000, 3000);
+                p.aesthetic_pct = 50;
+                p
+            })
+            .collect();
+
+        let standout_refs: Vec<&Photo> = standout.iter().collect();
+        let flat_refs: Vec<&Photo> = flat.iter().collect();
+
+        assert!(
+            hero_prominence(&dominant, &standout_refs) > hero_prominence(&even, &standout_refs),
+            "a standout photo should pull toward a dominant hero slot"
+        );
+        assert_eq!(
+            hero_prominence(&dominant, &flat_refs),
+            hero_prominence(&even, &flat_refs),
+            "with no standout, the term must not prefer either template"
+        );
+    }
+
+    /// The term must reach the total; shipped weight is 0.0.
+    #[test]
+    fn score_hero_prominence_changes_the_spread_total_when_weighted() {
+        let dominant = hero_dominant_template();
+        let even = even_three_up_template();
+        let mut standout: Vec<Photo> = (0..3).map(|_| photo(4000, 3000)).collect();
+        standout[0].aesthetic_pct = 99;
+        standout[1].aesthetic_pct = 40;
+        standout[2].aesthetic_pct = 38;
+        let refs: Vec<&Photo> = standout.iter().collect();
+
+        let w = Weights { hero_prominence: 1.0, ..Weights::default() };
+        let d = score_spread(&dominant, &refs, &[0, 1, 2], None, &w).expect("scores");
+        let e = score_spread(&even, &refs, &[0, 1, 2], None, &w).expect("scores");
+        assert!(d > e, "hero_prominence never reached the total: {d} vs {e}");
+
+        // Inert at the shipped weight -- but hero_match still separates these
+        // two templates, so compare the DELTA rather than asserting equality.
+        let inert = Weights::default();
+        let id = score_spread(&dominant, &refs, &[0, 1, 2], None, &inert).expect("scores");
+        let ie = score_spread(&even, &refs, &[0, 1, 2], None, &inert).expect("scores");
+        assert!(
+            (d - e) > (id - ie),
+            "weighting the term must widen the gap it is responsible for"
+        );
+    }
+
     // --- the four soft terms the brief left with no behavioural test.
     //
     // Each pairs two candidates that differ in exactly ONE term, so zeroing
@@ -1294,6 +1409,87 @@ mod tests {
             },
             density: Density::Medium,
             energy: Energy::Calm,
+        }
+    }
+
+    /// Three photos: one large Hero slot on the left page, two small Support
+    /// slots on the right. The hero clearly dominates the spread's area.
+    /// Non-square throughout, and every slot resolves well above 200 DPI for
+    /// a 4000x3000 photo.
+    fn hero_dominant_template() -> SpreadTemplate {
+        SpreadTemplate {
+            id: "fx-hero-dominant".into(),
+            left: PageLayout {
+                side: Side::Left,
+                edge_treatment: EdgeTreatment::Margin,
+                slots: vec![Slot {
+                    rect: Rect::new(0.1, 0.15, 0.8, 0.6),
+                    role: Role::Hero,
+                    bleed: Vec::<BleedEdge>::new(),
+                    aspect_pref: (1.5, 1.8),
+                }],
+            },
+            right: PageLayout {
+                side: Side::Right,
+                edge_treatment: EdgeTreatment::Margin,
+                slots: vec![
+                    Slot {
+                        rect: Rect::new(0.1, 0.05, 0.35, 0.4),
+                        role: Role::Support,
+                        bleed: Vec::<BleedEdge>::new(),
+                        aspect_pref: (1.0, 1.3),
+                    },
+                    Slot {
+                        rect: Rect::new(0.1, 0.5, 0.35, 0.4),
+                        role: Role::Support,
+                        bleed: Vec::<BleedEdge>::new(),
+                        aspect_pref: (1.0, 1.3),
+                    },
+                ],
+            },
+            density: Density::Dense,
+            energy: Energy::Lively,
+        }
+    }
+
+    /// Three photos, three equal-area Support slots -- the flat counterpart
+    /// to `hero_dominant_template`. Same slot dimensions repeated across
+    /// both pages so every slot's area is identical by construction. Non-
+    /// square throughout, and every slot resolves well above 200 DPI for a
+    /// 4000x3000 photo.
+    fn even_three_up_template() -> SpreadTemplate {
+        SpreadTemplate {
+            id: "fx-even-three-up".into(),
+            left: PageLayout {
+                side: Side::Left,
+                edge_treatment: EdgeTreatment::Margin,
+                slots: vec![Slot {
+                    rect: Rect::new(0.15, 0.3, 0.7, 0.35),
+                    role: Role::Support,
+                    bleed: Vec::<BleedEdge>::new(),
+                    aspect_pref: (2.4, 2.6),
+                }],
+            },
+            right: PageLayout {
+                side: Side::Right,
+                edge_treatment: EdgeTreatment::Margin,
+                slots: vec![
+                    Slot {
+                        rect: Rect::new(0.15, 0.05, 0.7, 0.35),
+                        role: Role::Support,
+                        bleed: Vec::<BleedEdge>::new(),
+                        aspect_pref: (2.4, 2.6),
+                    },
+                    Slot {
+                        rect: Rect::new(0.15, 0.55, 0.7, 0.35),
+                        role: Role::Support,
+                        bleed: Vec::<BleedEdge>::new(),
+                        aspect_pref: (2.4, 2.6),
+                    },
+                ],
+            },
+            density: Density::Dense,
+            energy: Energy::Lively,
         }
     }
 }
