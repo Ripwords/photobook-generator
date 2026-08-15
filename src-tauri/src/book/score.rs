@@ -144,6 +144,25 @@ fn face_area_retention(photo: &Photo, crop: &Rect) -> f64 {
     kept / total
 }
 
+/// Vision's own capture-quality score for the best face in the photo:
+/// blur, exposure and pose, in [0,1].
+///
+/// This is the closest thing the engine has to an EXPRESSION signal, and
+/// the distance is worth stating. Vision has no expression classifier at
+/// any macOS version, and the geometric smile proxy was measured against
+/// real faces with a 100% false-negative rate, so it is computed and
+/// deliberately unused. Capture quality does not know a smile from a
+/// grimace -- it knows a sharp, well-exposed, front-facing face from a
+/// blurred or turned one, which is a different thing that happens to
+/// correlate with the complaint.
+///
+/// Neutral at 0.5 when there is no face or Vision returned no score: a
+/// faceless photo is not a bad photo. Same convention as
+/// `saliency_retention` and `face_area_retention`.
+fn face_quality(photo: &Photo) -> f64 {
+    photo.capture_quality.map_or(0.5, |q| q.clamp(0.0, 1.0))
+}
+
 /// Rewards the highest-aesthetic photo landing in a `hero` slot.
 fn hero_match(photo: &Photo, slot: &Slot, best_aesthetic: u8) -> f64 {
     match slot.role {
@@ -236,6 +255,7 @@ pub fn score_spread(
         total += w.aspect_fit * aspect_fit(photo, slot)
             + w.saliency_retention * saliency_retention(photo, &crop)
             + w.face_area_retention * face_area_retention(photo, &crop)
+            + w.face_quality * face_quality(photo)
             + w.hero_match * hero_match(photo, slot, best_aesthetic)
             + w.resolution_headroom * resolution_headroom(photo, &crop, slot);
     }
@@ -734,6 +754,57 @@ mod tests {
         assert!(coherent > clashing, "a coherent palette must score higher: {coherent} vs {clashing}");
     }
 
+    /// A faceless photo is not a bad photo, so an absent capture quality scores
+    /// NEUTRALLY rather than zero -- the same convention saliency_retention and
+    /// face_area_retention already use for a missing signal.
+    #[test]
+    fn score_face_quality_is_neutral_without_a_face_and_ordered_with_one() {
+        let mut none = photo(4000, 3000);
+        none.capture_quality = None;
+        assert_eq!(face_quality(&none), 0.5);
+
+        let mut poor = photo(4000, 3000);
+        poor.capture_quality = Some(0.1);
+        let mut good = photo(4000, 3000);
+        good.capture_quality = Some(0.9);
+
+        assert!(
+            face_quality(&good) > face_quality(&poor),
+            "a well-captured face must outscore a poorly-captured one"
+        );
+        assert!((0.0..=1.0).contains(&face_quality(&good)));
+        assert!((0.0..=1.0).contains(&face_quality(&poor)));
+    }
+
+    /// The term must actually reach the total. Weight 0.0 ships, so a test
+    /// using the shipped weights would pass with the function body deleted --
+    /// this one gives it a non-zero weight explicitly.
+    #[test]
+    fn score_face_quality_changes_the_spread_total_when_weighted() {
+        let t = one_slot_template();
+        let mut poor = photo(4000, 3000);
+        poor.capture_quality = Some(0.1);
+        let mut good = photo(4000, 3000);
+        good.capture_quality = Some(0.9);
+
+        let w = Weights { face_quality: 1.0, ..Weights::default() };
+        let poor_score = score_spread(&t, &[&poor], &[0], None, &w).expect("scores");
+        let good_score = score_spread(&t, &[&good], &[0], None, &w).expect("scores");
+        assert!(
+            good_score > poor_score,
+            "face_quality never reached the total: {good_score} vs {poor_score}"
+        );
+
+        // And at the SHIPPED weight it changes nothing, which is what "inert"
+        // means and what keeps the golden stable.
+        let inert = Weights::default();
+        assert_eq!(
+            score_spread(&t, &[&poor], &[0], None, &inert),
+            score_spread(&t, &[&good], &[0], None, &inert),
+            "the term must be inert at its shipped weight of 0.0"
+        );
+    }
+
     #[test]
     fn score_best_spread_returns_none_when_every_candidate_is_rejected() {
         let lib = fixture_library();
@@ -778,6 +849,42 @@ mod tests {
         assert_eq!(a_score, b_score, "the fixture must actually reach a tie");
         assert_eq!(a.id, b.id, "iteration order must not decide the winner; the seed does");
         assert_eq!(a_assign, vec![0, 1], "and the winner is still the best assignment");
+    }
+
+    /// A slot on a LEFT page, flush to the fold (`x + w == 1.0` in page
+    /// coordinates) and non-square. Flush to the fold so per-slot terms that
+    /// care about position relative to the gutter dead band can exercise it;
+    /// non-square so an area- or aspect-dependent term cannot hide behind
+    /// `w == h`.
+    fn full_left_page_slot() -> Slot {
+        Slot {
+            rect: Rect::new(0.7, 0.375, 0.3, 0.25),
+            role: Role::Hero,
+            bleed: Vec::<BleedEdge>::new(),
+            aspect_pref: (1.2, 1.6),
+        }
+    }
+
+    /// A 1-photo spread template built around `full_left_page_slot`, so a
+    /// per-slot term can be varied without a second slot's terms moving
+    /// alongside it. A legal template: `photo_count()` is 1 and
+    /// `ordered_slots` handles an empty page.
+    fn one_slot_template() -> SpreadTemplate {
+        SpreadTemplate {
+            id: "fx-one-slot".into(),
+            left: PageLayout {
+                side: Side::Left,
+                edge_treatment: EdgeTreatment::Margin,
+                slots: vec![full_left_page_slot()],
+            },
+            right: PageLayout {
+                side: Side::Right,
+                edge_treatment: EdgeTreatment::Margin,
+                slots: Vec::new(),
+            },
+            density: Density::Sparse,
+            energy: Energy::Calm,
+        }
     }
 
     /// One slot on the left page and none on the right, so a per-slot term
