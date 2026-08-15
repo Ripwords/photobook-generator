@@ -56,52 +56,45 @@ impl Capacity {
     /// spreads -- confirmed against Pixajoy's page navigator, which reads
     /// `Cover . 1 . 2-3 . 4-5 . ...`. It is NOT N/2 spreads.
     ///
-    /// The single-page term below is computed from the largest *spread*
-    /// size, which OVER-ESTIMATES what a single page can actually hold: a
-    /// single page is one page-half, not a whole spread, so it can never
-    /// hold as many photos as the largest buildable spread. This function
-    /// exists so every test in this module can run against a plain list of
-    /// buildable sizes, without loading template files from disk -- the
-    /// over-estimate is the price of that independence. `from_library`
-    /// below computes the accurate, page-half-bounded figure from the real
-    /// template library and should be preferred by any caller that has one.
-    pub fn from_sizes(pages: u32, buildable: &[usize]) -> Capacity {
-        let singles = 2;
-        let spreads = (pages.saturating_sub(2)) / 2;
-        let smallest = buildable.iter().copied().min().unwrap_or(1);
-        let largest = buildable.iter().copied().max().unwrap_or(1);
-        Capacity {
-            pages,
-            singles,
-            spreads,
-            min_photos: (spreads as usize + singles as usize) * smallest,
-            max_photos: spreads as usize * largest + singles as usize * largest,
-        }
+    /// The two kinds of slot are measured against their OWN buildable sets --
+    /// a spread against the library's spread counts less 1 (a 1-photo spread
+    /// template prints a blank half), a single against `1 ..= largest_half`.
+    /// `largest_half` is a parameter rather than read from a `Library` so
+    /// every test in this module can run against plain lists, without loading
+    /// template files from disk; `from_library` below takes both figures from
+    /// the real library and should be preferred by any caller that has one.
+    pub fn from_sizes(pages: u32, spread_sizes: &[usize], largest_half: usize) -> Capacity {
+        Capacity::from_buildable(pages, &Buildable::from_sizes(spread_sizes, largest_half))
     }
 
-    /// Accurate version of `from_sizes`: the single-page term is bounded by
-    /// what one page-half can actually hold (`lib.page_half_pool()`'s
-    /// largest half), not by the largest whole spread.
+    /// The accurate figure: both sets come from the loaded library.
     pub fn from_library(pages: u32, lib: &Library) -> Capacity {
-        let buildable = buildable_sizes(lib);
-        let singles = 2;
+        Capacity::from_buildable(pages, &Buildable::from_library(lib))
+    }
+
+    /// A book is 2 single pages plus (N-2)/2 spreads, each kind bounded by
+    /// its own set. Written once so `from_sizes` and `from_library` cannot
+    /// drift apart -- they differ only in where the `Buildable` came from.
+    fn from_buildable(pages: u32, b: &Buildable) -> Capacity {
+        let singles = 2u32;
         let spreads = (pages.saturating_sub(2)) / 2;
-        let smallest = buildable.iter().copied().min().unwrap_or(1);
-        let largest_spread = buildable.iter().copied().max().unwrap_or(1);
-        let largest_half = lib
-            .page_half_pool()
-            .iter()
-            .map(|p| p.slots.len())
-            .max()
-            .unwrap_or(1);
+        let (single_lo, single_hi) = bounds_of(&b.single);
+        let (spread_lo, spread_hi) = bounds_of(&b.spread);
         Capacity {
             pages,
             singles,
             spreads,
-            min_photos: (spreads as usize + singles as usize) * smallest,
-            max_photos: spreads as usize * largest_spread + singles as usize * largest_half,
+            min_photos: spreads as usize * spread_lo + singles as usize * single_lo,
+            max_photos: spreads as usize * spread_hi + singles as usize * single_hi,
         }
     }
+}
+
+/// Smallest and largest usable size in one set, both floored at 1 so a
+/// malformed set cannot produce a zero divisor or a zero-sized group.
+fn bounds_of(sizes: &[usize]) -> (usize, usize) {
+    let usable = || sizes.iter().copied().filter(|&s| s > 0);
+    (usable().min().unwrap_or(1), usable().max().unwrap_or(1))
 }
 
 /// The photo counts the library can actually build a spread for.
@@ -116,12 +109,16 @@ pub fn buildable_sizes(lib: &Library) -> Vec<usize> {
 
 /// Smallest SKU that fits the keepers, defaulting to 20 pages.
 ///
-/// Measured against `Capacity::from_sizes`, which OVER-estimates the two
-/// single pages -- see its doc comment. Callers holding a real `Library`
-/// should use `recommend_pages` below instead; this variant exists so the
-/// recommendation is testable against a plain list of buildable sizes.
+/// Measured against `Capacity::from_sizes` with the largest page half taken
+/// to be the largest buildable SPREAD, which OVER-estimates the two single
+/// pages: a single page is one page-half and can never hold a whole spread's
+/// worth. Callers holding a real `Library` should use `recommend_pages` below
+/// instead; this variant exists so the recommendation is testable against a
+/// plain list of buildable sizes, and the over-estimate is the price of that
+/// independence.
 pub fn recommend_pages_with(keeper_count: usize, buildable: &[usize]) -> u32 {
-    let twenty = Capacity::from_sizes(20, buildable);
+    let largest_half = buildable.iter().copied().max().unwrap_or(1);
+    let twenty = Capacity::from_sizes(20, buildable, largest_half);
     if keeper_count <= twenty.max_photos {
         20
     } else {
@@ -180,6 +177,61 @@ fn slot_kind_at(index: usize, slots: usize) -> SlotKind {
     }
 }
 
+/// The group sizes each kind of slot may be cut to.
+///
+/// One book-wide set is wrong in both directions. A SPREAD cannot take 1:
+/// a 1-photo template has a single slot, the validator forbids a slot from
+/// spanning the fold, so one of its halves is empty and prints white --
+/// structurally, for every such template, with no authoring fix. A SINGLE
+/// cannot take a whole spread's worth: it is one page-half, so sizing it
+/// against the largest spread over-fills it and `pace::strongest` trims the
+/// surplus away.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Buildable {
+    /// Sizes for the first and last page: `1 ..= largest page half`.
+    pub single: Vec<usize>,
+    /// Sizes for the (N-2)/2 spreads: the library's spread counts, less 1.
+    pub spread: Vec<usize>,
+}
+
+impl Buildable {
+    /// Derived from the loaded library, never hardcoded. The real library is
+    /// currently 1..=6 for spreads, so `spread` comes out 2..=6 today, but a
+    /// future template changes that and `buildable_sizes` is the one place
+    /// that answers the question.
+    pub fn from_library(lib: &Library) -> Buildable {
+        let largest_half =
+            lib.page_half_pool().iter().map(|p| p.slots.len()).max().unwrap_or(1);
+        Buildable::from_sizes(&buildable_sizes(lib), largest_half)
+    }
+
+    /// As `from_library`, but from a plain list of spread sizes plus the
+    /// largest page half -- so the tests in this module can run without
+    /// loading template files from disk.
+    pub fn from_sizes(spread_sizes: &[usize], largest_half: usize) -> Buildable {
+        Buildable {
+            single: (1..=largest_half.max(1)).collect(),
+            spread: spread_sizes.iter().copied().filter(|&s| s >= 2).collect(),
+        }
+    }
+
+    pub fn for_kind(&self, kind: SlotKind) -> &[usize] {
+        match kind {
+            SlotKind::Single => &self.single,
+            SlotKind::Spread => &self.spread,
+        }
+    }
+
+    /// Bounds over BOTH sets, for the two places that need a book-wide
+    /// figure rather than a per-slot one: `apportion_slots`, which divides
+    /// slot COUNTS across chapters, and `Capacity`. Both use these as
+    /// bounds, not as exact sizes, so the union is the honest answer.
+    pub fn union_bounds(&self) -> (usize, usize) {
+        let all = || self.single.iter().chain(self.spread.iter()).copied().filter(|&s| s > 0);
+        (all().min().unwrap_or(1), all().max().unwrap_or(1))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Group {
     /// Indices into the photo slice handed to `pack`.
@@ -214,12 +266,12 @@ pub struct Group {
 pub fn pack(
     photos: &[Photo],
     capacity: &Capacity,
-    buildable: &[usize],
+    buildable: &Buildable,
     overrides: &Overrides,
 ) -> Result<Vec<Group>, IncludeOverflow> {
     use std::collections::BTreeMap;
 
-    if photos.is_empty() || buildable.is_empty() {
+    if photos.is_empty() || (buildable.single.is_empty() && buildable.spread.is_empty()) {
         return Ok(Vec::new());
     }
 
@@ -283,7 +335,7 @@ pub fn pack(
     let counts: Vec<usize> = chapters.values().map(Vec::len).collect();
     let wants: Vec<usize> =
         chapters.values().map(|b| b.iter().filter(|&&i| wanted(i)).count()).collect();
-    let (smallest, largest) = size_bounds(buildable);
+    let (smallest, largest) = buildable.union_bounds();
     let allowance = apportion_slots(&counts, &wants, slots, smallest, largest);
 
     for ((cluster, mut members), mut slots_left) in chapters.into_iter().zip(allowance) {
@@ -332,14 +384,23 @@ pub fn pack(
             // smaller group on the opening single page, which holds only a
             // page-half's worth anyway.
             let swing = if groups.len() % 2 == 0 { -1 } else { 1 };
-            match choose_group_size(remaining, buildable, slots_left, swing) {
+            // `groups.len()` is the GLOBAL slot index -- it counts across
+            // chapters, not within one -- which is exactly what the swing
+            // above already relies on. Slot 0 and slot `slots - 1` are the
+            // two single pages; everything between them is a spread.
+            let index = groups.len();
+            let kind = slot_kind_at(index, slots);
+            let (later_smallest, later_largest) =
+                lookahead_bounds(index, slots_left, slots, buildable);
+            match choose_group_size(
+                remaining,
+                buildable.for_kind(kind),
+                later_smallest,
+                later_largest,
+                slots_left,
+                swing,
+            ) {
                 Some(take) => {
-                    // `groups.len()` is the GLOBAL slot index -- it counts
-                    // across chapters, not within one -- which is exactly
-                    // what the swing above already relies on. Slot 0 and
-                    // slot `slots - 1` are the two single pages; everything
-                    // between them is a spread.
-                    let kind = slot_kind_at(groups.len(), slots);
                     groups.push(Group {
                         photos: members[i..i + take].to_vec(),
                         event_cluster: cluster,
@@ -360,14 +421,6 @@ pub fn pack(
     }
 
     Ok(groups)
-}
-
-/// The smallest and largest group the library can build, both floored at 1
-/// so a malformed `buildable` cannot produce a zero divisor or a zero-sized
-/// group.
-fn size_bounds(buildable: &[usize]) -> (usize, usize) {
-    let usable = || buildable.iter().copied().filter(|&s| s > 0);
-    (usable().min().unwrap_or(1), usable().max().unwrap_or(1))
 }
 
 /// How many spread slots each chapter may cut groups from, given the whole
@@ -475,25 +528,59 @@ fn apportion_slots(
 /// leaving a later slot with nothing to hold.
 ///
 /// * take fewer than `lo` and the `slots_left - 1` slots after it cannot
-///   hold the rest even at `largest` each, so a photo is dropped;
+///   hold the rest even at `later_largest` each, so a photo is dropped;
 /// * take more than `hi` and there are not enough photos left to give every
-///   later slot even `smallest`, so a slot comes out blank.
+///   later slot even `later_smallest`, so a slot comes out blank.
 ///
 /// Both saturate at zero, which is the honest answer when there are simply
 /// fewer photos than slots -- there the band collapses towards the smallest
 /// group and the leftover slots are blank because the photos ran out, not
 /// because an earlier slot was greedy.
 ///
-/// For a CONTIGUOUS `buildable` (which the real library is, 1..=6) the band
-/// is never empty when `smallest * slots_left <= remaining <= largest *
-/// slots_left`, and staying inside it is what makes "every slot filled and
-/// every photo placed" hold by induction all the way down the chapter.
-fn feasible_band(remaining: usize, buildable: &[usize], slots_left: usize) -> (usize, usize) {
-    let (smallest, largest) = size_bounds(buildable);
+/// The lookahead bounds are passed in rather than derived from this slot's
+/// own buildable set, because the slots that FOLLOW may be a different kind:
+/// a chapter's last slot can be the book's closing single, whose set starts
+/// at 1, while every slot before it is a spread whose set starts at 2. Using
+/// this slot's own bounds for the lookahead would mis-state the band by one
+/// photo at exactly the position where it matters.
+fn feasible_band(
+    remaining: usize,
+    later_smallest: usize,
+    later_largest: usize,
+    slots_left: usize,
+) -> (usize, usize) {
     let later = slots_left.saturating_sub(1);
-    let lo = remaining.saturating_sub(largest.saturating_mul(later));
-    let hi = remaining.saturating_sub(smallest.saturating_mul(later));
+    let lo = remaining.saturating_sub(later_largest.saturating_mul(later));
+    let hi = remaining.saturating_sub(later_smallest.saturating_mul(later));
     (lo.min(hi), hi)
+}
+
+/// The bounds over the slots that come AFTER `index`, given the book has
+/// `slots` of them in total. Which kind sits where is `slot_kind_at`'s
+/// answer, not re-derived here: one definition of "slot 0 and slot
+/// `slots - 1` are singles" is the whole reason that function exists.
+fn lookahead_bounds(
+    index: usize,
+    slots_left: usize,
+    slots: usize,
+    buildable: &Buildable,
+) -> (usize, usize) {
+    let later = slots_left.saturating_sub(1);
+    if later == 0 {
+        // Nothing follows, so the band collapses to [remaining, remaining]
+        // regardless of what these are.
+        return (1, 1);
+    }
+    let mut smallest = usize::MAX;
+    let mut largest = 0usize;
+    for i in (index + 1)..=(index + later) {
+        let set = buildable.for_kind(slot_kind_at(i, slots));
+        for &s in set.iter().filter(|&&s| s > 0) {
+            smallest = smallest.min(s);
+            largest = largest.max(s);
+        }
+    }
+    (if smallest == usize::MAX { 1 } else { smallest }, largest.max(1))
 }
 
 /// A buildable size for `remaining`, aimed at this chapter's FAIR SHARE of
@@ -530,7 +617,9 @@ fn feasible_band(remaining: usize, buildable: &[usize], slots_left: usize) -> (u
 /// that it can build.
 fn choose_group_size(
     remaining: usize,
-    buildable: &[usize],
+    own_buildable: &[usize],
+    later_smallest: usize,
+    later_largest: usize,
     slots_left: usize,
     swing: i64,
 ) -> Option<usize> {
@@ -540,7 +629,7 @@ fn choose_group_size(
 
     // `(2r + s) / 2s` is `r / s` rounded half up, in integer arithmetic.
     let share = (2 * remaining + slots_left) / (2 * slots_left);
-    let (lo, hi) = feasible_band(remaining, buildable, slots_left);
+    let (lo, hi) = feasible_band(remaining, later_smallest, later_largest, slots_left);
     // The aim is deliberately NOT clamped into the band. Clamping it would
     // enforce the band a second time, and a second enforcement of the same
     // rule is one no test can distinguish from the first -- measured: with
@@ -552,10 +641,10 @@ fn choose_group_size(
     // zero-size group would loop forever rather than fail. The validator
     // forbids an empty template, so this only ever fires on a malformed
     // `buildable`, and reporting the chapter unplaceable beats hanging.
-    buildable.iter().copied().filter(|&s| s > 0 && s <= remaining).min_by_key(|&size| {
+    own_buildable.iter().copied().filter(|&s| s > 0 && s <= remaining).min_by_key(|&size| {
         let rest = remaining - size;
         let outside = usize::from(size < lo || size > hi);
-        let strands = usize::from(rest != 0 && !is_decomposable(rest, buildable));
+        let strands = usize::from(rest != 0 && !is_decomposable(rest, own_buildable));
         (outside, strands, aim.abs_diff(size), std::cmp::Reverse(size))
     })
 }
@@ -599,6 +688,25 @@ mod tests {
     /// was true for every remainder, so the largest size always won.
     fn full() -> Vec<usize> {
         vec![1, 2, 3, 4, 5, 6]
+    }
+
+    /// A `Buildable` from a plain list of SPREAD sizes, taking the largest
+    /// page half to be the largest spread size. That is an OVER-estimate --
+    /// a single page is one page-half and cannot hold a whole spread's worth
+    /// -- but it is the same over-estimate the old book-wide slice made, so
+    /// the fixtures below keep the capacities their assertions were written
+    /// against and only the per-slot-kind behaviour moves.
+    fn buildable_for(spread_sizes: &[usize]) -> Buildable {
+        Buildable::from_sizes(spread_sizes, spread_sizes.iter().copied().max().unwrap_or(1))
+    }
+
+    /// `Capacity` under the same convention as `buildable_for` above.
+    fn capacity_for(pages: u32, spread_sizes: &[usize]) -> Capacity {
+        Capacity::from_sizes(
+            pages,
+            spread_sizes,
+            spread_sizes.iter().copied().max().unwrap_or(1),
+        )
     }
 
     fn group_sizes(groups: &[Group]) -> Vec<usize> {
@@ -645,10 +753,10 @@ mod tests {
     fn pack_never_drops_an_included_photo_when_trimming_to_capacity() {
         let photos: Vec<Photo> =
             (0..100).map(|i| photo(&format!("/p{i:03}.jpg"), 0, i as u8)).collect();
-        let c = Capacity::from_sizes(20, &sizes());
+        let c = capacity_for(20, &sizes());
         let o = include(&["/p000.jpg", "/p001.jpg"]);
 
-        let groups = pack(&photos, &c, &sizes(), &o).expect("2 included photos fit in 33");
+        let groups = pack(&photos, &c, &buildable_for(&sizes()), &o).expect("2 included photos fit in 33");
 
         let placed = placed_paths(&photos, &groups);
         assert!(placed.contains(&"/p000.jpg".to_string()), "the worst photo was asked for: {placed:?}");
@@ -671,12 +779,12 @@ mod tests {
     fn pack_reports_rather_than_drops_when_the_included_photos_alone_exceed_capacity() {
         let photos: Vec<Photo> =
             (0..40).map(|i| photo(&format!("/p{i:03}.jpg"), 0, i as u8)).collect();
-        let c = Capacity::from_sizes(20, &sizes());
+        let c = capacity_for(20, &sizes());
         assert_eq!(c.max_photos, 33, "fixture: the book holds fewer than the 40 asked for");
         let o: Overrides =
             photos.iter().map(|p| (p.hash.clone(), Override::Include)).collect();
 
-        let err = pack(&photos, &c, &sizes(), &o)
+        let err = pack(&photos, &c, &buildable_for(&sizes()), &o)
             .expect_err("40 explicit choices cannot be silently cut to 33");
 
         assert_eq!(err, IncludeOverflow { pages: 20, included: 40, capacity: 33, over: 7 });
@@ -690,11 +798,11 @@ mod tests {
     fn pack_accepts_included_photos_that_exactly_fill_the_book() {
         let photos: Vec<Photo> =
             (0..33).map(|i| photo(&format!("/p{i:03}.jpg"), 0, i as u8)).collect();
-        let c = Capacity::from_sizes(20, &sizes());
+        let c = capacity_for(20, &sizes());
         assert_eq!(c.max_photos, 33);
         let o: Overrides = photos.iter().map(|p| (p.hash.clone(), Override::Include)).collect();
 
-        let groups = pack(&photos, &c, &sizes(), &o).expect("33 into 33 must fit");
+        let groups = pack(&photos, &c, &buildable_for(&sizes()), &o).expect("33 into 33 must fit");
 
         assert_eq!(placed_paths(&photos, &groups).len(), 33);
     }
@@ -715,17 +823,17 @@ mod tests {
         let mut photos: Vec<Photo> =
             (0..31).map(|i| photo(&format!("/c0p{i:03}.jpg"), 0, 50)).collect();
         photos.extend((0..2).map(|i| photo(&format!("/c1p{i:03}.jpg"), 1, 50)));
-        let c = Capacity::from_sizes(20, &sizes());
+        let c = capacity_for(20, &sizes());
         assert_eq!(photos.len(), c.max_photos, "fixture: exactly at capacity, so nothing is trimmed");
 
-        let without = pack(&photos, &c, &sizes(), &Overrides::new()).expect("no includes");
+        let without = pack(&photos, &c, &buildable_for(&sizes()), &Overrides::new()).expect("no includes");
         let stranded = placed_paths(&photos, &without);
         assert!(
             !stranded.contains(&"/c0p030.jpg".to_string()),
             "fixture must actually strand this photo without an override, else the test is inert"
         );
 
-        let groups = pack(&photos, &c, &sizes(), &include(&["/c0p030.jpg"]))
+        let groups = pack(&photos, &c, &buildable_for(&sizes()), &include(&["/c0p030.jpg"]))
             .expect("one include is well inside capacity");
 
         let placed = placed_paths(&photos, &groups);
@@ -743,25 +851,33 @@ mod tests {
     /// chapters than slots -- pass 1 hands one slot each, longest first, and
     /// runs out. Every photo in an unslotted chapter vanishes from the book.
     ///
-    /// Twelve one-photo chapters into 11 slots: without an override the last
-    /// chapter loses (ties go to the earlier chapter), so the photo the user
-    /// asked for is exactly the one the engine would have thrown away.
+    /// Twelve TWO-photo chapters into 11 slots: without an override the last
+    /// chapter loses (ties go to the earlier chapter), so the photos the user
+    /// asked for are exactly the ones the engine would have thrown away.
+    ///
+    /// Two photos per chapter rather than one, because a spread slot can no
+    /// longer be cut to a single photo -- a one-photo chapter is now dropped
+    /// wherever it lands but the closing single, which would make the fixture
+    /// measure that instead of apportionment.
     #[test]
     fn pack_gives_a_slot_to_a_chapter_whose_photo_the_user_asked_for() {
-        let photos: Vec<Photo> =
-            (0..12).map(|i| photo(&format!("/p{i:02}.jpg"), i, 50)).collect();
-        let c = Capacity::from_sizes(20, &sizes());
+        let photos: Vec<Photo> = (0..12)
+            .flat_map(|i| {
+                [photo(&format!("/p{i:02}a.jpg"), i, 50), photo(&format!("/p{i:02}b.jpg"), i, 50)]
+            })
+            .collect();
+        let c = capacity_for(20, &sizes());
 
-        let without = pack(&photos, &c, &sizes(), &Overrides::new()).expect("no includes");
+        let without = pack(&photos, &c, &buildable_for(&sizes()), &Overrides::new()).expect("no includes");
         assert!(
-            !placed_paths(&photos, &without).contains(&"/p11.jpg".to_string()),
+            !placed_paths(&photos, &without).contains(&"/p11a.jpg".to_string()),
             "fixture must lose this chapter without an override, else the test is inert"
         );
 
-        let groups = pack(&photos, &c, &sizes(), &include(&["/p11.jpg"])).expect("one include");
+        let groups = pack(&photos, &c, &buildable_for(&sizes()), &include(&["/p11a.jpg"])).expect("one include");
 
         assert!(
-            placed_paths(&photos, &groups).contains(&"/p11.jpg".to_string()),
+            placed_paths(&photos, &groups).contains(&"/p11a.jpg".to_string()),
             "the chapter holding an explicit choice must be represented: {:?}",
             placed_paths(&photos, &groups)
         );
@@ -776,8 +892,8 @@ mod tests {
         let photos: Vec<Photo> = (0..60)
             .map(|i| photo(&format!("/p{i:02}.jpg"), (i % 4) as u32, (i * 7 % 100) as u8))
             .collect();
-        let c = Capacity::from_sizes(20, &full());
-        let groups = pack(&photos, &c, &full(), &Overrides::new()).expect("no includes");
+        let c = capacity_for(20, &full());
+        let groups = pack(&photos, &c, &buildable_for(&full()), &Overrides::new()).expect("no includes");
 
         assert_eq!(group_sizes(&groups), vec![4, 6, 5, 6, 4, 5, 4, 6, 5, 6, 6]);
     }
@@ -801,9 +917,21 @@ mod tests {
     /// arm no test enters.
     #[test]
     fn pack_reports_no_size_rather_than_one_the_library_cannot_build() {
-        assert_eq!(choose_group_size(2, &[3, 5], 1, 0), None, "nothing in {{3,5}} covers 2");
-        assert_eq!(choose_group_size(2, &[3, 5], 4, -1), None, "nor with slots still to fill");
-        assert_eq!(choose_group_size(3, &[3, 5], 1, 0), Some(3), "3 is covered, and must be");
+        // The lookahead bounds are now explicit. Here every later slot draws
+        // from the same {3,5} set as this one, so they are that set's own
+        // bounds -- which is exactly what the function used to derive for
+        // itself, so these three cases are unchanged in substance.
+        assert_eq!(choose_group_size(2, &[3, 5], 3, 5, 1, 0), None, "nothing in {{3,5}} covers 2");
+        assert_eq!(
+            choose_group_size(2, &[3, 5], 3, 5, 4, -1),
+            None,
+            "nor with slots still to fill"
+        );
+        assert_eq!(
+            choose_group_size(3, &[3, 5], 3, 5, 1, 0),
+            Some(3),
+            "3 is covered, and must be"
+        );
         // The decomposability guard itself, at the smallest input that shows
         // it working. Aim is 3 and 3 is buildable, so nearness-to-aim WANTS
         // 3 -- only the guard overrules it, because taking 3 of 5 strands a
@@ -812,7 +940,7 @@ mod tests {
         // Asserted here rather than through `pack`, whose only gapped-set
         // fixture is decided by the band before the guard is ever consulted.
         assert_eq!(
-            choose_group_size(5, &[3, 5], 2, 0),
+            choose_group_size(5, &[3, 5], 3, 5, 2, 0),
             Some(5),
             "taking 3 would strand a remainder of 2 that {{3,5}} cannot build"
         );
@@ -820,8 +948,14 @@ mod tests {
 
     #[test]
     fn pack_never_chooses_a_zero_sized_group() {
-        assert_eq!(choose_group_size(4, &[0], 2, 0), None, "0 is not a group size");
-        assert_eq!(choose_group_size(4, &[0, 3], 2, 0), Some(3), "0 must not out-rank a real size");
+        // `{0}` has no usable size at all, so its lookahead bounds floor at
+        // (1, 1) -- what `bounds_of` returns for it.
+        assert_eq!(choose_group_size(4, &[0], 1, 1, 2, 0), None, "0 is not a group size");
+        assert_eq!(
+            choose_group_size(4, &[0, 3], 3, 3, 2, 0),
+            Some(3),
+            "0 must not out-rank a real size"
+        );
     }
 
     /// Photos in chapters, packed, keyed so the caller can count them.
@@ -832,8 +966,8 @@ mod tests {
                 photos.push(photo(&format!("/c{c}p{i:03}.jpg"), c as u32, 50));
             }
         }
-        let c = Capacity::from_sizes(20, buildable);
-        let groups = pack(&photos, &c, buildable, &Overrides::new()).expect("the fixture must fit the included photos");
+        let c = capacity_for(20, buildable);
+        let groups = pack(&photos, &c, &buildable_for(buildable), &Overrides::new()).expect("the fixture must fit the included photos");
         (photos, groups)
     }
 
@@ -844,6 +978,11 @@ mod tests {
     /// while another goes short -- and the shortfall vanishes with no blank
     /// spread anywhere to show for it, which is the same class of defect as
     /// front-loading arriving by a different route.
+    ///
+    /// No chapter here holds fewer than two photos: a spread slot cannot be
+    /// cut to one (a 1-photo spread template prints a blank half), so a
+    /// one-photo chapter landing on a spread is dropped BY DESIGN and would
+    /// make this property untestable rather than false.
     ///
     /// The first row is the measured counterexample: chapters of 6/8/12/16/8
     /// over 11 slots with `buildable = 1..=6`. Apportioning on the upper
@@ -858,17 +997,17 @@ mod tests {
             vec![6, 8, 12, 16, 8],
             vec![16, 8, 12, 6, 8],
             vec![30],
-            vec![1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            vec![2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
             vec![2, 30, 2],
             vec![25, 25],
             vec![6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6],
-            vec![13, 5, 1, 9, 22],
+            vec![13, 5, 2, 9, 22],
         ] {
             let total: usize = shape.iter().sum();
             let (photos, groups) = pack_chapters(&shape, &full);
             let placed: usize = groups.iter().map(|g| g.photos.len()).sum();
             assert!(
-                total <= Capacity::from_sizes(20, &full).max_photos,
+                total <= capacity_for(20, &full).max_photos,
                 "fixture {shape:?} must fit inside capacity or the property does not apply"
             );
             assert_eq!(
@@ -907,8 +1046,8 @@ mod tests {
     fn pack_varies_group_size_across_a_book_instead_of_converging_on_the_average() {
         let photos: Vec<Photo> =
             (0..30).map(|i| photo(&format!("/p{i:02}.jpg"), 0, 50)).collect();
-        let c = Capacity::from_sizes(20, &full());
-        let groups = pack(&photos, &c, &full(), &Overrides::new()).expect("the fixture must fit the included photos");
+        let c = capacity_for(20, &full());
+        let groups = pack(&photos, &c, &buildable_for(&full()), &Overrides::new()).expect("the fixture must fit the included photos");
         let s = group_sizes(&groups);
 
         assert_eq!(groups.len(), 11, "variety must not cost a slot: {s:?}");
@@ -923,17 +1062,17 @@ mod tests {
 
     #[test]
     fn pack_capacity_follows_two_singles_plus_spreads() {
-        let c = Capacity::from_sizes(20, &sizes());
+        let c = capacity_for(20, &sizes());
         assert_eq!(c.singles, 2);
         assert_eq!(c.spreads, 9, "20 pages = 2 singles + 9 spreads");
-        let c40 = Capacity::from_sizes(40, &sizes());
+        let c40 = capacity_for(40, &sizes());
         assert_eq!(c40.spreads, 19);
     }
 
     /// Boundary tests AT the boundaries, not near them.
     #[test]
     fn pack_recommends_twenty_pages_at_exactly_the_capacity_limit() {
-        let twenty = Capacity::from_sizes(20, &sizes());
+        let twenty = capacity_for(20, &sizes());
         assert_eq!(recommend_pages_with(twenty.max_photos, &sizes()), 20);
         assert_eq!(recommend_pages_with(twenty.max_photos + 1, &sizes()), 40);
     }
@@ -959,7 +1098,7 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/templates");
         let lib = Library::load(&dir).expect("the frozen fixture library must decompose");
         let accurate = Capacity::from_library(20, &lib).max_photos;
-        let over_estimate = Capacity::from_sizes(20, &buildable_sizes(&lib)).max_photos;
+        let over_estimate = capacity_for(20, &buildable_sizes(&lib)).max_photos;
         assert!(
             over_estimate > accurate,
             "fixture must distinguish the two capacity rules ({over_estimate} vs {accurate})"
@@ -978,8 +1117,8 @@ mod tests {
     fn pack_never_emits_a_group_the_library_cannot_build() {
         let photos: Vec<Photo> =
             (0..11).map(|i| photo(&format!("/p{i:02}.jpg"), 0, 50)).collect();
-        let c = Capacity::from_sizes(20, &sizes());
-        let groups = pack(&photos, &c, &sizes(), &Overrides::new()).expect("the fixture must fit the included photos");
+        let c = capacity_for(20, &sizes());
+        let groups = pack(&photos, &c, &buildable_for(&sizes()), &Overrides::new()).expect("the fixture must fit the included photos");
         for g in &groups {
             assert!(sizes().contains(&g.photos.len()),
                 "group of {} is unbuildable", g.photos.len());
@@ -1008,8 +1147,13 @@ mod tests {
         let gapped = vec![3, 5];
         let photos: Vec<Photo> =
             (0..7).map(|i| photo(&format!("/p{i}.jpg"), 0, 50)).collect();
-        let c = Capacity::from_sizes(20, &gapped);
-        let groups = pack(&photos, &c, &gapped, &Overrides::new()).expect("the fixture must fit the included photos");
+        // Built by hand, not by `Buildable::from_sizes`: that fills the single
+        // set with `1 ..= largest_half`, which presumes a page half exists at
+        // every count up to the largest. This fixture's whole point is a
+        // library with GAPS, so its halves are the gapped counts too.
+        let b = Buildable { single: gapped.clone(), spread: gapped.clone() };
+        let c = capacity_for(20, &gapped);
+        let groups = pack(&photos, &c, &b, &Overrides::new()).expect("the fixture must fit the included photos");
 
         for g in &groups {
             assert!(gapped.contains(&g.photos.len()),
@@ -1028,8 +1172,8 @@ mod tests {
     fn pack_splits_a_chapter_of_five_because_no_five_up_template_exists() {
         let photos: Vec<Photo> =
             (0..5).map(|i| photo(&format!("/p{i}.jpg"), 7, 50)).collect();
-        let c = Capacity::from_sizes(20, &sizes());
-        let groups = pack(&photos, &c, &sizes(), &Overrides::new()).expect("the fixture must fit the included photos");
+        let c = capacity_for(20, &sizes());
+        let groups = pack(&photos, &c, &buildable_for(&sizes()), &Overrides::new()).expect("the fixture must fit the included photos");
         assert!(groups.iter().all(|g| g.photos.len() != 5));
         assert_eq!(groups.iter().map(|g| g.photos.len()).sum::<usize>(), 5);
     }
@@ -1045,12 +1189,12 @@ mod tests {
     fn pack_fills_every_slot_rather_than_front_loading_the_first_spreads() {
         let photos: Vec<Photo> =
             (0..30).map(|i| photo(&format!("/p{i:02}.jpg"), 0, 50)).collect();
-        let c = Capacity::from_sizes(20, &full());
+        let c = capacity_for(20, &full());
         assert_eq!((c.spreads, c.singles), (9, 2), "the measured case: 9 spreads + 2 singles");
         let slots = c.spreads as usize + c.singles as usize;
         assert!(photos.len() > slots, "fixture: more photos than slots, so no slot may be blank");
 
-        let groups = pack(&photos, &c, &full(), &Overrides::new()).expect("the fixture must fit the included photos");
+        let groups = pack(&photos, &c, &buildable_for(&full()), &Overrides::new()).expect("the fixture must fit the included photos");
         let s = group_sizes(&groups);
         assert_eq!(groups.len(), slots, "{} slots but only {} groups: {s:?}", slots, groups.len());
         assert_eq!(s.iter().sum::<usize>(), 30, "every photo must be placed: {s:?}");
@@ -1076,10 +1220,10 @@ mod tests {
             (0..60).map(|i| photo(&format!("/a{i:02}.jpg"), 1, 50)).collect();
         photos.extend((0..3).map(|i| photo(&format!("/b{i}.jpg"), 2, 50)));
         photos.extend((0..3).map(|i| photo(&format!("/c{i}.jpg"), 3, 50)));
-        let c = Capacity::from_sizes(20, &full());
+        let c = capacity_for(20, &full());
         assert_eq!(photos.len(), c.max_photos, "fixture: exactly at capacity, so nothing is trimmed");
 
-        let groups = pack(&photos, &c, &full(), &Overrides::new()).expect("the fixture must fit the included photos");
+        let groups = pack(&photos, &c, &buildable_for(&full()), &Overrides::new()).expect("the fixture must fit the included photos");
         let chapters: std::collections::BTreeSet<u32> =
             groups.iter().map(|g| g.event_cluster).collect();
         assert_eq!(
@@ -1101,8 +1245,8 @@ mod tests {
             (0..5).map(|i| photo(&format!("/a{i}.jpg"), 1, 50)).collect();
         photos.extend((0..5).map(|i| photo(&format!("/b{i}.jpg"), 2, 50)));
         let buildable = vec![2, 3];
-        let c = Capacity::from_sizes(20, &buildable);
-        let groups = pack(&photos, &c, &buildable, &Overrides::new()).expect("the fixture must fit the included photos");
+        let c = capacity_for(20, &buildable);
+        let groups = pack(&photos, &c, &buildable_for(&buildable), &Overrides::new()).expect("the fixture must fit the included photos");
 
         assert_eq!(
             group_sizes(&groups).iter().sum::<usize>(),
@@ -1125,11 +1269,11 @@ mod tests {
         let photos: Vec<Photo> = (0..30)
             .map(|i| photo(&format!("/p{i:02}.jpg"), (i % 4) as u32, (i * 7 % 100) as u8))
             .collect();
-        let c = Capacity::from_sizes(20, &full());
-        let forward = pack(&photos, &c, &full(), &Overrides::new()).expect("the fixture must fit the included photos");
+        let c = capacity_for(20, &full());
+        let forward = pack(&photos, &c, &buildable_for(&full()), &Overrides::new()).expect("the fixture must fit the included photos");
 
         let reversed: Vec<Photo> = photos.iter().rev().cloned().collect();
-        let backward = pack(&reversed, &c, &full(), &Overrides::new()).expect("the fixture must fit the included photos");
+        let backward = pack(&reversed, &c, &buildable_for(&full()), &Overrides::new()).expect("the fixture must fit the included photos");
 
         assert!(!forward.is_empty());
         assert_eq!(
@@ -1141,15 +1285,23 @@ mod tests {
 
     /// Input in NON-chronological order -- a pre-sorted fixture cannot
     /// detect a missing sort (a real Phase 1 failure mode).
+    ///
+    /// TWO photos per chapter, not one. A spread slot cannot be cut to a
+    /// single photo (a 1-photo spread template prints a blank half), so a
+    /// one-photo chapter that lands on a spread is now dropped outright and
+    /// the fixture would be measuring that rather than the ordering.
     #[test]
     fn pack_orders_groups_by_chapter_regardless_of_input_order() {
         let photos = vec![
-            photo("/z.jpg", 3, 50),
-            photo("/a.jpg", 1, 50),
-            photo("/m.jpg", 2, 50),
+            photo("/z1.jpg", 3, 50),
+            photo("/a1.jpg", 1, 50),
+            photo("/m1.jpg", 2, 50),
+            photo("/z2.jpg", 3, 50),
+            photo("/a2.jpg", 1, 50),
+            photo("/m2.jpg", 2, 50),
         ];
-        let c = Capacity::from_sizes(20, &sizes());
-        let groups = pack(&photos, &c, &sizes(), &Overrides::new()).expect("the fixture must fit the included photos");
+        let c = capacity_for(20, &sizes());
+        let groups = pack(&photos, &c, &buildable_for(&sizes()), &Overrides::new()).expect("the fixture must fit the included photos");
         let clusters: Vec<u32> = groups.iter().map(|g| g.event_cluster).collect();
         assert_eq!(clusters, vec![1, 2, 3]);
     }
@@ -1163,9 +1315,14 @@ mod tests {
         // 30 photos, one chapter, 20 pages -> 2 singles + 9 spreads = 11 slots.
         let photos: Vec<Photo> =
             (0..30).map(|i| photo(&format!("/p{i:02}.jpg"), 0, 50)).collect();
-        let capacity = Capacity::from_sizes(20, &[1, 2, 3, 4, 5, 6]);
-        let groups =
-            pack(&photos, &capacity, &[1, 2, 3, 4, 5, 6], &Overrides::new()).expect("packs");
+        let capacity = capacity_for(20, &[1, 2, 3, 4, 5, 6]);
+        let groups = pack(
+            &photos,
+            &capacity,
+            &buildable_for(&[1, 2, 3, 4, 5, 6]),
+            &Overrides::new(),
+        )
+        .expect("packs");
 
         assert_eq!(groups.len(), 11, "11 slots should yield 11 groups");
         assert_eq!(groups[0].slot, SlotKind::Single, "group 0 fills the opening page");
@@ -1175,13 +1332,41 @@ mod tests {
         }
     }
 
+    /// A 1-photo spread template has one slot, and the validator forbids a slot
+    /// from spanning the fold -- so one of its two page halves is necessarily
+    /// EMPTY and prints white. Size 1 therefore has no place in the spread
+    /// region. The two single pages keep it: there, one photo on one page is
+    /// the whole point.
+    #[test]
+    fn pack_never_cuts_a_one_photo_group_for_a_spread_slot() {
+        // 13 photos into 11 slots forces small groups: under a book-wide
+        // buildable set of 1..=6 the packer's fair share is ~1 and it cut
+        // size-1 groups for spreads.
+        let photos: Vec<Photo> =
+            (0..13).map(|i| photo(&format!("/p{i:02}.jpg"), 0, 50)).collect();
+        let buildable = Buildable::from_sizes(&[1, 2, 3, 4, 5, 6], 4);
+        let capacity = Capacity::from_sizes(20, &[1, 2, 3, 4, 5, 6], 4);
+        let groups = pack(&photos, &capacity, &buildable, &Overrides::new()).expect("packs");
+
+        for g in &groups {
+            if g.slot == SlotKind::Spread {
+                assert!(
+                    g.photos.len() >= 2,
+                    "a spread slot was given {} photo(s); every 1-photo spread \
+                     template prints one blank page",
+                    g.photos.len()
+                );
+            }
+        }
+    }
+
     #[test]
     fn pack_drops_the_lowest_ranked_photos_when_over_capacity() {
         let photos: Vec<Photo> = (0..100)
             .map(|i| photo(&format!("/p{i:03}.jpg"), 0, i as u8))
             .collect();
-        let c = Capacity::from_sizes(20, &sizes());
-        let groups = pack(&photos, &c, &sizes(), &Overrides::new()).expect("the fixture must fit the included photos");
+        let c = capacity_for(20, &sizes());
+        let groups = pack(&photos, &c, &buildable_for(&sizes()), &Overrides::new()).expect("the fixture must fit the included photos");
         let used: usize = groups.iter().map(|g| g.photos.len()).sum();
         assert!(used <= c.max_photos, "used {used}, capacity {}", c.max_photos);
         // The best photo must survive; the worst must not.
@@ -1191,3 +1376,4 @@ mod tests {
         assert!(!kept.contains(&0), "lowest aesthetic must be dropped");
     }
 }
+

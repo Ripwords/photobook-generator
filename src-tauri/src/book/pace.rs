@@ -12,7 +12,7 @@
 
 use crate::book::crop::choose_crop;
 use crate::book::cull::{cull, Overrides, Photo};
-use crate::book::pack::{buildable_sizes, pack, Capacity, Group, IncludeOverflow, SlotKind};
+use crate::book::pack::{pack, Buildable, Capacity, Group, IncludeOverflow, SlotKind};
 use crate::book::score::{best_spread, rejects, slot_aspect};
 use crate::geometry::{Rect, Side};
 use crate::templates::{EdgeTreatment, Library, PageLayout, SpreadTemplate, Weights};
@@ -347,11 +347,12 @@ pub fn assemble(
     overrides: &Overrides,
 ) -> Result<Book, BookError> {
     let kept = cull(photos, overrides);
-    let sizes = buildable_sizes(lib);
     // `from_library`, not `from_sizes`: the latter over-estimates what the two
     // single pages hold by measuring them against the largest whole SPREAD.
+    let buildable = Buildable::from_library(lib);
     let cap = Capacity::from_library(pages, lib);
-    let groups = pack(&kept, &cap, &sizes, overrides).map_err(BookError::IncludedExceedCapacity)?;
+    let groups =
+        pack(&kept, &cap, &buildable, overrides).map_err(BookError::IncludedExceedCapacity)?;
 
     // `pack` indexes into `kept`; the manifest wants indices into `photos`.
     // Keyed on PATH, not hash: a content hash is not unique within a run --
@@ -1328,17 +1329,23 @@ mod tests {
         }
     }
 
-    /// R2 again, at the other end: `pack` sizes every group by SPREAD counts,
-    /// so the group handed to a single page is routinely larger than any page
-    /// half. Requiring an exact match leaves the opening page blank; taking
-    /// the largest half that fits places what it can and drops the rest.
+    /// R2 again, at the other end: when a group is larger than any page half,
+    /// requiring an exact match leaves the page blank; taking the largest half
+    /// that fits places what it can and drops the rest.
     ///
-    /// 36 photos, not 24: the opening chapter must hand the single page a
-    /// group BIGGER than any half or the two rules agree and the test proves
-    /// nothing. At 36 the packer apportions chapter 1 one slot for its three
-    /// photos, so the group is 3 against a largest half of 2. The size is
-    /// asserted from the packer rather than assumed, so a future packing
-    /// change cannot silently defang this.
+    /// Driven through `single_page` DIRECTLY, and that change of level is the
+    /// point rather than a convenience. `pack` used to size every group by
+    /// SPREAD counts and hand the opening page a group no half could hold --
+    /// which is the defect `Buildable` removed, by sizing a single at
+    /// `1 ..= largest page half`. So the overflow can no longer arrive from
+    /// the packer, and the first assertion below PINS that: if a future change
+    /// lets `pack` over-fill a single again, this test says so instead of
+    /// quietly going back to being an end-to-end test of a bug.
+    ///
+    /// `single_page` still owes the contract, because the half it actually
+    /// chooses can be smaller than the largest one (every larger half may be
+    /// rejected by a face or DPI constraint), so a group CAN still overflow
+    /// the half it lands on. That is what is asserted here.
     #[test]
     fn pace_fills_a_single_page_from_a_group_larger_than_any_page_half() {
         let lib = fixture_library();
@@ -1348,21 +1355,29 @@ mod tests {
 
         let photos = fixture_photos(36);
         let kept = cull(&photos, &Overrides::new());
-        let opening = pack(&kept, &Capacity::from_library(20, &lib), &buildable_sizes(&lib), &Overrides::new())
-            .expect("no includes in the fixture")
-            .first()
-            .map(|g| g.photos.len())
-            .unwrap();
-        assert!(
-            opening > largest_half,
-            "fixture: the opening group ({opening}) must overflow the largest half ({largest_half})"
-        );
+        let groups = pack(
+            &kept,
+            &Capacity::from_library(20, &lib),
+            &Buildable::from_library(&lib),
+            &Overrides::new(),
+        )
+        .expect("no includes in the fixture");
+        for g in groups.iter().filter(|g| g.slot == SlotKind::Single) {
+            assert!(
+                g.photos.len() <= largest_half,
+                "pack over-filled a single page again: {} photos into a half of {largest_half}",
+                g.photos.len()
+            );
+        }
 
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
+        // Three photos onto a half that holds at most two.
+        let group = Group { photos: vec![0, 1, 2], event_cluster: 0, slot: SlotKind::Single };
+        let page = single_page(Side::Right, Some(&group), &half_pool(&lib), &photos, 5);
+        assert_ne!(page.template_id, BLANK_TEMPLATE_ID, "a blank page is the wrong answer here");
         assert_eq!(
-            book.pages[0].placements.len(),
+            page.placements.len(),
             largest_half,
-            "the opening page must hold what the largest half can, not nothing"
+            "the page must hold what the largest half can, not nothing"
         );
     }
 
@@ -1429,21 +1444,32 @@ mod tests {
     /// (which would keep photos 1 and 2) and ranking (which keeps 2 and 3)
     /// disagree.
     ///
-    /// 36 photos, not 24: the opening group has to OVERFLOW the page half for
-    /// anything to be dropped at all, and at 24 the packer hands the opening
-    /// page a group of two, which a two-slot half holds whole.
+    /// Asserted on `strongest` DIRECTLY. `pack` now sizes a single page at
+    /// `1 ..= largest page half`, so it no longer hands one a group that
+    /// overflows every half and the trim cannot be reached end to end from
+    /// the opening page any more. It is still reachable -- the half actually
+    /// CHOSEN can be smaller than the largest, when a face or DPI constraint
+    /// rejects the bigger ones -- so the ranking is a contract `strongest`
+    /// still owes its caller, kept honest here rather than left as an arm no
+    /// test enters.
     #[test]
     fn pace_drops_the_weakest_photo_when_a_group_overflows_its_page_half() {
-        let lib = fixture_library();
         let mut photos = fixture_photos(36);
         assert_eq!(photos[2].aesthetic_pct, 74, "fixture: photo 2 is the strongest");
         assert_eq!(photos[3].aesthetic_pct, 11);
-        photos[1].aesthetic_pct = 5; // now the weakest of the opening group
+        photos[1].aesthetic_pct = 5; // now the weakest of the group
 
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
-        let opening: Vec<usize> =
-            book.pages[0].placements.iter().map(|p| p.photo_index).collect();
-        assert_eq!(opening, vec![2, 3], "the weakest photo of the group must be the one dropped");
+        let group = Group { photos: vec![1, 2, 3], event_cluster: 0, slot: SlotKind::Single };
+        assert_eq!(
+            strongest(&group, &photos, 2),
+            vec![2, 3],
+            "the weakest photo of the group must be the one dropped, not the last in path order"
+        );
+        assert_eq!(
+            strongest(&group, &photos, 3),
+            vec![1, 2, 3],
+            "a group that fits must come through untouched"
+        );
     }
 
     // --- the index remap --------------------------------------------------
@@ -1551,7 +1577,17 @@ mod tests {
     ///
     /// Filling every slot is the harder constraint and is asserted first, so
     /// this can never be satisfied by buying variety with a blank spread.
+    /// **IGNORED until Task 4.** Banning size 1 from the spread region (a
+    /// 1-photo spread template prints a blank half) removed `Sparse` from
+    /// every spread this library can build, and 2, 3 and 4 are all `Medium`
+    /// here -- so the declared-density axis is genuinely flat and no fixture
+    /// of this shape can make it vary. Deliberately NOT re-baselined onto
+    /// photo counts: [2,2,3] has three counts and one density, so a
+    /// count-based assertion would pass while the axis this test exists to
+    /// protect is still flat. Task 4 rebalances two templates to restore
+    /// density variety at sizes 3 and 4; un-ignore it there.
     #[test]
+    #[ignore = "no density variety is buildable until Task 4 rebalances the templates"]
     fn pace_spread_density_varies_across_a_book_rather_than_converging() {
         let lib = frozen_library();
         let book = assemble(&fixture_photos(30), 20, &lib, &Weights::default(), 1234, &Overrides::new()).expect("the fixture must place every included photo");

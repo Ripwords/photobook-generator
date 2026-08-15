@@ -42,21 +42,21 @@
     {
       "number": 2,
       "side": "left",
-      "template_id": "35-portrait-triptych-hero-left",
+      "template_id": "07-two-up-symmetric-margin",
       "placements": [
         {
-          "photo_index": 5,
+          "photo_index": 4,
           "slot_rect": {
-            "x": 0.1,
-            "y": 0.04,
-            "w": 0.6,
-            "h": 0.92
+            "x": 0.08,
+            "y": 0.08,
+            "w": 0.84,
+            "h": 0.84
           },
           "crop": {
-            "x": 0.0,
+            "x": 0.030353796566974012,
             "y": 0.0,
-            "w": 1.0,
-            "h": 0.9134678931856748
+            "w": 0.8392924068660519,
+            "h": 1.0
           },
           "z": 1
         }
@@ -65,49 +65,125 @@
     {
       "number": 3,
       "side": "right",
-      "template_id": "35-portrait-triptych-hero-left",
+      "template_id": "07-two-up-symmetric-margin",
       "placements": [
         {
-          "photo_index": 4,
+          "photo_index": 5,
           "slot_rect": {
-            "x": 0.15999999999999992,
-            "y": 0.05,
-            "w": 0.64,
-            "h": 0.42
+            "x": 0.08000000000000007,
+            "y": 0.08,
+            "w": 0.84,
+            "h": 0.84
           },
           "crop": {
             "x": 0.0,
-            "y": 0.009045670715370213,
+            "y": 0.10213003483075822,
             "w": 1.0,
-            "h": 0.7819086585692596
+            "h": 0.5957399303384836
           },
           "z": 1
-        },
-        {
-          "photo_index": 6,
-          "slot_rect": {
-            "x": 0.15999999999999992,
-            "y": 0.51,
-            "w": 0.64,
-            "h": 0.42
-          },
-          "crop": {
-            "x": 0.0,
-            "y": 0.04470726285810683,
-            "w": 1.0,
-            "h": 0.6950299187282307
-          },
-          "z": 2
         }
       ]
     },
     {
       "number": 4,
       "side": "left",
-      "template_id": "03-hero-left-text-right",
+      "template_id": "08-two-up-symmetric-bleed-outer",
+      "placements": [
+        {
+          "photo_index": 6,
+          "slot_rect": {
+            "x": 0.0,
+            "y": 0.0,
+            "w": 0.982406,
+            "h": 1.0
+          },
+          "crop": {
+            "x": 0.015833812983576168,
+            "y": 0.0,
+            "w": 0.9275916332921069,
+            "h": 1.0
+          },
+          "z": 1
+        }
+      ]
+    },
+    {
+      "number": 5,
+      "side": "right",
+      "template_id": "08-two-up-symmetric-bleed-outer",
       "placements": [
         {
           "photo_index": 8,
+          "slot_rect": {
+            "x": 0.01759400000000011,
+            "y": 0.0,
+            "w": 0.982406,
+            "h": 1.0
+          },
+          "crop": {
+            "x": 0.0,
+            "y": 0.09679545404930162,
+            "w": 1.0,
+            "h": 0.6064090919013968
+          },
+          "z": 1
+        }
+      ]
+    },
+    {
+      "number": 6,
+      "side": "left",
+      "template_id": "07-two-up-symmetric-margin",
+      "placements": [
+        {
+          "photo_index": 9,
+          "slot_rect": {
+            "x": 0.08,
+            "y": 0.08,
+            "w": 0.84,
+            "h": 0.84
+          },
+          "crop": {
+            "x": 0.0,
+            "y": 0.0,
+            "w": 0.9442039577243084,
+            "h": 1.0
+          },
+          "z": 1
+        }
+      ]
+    },
+    {
+      "number": 7,
+      "side": "right",
+      "template_id": "07-two-up-symmetric-margin",
+      "placements": [
+        {
+          "photo_index": 10,
+          "slot_rect": {
+            "x": 0.08000000000000007,
+            "y": 0.08,
+            "w": 0.84,
+            "h": 0.84
+          },
+          "crop": {
+            "x": 0.07035379656697405,
+            "y": 0.0,
+            "w": 0.8392924068660519,
+            "h": 1.0
+          },
+          "z": 1
+        }
+      ]
+    },
+    {
+      "number": 8,
+      "side": "left",
+      "template_id": "08-two-up-symmetric-bleed-outer",
+      "placements": [
+        {
+          "photo_index": 11,
           "slot_rect": {
             "x": 0.0,
             "y": 0.0,
@@ -125,82 +201,14 @@
       ]
     },
     {
-      "number": 5,
+      "number": 9,
       "side": "right",
-      "template_id": "03-hero-left-text-right",
-      "placements": []
-    },
-    {
-      "number": 6,
-      "side": "left",
-      "template_id": "13-three-up-hero-left-stack-right",
-      "placements": [
-        {
-          "photo_index": 10,
-          "slot_rect": {
-            "x": 0.0,
-            "y": 0.0,
-            "w": 0.982406,
-            "h": 1.0
-          },
-          "crop": {
-            "x": 0.07773705187017471,
-            "y": 0.0,
-            "w": 0.8245258962596506,
-            "h": 1.0
-          },
-          "z": 1
-        }
-      ]
-    },
-    {
-      "number": 7,
-      "side": "right",
-      "template_id": "13-three-up-hero-left-stack-right",
-      "placements": [
-        {
-          "photo_index": 11,
-          "slot_rect": {
-            "x": 0.1200000000000001,
-            "y": 0.06,
-            "w": 0.8,
-            "h": 0.42
-          },
-          "crop": {
-            "x": 0.0,
-            "y": 0.24361826828614808,
-            "w": 1.0,
-            "h": 0.3127634634277039
-          },
-          "z": 1
-        },
-        {
-          "photo_index": 9,
-          "slot_rect": {
-            "x": 0.1200000000000001,
-            "y": 0.52,
-            "w": 0.8,
-            "h": 0.42
-          },
-          "crop": {
-            "x": 0.0,
-            "y": 0.11260658920973865,
-            "w": 1.0,
-            "h": 0.5560239349825846
-          },
-          "z": 2
-        }
-      ]
-    },
-    {
-      "number": 8,
-      "side": "left",
-      "template_id": "03-hero-left-text-right",
+      "template_id": "08-two-up-symmetric-bleed-outer",
       "placements": [
         {
           "photo_index": 12,
           "slot_rect": {
-            "x": 0.0,
+            "x": 0.01759400000000011,
             "y": 0.0,
             "w": 0.982406,
             "h": 1.0
@@ -214,12 +222,6 @@
           "z": 1
         }
       ]
-    },
-    {
-      "number": 9,
-      "side": "right",
-      "template_id": "03-hero-left-text-right",
-      "placements": []
     },
     {
       "number": 10,
@@ -440,21 +442,21 @@
     {
       "number": 18,
       "side": "left",
-      "template_id": "35-portrait-triptych-hero-left",
+      "template_id": "07-two-up-symmetric-margin",
       "placements": [
         {
-          "photo_index": 26,
+          "photo_index": 25,
           "slot_rect": {
-            "x": 0.1,
-            "y": 0.04,
-            "w": 0.6,
-            "h": 0.92
+            "x": 0.08,
+            "y": 0.08,
+            "w": 0.84,
+            "h": 0.84
           },
           "crop": {
-            "x": 0.0,
+            "x": 0.05035379656697403,
             "y": 0.0,
-            "w": 1.0,
-            "h": 0.9134678931856748
+            "w": 0.8392924068660519,
+            "h": 1.0
           },
           "z": 1
         }
@@ -463,60 +465,44 @@
     {
       "number": 19,
       "side": "right",
-      "template_id": "35-portrait-triptych-hero-left",
+      "template_id": "07-two-up-symmetric-margin",
       "placements": [
         {
-          "photo_index": 25,
+          "photo_index": 26,
           "slot_rect": {
-            "x": 0.15999999999999992,
-            "y": 0.05,
-            "w": 0.64,
-            "h": 0.42
+            "x": 0.08000000000000007,
+            "y": 0.08,
+            "w": 0.84,
+            "h": 0.84
           },
           "crop": {
             "x": 0.0,
-            "y": 0.009045670715370213,
+            "y": 0.10213003483075822,
             "w": 1.0,
-            "h": 0.7819086585692596
+            "h": 0.5957399303384836
           },
           "z": 1
-        },
-        {
-          "photo_index": 27,
-          "slot_rect": {
-            "x": 0.15999999999999992,
-            "y": 0.51,
-            "w": 0.64,
-            "h": 0.42
-          },
-          "crop": {
-            "x": 0.0,
-            "y": 0.04414569045537925,
-            "w": 1.0,
-            "h": 0.6950299187282307
-          },
-          "z": 2
         }
       ]
     },
     {
       "number": 20,
       "side": "left",
-      "template_id": "35-portrait-triptych-hero-left:left",
+      "template_id": "07-two-up-symmetric-margin:left",
       "placements": [
         {
-          "photo_index": 29,
+          "photo_index": 27,
           "slot_rect": {
-            "x": 0.1,
-            "y": 0.04,
-            "w": 0.6,
-            "h": 0.92
+            "x": 0.08,
+            "y": 0.08,
+            "w": 0.84,
+            "h": 0.84
           },
           "crop": {
-            "x": 0.0,
+            "x": 0.02121932077683497,
             "y": 0.0,
-            "w": 1.0,
-            "h": 0.9134678931856748
+            "w": 0.9442039577243084,
+            "h": 1.0
           },
           "z": 1
         }
@@ -524,5 +510,5 @@
     }
   ],
   "seed": 1234,
-  "dropped": 6
+  "dropped": 7
 }
