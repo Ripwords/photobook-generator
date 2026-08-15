@@ -808,6 +808,7 @@ mod tests {
             near_dup_cluster: 0, event_cluster: event,
             faces: Vec::new(), face_area_fraction: 0.0, saliency_box: None,
             palette: Vec::<PaletteColor>::new(), capture_quality: None,
+            scene_tags: Vec::new(), captured_at: None,
         }
     }
 

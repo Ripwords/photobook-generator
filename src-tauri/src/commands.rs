@@ -2388,11 +2388,12 @@ mod tests {
             "sharpness": sharpness,
             "exif": { "captureDate": null },
             "faces": faces,
-            // Swift emits both unconditionally and `from_features` now
+            // Swift emits these unconditionally and `from_features` now
             // requires the keys, so a fixture standing in for a real record
             // must carry them even where the assertions never read them.
             "faceAreaFraction": 0.0,
             "palette": [],
+            "sceneTags": [],
         })
     }
 
@@ -2978,6 +2979,7 @@ mod tests {
             "faces": [],
             "faceAreaFraction": 0.0,
             "palette": [],
+            "sceneTags": [],
         })
     }
 
@@ -3072,6 +3074,7 @@ mod tests {
             "faces": [],
             "faceAreaFraction": 0.0,
             "palette": [],
+            "sceneTags": [],
         })
     }
 
@@ -3118,6 +3121,8 @@ mod tests {
             saliency_box: None,
             palette: Vec::new(),
             capture_quality: None,
+            scene_tags: Vec::new(),
+            captured_at: None,
         }
     }
 

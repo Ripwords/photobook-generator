@@ -859,6 +859,8 @@ mod tests {
                         weight: 1.0,
                     }],
                     capture_quality: if i % 3 == 0 { Some(0.4) } else { None },
+                    scene_tags: Vec::new(),
+                    captured_at: None,
                 }
             })
             .collect()
@@ -1509,6 +1511,8 @@ mod tests {
             saliency_box: None,
             palette: Vec::new(),
             capture_quality: Some(0.5),
+            scene_tags: Vec::new(),
+            captured_at: None,
         }
     }
 

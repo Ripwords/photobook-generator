@@ -120,6 +120,8 @@ mod tests {
             saliency_box: None,
             palette: Vec::new(),
             capture_quality: None,
+            scene_tags: Vec::new(),
+            captured_at: None,
         }
     }
 

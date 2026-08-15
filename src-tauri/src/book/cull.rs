@@ -44,6 +44,14 @@ pub struct Photo {
     /// faces or Vision returned none. Precomputed because culling reads it
     /// once per comparison.
     pub capture_quality: Option<f64>,
+    /// Vision's scene classification tags. Always emitted by Swift, so an
+    /// absent KEY is a pipeline bug and is refused; an EMPTY list is a real
+    /// answer (Vision recognised nothing) and is accepted.
+    pub scene_tags: Vec<String>,
+    /// EXIF capture time, seconds since the epoch. Legitimately `None` --
+    /// a scan or an export often carries no EXIF date at all -- so absence
+    /// is tolerated here, unlike `scene_tags`.
+    pub captured_at: Option<i64>,
 }
 
 impl Photo {
@@ -170,6 +178,18 @@ fn parse_features(v: &serde_json::Value, derived: Derived) -> Option<Photo> {
         }
     };
 
+    // Required: Swift always emits the key. `[]` is a real answer and is
+    // accepted; a missing key is not.
+    let scene_tags: Vec<String> = v["sceneTags"]
+        .as_array()?
+        .iter()
+        .map(|t| t.as_str().map(str::to_string))
+        .collect::<Option<Vec<String>>>()?;
+
+    // Optional: `encodeIfPresent` omits it, and a photo with no EXIF date
+    // is ordinary rather than malformed.
+    let captured_at = v["exif"]["captureDate"].as_f64().map(|t| t as i64);
+
     Some(Photo {
         path: v["path"].as_str()?.to_string(),
         hash: v["hash"].as_str()?.to_string(),
@@ -188,6 +208,8 @@ fn parse_features(v: &serde_json::Value, derived: Derived) -> Option<Photo> {
         saliency_box: rect_from(&v["saliencyBox"]),
         palette,
         capture_quality,
+        scene_tags,
+        captured_at,
     })
 }
 
@@ -432,6 +454,8 @@ mod tests {
             saliency_box: None,
             palette: Vec::new(),
             capture_quality: None,
+            scene_tags: Vec::new(),
+            captured_at: None,
         }
     }
 
@@ -773,7 +797,8 @@ mod tests {
             "faces": [{"box":[0.1,0.2,0.3,0.4],"captureQuality":0.7}],
             "faceAreaFraction": 0.12,
             "saliencyBox": [0.2,0.1,0.5,0.6],
-            "palette": [{"r":0.5,"g":0.2,"b":0.1,"weight":0.6}]
+            "palette": [{"r":0.5,"g":0.2,"b":0.1,"weight":0.6}],
+            "sceneTags": ["beach", "sunset"]
         });
         let p = from_features(&v).expect("well-formed record");
         assert_eq!(p.faces.len(), 1);
@@ -791,7 +816,7 @@ mod tests {
             "path": "/p/a.jpg", "hash": "abc", "width": 4032, "height": 3024,
             "isUtility": false, "aestheticPct": 80, "sharpnessPct": 60,
             "nearDupCluster": 2, "eventCluster": 1,
-            "faces": [], "faceAreaFraction": 0.0, "palette": []
+            "faces": [], "faceAreaFraction": 0.0, "palette": [], "sceneTags": []
         });
         let p = from_features(&v).expect("well-formed record");
         assert!(p.saliency_box.is_none());
@@ -808,8 +833,48 @@ mod tests {
             "faces": [{"box":[0.1,0.2,0.3,0.4],"captureQuality":0.7}],
             "faceAreaFraction": 0.12,
             "saliencyBox": [0.2,0.1,0.5,0.6],
-            "palette": [{"r":0.5,"g":0.2,"b":0.1,"weight":0.6}]
+            "palette": [{"r":0.5,"g":0.2,"b":0.1,"weight":0.6}],
+            "sceneTags": ["beach", "sunset"],
+            "exif": { "captureDate": 1_700_000_000.0 }
         })
+    }
+
+    /// Alias for `full_record`, matched to the name Task 9's brief uses --
+    /// kept as an alias rather than a rename so existing call sites and their
+    /// history stay intact.
+    fn complete_record() -> serde_json::Value {
+        full_record()
+    }
+
+    /// `sceneTags` is always emitted by Swift, so its ABSENCE is a pipeline bug
+    /// and must be refused. `exif.captureDate` is legitimately null on a photo
+    /// with no EXIF date, so its absence must be tolerated. Getting these two
+    /// the wrong way round either fails every book containing one scanned
+    /// photo, or silently degrades the diversity term to a constant.
+    #[test]
+    fn cull_from_features_requires_scene_tags_but_tolerates_a_missing_capture_date() {
+        let mut v = complete_record();
+        v["sceneTags"] = serde_json::json!(["beach", "sunset"]);
+        v["exif"] = serde_json::json!({ "captureDate": 1_700_000_000.0 });
+        let photo = from_features(&v).expect("a complete record parses");
+        assert_eq!(photo.scene_tags, vec!["beach".to_string(), "sunset".to_string()]);
+        assert_eq!(photo.captured_at, Some(1_700_000_000));
+
+        // A null capture date is a real answer, not a malformed record.
+        let mut no_date = complete_record();
+        no_date["sceneTags"] = serde_json::json!([]);
+        no_date["exif"] = serde_json::json!({ "captureDate": serde_json::Value::Null });
+        let photo = from_features(&no_date).expect("a photo with no EXIF date still parses");
+        assert_eq!(photo.captured_at, None);
+        assert!(photo.scene_tags.is_empty(), "an empty tag list is a real answer");
+
+        // A MISSING sceneTags key is not.
+        let mut no_tags = complete_record();
+        no_tags.as_object_mut().expect("object").remove("sceneTags");
+        assert!(
+            from_features(&no_tags).is_none(),
+            "a record with no sceneTags key must be refused"
+        );
     }
 
     fn without(key: &str) -> serde_json::Value {
@@ -840,6 +905,7 @@ mod tests {
             "faces",
             "faceAreaFraction",
             "palette",
+            "sceneTags",
         ] {
             assert!(
                 from_features(&without(key)).is_none(),
