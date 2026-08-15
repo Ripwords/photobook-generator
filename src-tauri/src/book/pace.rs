@@ -1627,6 +1627,46 @@ mod tests {
         );
     }
 
+    /// **Every keeper the book has room for is placed.** This is the invariant
+    /// `pack`'s induction argument exists to establish, and it is asserted here
+    /// on the REAL library because that is where it broke.
+    ///
+    /// Banning size 1 from the spread region made a chapter's remainder of one
+    /// unbuildable at a spread slot. `pack` walks a chapter's slots in order and
+    /// stops at the first it cannot fill, so such a remainder ended the chapter
+    /// -- even when the book's closing single page, which holds one, was still
+    /// free. Measured before the fix in `choose_group_size`: over this sweep,
+    /// 471 of 474 keepers were placed, all three losses at 25 photos, where the
+    /// last chapter of 8 took 2 then 3 then 2 and arrived at a spread slot
+    /// holding one photo.
+    ///
+    /// Asserted per book rather than as a total, so a failure names the book.
+    /// The counts are all well inside what 20 pages hold (9 spreads of up to 6
+    /// plus 2 singles of up to 5), so "every keeper" is the right bar here;
+    /// `pace_records_how_many_photos_were_dropped` covers the over-capacity
+    /// case, where dropping is correct.
+    #[test]
+    fn pace_places_every_keeper_across_the_real_library_sweep() {
+        let lib = real_library();
+        for n in [12usize, 20, 25, 30, 40, 60] {
+            for seed in [1u64, 7, 1234] {
+                let photos = fixture_photos(n);
+                let keepers = cull(&photos, &Overrides::new()).len();
+                let book =
+                    assemble(&photos, 20, &lib, &Weights::default(), seed, &Overrides::new())
+                        .expect("the real library must place every included photo");
+                let placed: usize = book.pages.iter().map(|p| p.placements.len()).sum();
+                assert_eq!(
+                    placed, keepers,
+                    "{n} photos, seed {seed}: {keepers} keepers survived `cull` but only \
+                     {placed} were placed -- {} photo(s) the book had room for are simply \
+                     absent from it",
+                    keepers - placed
+                );
+            }
+        }
+    }
+
     /// **I2: the headline outcome of the per-slot-kind change, asserted.**
     ///
     /// A page that names a REAL template and holds nothing prints white. That

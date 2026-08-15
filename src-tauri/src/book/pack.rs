@@ -755,7 +755,33 @@ fn choose_group_size(
         let rest = remaining - size;
         let outside = usize::from(size < lo || size > hi);
         let strands = usize::from(rest != 0 && !is_decomposable(rest, &look.sizes));
-        (outside, strands, aim.abs_diff(size), std::cmp::Reverse(size))
+        // HOW FAR outside, ranked only among candidates that are all outside
+        // already -- `outside` above has separated those from the ones inside,
+        // and a candidate inside the band scores 0 here too, so this term is
+        // inert except in the starved case it exists for.
+        //
+        // That case is a chapter apportioned more slots than its photos can
+        // fill. The band then collapses to `hi == 0` ("take nothing"), no
+        // buildable size satisfies it, and every candidate ties on `outside`.
+        // Before this term the tie fell through to `aim`, which is
+        // `share + swing` -- a TASTE preference -- and the swing could push
+        // the choice UP at the exact moment photos were scarcest. Measured, on
+        // the real library with 21 keepers in chapters of 3, 4, 6 and 8: the
+        // last chapter held 8 with five slots to fill, took 2 then 3 then 2,
+        // and arrived at a spread slot holding one photo. No spread can be
+        // built from one -- that is the whole point of the size-1 ban -- so
+        // the chapter broke off there and the photo was never placed, even
+        // though the book's closing single page could have held it. Preferring
+        // the candidate nearest the band takes 2 four times instead and seats
+        // all eight.
+        //
+        // Ordered AFTER `strands`, deliberately. Ranking it before turns the
+        // stranding guard off whenever the band has collapsed: measured, with
+        // this term first, a chapter of 3 facing three spread slots takes 2
+        // and strands the third photo, where `strands` had correctly made it
+        // take 3.
+        let overshoot = size.saturating_sub(hi).max(lo.saturating_sub(size));
+        (outside, strands, overshoot, aim.abs_diff(size), std::cmp::Reverse(size))
     })
 }
 

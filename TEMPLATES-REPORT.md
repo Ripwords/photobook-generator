@@ -56,7 +56,9 @@ rect.
 **Four-up: grid and non-grid (5)**
 - `18-four-up-grid-2x2-generous` — an even 2×2 grid, page-aligned columns, wide gaps.
 - `19-four-up-grid-2x2-tight` — the same grid, tighter gaps, higher energy.
-- `20-four-up-windowpane` — non-grid mosaic alternating large/small cells diagonally.
+- `20-four-up-windowpane` — a 2×2 grid centred on the spread, one column per page, with
+  the fold itself as the grid's vertical mullion (0.0176 column gap against a 0.0225 row
+  gap) and the slack carried as symmetric outer margins.
 - `21`/`22-four-up-hero-plus-three-left/right` — full-page hero with three stacked
   supports on the opposite page.
 
