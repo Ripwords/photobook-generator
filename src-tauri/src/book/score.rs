@@ -354,6 +354,14 @@ fn capture_gap_distance(a: &Photo, b: &Photo) -> f64 {
 /// Neutral at 0.5 when the group is flat, so the term is silent rather than
 /// pushing toward big slots generally: it exists to give a standout room,
 /// not to prefer dominant templates as a matter of taste.
+///
+/// `standout` gates the result TWICE, deliberately: the early
+/// `if standout == 0.0` return and the `standout *` factor in the final
+/// expression are redundant with each other by design, not an oversight.
+/// Either one alone is sufficient to keep a flat group neutral; do not
+/// "simplify" by deleting one on the assumption the other already covers
+/// it -- a mutation check on this function only reproduces the intended
+/// flat-group failure when BOTH are removed together.
 fn hero_prominence(t: &SpreadTemplate, photos: &[&Photo]) -> f64 {
     if photos.len() < 2 {
         return 0.5;
@@ -893,6 +901,115 @@ mod tests {
             score_spread(&t, &[&a, &b], &[0, 1], None, &inert),
             score_spread(&t, &[&c, &d], &[0, 1], None, &inert),
             "the term must be inert at its shipped weight of 0.0"
+        );
+    }
+
+    // --- one isolation test per `spread_diversity` component. Each fixture
+    // varies exactly ONE axis and holds the other two identical between the
+    // matched and varied pair, so a matched pair scores exactly 0.0 on every
+    // axis and the only thing that can lift `varied` above it is the axis
+    // under test. The all-axes test above proves the term separates a real
+    // spread; these three prove no single component is silently dead inside
+    // the equal-weighted average -- a diagnostic run once is not a guard,
+    // these are.
+
+    /// Isolates `scene_tag_distance`: palettes and capture times are
+    /// identical in both pairs, only the scene tags differ in `varied`.
+    #[test]
+    fn score_spread_diversity_isolates_scene_tag_distance() {
+        let same_palette = vec![PaletteColor { r: 0.5, g: 0.5, b: 0.5, weight: 1.0 }];
+        let same_time = Some(1_700_000_000);
+
+        let mut matched_a = photo(4000, 3000);
+        let mut matched_b = photo(4000, 3000);
+        matched_a.scene_tags = vec!["beach".into()];
+        matched_b.scene_tags = vec!["beach".into()];
+        matched_a.palette = same_palette.clone();
+        matched_b.palette = same_palette.clone();
+        matched_a.captured_at = same_time;
+        matched_b.captured_at = same_time;
+
+        let mut varied_a = photo(4000, 3000);
+        let mut varied_b = photo(4000, 3000);
+        varied_a.scene_tags = vec!["beach".into()];
+        varied_b.scene_tags = vec!["forest".into()];
+        varied_a.palette = same_palette.clone();
+        varied_b.palette = same_palette;
+        varied_a.captured_at = same_time;
+        varied_b.captured_at = same_time;
+
+        let matched = spread_diversity(&[&matched_a, &matched_b]);
+        let varied = spread_diversity(&[&varied_a, &varied_b]);
+        assert!(
+            varied > matched,
+            "scene-tag divergence alone must raise the score: {varied} vs {matched}"
+        );
+    }
+
+    /// Isolates `palette_distance`: scene tags and capture times are
+    /// identical in both pairs, only the palette differs in `varied`.
+    #[test]
+    fn score_spread_diversity_isolates_palette_distance() {
+        let same_tags = vec!["beach".to_string()];
+        let same_time = Some(1_700_000_000);
+
+        let mut matched_a = photo(4000, 3000);
+        let mut matched_b = photo(4000, 3000);
+        matched_a.scene_tags = same_tags.clone();
+        matched_b.scene_tags = same_tags.clone();
+        matched_a.palette = vec![PaletteColor { r: 0.5, g: 0.5, b: 0.5, weight: 1.0 }];
+        matched_b.palette = vec![PaletteColor { r: 0.5, g: 0.5, b: 0.5, weight: 1.0 }];
+        matched_a.captured_at = same_time;
+        matched_b.captured_at = same_time;
+
+        let mut varied_a = photo(4000, 3000);
+        let mut varied_b = photo(4000, 3000);
+        varied_a.scene_tags = same_tags.clone();
+        varied_b.scene_tags = same_tags;
+        varied_a.palette = vec![PaletteColor { r: 0.9, g: 0.1, b: 0.1, weight: 1.0 }];
+        varied_b.palette = vec![PaletteColor { r: 0.1, g: 0.1, b: 0.9, weight: 1.0 }];
+        varied_a.captured_at = same_time;
+        varied_b.captured_at = same_time;
+
+        let matched = spread_diversity(&[&matched_a, &matched_b]);
+        let varied = spread_diversity(&[&varied_a, &varied_b]);
+        assert!(
+            varied > matched,
+            "palette divergence alone must raise the score: {varied} vs {matched}"
+        );
+    }
+
+    /// Isolates `capture_gap_distance`: scene tags and palettes are identical
+    /// in both pairs, only the capture time differs in `varied` -- by hours,
+    /// so the gap actually saturates rather than sitting near zero.
+    #[test]
+    fn score_spread_diversity_isolates_capture_gap_distance() {
+        let same_tags = vec!["beach".to_string()];
+        let same_palette = vec![PaletteColor { r: 0.5, g: 0.5, b: 0.5, weight: 1.0 }];
+
+        let mut matched_a = photo(4000, 3000);
+        let mut matched_b = photo(4000, 3000);
+        matched_a.scene_tags = same_tags.clone();
+        matched_b.scene_tags = same_tags.clone();
+        matched_a.palette = same_palette.clone();
+        matched_b.palette = same_palette.clone();
+        matched_a.captured_at = Some(1_700_000_000);
+        matched_b.captured_at = Some(1_700_000_000);
+
+        let mut varied_a = photo(4000, 3000);
+        let mut varied_b = photo(4000, 3000);
+        varied_a.scene_tags = same_tags.clone();
+        varied_b.scene_tags = same_tags;
+        varied_a.palette = same_palette.clone();
+        varied_b.palette = same_palette;
+        varied_a.captured_at = Some(1_700_000_000);
+        varied_b.captured_at = Some(1_700_000_000 + 4 * 3600); // 4 hours apart
+
+        let matched = spread_diversity(&[&matched_a, &matched_b]);
+        let varied = spread_diversity(&[&varied_a, &varied_b]);
+        assert!(
+            varied > matched,
+            "capture-time divergence alone must raise the score: {varied} vs {matched}"
         );
     }
 
