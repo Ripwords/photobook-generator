@@ -251,6 +251,14 @@ tunable without a rebuild.
 | Palette harmony | Oklab hue spread across the spread's photos — deferred out of Phase 1 |
 | Variety | Penalise reusing or mirroring the previous spread's template |
 | Gutter saliency | Fraction of the surviving saliency box falling in the gutter dead band (§4.2's penalty half) |
+| Face quality | Vision's blur/exposure/pose score for the best face — the nearest thing to an expression signal (§4.2a) |
+| Spread diversity | How unlike each other the photos on one spread are: scene tags, palette, capture-time gap |
+| Hero prominence | Rewards a dominant hero slot when the group holds a standout photo |
+
+**The last four ship at weight `0.0`.** `face_quality`, `spread_diversity`, `gutter_saliency`
+and `hero_prominence` are implemented, unit-tested and wired into `score_spread`, but every
+one of them is inert in `templates/weights.json` until it has been tuned against real
+photographs. See PROJECT-STATUS.md § "The four new scoring terms are DORMANT".
 
 **Text room is removed** — Phase 2 renders no text (§5.4).
 

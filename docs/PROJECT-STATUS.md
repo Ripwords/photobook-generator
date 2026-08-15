@@ -1,7 +1,7 @@
 # PhotobookGen — Project Status
 
-**Last updated:** 2026-08-14
-**Branch:** `feat/phase-2-layout-engine` (not yet merged)
+**Last updated:** 2026-08-15
+**Branch:** `feat/phase-2-completion` (not yet merged)
 
 This document exists so a new agent can pick the project up without re-deriving what
 was already learned. Read it before touching code. The authoritative documents are:
@@ -14,9 +14,10 @@ was already learned. Read it before touching code. The authoritative documents a
   original text reintroduces two real bugs.
 
 A blow-by-blow record of every fix round, ruling, and deferred finding is in
-`.superpowers/sdd/2026-08-12-phase-1-analysis-pipeline/progress.md` and
-`.superpowers/sdd/2026-08-14-phase-2-export-revision/` (git-ignored, local only). They are
-long but they are where the reasoning lives.
+`.superpowers/sdd/2026-08-12-phase-1-analysis-pipeline/progress.md`,
+`.superpowers/sdd/2026-08-14-phase-2-export-revision/` and
+`.superpowers/sdd/2026-08-15-phase-2-completion/progress.md` (git-ignored, local only). They
+are long but they are where the reasoning lives.
 
 **If you read only one section, read "Phase 2 open items" — every entry there is a real,
 deliberately-parked decision that this file is the only surviving record of.**
@@ -59,9 +60,10 @@ thumbnails, chapter dividers and burst-size badges.
 | Nuxt UI | `app/` | `pages/index.vue`, `components/PhotoTile.vue`, `composables/useAnalysis.ts`, `types/features.ts` |
 | Template library | `templates/` | Spread templates + validator at `tests/templates.test.ts`. Was 40 at end of Phase 1; **now 36** — see the Print geometry section. |
 
-**Test counts at last run (2026-08-14, end of Phase 2):** 496 TypeScript, 308 Rust unit
-(3 ignored — they read the real `templates/` directory) plus 2 harness'd and 4
-`harness = false` integration binaries, 130 Swift. All green, lint clean.
+**Test counts at last run (2026-08-15, end of `feat/phase-2-completion`):** 571 TypeScript,
+**413 Rust lib tests, 0 failed, 0 ignored** — the three that used to be ignored now run —
+plus 2 harness'd and 4 `harness = false` integration binaries, 130 Swift. All green, lint
+clean.
 **Release build works:** `bun tauri build --bundles app` produces `PhotobookGen.app`.
 
 ### Unplanned additions beyond the plan
@@ -85,8 +87,11 @@ thumbnails, chapter dividers and burst-size badges.
 
 ## Current state: Phase 2 is complete
 
-Built across two plans and sixteen reviewed tasks. The app now turns an analysed folder
-into files you can upload to a printer.
+Built across three plans and thirty reviewed tasks — the last fourteen on
+`feat/phase-2-completion`, which closed open items 1, 3, 9 and 11 plus item 4's remaining
+page-half defect, corrected item 6 (already closed by `3e934e9`, the entry was stale), and
+added four scoring terms that all ship **inert at weight `0.0`**. The app now turns an
+analysed folder into files you can upload to a printer.
 
 **Working end to end:** analyse a folder → pick a page count (the app recommends the
 smallest SKU that fits, and says how many keepers each length would drop) → generate →
@@ -96,8 +101,8 @@ file per placement.
 | Stage | Where | What it does |
 |---|---|---|
 | Cull | `book::cull::cull` | Drops utility images, keeps one winner per near-duplicate cluster. **The single authority** — see below. |
-| Pack | `book::pack` | Chapter-aware grouping into buildable group sizes, **distributed over the available slots rather than front-loaded**; drops the lowest aesthetic percentiles when keepers exceed capacity. |
-| Score | `book::score` | Scores each template against a group: aspect fit, saliency and face-area retention, hero match, resolution headroom, palette harmony, variety. Hard rejections for a face in the gutter, a face outside the safe margin, and sub-`MIN_DPI` resolution. |
+| Pack | `book::pack` | Chapter-aware grouping into buildable group sizes, **distributed over the available slots rather than front-loaded** and **sized against the kind of slot each group will land on** (a single page holds a page half's worth, a spread does not); drops the lowest aesthetic percentiles when keepers exceed capacity. |
+| Score | `book::score` | Scores each template against a group: aspect fit, saliency and face-area retention, hero match, resolution headroom, palette harmony, variety — plus `face_quality`, `spread_diversity`, `gutter_saliency` and `hero_prominence`, **all four at weight `0.0`**. Hard rejections for a face in the gutter, a face outside the safe margin, and sub-`MIN_DPI` resolution. |
 | Crop | `book::crop::choose_crop` | Deterministic saliency- and face-aware crop window, normalised 0…1 of the photo's **oriented** frame. |
 | Pace | `book::pace::assemble` | Lays groups into pages, keeps both halves of a spread on one template, falls back to a smaller page half rather than blanking a page. |
 | Pre-flight | `book::preflight` | Blocks and warnings before anything is written. |
@@ -295,8 +300,14 @@ bumps once per analysis and is the identity to watch.
 - **A manifest** (`book::manifest`) describes every page and placement, including blank
   pages, which are kept in the list rather than dropped.
 - **Pre-flight is a pure core** (`preflight_core`) plus a thin I/O shell, so Phase 3 can
-  re-run it on an edited book without touching the filesystem — with one caveat noted in
-  the open items below.
+  re-run it on an edited book without touching the filesystem. **This is now literally
+  true** — the last `Path::exists()` moved out to the shell on 2026-08-15, which hands the
+  core a set of already-known-missing paths. See open item 9.
+- **`best_spread` takes a seed**, so spread selection is seedable and "regenerate" is
+  implementable. **One caveat, and Phase 3 must plan around it:** a single global seed feeds
+  every call, so every 2-candidate tie in the book resolves the same way and changing the
+  seed re-rolls the whole book together. Per-spread regeneration needs a per-spread seed
+  mixed in at the call site. See open item 3.
 - **Geometry predicates are property-tested** (`geometry.rs`), so a canvas editor can snap
   against `in_trim`, `in_safe_margin` and `clear_of_gutter` rather than inventing its own.
 
@@ -308,18 +319,26 @@ Every one of these is real. Each was found during Phase 2, deliberately parked w
 ruling rather than forgotten, and **this file is the only place it survives.** None of them
 blocks the phase; several block a later one, and those say so.
 
-### 1. The gutter-saliency penalty does not exist
+**Status as of 2026-08-15.** Closed: **1**, **3**, **9**, **11**, and item **4**'s remaining
+"Still open, smaller" paragraph. Item **6** was never open — it was closed by `3e934e9` and
+this ledger simply had not caught up. Item **10** was already nothing. **Still open, rulings
+intact: 2, 5, 7, 8.** Two new items, **12** and **13**, are added at the end; item 12 is the
+highest-value follow-up in the project.
 
-The spec promises a **penalty** for saliency falling in the gutter. Only the other half is
-implemented: a face in the gutter is a hard rejection (`book::score`, `clear_of_gutter`),
-and there is a test — `score_does_not_reject_generic_saliency_in_the_gutter_strip` —
-pinning that generic saliency is deliberately *not* a rejection. But no `Weights` field
-implements the graded penalty either. `Weights` is exactly: `aspect_fit`,
-`saliency_retention`, `face_area_retention`, `hero_match`, `resolution_headroom`,
-`palette_harmony`, `variety`.
+### 1. The gutter-saliency penalty does not exist — **FIXED 2026-08-15**
 
-**Ruling: implement it or correct the spec — do not leave the spec claiming a term the
-scorer does not have.** Either is defensible; the mismatch is not.
+The spec promised a **penalty** for saliency falling in the gutter, and only the other half
+was implemented: a face in the gutter is a hard rejection (`book::score`,
+`clear_of_gutter`), with `score_does_not_reject_generic_saliency_in_the_gutter_strip`
+pinning that generic saliency is deliberately *not* a rejection. No `Weights` field
+implemented the graded penalty.
+
+It exists now, as the `gutter_saliency` weight — the fraction of the surviving saliency box
+that falls in the dead band, penalised. The layout-engine design's §4.3 table carries the
+row, so the §4.2-vs-§4.3 mismatch that this item was really about is gone.
+
+**It ships at weight `0.0`.** See "The four new scoring terms are DORMANT" below before
+reading this as a change to how books look.
 
 ### 2. `palette_harmony` is effectively inert
 
@@ -331,19 +350,27 @@ roughly **1% of a spread's score** — it can essentially never change which tem
 measuring is guesswork; the term does no harm while inert. Do not spend effort here before
 the real-photo run below.
 
-### 3. The seed never reaches spread selection — **know this before planning Phase 3**
+**Added 2026-08-15:** `spread_diversity` now supersedes the *need* for this term. Complaint
+3 below is that a spread holds too many similar photos, and `palette_harmony` rewards
+exactly that similarity — so the two terms pull against each other by construction. Trading
+one against the other (lower `palette_harmony`, raise `spread_diversity`) is the obvious
+first move of the tuning session, and it costs nothing but a `weights.json` edit. The item
+stays open because neither number has been measured on real photographs.
 
-`assemble(photos, pages, lib, w, seed)` passes `seed` only to `single_page` → `best_single`
-→ `tie_break`. **`best_spread` takes no seed at all.** The seed therefore influences only
-the two single pages (the first and last), never any of the middle spreads.
+### 3. The seed never reaches spread selection — **FIXED 2026-08-15**
 
-The spec's "regenerate this spread advances the seed" is consequently **unimplementable for
-middle spreads as the code stands** — advancing the seed would change nothing. `Book.seed`
-is persisted, so the data model is ready; the plumbing is not.
+`assemble(photos, pages, lib, w, seed)` used to pass `seed` only to `single_page` →
+`best_single` → `tie_break`; `best_spread` took no seed at all, so the seed influenced only
+the first and last pages and never a middle spread. `best_spread` now takes a seed and
+breaks its ties with it. This is no longer a Phase 3 blocker.
 
-**Ruling: parked, but it is a Phase 3 blocker, not a Phase 2 one.** Phase 3's spread-level
-"regenerate" control must either thread the seed through `best_spread` or pick a different
-regeneration mechanism. Decide before planning, not during.
+**But it does not by itself make one spread re-rollable, and Phase 3 must know that.** ONE
+global seed feeds every `best_spread` call, so `tie_break(seed, 2)` resolves identically at
+every 2-candidate tie in the book. It is observable in the golden: re-baselining it after
+this change flipped **all six** symmetric spreads together, not one. "Regenerate THIS
+spread" therefore needs a per-spread seed — `seed ^ spread_index`, or similar — mixed in at
+the call sites. The signature accepts a seed, so the work is a call-site change rather than
+a plumbing change, but it is still work Phase 3 has to do.
 
 ### 4. `choose_group_size` front-loaded — **FIXED 2026-08-14**
 
@@ -384,18 +411,22 @@ and at 120 photos it places 9 more of them. (The seed does not reach the packer,
 three of seeds 1, 9 and 1234 give identical figures — see the open item on that.)
 
 **"0 blank pages" here means "no spread slot went unfilled". It does not mean every printed
-page carries a photo, and the difference is large.** Ten of the 36 templates put all of
-their slots on ONE page half and leave the other half empty — `03`, `04`, `05`, `06`, `20`,
-`28`, `30`, `36`, `41`, `45`, eight of them because they carry text zones that Phase 2 never
-renders (§ "Phase 2 renders no text"). Every time the packer picks one, a full printed page
-comes out blank white. Measured on the same runs above, the count of printed pages with zero
-photos is **8 / 4 / 5 / 1 / 2 / 1** for 14 / 24 / 30 / 40 / 60 / 120 photos — not zero.
+page carries a photo, and the difference is large.** That gap is what
+`feat/phase-2-completion` closed — see "Blank printed pages: what the completion branch
+actually did" below. The historical finding, kept because it is the reasoning behind that
+branch: ten of the 36 templates put all their slots on ONE page half and left the other
+empty — `03`, `04`, `05`, `06`, `20`, `28`, `30`, `36`, `41`, `45` — so every time the
+packer picked one, a full printed page came out white. Measured on the same runs above, the
+count of printed pages with zero photos was **8 / 4 / 5 / 1 / 2 / 1** for 14 / 24 / 30 / 40
+/ 60 / 120 photos. The golden did it twice, both from `03-hero-left-text-right`.
 
-The golden does it twice: its spread group sizes are `[3,1,3,1,2,2,3,3,3]`, and both `1`s
-are template `03-hero-left-text-right`, whose right page (pages 5 and 9) prints blank. A
-reader who sees "0 blank pages" and opens the golden will find two. This is a known,
-accepted Phase 2 limitation of shipping text-zone templates with no text renderer, not a
-packer defect — the packer filled every slot those templates offered.
+**Both causes are gone.** Size 1 is banned from the spread region, and the two MULTI-photo
+offenders (`20`, `45`) were re-authored to span both halves. Eight templates still have an
+empty half — `03`, `04`, `05`, `06`, `28`, `30`, `36`, `41` — but all eight hold exactly one
+photo and are therefore only ever drawn as page halves now, never as a spread. The golden is
+at 0 pages with empty placements, and
+`pace_no_printed_page_names_a_real_template_and_holds_nothing_in_the_real_library` asserts
+the property against the shipping library rather than a fixture.
 
 The pinned
 regression is `pack_fills_every_slot_rather_than_front_loading_the_first_spreads` (30
@@ -419,13 +450,23 @@ book level, `pace_spread_density_varies_across_a_book_rather_than_converging`, w
 asserts on the library's declared `density` rather than on photo counts (2, 3 and 4 are all
 `medium`, so a count-based assertion passes while the axis is still flat).
 
-**Still open, smaller:** `pack` sizes every group by SPREAD counts, but two of the eleven
-slots are single pages holding only a page-half's worth, so a group landing on one is
-trimmed by `pace::strongest`. In the golden that costs one photo on the opening page. It is
-not caused by the distribution rule (it is why `best_single` takes the largest half that
-FITS rather than an exact match) but closing it properly means teaching `Capacity` and
-`apportion_slots` that the first and last slots have a smaller photo capacity than a
-spread. Not attempted; judge it at the real-photo run.
+**What that density test now covers — 2026-08-15, and do not mistake it for more.** It was
+`#[ignore]`d during the completion branch (with size 1 banned from spreads, every buildable
+spread in its library was `medium`, so the axis was flat by construction) and is now
+un-ignored and green. But it runs against a **purpose-built synthetic library whose declared
+density is one-to-one with slot count**, not against the real `templates/` directory and not
+against the frozen fixtures it used before. That bijection is asserted, so "density varied"
+provably means "group size varied" — which makes it a sound guard on a `pack` property. It
+is **not** real-library density coverage, and must not later be read as such. The prior
+plan's assumption that rebalancing real templates would restore it was simply wrong: the
+test never loaded the real library.
+
+**Still open, smaller — FIXED 2026-08-15.** `pack` used to size every group by SPREAD
+counts even though two of the eleven slots are single pages holding only a page half's
+worth, so a group landing on one was trimmed by `pace::strongest`; in the golden that cost
+one photo on the opening page. Groups are now tagged by slot kind (`slot_kind_at`) and sized
+against the capacity of the kind of slot they will land on, and `Capacity` was split to
+match. The golden is back to 24 placements and 6 dropped with 0 pages holding no placements.
 
 ### 5. RAW is uncovered end to end, and cannot be closed synthetically
 
@@ -442,16 +483,19 @@ pure function against `UTType`s. The decode path is not.
 **Ruling: only closable at a real-photo run with actual camera RAW files.** Do not
 manufacture a fixture.
 
-### 6. Persistence is plumbed but only half-reachable from the UI
+### 6. Persistence half-reachable from the UI — **STALE ENTRY, already closed by `3e934e9`**
 
-The backend supports exporting **any** saved project: `list_projects`, `open_project` and
-`export_book` all exist and work. The UI calls `list_projects` (`useBook.ts`) but never
-`open_project`, so in practice **Export is only offered for the book generated in the
-current session.** Quit the app and the saved project cannot be exported again without
-regenerating it.
+The claim was that the UI calls `list_projects` but never `open_project`, so Export was only
+offered for the book generated in the current session. **That has not been true since
+`3e934e9`.** `useBook.ts:162` invokes `open_project` and applies the result
+(`applyBookState(withOpenedProject(project))`, then `loadLayout`), and a reopened project's
+selection is visible and editable — see "A reopened project's selection is visible and
+editable" above, which was written about that very fix.
 
-**Ruling: parked as a Phase 3 UI concern.** The plumbing needs no work; only the screen
-does.
+Recorded as a correction rather than deleted, because the failure mode matters: this entry
+sat here open for a day after the code closed it, and a reader trusting the ledger would
+have re-implemented a working feature. **`feat/phase-2-completion` did not fix this; it
+found the entry lying.**
 
 ### 7. Two constants are chosen, not measured
 
@@ -478,12 +522,17 @@ dropped `ORDER BY`.
 an index's incidental ordering is not a contract — but do not read the passing test as
 proof that removing it would be caught.
 
-### 9. `preflight_core`'s doc comment is wrong about I/O
+### 9. `preflight_core`'s doc comment is wrong about I/O — **FIXED 2026-08-15**
 
-It says "No I/O", and it performs one `Path::exists()` per placement (the moved-source-file
-Block check). Minor, but it matters to Phase 3: the "pure core" is not actually callable in
-a hot loop or off-disk. Either move the existence check out to the shell or correct the
-comment.
+It said "No I/O" while performing one `Path::exists()` per placement (the moved-source-file
+Block check), so the "pure core" was not callable in a hot loop or off-disk.
+
+The check moved out to the shell, which now gathers the missing paths into a set and hands
+that set to the core. `preflight_core` is genuinely pure and re-runnable off-disk: Phase 3
+can call it on every edit of a book without touching the filesystem, and re-stat only when
+it wants to. The pre-existing `preflight_blocks_a_source_file_that_no_longer_exists` was
+mutation-checked after the refactor to confirm it still reaches the rule rather than having
+gone inert — deleting the rule fails both it and the new core-level test.
 
 ### 10. Culling is fully reconciled — nothing remains
 
@@ -492,23 +541,64 @@ authorities are now one (see "One culling authority" above); `keepers()` carries
 and Rust's verdict travels on the wire as `AnalyzedPhoto.kept`. **Nothing is outstanding on
 this item.**
 
-### 11. `from_features`' new strictness fails silently on two paths
+### 11. `from_features`' new strictness fails silently on two paths — **FIXED 2026-08-15**
 
-Added 2026-08-14 by the final fix wave's re-review, non-blocking.
+`from_features` refuses a feature record missing a field the book depends on, and
+`photos_from_records` and `resolve_photos` surfaced that loudly — but `stamp_kept` and
+`count_keepers` consumed it through `filter_map`, so a malformed record was silently
+skipped: the photo came back `kept: false`, or the completion notification undercounted,
+with no error anywhere.
 
-`from_features` now refuses a feature record missing a field the book depends on — that is
-the point of it, and `photos_from_records` and `resolve_photos` surface the refusal loudly.
-But `stamp_kept` and `count_keepers` still consume it through `filter_map`, so there a
-malformed record is silently skipped: the photo comes back `kept: false`, or the completion
-notification undercounts, with no error anywhere.
+Both now **return the count of refused records alongside their result, and their callers log
+it.** A refusal is no longer invisible on any path. The related cosmetic error — a fixture
+doc attributing the `filter_map` to `from_features` rather than to its caller — was
+corrected at the same time.
 
-The `filter_map` shape predates the strictness — it was harmless when `from_features`
-defaulted everything and could only fail on a truly unparseable record. It now has a larger
-blast radius. Consider surfacing the count of refused records, or failing the analysis.
+### 12. `apportion_slots` is slot-kind-blind, and it is the cause of the remaining blank pages
 
-Related, cosmetic: the fixture doc at `src-tauri/src/commands.rs:2444` says a record is
-"silently dropped by `from_features`'s `filter_map`". The `filter_map` belongs to the
-caller, not to `from_features`.
+Added 2026-08-15. **This is the highest-value remaining follow-up in the project, and its
+mechanism is already known — do not re-derive it.**
+
+`apportion_slots` divides the book-wide slot budget across chapters. To decide how many
+slots a chapter could possibly need it uses a floor taken from `Buildable::union_bounds()`,
+which is **`1`** — because the SINGLE set starts at 1. But nine of a 20-page book's eleven
+slots are spreads, whose floor is **`2`**. So a chapter of 8 photos is apportioned 5 slots
+that between them need 9 photos, and the slots it cannot fill come out white. **That is the
+direct cause of the 45 remaining `blank` pages** measured below. Making `apportion_slots`
+slot-kind-aware would plausibly take the count back toward the pre-branch 6.
+
+It was deliberately **not** done in `feat/phase-2-completion`, and the reasoning is worth
+keeping: `apportion_slots` is the most delicate function in the packer — it carries the
+`Include`-protection guarantees and the D'Hondt fairness that `pace::assemble`'s
+post-condition depends on — and `pack`'s contract had already been changed twice in that
+branch, each change surfacing a defect that only a whole-library sweep caught. Every photo
+is placed today, so what remains is pacing, not data loss.
+
+**The same floor already cost three photos once, in this branch.** The first sweep measured
+471 of 474 keepers placed against a pre-branch 474. Mechanism: the band collapses to
+`hi = 1`, every candidate ties on `outside`, the tie falls through to `aim = share + swing`,
+and a remainder of 1 lands on a Spread slot the packer was just taught it cannot build — so
+the chapter is abandoned without ever reaching the closing Single that holds exactly one.
+Fixed by an `overshoot` term in `choose_group_size`'s sort key, ranked **after** `strands`
+and provably inert unless every candidate is already outside the band (measured: 168 books,
+148 byte-identical, all 20 that changed placed one photo MORE). 474/474 again. **So the
+symptom is treated and the root cause is not.** Anyone attacking the blank pages is
+attacking the same floor.
+
+### 13. Nothing in the test suite checks a slot against a text zone
+
+Added 2026-08-15. There is **no overlap check between a template's photo slots and its
+`text_zones` anywhere in the suite** — not in `tests/templates.test.ts`, not in Rust.
+
+This is not hypothetical. Both template edits in `feat/phase-2-completion` (`20` and `45`)
+produced a text zone that would have landed on a moved slot, and **both were caught by
+hand** — once by the implementer, once by the reviewer computing the clearances pairwise.
+Two for two on the only two occasions the geometry has moved. The validator already walks
+every template and already knows both rectangles; this is a cheap guard that does not exist.
+
+Related, from the same review and deliberately left alone: template `20`'s four panes sit
+exactly on `GUTTER_X0`/`GUTTER_X1` with zero margin, passing only via `clear_of_gutter`'s
+epsilon. A higher-precision re-derivation of the gutter constants would flip them.
 
 ---
 
@@ -520,21 +610,52 @@ complaints, in their words, each traced to a cause here. **These are the first e
 this project has about whether the engine produces a good book, as opposed to a valid
 one.** Nothing below is a bug; every one is a design gap.
 
+**Updated 2026-08-15.** `feat/phase-2-completion` addressed all four. Complaint 1 is
+genuinely improved and measured. Complaints 2, 3 and 4 got machinery that **ships at weight
+`0.0` and changes nothing yet** — read "The four new scoring terms are DORMANT" at the end
+of this section before reading any of them as an improvement.
+
 ### 1. "Some pages are left blank not sure why"
 
-Two distinct causes, now distinguishable on screen because the preview shows template ids.
+Two distinct causes, distinguishable on screen because the preview shows template ids.
 
-- **Ten of the 36 templates have a page with zero photo slots**, eight of them because
-  they carry `text_zones` and Phase 2 renders no text (spec §5.4). Those pages print
-  white by construction. On screen they appear under a real template id such as
-  `03-hero-left-text-right`.
-- **`assemble` emits a blank page when no template scores for a group** — the ruling
-  being that a short book cannot be uploaded against a fixed-page SKU. These appear
-  under the id `blank`, and mean every candidate was rejected by a hard constraint
-  (face clipped, face in the gutter or safe margin, or below 200 DPI).
+- **STRUCTURAL: a template with a page half holding zero photo slots.** Ten of the 36
+  templates were in that state, and those pages printed white by construction under a real
+  template id such as `03-hero-left-text-right`. **Gone.** Eight remain, all of them 1-photo
+  templates, and size 1 is now banned from the spread region — so those eight are only ever
+  drawn as page halves, where they fill the page.
+- **UNDER-PRODUCTION: `assemble` emits a page with the id `blank`** when a slot gets no
+  group — either because the packer produced fewer groups than there are slots, or because
+  every candidate template was rejected by a hard constraint (face clipped, face in the
+  gutter or safe margin, below 200 DPI). The ruling behind it is that a short book cannot be
+  uploaded against a fixed-page SKU. **This is now the only cause of a white page, and the
+  first of the two reasons is the one that fires** — see open item 12.
 
-Cheapest fix for the first: stop drawing zero-slot page-halves from `page_half_pool`
-while text is unrendered. The second needs diagnosis per occurrence.
+**Blank printed pages: what the completion branch actually did (measured 2026-08-15).**
+Real-library sweep, 6 photo counts × 3 seeds = **18 books × 20 pages = 360 printed pages**,
+comparing the pre-branch commit `6a40c63` against the branch:
+
+| | pre-branch `6a40c63` | after the branch |
+|---|---|---|
+| pages naming a REAL template and holding zero placements | **78** | **0** |
+| pages named `blank` | 6 | **45** |
+| **total white pages** | **84** | **45** |
+| photos placed / keepers | 474 / 474 | **474 / 474** |
+
+**Read that precisely.** The STRUCTURAL blank page is eliminated entirely, 78 → 0: size 1 is
+banned from the spread region and the two multi-photo templates with an empty half were
+re-authored. It was **traded** for 45 new `blank`-template pages, which are the documented
+and accepted consequence of the ban: a 20-page book's minimum rises from 11 × 1 = 11 photos
+to 2 × 1 + 9 × 2 = 20, so books with 11–19 keepers now blank the slots they cannot fill.
+Before the branch those same books were filled with 1-photo spread templates — each of which
+printed a blank half anyway, which is why the net still falls. **This is not "blank pages
+eliminated."** It is 84 → 45 white pages out of 360, 23% → 12.5%, with every keeper still
+placed and one known remaining cause.
+
+That cause is **open item 12**: `apportion_slots` hands a chapter more slots than it can
+fill, because it sizes against a floor of 1 taken from the single-page set. Fixing it would
+plausibly take the 45 back toward the pre-branch 6. It is the highest-value follow-up
+available and it is deliberately not done — the reasoning, and the mechanism, are in item 12.
 
 ### 2. "Some facial features are too candid/unprepared/unflattering"
 
@@ -542,10 +663,17 @@ while text is unrendered. The second needs diagnosis per occurrence.
 at any macOS version; the geometric smile proxy was measured against real faces and has
 a proven 100% false-negative rate, so it is computed and deliberately unused.
 
-What exists and is underused: Vision's **face capture quality**, which scores blur,
-exposure and pose. It is currently only a tie-break inside `cull`, and is never a
-scoring term. Promoting it to a weighted term in `score.rs` is the cheapest real
-improvement available and needs no new signal.
+**Built 2026-08-15: the `face_quality` scoring term, at weight `0.0`.** Vision's face
+capture quality — blur, exposure and pose for the best face in the slot — was previously
+only a tie-break inside `cull`. It is now a per-slot soft term in `score.rs`, unit-tested,
+and inert until its weight is raised.
+
+**It is still not an expression signal, and raising its weight will not make it one.**
+Vision has no expression classifier at any macOS version. Capture quality is a proxy for
+*sharp, well-exposed and front-facing*; it does not know a smile from a grimace, and a
+perfectly-captured unflattering face scores well on it. What it should reliably improve is
+the subset of complaint 2 that is really "this face is soft or badly lit". The rest of the
+complaint has no signal behind it and this term does not change that.
 
 Eyes-closed/mid-blink detection is derivable from the landmark geometry already carried,
 but it is the same shape as the smile proxy and must be measured against real faces
@@ -565,6 +693,20 @@ repurposing it into a diversity term cheap rather than disruptive.
 Signals available today with no new analysis: `phash` distance, palette distance, scene
 tags, and capture-time proximity.
 
+**Built 2026-08-15: the `spread_diversity` term, at weight `0.0`.** A spread-global term
+combining three components, **equal-weighted**: scene-tag Jaccard distance, palette
+distance, and capture-time gap (saturating at `SATURATE_SECONDS = 3600.0`). `Photo` gained
+`scene_tags` and `captured_at` to carry the first and third. Each component has its own
+isolation test varying exactly one axis with the other two held byte-identical, and the full
+3 × 3 mutation matrix was run: stubbing any one component fails only its own test. So all
+three are individually load-bearing — which matters, because the term's whole claim is
+"three signals, equal weight".
+
+**Equal weighting is a starting point, not a claim.** Nobody has measured whether scene
+tags, palette and time deserve the same share, or whether one of them dominates on real
+photographs. That is a tuning question, and the tuning session below is where it gets
+answered. Note also that `palette_harmony` pulls the opposite way — see open item 2.
+
 ### 4. "Some interesting features should be highlighted rather than mixed with other images"
 
 `hero_match` places the highest-aesthetic photo in a `hero` slot, but **only within a
@@ -576,6 +718,56 @@ Two fixes, different sizes: bias `best_spread` toward templates with a dominant 
 when a group contains a high-percentile photo (cheap, no packing change); or let merit
 influence group size in `pack`, so an exceptional photo gets a small group or a page to
 itself (the real fix, and a genuine change to the packer's contract).
+
+**Built 2026-08-15: the first of those two, as `hero_prominence`, at weight `0.0`.** It
+rewards a template whose hero slot dominates the spread when the group holds a standout
+photo, scaling with how far above the group the standout sits. The `standout` factor gates
+the function twice — an early return and a multiplier — which is documented as deliberate
+redundancy so nobody deletes one half as dead code; the early return is a compute
+short-circuit, not an independent safety net.
+
+**The packer half is deliberately deferred.** `pack` still knows nothing about photo merit,
+so a standout image can still be dealt into a six-up; only the template *choice* for the
+group it lands in is biased. Letting merit influence group size is a change to `pack`'s
+contract, and `pack`'s contract was already changed twice in this branch with each change
+surfacing a defect that only a sweep caught. Do it after measurement, not before.
+
+One gap to know before raising this weight: **the graduated scaling is untested.** Both
+tests compare a fully-flat group against a fully-standout one; no test exercises a mid-range
+standout's proportional effect, which is the term's whole selling point.
+
+### The four new scoring terms are DORMANT — read this before claiming the book got better
+
+`face_quality`, `spread_diversity`, `gutter_saliency` and `hero_prominence` all exist, are
+unit-tested, are wired into `score_spread`, and **ship at weight `0.0` in
+`templates/weights.json`.** At 0.0 they cannot change which template wins any spread. That
+is why the golden fixture did not move when any of them landed, and it is the reason they
+could be shipped without a real-photo run.
+
+**Until they are tuned against real photographs, the honest description of this work is "the
+machinery exists and is unproven" — not "the book is better."** No book has been generated
+with any of these weights above zero and looked at by a human. Do not write, or repeat, the
+stronger claim.
+
+`weights.json` is **hot-reloadable beside the templates**, so raising a weight needs no
+rebuild — edit the file and regenerate. That is what makes a tuning session cheap: it is a
+sitting with real photographs and a text editor, not a development task.
+
+**The tuning session fills this table in.** Fill the last column with what you settle on,
+and record what you were looking at when you decided:
+
+| Term | Complaint it addresses | Ships at | Settled weight |
+|---|---|---|---|
+| `face_quality` | 2 — candid/unflattering faces. **Sharp/well-exposed/front-facing only; there is still NO expression signal.** | `0.0` | |
+| `spread_diversity` | 3 — too many similar photos on a spread. Scene tags + palette + capture-time gap, equal-weighted. | `0.0` | |
+| `gutter_saliency` | Closes open item 1 — the graded penalty §4.3 promised. Not one of the four complaints. | `0.0` | |
+| `hero_prominence` | 4 — standout photos buried in a group. **Scorer half only; the packer half is deferred.** | `0.0` | |
+
+Two things to try first, both free: **trade `palette_harmony` (currently `0.2`) down against
+`spread_diversity` up** — they pull in opposite directions on complaint 3, and open item 2
+records why `palette_harmony` is close to inert anyway — and raise `face_quality` alone
+before touching anything else, since it is the term most likely to show a visible difference
+per unit of weight.
 
 ---
 
@@ -612,8 +804,32 @@ fixed nine more decorative fixtures and four inert prescribed mutations** — te
 into detailed plans by agents that believed they were sound, which would have passed with
 the feature deleted.
 
-That is thirteen more in one phase. It is the single most useful thing this document
-carries forward, so treat it as a standing rule rather than a historical note:
+That is thirteen more in one phase. **`feat/phase-2-completion` caught six more (2026-08-15),
+every one of them found by mutation discipline rather than by review reading:**
+
+- A `deny_unknown_fields` test whose typo (`pallete_harmony`) was simultaneously an unknown
+  key **and** an omission of the required `palette_harmony`, so the file was rejected on the
+  missing field whether or not the attribute existed. **This one was written into the plan by
+  the controller whose job was to police for exactly this shape.** Nobody is immune.
+- The new real-library "no page names a real template and holds nothing" assertion stayed
+  **green** when template `20` was reverted to its broken form, because the packer never
+  selects `20` at the swept photo counts. A structural whole-library test was added to
+  catch it; the assemble-level one cannot.
+- The un-ignored density test passed for the wrong reason: at 25 keepers in odd chapters a
+  size-3 group is arithmetically unavoidable, so deleting `pack`'s density swing left it
+  green. Rebuilt on 22 keepers in chapters of 8/8/6 — all even, so an all-2s book is exactly
+  buildable — and the mutation now turns it red.
+- `spread_diversity`'s separation test over-determined: its fixture maximised all three
+  component distances at once, so it would have stayed green with any one component dead.
+  Split into three isolation tests, each varying one axis with the other two held identical.
+- `hero_prominence`'s obvious assertion (`varied > flat`) still passed with the term stubbed
+  out of the total, because `hero_match` alone separates those fixtures. Only a delta
+  assertion does the work.
+- The prescribed `hero_prominence` mutation was inert, because `standout` gates the function
+  twice. The intended mutation had to be derived rather than taken from the brief.
+
+It is the single most useful thing this document carries forward, so treat it as a standing
+rule rather than a historical note:
 
 - **Do not trust that a test tests what it says.** Break the thing deliberately and confirm
   the test notices.
@@ -634,6 +850,10 @@ The recurring shapes, all of which appeared for real:
 | A degenerate value that "passes" a guard via NaN propagation | A zero-width box; use a negative width |
 | Uniqueness that rides on the wrong axis | Filenames "unique by page+z" tested with a fixture that also varied the hash per photo |
 
+**The one guard that is missing outright:** nothing anywhere checks a template's photo slots
+against its text zones. Two template edits, two zones that would have landed on a moved
+slot, both caught by hand. See open item 13.
+
 **The single wire test.** `src-tauri/tests/export_roundtrip.rs` is the only test that drives
 both sides of the Rust↔Swift export wire against each other. Every other export test judges
 one side against a *copy* of the contract. Keep it that way, and keep its fixtures
@@ -650,7 +870,7 @@ implementing from the design doc alone.
 
 | Phase | Scope | Blocked on |
 |---|---|---|
-| **3** | Spread preview UI + spread-level controls (regenerate, swap, lock, reject) | Nothing — but **read the seed item in "Phase 2 open items" first**, because "regenerate this spread" is not currently implementable for middle spreads. |
+| **3** | Spread preview UI + spread-level controls (regenerate, swap, lock, reject) | Nothing — `best_spread` now takes a seed. But **read open item 3 first:** one global seed feeds every call, so re-rolling changes the whole book at once. "Regenerate THIS spread" needs a per-spread seed (`seed ^ spread_index`) mixed in at the call sites. |
 | **4** | Canvas editor: drag/resize/crop with snapping to the margin guides | Phase 3 |
 | **5** | AI SDK v7 + DeepSeek chat agent driving the layout tools | Phases 3-4 |
 
@@ -833,9 +1053,26 @@ templates** plus `weights.json` and a `README.md`:
 
 Two commits got here: `31afe4d` removed 21 templates whose slots straddled the fold (they
 could not decompose into page halves), and `77c5005` authored page-subdivision layouts
-closing the 4/5/6-up gaps. The ignored test
-`templates_real_library_covers_every_group_size_from_one_to_six` asserts this against the
-real directory — run it with `cargo test -- --ignored`.
+closing the 4/5/6-up gaps. `templates_real_library_covers_every_group_size_from_one_to_six`
+asserts this against the real directory.
+
+**That test, and the two beside it, are no longer `#[ignore]`d (2026-08-15).** They had been
+ignored "so the unit tests stay hermetic" — but `bun run test:rust` passes no `--ignored`
+and there is no CI, so the only guards on the authored library, including the 1..=6 coverage
+the whole packer rests on, ran nowhere at all. Measured before un-ignoring: all three
+together finish in under 10 ms. There is now **nothing `#[ignore]`d in the crate.**
+
+**Two templates were re-authored on 2026-08-15, and both changed identity or shape:**
+
+- `45-three-up-mosaic-margin-left` is now **`45-three-up-mosaic-hero-right`** — file name
+  and `id` renamed together. Grep for the old name if a doc or fixture still cites it.
+- `20-four-up-windowpane` was re-authored as a true 2 × 2 grid **spanning both pages**.
+
+Both previously put every slot on one page half, so both printed a white page every time
+they were chosen. The per-slot-count coverage table above is unaffected — 45 is still a
+3-up, 20 still a 4-up — but the count of templates with an empty page half fell from ten to
+**eight, and all eight now hold exactly one photo**, which is why banning size 1 from the
+spread region removes the structural blank page entirely.
 
 **Note the side effect, since fixed:** closing the coverage gap made `choose_group_size`
 always take 6, because its decomposability guard is trivially true once `1` is buildable.
@@ -1031,7 +1268,15 @@ beside it. The design calls for the OS keychain, read from Rust.
    it is measured against fixtures only.
 2. **Answer the Pixajoy page-count question** — 30 seconds in their editor, while you are
    there.
-3. **Decide the seed question before planning Phase 3** (open item 3). "Regenerate this
-   spread" cannot be built as specified until the seed reaches `best_spread`.
-4. **Rule on the gutter-saliency penalty** (open item 1): implement it, or correct the
-   spec. Do not leave the spec promising a term the scorer does not have.
+3. **Tune the four dormant scoring terms** against those same real photographs, and fill in
+   the settled-weight table in "The four new scoring terms are DORMANT". Nothing in
+   `feat/phase-2-completion` improves a book until this happens; it is a `weights.json` edit
+   and a regenerate, no rebuild. Cheapest first move: `palette_harmony` down against
+   `spread_diversity` up.
+4. **Then decide whether 45 white pages of 360 is acceptable** (open item 12). If it is not,
+   the fix is to make `apportion_slots` slot-kind-aware — the mechanism is written down, the
+   reason it was deferred is written down, and the number to beat is the pre-branch 6. Do it
+   with real photographs in front of you, not against fixtures.
+
+Items 1 and 3 of the previous list are closed: the seed reaches `best_spread`, and the
+gutter-saliency penalty exists. Both have successor caveats — see open items 3 and 1.
