@@ -130,16 +130,22 @@ pub fn recommend_pages_with(keeper_count: usize, buildable: &[usize]) -> u32 {
 }
 
 /// Smallest SKU that fits the keepers, measured with `Capacity::from_library`
-/// -- the ACCURATE capacity, where the two single pages are bounded by what
-/// one page-half can hold rather than by the largest whole spread.
+/// -- the MORE accurate capacity, where the two single pages are bounded by
+/// what one page-half can hold rather than by the largest whole spread.
 ///
 /// Deliberately not `recommend_pages_with(keeper_count, &buildable_sizes(lib))`:
 /// that measures against the over-estimate, so for a keeper count in the gap
-/// between the two figures (65 or 66 against the real library, whose accurate
-/// 20-page capacity is 64 and whose over-estimate is 66) it recommends a
-/// 20-page book that then silently drops photos a 40-page book would have
-/// kept. `pace::assemble` packs against `from_library`, so this is also the
-/// only figure that agrees with the book the recommendation leads to.
+/// between the two figures (65 or 66 against the real library, whose
+/// `from_library` 20-page capacity is 64 and whose over-estimate is 66) it
+/// recommends a 20-page book that then silently drops photos a 40-page book
+/// would have kept. `pace::assemble` packs against `from_library`, so this is
+/// also the only figure that agrees with the book the recommendation leads to.
+///
+/// **"More accurate" is not "accurate."** That 64 is itself an overclaim by one:
+/// the true 20-page ceiling is 63, because `Buildable::from_library`'s `single`
+/// set is side-blind. See the warning block on that function and
+/// `docs/PROJECT-STATUS.md` open item 14 — including why the obvious fix was
+/// measured and rejected.
 pub fn recommend_pages(keeper_count: usize, lib: &Library) -> u32 {
     if keeper_count <= Capacity::from_library(20, lib).max_photos {
         20
@@ -212,6 +218,50 @@ impl Buildable {
     /// ones. Neither is a contiguous range invented from a maximum -- a range
     /// claims the library can build every count below the largest, which is a
     /// claim only the library itself can make.
+    ///
+    /// # KNOWN DEFECT: `single` is SIDE-BLIND, and a fix was measured and rejected
+    ///
+    /// `page_half_pool()` pools BOTH sides, so `single` is the union of what
+    /// left halves and right halves can build. But a page half is authored for
+    /// the side it prints on -- bleed edges and the gutter are side-specific --
+    /// so `pace::best_single` filters the pool by `l.side == side`, and
+    /// `pace::assemble` places the opening single on the RIGHT and the closing
+    /// single on the LEFT. The two slots therefore do NOT have the same set.
+    ///
+    /// On the real library: LEFT halves offer `{1,2,3,4}`, RIGHT `{1,2,3,4,5}`,
+    /// so the union is `{1,2,3,4,5}`. Two consequences, both measured:
+    ///
+    /// * `pack` may cut a `(5, Single)` CLOSING group, which no left half can
+    ///   build. `best_single` falls back to a 4-slot left half and
+    ///   `pace::strongest` silently trims one photo.
+    /// * `Capacity::from_buildable` reads `single_hi = 5` off this set, so
+    ///   `Capacity::from_library(20, lib).max_photos` reports **64** when the
+    ///   true ceiling is **63** (9 spreads x 6, plus a right-hand 5 opening and
+    ///   a left-hand 4 closing). `commands::…dropped_photos` is
+    ///   `keeper_count.saturating_sub(max_photos)`, so at 64 keepers the UI
+    ///   reports 0 dropped for a book that actually drops 6.
+    ///
+    /// **Replacing the union with the INTERSECTION (`{1,2,3,4}`) was tried and
+    /// measured NET NEGATIVE. Do not re-attempt it.** The intersection is not
+    /// conservative, because the union is not uniformly an overclaim: 5 is a
+    /// size the closing slot cannot take but the OPENING slot genuinely can.
+    /// Measured on the real library, 20 pages, `pace::assemble`:
+    ///
+    /// * page 1 really does lay out five photos on
+    ///   `25-six-up-mosaic-hero-five:right`. Under the intersection it drops to
+    ///   four, losing a photo the library could print.
+    /// * `max_photos` falls to 62 -- an UNDERclaim, since the true ceiling is
+    ///   63 -- so `pack`'s capacity trim pre-emptively discards keepers at 63
+    ///   and 64 that reached the page before.
+    /// * across four synthetic chapter shapes x three seeds at 60..=64 keepers,
+    ///   three of the four shapes lose 1-2 photos per book and none gains one.
+    ///
+    /// **The correct fix is a per-SIDE single set** -- `single_left` and
+    /// `single_right`, each slot measured against the side it actually prints
+    /// on, with `Capacity` summing `right_hi + left_hi` rather than
+    /// `2 * single_hi`. That is a fourth change to `pack`'s contract and is
+    /// deliberately deferred, not forgotten; see `docs/PROJECT-STATUS.md`
+    /// known-open item 14, which carries the full 40..=64-keeper sweep.
     pub fn from_library(lib: &Library) -> Buildable {
         let halves: std::collections::BTreeSet<usize> =
             lib.page_half_pool().iter().map(|p| p.slots.len()).filter(|&n| n > 0).collect();
@@ -260,6 +310,16 @@ impl Buildable {
 pub struct Group {
     /// Indices into the photo slice handed to `pack`.
     pub photos: Vec<usize>,
+    /// The chapter this group was cut from -- but NOT reliably the cluster its
+    /// photos were originally assigned. `merge_sub_spread_chapters` folds a
+    /// chapter too small to fill a spread into the next one chronologically and
+    /// re-keys the folded photos onto the LATER cluster id, so after a merge
+    /// this names the chapter that absorbed them, not the one they came from.
+    ///
+    /// Inert today: the only non-test reader is the pass-through in
+    /// `pace::assemble`. It stops being inert the moment Phase 3 derives a
+    /// chapter TITLE or date range from it, which would then silently inherit
+    /// the absorbing chapter's identity. Read the merge before relying on this.
     pub event_cluster: u32,
     /// The kind of slot this group was SIZED for. Set by `pack`; read by
     /// `pace::assemble` to decide where it goes.
@@ -716,8 +776,14 @@ fn feasible_band(remaining: usize, look: &Lookahead) -> (usize, usize) {
 /// 2. a remainder that is itself fully decomposable BY THE SLOTS THAT FOLLOW,
 ///    checked exhaustively (not a one-step lookahead) so a gapped buildable
 ///    set like {3,5} cannot slip an unreachable remainder past the check;
-/// 3. nearest to the aim;
-/// 4. the larger size, so an aim sitting exactly between two buildable sizes
+/// 3. `overshoot` -- HOW FAR outside the band, ranked only among candidates
+///    that are all outside it already. Inert unless the band has collapsed
+///    (a chapter apportioned more slots than its photos can fill), which is
+///    the starved case it exists for; the inline comment at the sort key
+///    below carries the measurement and explains why it is ordered after
+///    `strands` rather than before;
+/// 4. nearest to the aim;
+/// 5. the larger size, so an aim sitting exactly between two buildable sizes
 ///    rounds up rather than trailing photos into a later slot.
 ///
 /// The last slot needs no special case: at `slots_left == 1` the band

@@ -1677,10 +1677,20 @@ mod tests {
     /// holding one photo.
     ///
     /// Asserted per book rather than as a total, so a failure names the book.
-    /// The counts are all well inside what 20 pages hold (9 spreads of up to 6
-    /// plus 2 singles of up to 5), so "every keeper" is the right bar here;
     /// `pace_records_how_many_photos_were_dropped` covers the over-capacity
     /// case, where dropping is correct.
+    ///
+    /// # This sweep's range is 10..=51 keepers, and the invariant is FALSE above it
+    ///
+    /// The six counts cull to 10, 17, 21, 25, 34 and 51 keepers (158 per seed,
+    /// 474 over the three). Do not read the green as "every keeper is always
+    /// placed": swept independently at 40..=64 keepers on the same real library,
+    /// this engine loses up to **6 of 64**, with zero blank pages throughout.
+    /// The per-count table and both mechanisms are in `docs/PROJECT-STATUS.md`
+    /// open item 14. Widening the range here would simply turn this test red;
+    /// it is left at the range it can honestly assert, and the failure above it
+    /// is tracked as an open item rather than hidden behind a narrow sweep
+    /// nobody documented the edges of.
     #[test]
     fn pace_places_every_keeper_across_the_real_library_sweep() {
         let lib = real_library();
