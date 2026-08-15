@@ -210,7 +210,17 @@ fn decompose(raw: RawTemplate) -> Result<SpreadTemplate, TemplateError> {
 /// Soft-term weights, hot-reloadable from `templates/weights.json` so taste
 /// is tunable without a rebuild. Hard constraints are NOT weighted and are
 /// deliberately absent here.
+///
+/// `deny_unknown_fields` is load-bearing: without it a misspelled weight
+/// name is ignored and the real term silently keeps its default, which is
+/// indistinguishable from the file having been written correctly.
+///
+/// The four terms below it carry `#[serde(default)]` INDIVIDUALLY rather
+/// than the struct carrying it wholesale: a weights file written before
+/// they existed must still load, but a TRUNCATED file missing one of the
+/// original seven must still fail loudly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Weights {
     pub aspect_fit: f64,
     pub saliency_retention: f64,
@@ -219,6 +229,21 @@ pub struct Weights {
     pub resolution_headroom: f64,
     pub palette_harmony: f64,
     pub variety: f64,
+    /// Vision's own blur/exposure/pose score for the best face in the photo.
+    /// Ships at 0.0 -- see the Phase 2 completion design, §4.0.
+    #[serde(default)]
+    pub face_quality: f64,
+    /// How unlike each other the photos on one spread are. Ships at 0.0.
+    #[serde(default)]
+    pub spread_diversity: f64,
+    /// Penalty for generic salient content falling in the gutter dead band.
+    /// Ships at 0.0.
+    #[serde(default)]
+    pub gutter_saliency: f64,
+    /// Rewards a dominant hero slot when the group holds a standout photo.
+    /// Ships at 0.0.
+    #[serde(default)]
+    pub hero_prominence: f64,
 }
 
 impl Default for Weights {
@@ -231,6 +256,12 @@ impl Default for Weights {
             resolution_headroom: 0.4,
             palette_harmony: 0.2,
             variety: 0.5,
+            // Inert on purpose. `Weights::default()` must agree with the
+            // shipped weights.json or the golden and the app disagree.
+            face_quality: 0.0,
+            spread_diversity: 0.0,
+            gutter_saliency: 0.0,
+            hero_prominence: 0.0,
         }
     }
 }
@@ -371,6 +402,52 @@ mod tests {
         assert!(d.aspect_fit > 0.0);
         assert!(d.face_area_retention > d.saliency_retention,
             "faces must outweigh generic saliency");
+    }
+
+    /// The four terms added for Phase 2 completion ship INERT. A weights file
+    /// written before they existed must still load, with the new terms at zero
+    /// -- otherwise every saved project's weights file becomes unloadable.
+    #[test]
+    fn templates_weights_default_the_new_terms_to_zero_on_an_older_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("weights.json");
+        std::fs::write(
+            &path,
+            r#"{"aspect_fit":1.0,"saliency_retention":0.8,"face_area_retention":1.2,
+                "hero_match":0.6,"resolution_headroom":0.4,"palette_harmony":0.2,
+                "variety":0.5}"#,
+        )
+        .expect("write");
+
+        let w = Weights::load(&path).expect("an older weights file must still load");
+
+        assert_eq!(w.aspect_fit, 1.0);
+        assert_eq!(w.face_quality, 0.0);
+        assert_eq!(w.spread_diversity, 0.0);
+        assert_eq!(w.gutter_saliency, 0.0);
+        assert_eq!(w.hero_prominence, 0.0);
+    }
+
+    /// A typo'd weight name must FAIL rather than read as 0.0. Silently
+    /// treating `pallete_harmony` as an unknown key and leaving the real term
+    /// at its default is exactly the invisible failure this project keeps
+    /// finding.
+    #[test]
+    fn templates_weights_reject_an_unknown_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("weights.json");
+        std::fs::write(
+            &path,
+            r#"{"aspect_fit":1.0,"saliency_retention":0.8,"face_area_retention":1.2,
+                "hero_match":0.6,"resolution_headroom":0.4,"pallete_harmony":0.2,
+                "variety":0.5}"#,
+        )
+        .expect("write");
+
+        assert!(
+            Weights::load(&path).is_err(),
+            "a misspelled weight name must be an error, not a silent zero"
+        );
     }
 
     /// Guards the real authored library, not a fixture: every file in

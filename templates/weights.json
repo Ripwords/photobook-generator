@@ -5,5 +5,9 @@
   "hero_match": 0.6,
   "resolution_headroom": 0.4,
   "palette_harmony": 0.2,
-  "variety": 0.5
+  "variety": 0.5,
+  "face_quality": 0.0,
+  "spread_diversity": 0.0,
+  "gutter_saliency": 0.0,
+  "hero_prominence": 0.0
 }
