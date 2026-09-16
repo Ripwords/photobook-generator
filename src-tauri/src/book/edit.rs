@@ -39,8 +39,8 @@ use crate::book::crop::choose_crop;
 use crate::book::cull::Photo;
 use crate::book::pace::{half_id, place, rebuild, single_fit, tie_break, Book, Page};
 use crate::book::score::{best_spread, rejects, slot_aspect, Rejection};
-use crate::geometry::Side;
-use crate::templates::{Library, PageLayout, Slot, SpreadTemplate, Weights};
+use crate::geometry::{BleedEdge, Rect, Side};
+use crate::templates::{Library, PageLayout, Role, Slot, SpreadTemplate, Weights};
 use serde::{Deserialize, Serialize};
 
 /// What the user has said about one opening. Absent from `Book::controls`
@@ -118,6 +118,12 @@ pub enum BookEdit {
         y: f64,
         w: f64,
     },
+    /// Move or resize the slot itself, in the page's normalised frame. The
+    /// photo is re-cropped for the slot's new shape.
+    SetSlot {
+        placement: PlacementRef,
+        rect: Rect,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -155,6 +161,19 @@ pub enum EditError {
     },
     /// A hand crop falls outside the photo, or is too small to mean anything.
     CropOutOfBounds(PlacementRef),
+    /// A moved or resized slot leaves the page, or is too small to print.
+    SlotOutOfBounds(PlacementRef),
+    /// A moved or resized slot lands on another slot of the same page.
+    SlotOverlaps {
+        placement: PlacementRef,
+        other: PlacementRef,
+    },
+    /// The photo cannot be laid into the slot's new shape without breaking a
+    /// hard constraint.
+    SlotRejected {
+        placement: PlacementRef,
+        reason: Rejection,
+    },
     /// A page names a template the library no longer has.
     MissingLayout(String),
 }
@@ -213,6 +232,25 @@ impl std::fmt::Display for EditError {
             Self::CropOutOfBounds(_) => {
                 write!(f, "the crop window has to stay inside the photo")
             }
+            Self::SlotOutOfBounds(_) => {
+                write!(
+                    f,
+                    "a slot has to stay on the page and be at least 5% of it each way"
+                )
+            }
+            Self::SlotOverlaps { other, .. } => {
+                write!(f, "that would overlap the photo at {other}")
+            }
+            Self::SlotRejected { reason, .. } => write!(
+                f,
+                "at that size the photo would {}",
+                match reason {
+                    Rejection::FaceClipped => "have a face cut by the crop",
+                    Rejection::FaceInGutter => "put a face in the gutter",
+                    Rejection::FaceInSafeMargin => "put a face outside the safe margin",
+                    Rejection::TooLowResolution => "print below 200 DPI",
+                }
+            ),
             Self::MissingLayout(id) => write!(
                 f,
                 "this page uses template {id:?}, which is no longer in the library"
@@ -377,6 +415,7 @@ pub fn apply(
         BookEdit::SetCrop { placement, x, y, w } => {
             set_crop(book, lib, photos, *placement, *x, *y, *w)
         }
+        BookEdit::SetSlot { placement, rect } => set_slot(book, lib, photos, *placement, *rect),
     }
 }
 
@@ -594,6 +633,60 @@ fn slot_for<'a>(
     })
 }
 
+/// The slot a placement prints in, as the constraints see it: the
+/// PLACEMENT's own rect (a slot the user has moved no longer matches the
+/// template's), with the template's role where the template is still in the
+/// library and `Support` where it is not, and bleed edges read off the rect
+/// itself -- an edge on the canvas boundary bleeds, the fold edge never does.
+/// Never fails: a page whose template has gone is still a page of rects.
+fn placement_slot(
+    book: &Book,
+    lib: &Library,
+    page_index: usize,
+    slot_index: usize,
+) -> (Slot, Side) {
+    let page = &book.pages[page_index];
+    let rect = page.placements[slot_index].slot_rect;
+    let role = slot_for(book, lib, page_index)
+        .ok()
+        .and_then(|layout| layout.slots.get(slot_index))
+        .map(|s| s.role)
+        .unwrap_or(Role::Support);
+    (
+        Slot {
+            rect,
+            role,
+            bleed: bleed_edges(&rect, page.side),
+            aspect_pref: (slot_aspect_of(&rect), slot_aspect_of(&rect)),
+        },
+        page.side,
+    )
+}
+
+fn slot_aspect_of(rect: &Rect) -> f64 {
+    rect.aspect_in(crate::geometry::PAGE_W_IN, crate::geometry::PAGE_H_IN)
+}
+
+/// The edges of a page-normalised rect that reach the canvas boundary and so
+/// print as bleed. The fold edge is not a boundary: the paper continues.
+fn bleed_edges(rect: &Rect, side: Side) -> Vec<BleedEdge> {
+    const EPS: f64 = 1e-9;
+    let mut edges = Vec::new();
+    if rect.x <= EPS && side == Side::Left {
+        edges.push(BleedEdge::Left);
+    }
+    if rect.right() >= 1.0 - EPS && side == Side::Right {
+        edges.push(BleedEdge::Right);
+    }
+    if rect.y <= EPS {
+        edges.push(BleedEdge::Top);
+    }
+    if rect.bottom() >= 1.0 - EPS {
+        edges.push(BleedEdge::Bottom);
+    }
+    edges
+}
+
 fn locate(book: &Book, r: PlacementRef) -> Result<(usize, usize), EditError> {
     let page_index = book
         .pages
@@ -635,15 +728,11 @@ fn swap(
     // `z` is 1-based slot order (`pace::place`), so the layout slot behind a
     // placement is `z - 1` -- looked up by z rather than by position in the
     // placements list, which would drift if a placement were ever removed.
-    let fit = |page_index: usize, photo_index: usize, at: PlacementRef| {
-        let layout = slot_for(book, lib, page_index)?;
-        let slot: &Slot = layout
-            .slots
-            .get((at.z as usize).saturating_sub(1))
-            .ok_or_else(|| EditError::MissingLayout(book.pages[page_index].template_id.clone()))?;
+    let fit = |page_index: usize, slot_index: usize, photo_index: usize, at: PlacementRef| {
+        let (slot, side) = placement_slot(book, lib, page_index, slot_index);
         let photo = &photos[photo_index];
-        let crop = choose_crop(photo, slot_aspect(slot));
-        match rejects(photo, &crop, slot, layout.side) {
+        let crop = choose_crop(photo, slot_aspect(&slot));
+        match rejects(photo, &crop, &slot, side) {
             Some(reason) => Err(EditError::SwapRejected {
                 placement: at,
                 reason,
@@ -651,8 +740,8 @@ fn swap(
             None => Ok(crop),
         }
     };
-    let crop_a = fit(pa, photo_b, a)?;
-    let crop_b = fit(pb, photo_a, b)?;
+    let crop_a = fit(pa, ia, photo_b, a)?;
+    let crop_b = fit(pb, ib, photo_a, b)?;
 
     book.pages[pa].placements[ia].photo_index = photo_b;
     book.pages[pa].placements[ia].crop = crop_a;
@@ -666,7 +755,6 @@ mod tests {
     use super::*;
     use crate::book::cull::{Face, Overrides, PaletteColor};
     use crate::book::pace::assemble;
-    use crate::geometry::Rect;
 
     /// The frozen five: `03` (1 photo), `07` and `08` (2), `13` and `35` (3).
     /// A 2-photo spread therefore has exactly ONE alternative, which is what
@@ -1512,6 +1600,215 @@ mod tests {
         assert_eq!(err, Err(EditError::Locked(1)));
     }
 
+    // --- slot -----------------------------------------------------------------
+
+    /// The slot moves and resizes where the user put it and the photo is
+    /// re-cropped for its new shape; a rect off the page, a sliver, or one on
+    /// top of a neighbour is refused with the book untouched.
+    #[test]
+    fn edit_set_slot_moves_the_slot_and_recrops_the_photo_for_its_new_shape() {
+        let ps = photos(25);
+        let mut b = book(&ps);
+        let lib = frozen_library();
+        let w_ = Weights::default();
+        let (page_number, first, second) = b
+            .pages
+            .iter()
+            .find(|p| p.placements.len() >= 2)
+            .map(|p| (p.number, p.placements[0].clone(), p.placements[1].clone()))
+            .expect("fixture: a page with two placements");
+        let at = PlacementRef {
+            page: page_number,
+            z: first.z,
+        };
+        // Half the width at the same height: a different SHAPE, so the crop
+        // has to change (halving both would keep the aspect and the crop).
+        let target = Rect::new(
+            first.slot_rect.x,
+            first.slot_rect.y,
+            first.slot_rect.w * 0.5,
+            first.slot_rect.h,
+        );
+
+        apply(
+            &mut b,
+            &BookEdit::SetSlot {
+                placement: at,
+                rect: target,
+            },
+            &lib,
+            &ps,
+            &w_,
+        )
+        .unwrap();
+
+        let (pi, si) = locate(&b, at).unwrap();
+        let moved = &b.pages[pi].placements[si];
+        assert_eq!(moved.slot_rect, target);
+        assert_ne!(
+            moved.crop, first.crop,
+            "a different shape needs a different crop"
+        );
+        let photo = &ps[moved.photo_index];
+        let crop_aspect =
+            (moved.crop.w * photo.width as f64) / (moved.crop.h * photo.height as f64);
+        assert!(
+            (crop_aspect - slot_aspect_of(&target)).abs() < 1e-9,
+            "the crop has the slot's real aspect"
+        );
+
+        let snapshot = b.clone();
+        for bad in [
+            Rect::new(0.9, 0.1, 0.3, 0.3),
+            Rect::new(0.1, 0.1, 0.01, 0.3),
+            Rect::new(-0.2, 0.1, 0.3, 0.3),
+            Rect::new(f64::NAN, 0.1, 0.3, 0.3),
+        ] {
+            assert_eq!(
+                apply(
+                    &mut b,
+                    &BookEdit::SetSlot {
+                        placement: at,
+                        rect: bad
+                    },
+                    &lib,
+                    &ps,
+                    &w_
+                ),
+                Err(EditError::SlotOutOfBounds(at)),
+                "{bad:?}"
+            );
+        }
+        let onto = second.slot_rect;
+        assert_eq!(
+            apply(
+                &mut b,
+                &BookEdit::SetSlot {
+                    placement: at,
+                    rect: onto
+                },
+                &lib,
+                &ps,
+                &w_
+            ),
+            Err(EditError::SlotOverlaps {
+                placement: at,
+                other: PlacementRef {
+                    page: page_number,
+                    z: second.z
+                }
+            })
+        );
+        assert_eq!(b, snapshot);
+    }
+
+    /// A slot the user moved is what later edits see: a swap into it crops for
+    /// ITS rect, not the template's, and a slot dragged to the canvas edge
+    /// bleeds there. Also: a tiny slot refuses a photo below 200 DPI.
+    #[test]
+    fn edit_moved_slot_governs_later_edits_and_reads_bleed_off_its_own_edges() {
+        let mut ps = photos(25);
+        let mut b = book(&ps);
+        let lib = frozen_library();
+        let w_ = Weights::default();
+        let at = PlacementRef { page: 2, z: 1 };
+        let (pi, si) = locate(&b, at).unwrap();
+        let side = b.pages[pi].side;
+
+        let flush = match side {
+            Side::Left => Rect::new(0.0, 0.0, 0.4, 0.5),
+            Side::Right => Rect::new(0.6, 0.0, 0.4, 0.5),
+        };
+        let others: Vec<PlacementRef> = b.pages[pi]
+            .placements
+            .iter()
+            .skip(1)
+            .map(|p| PlacementRef { page: 2, z: p.z })
+            .collect();
+        for (k, other) in others.iter().enumerate() {
+            let parked = Rect::new(0.45, 0.6 + 0.1 * k as f64, 0.1, 0.08);
+            apply(
+                &mut b,
+                &BookEdit::SetSlot {
+                    placement: *other,
+                    rect: parked,
+                },
+                &lib,
+                &ps,
+                &w_,
+            )
+            .unwrap();
+        }
+        apply(
+            &mut b,
+            &BookEdit::SetSlot {
+                placement: at,
+                rect: flush,
+            },
+            &lib,
+            &ps,
+            &w_,
+        )
+        .unwrap();
+        let (slot, _) = placement_slot(&b, &lib, pi, si);
+        let expected_outer = if side == Side::Left {
+            BleedEdge::Left
+        } else {
+            BleedEdge::Right
+        };
+        assert_eq!(slot.bleed, vec![expected_outer, BleedEdge::Top]);
+
+        let other = PlacementRef { page: 4, z: 1 };
+        apply(
+            &mut b,
+            &BookEdit::SwapPhotos { a: at, b: other },
+            &lib,
+            &ps,
+            &w_,
+        )
+        .unwrap();
+        let (pi2, si2) = locate(&b, at).unwrap();
+        let swapped = b.pages[pi2].placements[si2].clone();
+        let photo = &ps[swapped.photo_index];
+        let crop_aspect =
+            (swapped.crop.w * photo.width as f64) / (swapped.crop.h * photo.height as f64);
+        assert!((crop_aspect - slot_aspect_of(&flush)).abs() < 1e-9);
+
+        apply(
+            &mut b,
+            &BookEdit::SetCrop {
+                placement: at,
+                x: 0.0,
+                y: 0.0,
+                w: swapped.crop.w * 0.9,
+            },
+            &lib,
+            &ps,
+            &w_,
+        )
+        .unwrap();
+
+        ps[swapped.photo_index].width = 300;
+        ps[swapped.photo_index].height = 200;
+        let err = apply(
+            &mut b,
+            &BookEdit::SetSlot {
+                placement: at,
+                rect: Rect::new(flush.x, 0.1, 0.4, 0.5),
+            },
+            &lib,
+            &ps,
+            &w_,
+        );
+        assert_eq!(
+            err,
+            Err(EditError::SlotRejected {
+                placement: at,
+                reason: Rejection::TooLowResolution
+            })
+        );
+    }
+
     // --- wire ---------------------------------------------------------------------
 
     /// The literal shapes the webview sends, read from the wire fixture
@@ -1548,6 +1845,10 @@ mod tests {
                     x: 0.125,
                     y: 0.0,
                     w: 0.75
+                },
+                BookEdit::SetSlot {
+                    placement: PlacementRef { page: 3, z: 2 },
+                    rect: Rect::new(0.1, 0.2, 0.3, 0.4),
                 },
             ]
         );
@@ -1649,13 +1950,9 @@ fn set_crop(
     if book.controls.get(&o).is_some_and(|c| c.locked) {
         return Err(EditError::Locked(o));
     }
-    let layout = slot_for(book, lib, page_index)?;
-    let slot: &Slot = layout
-        .slots
-        .get((at.z as usize).saturating_sub(1))
-        .ok_or_else(|| EditError::MissingLayout(book.pages[page_index].template_id.clone()))?;
+    let (slot, side) = placement_slot(book, lib, page_index, slot_index);
     let photo = &photos[book.pages[page_index].placements[slot_index].photo_index];
-    let h = w * photo.aspect() / slot_aspect(slot);
+    let h = w * photo.aspect() / slot_aspect(&slot);
     let inside = |v: f64| v.is_finite() && v >= -CROP_EPS;
     if !(inside(x) && inside(y) && w.is_finite() && w >= MIN_CROP_W && h.is_finite())
         || x + w > 1.0 + CROP_EPS
@@ -1665,12 +1962,104 @@ fn set_crop(
     }
     let crop =
         crate::geometry::Rect::new(x.clamp(0.0, 1.0), y.clamp(0.0, 1.0), w.min(1.0), h.min(1.0));
-    if let Some(reason) = rejects(photo, &crop, slot, layout.side) {
+    if let Some(reason) = rejects(photo, &crop, &slot, side) {
         return Err(EditError::CropRejected {
             placement: at,
             reason,
         });
     }
     book.pages[page_index].placements[slot_index].crop = crop;
+    Ok(())
+}
+
+/// The smallest slot accepted, as a fraction of the page each way. Smaller
+/// than this is a sliver nobody meant to print.
+const MIN_SLOT: f64 = 0.05;
+/// Two slots may touch; they may not overlap by more than this, the same
+/// tolerance the template validator allows for authored rounding.
+const OVERLAP_EPS: f64 = 0.0005;
+
+/// Moves or resizes a slot on the page and re-crops its photo for the new
+/// shape.
+///
+/// The rect stays on the page -- it may reach the canvas edge, which prints
+/// as bleed, but not pass it -- and may not overlap another slot on the same
+/// page, which the template validator forbids for authored layouts and the
+/// editor forbids for the same reason. The photo's crop is recomputed with
+/// `choose_crop` for the slot's new aspect and then checked against the same
+/// hard constraints as every other edit, with the slot's bleed read off the
+/// new rect. A hand crop made before the slot moved is replaced: it was
+/// chosen for a shape that no longer exists.
+fn set_slot(
+    book: &mut Book,
+    lib: &Library,
+    photos: &[Photo],
+    at: PlacementRef,
+    rect: Rect,
+) -> Result<(), EditError> {
+    let (page_index, slot_index) = locate(book, at)?;
+    let o = opening_of(book, page_index);
+    if book.controls.get(&o).is_some_and(|c| c.locked) {
+        return Err(EditError::Locked(o));
+    }
+    let finite = [rect.x, rect.y, rect.w, rect.h]
+        .iter()
+        .all(|v| v.is_finite());
+    if !finite
+        || rect.w < MIN_SLOT
+        || rect.h < MIN_SLOT
+        || rect.x < -CROP_EPS
+        || rect.y < -CROP_EPS
+        || rect.right() > 1.0 + CROP_EPS
+        || rect.bottom() > 1.0 + CROP_EPS
+    {
+        return Err(EditError::SlotOutOfBounds(at));
+    }
+    let rect = Rect::new(
+        rect.x.max(0.0),
+        rect.y.max(0.0),
+        rect.w.min(1.0),
+        rect.h.min(1.0),
+    );
+    let page = &book.pages[page_index];
+    for (i, other) in page.placements.iter().enumerate() {
+        if i == slot_index {
+            continue;
+        }
+        let overlaps = rect
+            .intersect(&other.slot_rect)
+            .is_some_and(|r| r.w > OVERLAP_EPS && r.h > OVERLAP_EPS);
+        if overlaps {
+            return Err(EditError::SlotOverlaps {
+                placement: at,
+                other: PlacementRef {
+                    page: page.number,
+                    z: other.z,
+                },
+            });
+        }
+    }
+    let role = slot_for(book, lib, page_index)
+        .ok()
+        .and_then(|layout| layout.slots.get(slot_index))
+        .map(|s| s.role)
+        .unwrap_or(Role::Support);
+    let slot = Slot {
+        rect,
+        role,
+        bleed: bleed_edges(&rect, page.side),
+        aspect_pref: (slot_aspect_of(&rect), slot_aspect_of(&rect)),
+    };
+    let photo = &photos[page.placements[slot_index].photo_index];
+    let crop = choose_crop(photo, slot_aspect(&slot));
+    if let Some(reason) = rejects(photo, &crop, &slot, page.side) {
+        return Err(EditError::SlotRejected {
+            placement: at,
+            reason,
+        });
+    }
+    let placement = &mut book.pages[page_index].placements[slot_index];
+    placement.slot_rect = rect;
+    placement.crop = crop;
     Ok(())
 }

@@ -71,7 +71,14 @@ exists so that error is easy to diagnose.
    first again or press Escape to cancel. To **adjust a crop**, drag the photo inside its
    slot to move the window, or scroll over it to zoom; the window keeps the slot's shape and
    is saved when you let go. Regenerating that opening or swapping the photo away recomputes
-   its crop, because the slot it was chosen for is gone. A change that would cut a face, put one in the
+   its crop, because the slot it was chosen for is gone.
+
+   To **move or resize the boxes themselves**, turn on **Move and resize boxes** above the
+   book. Drag a box to move it, drag a corner to resize it; edges snap to the trim, safe and
+   gutter guides, the page edge (which prints as bleed) and the other boxes on the page. A box
+   cannot leave the page, shrink below 5% of it, or overlap another box, and the photo is
+   re-cropped for the new shape under the same rules as everything else. Turn the switch off
+   to go back to swapping and cropping. A change that would cut a face, put one in the
    gutter or the safe margin, or print below 200 DPI is refused with the reason, and the book
    stays as it was. Every change is saved immediately.
 4. **Export.** Choose an output folder and export. Pre-flight runs first; anything that would

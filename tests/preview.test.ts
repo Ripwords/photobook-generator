@@ -15,7 +15,12 @@ import {
   photoFor,
   rectStyle,
   safeRect,
+  pageGuides,
   setCropEdit,
+  setSlotEdit,
+  slotMoved,
+  slotResized,
+  snapValue,
   spreadTemplates,
   templateLabel,
   toSpreads,
@@ -565,6 +570,7 @@ describe("the edit wire", () => {
       { kind: "shuffle" },
       { kind: "swapPhotos", a: { page: 2, z: 1 }, b: { page: 5, z: 2 } },
       { kind: "setCrop", placement: { page: 3, z: 2 }, x: 0.125, y: 0, w: 0.75 },
+      { kind: "setSlot", placement: { page: 3, z: 2 }, rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 } },
     ];
     expect(fixture).toEqual(typed);
   });
@@ -619,5 +625,71 @@ describe("hand cropping", () => {
       y: 0.2,
       w: 0.3,
     });
+  });
+});
+
+describe("slot editing", () => {
+  const rect = { x: 0.2, y: 0.2, w: 0.3, h: 0.4 };
+  const guides = { xs: [0, 0.5, 1], ys: [0, 0.5, 1] };
+
+  it("snaps a value only within the threshold, to the nearest guide", () => {
+    expect(snapValue(0.49, [0, 0.5, 1], 0.02)).toBe(0.5);
+    expect(snapValue(0.45, [0, 0.5, 1], 0.02)).toBe(0.45);
+    expect(snapValue(0.26, [0.25, 0.3], 0.05)).toBe(0.25);
+  });
+
+  it("moves a slot, snapping whichever edge is nearest a guide and keeping its size", () => {
+    const moved = slotMoved(rect, { dx: -0.01, dy: 0 }, guides, 0.02);
+    expect(moved).toEqual({ x: 0.2, y: 0.2, w: 0.3, h: 0.4 });
+    const free = slotMoved(rect, { dx: 0.1, dy: 0.05 }, guides, 0.02);
+    expect(free.x).toBeCloseTo(0.3, 12);
+    expect(free.y).toBeCloseTo(0.25, 12);
+    expect([free.w, free.h]).toEqual([0.3, 0.4]);
+  });
+
+  it("keeps a moved slot on the page", () => {
+    expect(slotMoved(rect, { dx: 5, dy: 5 }, guides, 0)).toEqual({ x: 0.7, y: 0.6, w: 0.3, h: 0.4 });
+    expect(slotMoved(rect, { dx: -5, dy: -5 }, guides, 0)).toEqual({ x: 0, y: 0, w: 0.3, h: 0.4 });
+  });
+
+  it("resizes from a corner with the opposite corner fixed", () => {
+    const se = slotResized(rect, "se", { dx: 0.1, dy: 0.1 }, guides, 0, 0.05);
+    expect(se.x).toBe(0.2);
+    expect(se.y).toBe(0.2);
+    expect(se.w).toBeCloseTo(0.4, 12);
+    expect(se.h).toBeCloseTo(0.5, 12);
+    const nw = slotResized(rect, "nw", { dx: -0.1, dy: -0.1 }, guides, 0, 0.05);
+    expect(nw.x).toBeCloseTo(0.1, 12);
+    expect(nw.y).toBeCloseTo(0.1, 12);
+    expect(nw.x + nw.w).toBeCloseTo(0.5, 12);
+    expect(nw.y + nw.h).toBeCloseTo(0.6, 12);
+  });
+
+  it("never resizes below the minimum or past the page, and snaps the moving edge", () => {
+    const tiny = slotResized(rect, "se", { dx: -5, dy: -5 }, guides, 0, 0.05);
+    expect(tiny.w).toBeCloseTo(0.05, 12);
+    expect(tiny.h).toBeCloseTo(0.05, 12);
+    const huge = slotResized(rect, "se", { dx: 5, dy: 5 }, guides, 0, 0.05);
+    expect(huge.x + huge.w).toBe(1);
+    expect(huge.y + huge.h).toBe(1);
+    const snapped = slotResized(rect, "ne", { dx: -0.01, dy: 0 }, guides, 0.02, 0.05);
+    expect(snapped.x + snapped.w).toBeCloseTo(0.5, 12);
+  });
+
+  it("builds page guides from the engine's own geometry plus the other slots", () => {
+    const g = pageGuides(geometry, "left", [{ x: 0.1, y: 0.3, w: 0.2, h: 0.2 }]);
+    expect(g.xs).toContain(0);
+    expect(g.xs).toContain(1);
+    expect(g.xs.some((x) => Math.abs(x - geometry.trimU) < 1e-6)).toBe(true);
+    expect(g.xs.some((x) => Math.abs(x - (1 - geometry.gutterU)) < 1e-6)).toBe(true);
+    expect(g.xs).toContain(0.1);
+    expect(g.xs.some((x) => Math.abs(x - 0.3) < 1e-6)).toBe(true);
+    expect(g.ys).toContain(0.3);
+    expect(g.ys.some((y) => Math.abs(y - 0.5) < 1e-6)).toBe(true);
+    expect(g.xs.toSorted((a, b) => a - b)).toEqual(g.xs);
+  });
+
+  it("sends the whole rect for a slot edit", () => {
+    expect(setSlotEdit({ page: 2, z: 1 }, rect)).toEqual({ kind: "setSlot", placement: { page: 2, z: 1 }, rect });
   });
 });

@@ -144,7 +144,8 @@ export type BookEdit =
   | { kind: "setLocked"; opening: number; locked: boolean }
   | { kind: "shuffle" }
   | { kind: "swapPhotos"; a: PlacementRef; b: PlacementRef }
-  | { kind: "setCrop"; placement: PlacementRef; x: number; y: number; w: number };
+  | { kind: "setCrop"; placement: PlacementRef; x: number; y: number; w: number }
+  | { kind: "setSlot"; placement: PlacementRef; rect: PreviewRect };
 
 /**
  * One printed opening: two facing pages with the fold between them, or ONE
@@ -533,4 +534,124 @@ export function setCropEdit(placement: PlacementRef, crop: PreviewRect): BookEdi
 
 function clamp(value: number, lo: number, hi: number): number {
   return Math.min(Math.max(value, lo), Math.max(lo, hi));
+}
+
+/** The edit that saves a slot the user moved or resized. */
+export function setSlotEdit(placement: PlacementRef, rect: PreviewRect): BookEdit {
+  return { kind: "setSlot", placement, rect };
+}
+
+/** Which corner of a slot a resize handle drags. */
+export type Corner = "nw" | "ne" | "sw" | "se";
+
+/** The lines a slot edge snaps to, page-normalised. */
+export interface SnapGuides {
+  xs: number[];
+  ys: number[];
+}
+
+/**
+ * Every line worth snapping to on a page: the canvas edges (bleed), the trim
+ * and safe lines, the gutter line at the fold, and the edges of every OTHER
+ * slot on the page. The same geometry the preview draws and the engine
+ * enforces -- `PreviewGeometry` is `geometry.rs` on the wire, so a slot
+ * snapped to the safe line here is exactly inside `in_safe_margin` there.
+ */
+export function pageGuides(
+  geometry: PreviewGeometry,
+  side: PageSide,
+  others: readonly PreviewRect[],
+): SnapGuides {
+  const trim = trimRect(geometry, side);
+  const safe = safeRect(geometry, side);
+  const gutter = gutterRect(geometry, side);
+  const xs = [0, 1, trim.x, trim.x + trim.w, safe.x, safe.x + safe.w, gutter.x, gutter.x + gutter.w];
+  const ys = [0, 1, trim.y, trim.y + trim.h, safe.y, safe.y + safe.h];
+  for (const r of others) {
+    xs.push(r.x, r.x + r.w);
+    ys.push(r.y, r.y + r.h);
+  }
+  return { xs: dedupe(xs), ys: dedupe(ys) };
+}
+
+function dedupe(values: number[]): number[] {
+  return [...new Set(values.map((v) => Math.round(v * 1e6) / 1e6))].toSorted((a, b) => a - b);
+}
+
+/** `value` pulled onto the nearest guide within `threshold`, else unchanged. */
+export function snapValue(value: number, guides: readonly number[], threshold: number): number {
+  let best = value;
+  let gap = threshold;
+  for (const g of guides) {
+    const d = Math.abs(g - value);
+    if (d < gap) {
+      gap = d;
+      best = g;
+    }
+  }
+  return best;
+}
+
+/**
+ * The slot after being dragged by `delta` page-widths and page-heights. The
+ * size is kept; whichever edge lands nearest a guide snaps, pulling the whole
+ * slot with it; and the slot never leaves the page.
+ */
+export function slotMoved(
+  rect: PreviewRect,
+  delta: SlotDelta,
+  guides: SnapGuides,
+  threshold: number,
+): PreviewRect {
+  const x = clamp(rect.x + delta.dx, 0, 1 - rect.w);
+  const y = clamp(rect.y + delta.dy, 0, 1 - rect.h);
+  const sx = snapEither(x, rect.w, guides.xs, threshold);
+  const sy = snapEither(y, rect.h, guides.ys, threshold);
+  return { x: clamp(sx, 0, 1 - rect.w), y: clamp(sy, 0, 1 - rect.h), w: rect.w, h: rect.h };
+}
+
+/**
+ * The start of a span of `size` at `start`, pulled so that whichever of its
+ * two edges can snap with the smaller correction does. An edge that is not
+ * within `threshold` of any guide does not count, so an unsnapped edge never
+ * wins over a snapped one merely by moving less.
+ */
+function snapEither(start: number, size: number, guides: readonly number[], threshold: number): number {
+  const byStart = snapValue(start, guides, threshold) - start;
+  const byEnd = snapValue(start + size, guides, threshold) - (start + size);
+  const candidates = [byStart, byEnd].filter((c) => c !== 0);
+  if (candidates.length === 0) return start;
+  return start + candidates.reduce((a, b) => (Math.abs(b) < Math.abs(a) ? b : a));
+}
+
+/**
+ * The slot after one corner is dragged by `delta`. The opposite corner stays
+ * put, the moving edges snap to guides, and the slot can shrink no further
+ * than `minSize` each way nor leave the page. Free-form on purpose: a slot's
+ * shape is the user's to choose; Rust re-crops the photo for whatever shape
+ * results and refuses one that breaks a hard constraint.
+ */
+export function slotResized(
+  rect: PreviewRect,
+  corner: Corner,
+  delta: SlotDelta,
+  guides: SnapGuides,
+  threshold: number,
+  minSize: number,
+): PreviewRect {
+  let left = rect.x;
+  let right = rect.x + rect.w;
+  let top = rect.y;
+  let bottom = rect.y + rect.h;
+  if (corner === "nw" || corner === "sw") {
+    left = clamp(snapValue(clamp(left + delta.dx, 0, 1), guides.xs, threshold), 0, right - minSize);
+  } else {
+    right = clamp(snapValue(clamp(right + delta.dx, 0, 1), guides.xs, threshold), left + minSize, 1);
+  }
+  if (corner === "nw" || corner === "ne") {
+    top = clamp(snapValue(clamp(top + delta.dy, 0, 1), guides.ys, threshold), 0, bottom - minSize);
+  } else {
+    bottom = clamp(snapValue(clamp(bottom + delta.dy, 0, 1), guides.ys, threshold), top + minSize, 1);
+  }
+  return { x: left, y: top, w: right - left, h: bottom - top };
 }

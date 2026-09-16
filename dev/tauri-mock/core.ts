@@ -98,6 +98,26 @@ function applyEdit(edit: BookEdit): BookLayout {
       target.crop = { x: edit.x, y: edit.y, w: edit.w, h: edit.w * shape };
       break;
     }
+    case "setSlot": {
+      const target = placement(edit.placement);
+      if (!target) throw new Error("there is no photo at that slot");
+      const r = edit.rect;
+      if (r.x < 0 || r.y < 0 || r.x + r.w > 1.000001 || r.y + r.h > 1.000001 || r.w < 0.05 || r.h < 0.05) {
+        throw new Error("a slot has to stay on the page and be at least 5% of it each way");
+      }
+      const page = layout.pages.find((p) => p.number === edit.placement.page);
+      for (const other of page?.placements ?? []) {
+        if (other === target) continue;
+        const o = other.slotRect;
+        const overlapW = Math.min(r.x + r.w, o.x + o.w) - Math.max(r.x, o.x);
+        const overlapH = Math.min(r.y + r.h, o.y + o.h) - Math.max(r.y, o.y);
+        if (overlapW > 0.0005 && overlapH > 0.0005) {
+          throw new Error(`that would overlap the photo at page ${page?.number} slot ${other.z}`);
+        }
+      }
+      target.slotRect = { ...r };
+      break;
+    }
     case "swapPhotos": {
       const a = placement(edit.a);
       const b = placement(edit.b);

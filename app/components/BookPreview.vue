@@ -7,6 +7,7 @@ import {
   openingFor,
   pageSide,
   setCropEdit,
+  setSlotEdit,
   spreadTemplates,
   templateLabel,
   toSpreads,
@@ -52,6 +53,17 @@ const anyToShuffle = computed(() => layout.openings.some(canRelayout));
  */
 const selected = ref<PlacementRef | null>(null);
 
+/**
+ * Layout mode: drag moves a photo box and its corners resize it, instead of
+ * the drag moving the crop. A switch rather than a modifier key so it is
+ * discoverable and cannot be entered by accident mid-crop. Turning it on
+ * drops any swap selection, because a click no longer selects.
+ */
+const editSlots = ref(false);
+watch(editSlots, () => {
+  selected.value = null;
+});
+
 function onSelect(placement: PlacementRef) {
   const step = nextSwapStep(selected.value, placement);
   selected.value = step.selected;
@@ -70,6 +82,10 @@ watch(
 function onCrop(placement: PlacementRef, crop: PreviewRect) {
   selected.value = null;
   emit("edit", setCropEdit(placement, crop));
+}
+
+function onSlot(placement: PlacementRef, rect: PreviewRect) {
+  emit("edit", setSlotEdit(placement, rect));
 }
 
 function layoutMenu(index: number, alternatives: string[]) {
@@ -121,16 +137,19 @@ const blankPages = computed(() => layout.pages.filter((page) => page.blank).leng
         yet, with the same photos in place. Locking is how the user keeps the
         spreads they like while the rest keep changing.
       -->
-      <UButton
-        icon="i-lucide-shuffle"
-        color="neutral"
-        variant="outline"
-        size="sm"
-        :disabled="busy || !anyToShuffle"
-        @click="emit('edit', { kind: 'shuffle' })"
-      >
-        {{ anyLocked ? "Shuffle unlocked spreads" : "Shuffle every spread" }}
-      </UButton>
+      <div class="flex flex-wrap items-center gap-4">
+        <USwitch v-model="editSlots" size="sm" label="Move and resize boxes" :disabled="busy" />
+        <UButton
+          icon="i-lucide-shuffle"
+          color="neutral"
+          variant="outline"
+          size="sm"
+          :disabled="busy || !anyToShuffle"
+          @click="emit('edit', { kind: 'shuffle' })"
+        >
+          {{ anyLocked ? "Shuffle unlocked spreads" : "Shuffle every spread" }}
+        </UButton>
+      </div>
     </div>
 
     <!--
@@ -170,7 +189,10 @@ const blankPages = computed(() => layout.pages.filter((page) => page.blank).leng
       </li>
       <li class="flex items-center gap-1.5">
         <UIcon name="i-lucide-move" class="size-3.5" />
-        Drag a photo to move its crop, scroll over it to zoom
+        <template v-if="editSlots">
+          Drag a box to move it, drag a corner to resize it; edges snap to the guides
+        </template>
+        <template v-else>Drag a photo to move its crop, scroll over it to zoom</template>
       </li>
     </ul>
 
@@ -300,8 +322,11 @@ const blankPages = computed(() => layout.pages.filter((page) => page.blank).leng
               :side="pageSide(spread.left, 'left')"
               :selectable="!busy && !spread.opening.locked"
               :selected
+              :edit-slots="editSlots"
+              :busy
               @select="onSelect"
               @crop="onCrop"
+              @slot="onSlot"
             />
           </div>
           <div class="w-1/2">
@@ -311,8 +336,11 @@ const blankPages = computed(() => layout.pages.filter((page) => page.blank).leng
               :side="pageSide(spread.right, 'right')"
               :selectable="!busy && !spread.opening.locked"
               :selected
+              :edit-slots="editSlots"
+              :busy
               @select="onSelect"
               @crop="onCrop"
+              @slot="onSlot"
             />
           </div>
         </div>
