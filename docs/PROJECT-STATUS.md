@@ -26,9 +26,9 @@ deliberately-parked decision that this file is the only surviving record of.**
 
 ## What changed on 2026-09-16
 
-One session on `master`, nine commits, every suite green at the end (620 TypeScript, 439 Rust
-unit tests plus the sweep and five live-sidecar binaries, 130 Swift, lint and `nuxt generate`
-clean). In the order it happened:
+One session on `master`, thirteen commits, every suite green at the end (633 TypeScript, 443
+Rust unit tests plus the sweep and five live-sidecar binaries, 130 Swift, lint and
+`nuxt generate` clean, and the packaged app builds). In the order it happened:
 
 1. **The packer was redesigned, closing open items 12 and 14** (`23d757f`). `Buildable` is per
    side (`single_left`, `single_right`), so the opening page is measured against right halves
@@ -62,6 +62,11 @@ clean). In the order it happened:
 6. **Several folders are one analysed set, and the `AppState` collision is fixed** (`a84ba97`).
    See "Multiple source folders" below; the old "Requested, not yet specced" section is gone.
 7. `no-explicit-any` is a lint error; the dead `Sidecar::benchmark` is removed (`4e69085`).
+8. **Phase 4, first two steps** (`168d853`, `a9d8324`): hand cropping (drag the photo, scroll
+   to zoom) and moving/resizing the boxes with snap-to-guide, both through `edit_book` under
+   the same hard constraints as every other edit. See the Phase 4 row under "What is NOT
+   built" for exactly what is and is not there.
+9. `bun tauri build --bundles app` still produces `PhotobookGen.app` (run after item 6).
 
 **Still not done, and not fakeable:** the real-photo run and Pixajoy upload (see "The
 outstanding verification"). Nothing in this session changed that. The four scoring terms still
@@ -105,7 +110,7 @@ thumbnails, chapter dividers and burst-size badges.
 | Nuxt UI | `app/` | `pages/index.vue`, `components/PhotoTile.vue`, `composables/useAnalysis.ts`, `types/features.ts` |
 | Template library | `templates/` | Spread templates + validator at `tests/templates.test.ts`. Was 40 at end of Phase 1; **now 36** — see the Print geometry section. |
 
-**Test counts at last run (2026-09-16, `master`):** 620 TypeScript, **439 Rust lib tests, 0
+**Test counts at last run (2026-09-16, `master`):** 633 TypeScript, **443 Rust lib tests, 0
 failed, 0 ignored**, plus the `pack_sweep` binary, 2 other harness'd and 4 `harness = false`
 integration binaries, 130 Swift. All green, lint clean.
 **Release build works:** `bun tauri build --bundles app` produces `PhotobookGen.app`.
