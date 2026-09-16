@@ -371,6 +371,22 @@ describe("template library", () => {
         expect(ENERGIES, `${filename}: energy='${template.energy}'`).toContain(template.energy);
       });
 
+      it("no slot overlaps a text zone", () => {
+        // Both template edits in Phase 2 completion moved a slot onto a text
+        // zone, and both were caught by a human computing the clearances by
+        // hand. The validator already holds both rectangles; this is the check
+        // that was missing (docs/PROJECT-STATUS.md open item 13).
+        template.slots.forEach((slot, i) => {
+          template.text_zones.forEach((tz, j) => {
+            expect(
+              rectsOverlap(slot.rect, tz.rect),
+              `${filename}: slots[${i}] rect=[${slot.rect.join(", ")}] overlaps ` +
+                `text_zones[${j}] rect=[${tz.rect.join(", ")}]`,
+            ).toBe(false);
+          });
+        });
+      });
+
       it("slots do not overlap each other by more than a negligible epsilon", () => {
         for (let i = 0; i < template.slots.length; i++) {
           for (let j = i + 1; j < template.slots.length; j++) {
