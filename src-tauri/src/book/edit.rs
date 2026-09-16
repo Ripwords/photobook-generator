@@ -109,6 +109,15 @@ pub enum BookEdit {
         a: PlacementRef,
         b: PlacementRef,
     },
+    /// Move or resize one placement's crop window by hand. `x`, `y` and `w`
+    /// are in the photo's own normalised frame; the height is derived from
+    /// the slot's aspect, so a hand crop can never distort.
+    SetCrop {
+        placement: PlacementRef,
+        x: f64,
+        y: f64,
+        w: f64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -139,6 +148,13 @@ pub enum EditError {
         placement: PlacementRef,
         reason: Rejection,
     },
+    /// A hand crop would break a hard constraint at this slot.
+    CropRejected {
+        placement: PlacementRef,
+        reason: Rejection,
+    },
+    /// A hand crop falls outside the photo, or is too small to mean anything.
+    CropOutOfBounds(PlacementRef),
     /// A page names a template the library no longer has.
     MissingLayout(String),
 }
@@ -184,6 +200,19 @@ impl std::fmt::Display for EditError {
                     Rejection::TooLowResolution => "print below 200 DPI at that size",
                 }
             ),
+            Self::CropRejected { reason, .. } => write!(
+                f,
+                "that crop would {}",
+                match reason {
+                    Rejection::FaceClipped => "cut a face",
+                    Rejection::FaceInGutter => "put a face in the gutter",
+                    Rejection::FaceInSafeMargin => "put a face outside the safe margin",
+                    Rejection::TooLowResolution => "print below 200 DPI",
+                }
+            ),
+            Self::CropOutOfBounds(_) => {
+                write!(f, "the crop window has to stay inside the photo")
+            }
             Self::MissingLayout(id) => write!(
                 f,
                 "this page uses template {id:?}, which is no longer in the library"
@@ -345,6 +374,9 @@ pub fn apply(
             Ok(())
         }
         BookEdit::SwapPhotos { a, b } => swap(book, lib, photos, *a, *b),
+        BookEdit::SetCrop { placement, x, y, w } => {
+            set_crop(book, lib, photos, *placement, *x, *y, *w)
+        }
     }
 }
 
@@ -1341,6 +1373,145 @@ mod tests {
         assert_eq!(b, before);
     }
 
+    // --- crop -----------------------------------------------------------------
+
+    /// The window moves where the user put it, keeps the slot's shape whatever
+    /// height the webview thinks, and a window that would leave the photo is
+    /// refused with the book untouched.
+    #[test]
+    fn edit_set_crop_moves_the_window_and_derives_its_height_from_the_slot() {
+        let ps = photos(25);
+        let mut b = book(&ps);
+        let lib = frozen_library();
+        let w_ = Weights::default();
+        let at = PlacementRef { page: 2, z: 1 };
+        let (pi, si) = locate(&b, at).unwrap();
+        let before = b.pages[pi].placements[si].crop;
+        assert!(
+            before.w < 1.0 || before.h < 1.0,
+            "fixture: the crop must have room to move"
+        );
+        let w = before.w * 0.8;
+
+        apply(
+            &mut b,
+            &BookEdit::SetCrop {
+                placement: at,
+                x: 0.1,
+                y: 0.05,
+                w,
+            },
+            &lib,
+            &ps,
+            &w_,
+        )
+        .unwrap();
+
+        let after = b.pages[pi].placements[si].crop;
+        assert_eq!((after.x, after.y, after.w), (0.1, 0.05, w));
+        let ratio = |r: Rect| r.w / r.h;
+        assert!(
+            (ratio(after) - ratio(before)).abs() < 1e-9,
+            "the shape is the slot's: {after:?} vs {before:?}"
+        );
+
+        let snapshot = b.clone();
+        let err = apply(
+            &mut b,
+            &BookEdit::SetCrop {
+                placement: at,
+                x: 0.5,
+                y: 0.0,
+                w: 0.8,
+            },
+            &lib,
+            &ps,
+            &w_,
+        );
+        assert_eq!(err, Err(EditError::CropOutOfBounds(at)));
+        let err = apply(
+            &mut b,
+            &BookEdit::SetCrop {
+                placement: at,
+                x: 0.0,
+                y: 0.0,
+                w: 0.001,
+            },
+            &lib,
+            &ps,
+            &w_,
+        );
+        assert_eq!(err, Err(EditError::CropOutOfBounds(at)));
+        assert_eq!(b, snapshot);
+    }
+
+    #[test]
+    fn edit_set_crop_refuses_a_window_that_cuts_a_face_or_is_locked() {
+        let mut ps = photos(25);
+        let mut b = book(&ps);
+        let lib = frozen_library();
+        let w_ = Weights::default();
+        let at = PlacementRef { page: 2, z: 1 };
+        let (pi, si) = locate(&b, at).unwrap();
+        let victim = b.pages[pi].placements[si].photo_index;
+        ps[victim].faces = vec![Face {
+            box_: Rect::new(0.4, 0.4, 0.2, 0.2),
+            capture_quality: None,
+        }];
+        let snapshot = b.clone();
+
+        // A window in the top-left corner, a quarter of the photo wide, cannot
+        // contain a face centred at (0.5, 0.5).
+        let err = apply(
+            &mut b,
+            &BookEdit::SetCrop {
+                placement: at,
+                x: 0.0,
+                y: 0.0,
+                w: 0.25,
+            },
+            &lib,
+            &ps,
+            &w_,
+        );
+        assert!(
+            matches!(
+                err,
+                Err(EditError::CropRejected {
+                    reason: Rejection::FaceClipped | Rejection::TooLowResolution,
+                    ..
+                })
+            ),
+            "{err:?}"
+        );
+        assert_eq!(b, snapshot);
+
+        apply(
+            &mut b,
+            &BookEdit::SetLocked {
+                opening: 1,
+                locked: true,
+            },
+            &lib,
+            &ps,
+            &w_,
+        )
+        .unwrap();
+        let err = apply(
+            &mut b,
+            &BookEdit::SetCrop {
+                placement: at,
+                x: 0.3,
+                y: 0.3,
+                w: 0.4,
+            },
+            &lib,
+            &ps,
+            &w_,
+        );
+        assert_eq!(err, Err(EditError::Locked(1)));
+    }
+
     // --- wire ---------------------------------------------------------------------
 
     /// The literal shapes the webview sends, read from the wire fixture
@@ -1371,6 +1542,12 @@ mod tests {
                 BookEdit::SwapPhotos {
                     a: PlacementRef { page: 2, z: 1 },
                     b: PlacementRef { page: 5, z: 2 }
+                },
+                BookEdit::SetCrop {
+                    placement: PlacementRef { page: 3, z: 2 },
+                    x: 0.125,
+                    y: 0.0,
+                    w: 0.75
                 },
             ]
         );
@@ -1438,4 +1615,62 @@ mod tests {
             "no such opening, no alternatives"
         );
     }
+}
+
+/// The smallest crop width accepted, as a fraction of the photo. Below this
+/// the window is a handful of pixels and `rejects` would refuse it on DPI
+/// anyway; refusing earlier gives a clearer message.
+const MIN_CROP_W: f64 = 0.02;
+const CROP_EPS: f64 = 1e-6;
+
+/// Moves or resizes a placement's crop by hand.
+///
+/// The height is DERIVED from the slot's aspect and the photo's, exactly as
+/// `choose_crop` derives it, so the window keeps the slot's shape whatever the
+/// webview sends. The window must lie inside the photo, and the same hard
+/// constraints the scorer enforces still hold: a face the new window would cut,
+/// or a window too small to print at 200 DPI, is refused with the reason.
+///
+/// A hand crop is a property of THIS placement of THIS photo in THIS slot.
+/// Regenerating the opening or swapping the photo away recomputes the crop
+/// from scratch, because the slot it was chosen for no longer exists; that is
+/// deliberate and documented in the manual.
+fn set_crop(
+    book: &mut Book,
+    lib: &Library,
+    photos: &[Photo],
+    at: PlacementRef,
+    x: f64,
+    y: f64,
+    w: f64,
+) -> Result<(), EditError> {
+    let (page_index, slot_index) = locate(book, at)?;
+    let o = opening_of(book, page_index);
+    if book.controls.get(&o).is_some_and(|c| c.locked) {
+        return Err(EditError::Locked(o));
+    }
+    let layout = slot_for(book, lib, page_index)?;
+    let slot: &Slot = layout
+        .slots
+        .get((at.z as usize).saturating_sub(1))
+        .ok_or_else(|| EditError::MissingLayout(book.pages[page_index].template_id.clone()))?;
+    let photo = &photos[book.pages[page_index].placements[slot_index].photo_index];
+    let h = w * photo.aspect() / slot_aspect(slot);
+    let inside = |v: f64| v.is_finite() && v >= -CROP_EPS;
+    if !(inside(x) && inside(y) && w.is_finite() && w >= MIN_CROP_W && h.is_finite())
+        || x + w > 1.0 + CROP_EPS
+        || y + h > 1.0 + CROP_EPS
+    {
+        return Err(EditError::CropOutOfBounds(at));
+    }
+    let crop =
+        crate::geometry::Rect::new(x.clamp(0.0, 1.0), y.clamp(0.0, 1.0), w.min(1.0), h.min(1.0));
+    if let Some(reason) = rejects(photo, &crop, slot, layout.side) {
+        return Err(EditError::CropRejected {
+            placement: at,
+            reason,
+        });
+    }
+    book.pages[page_index].placements[slot_index].crop = crop;
+    Ok(())
 }

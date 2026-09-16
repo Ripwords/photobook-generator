@@ -6,12 +6,14 @@ import {
   nextSwapStep,
   openingFor,
   pageSide,
+  setCropEdit,
   spreadTemplates,
   templateLabel,
   toSpreads,
   type BookEdit,
   type BookLayout,
   type PlacementRef,
+  type PreviewRect,
 } from "~/types/preview";
 
 const { layout, busy = false } = defineProps<{
@@ -64,6 +66,11 @@ watch(
     selected.value = null;
   },
 );
+
+function onCrop(placement: PlacementRef, crop: PreviewRect) {
+  selected.value = null;
+  emit("edit", setCropEdit(placement, crop));
+}
 
 function layoutMenu(index: number, alternatives: string[]) {
   return alternatives.map((templateId) => ({
@@ -160,6 +167,10 @@ const blankPages = computed(() => layout.pages.filter((page) => page.blank).leng
       <li class="flex items-center gap-1.5">
         <UIcon name="i-lucide-arrow-left-right" class="size-3.5" />
         Click a photo, then another anywhere in the book, to swap them
+      </li>
+      <li class="flex items-center gap-1.5">
+        <UIcon name="i-lucide-move" class="size-3.5" />
+        Drag a photo to move its crop, scroll over it to zoom
       </li>
     </ul>
 
@@ -290,6 +301,7 @@ const blankPages = computed(() => layout.pages.filter((page) => page.blank).leng
               :selectable="!busy && !spread.opening.locked"
               :selected
               @select="onSelect"
+              @crop="onCrop"
             />
           </div>
           <div class="w-1/2">
@@ -300,6 +312,7 @@ const blankPages = computed(() => layout.pages.filter((page) => page.blank).leng
               :selectable="!busy && !spread.opening.locked"
               :selected
               @select="onSelect"
+              @crop="onCrop"
             />
           </div>
         </div>

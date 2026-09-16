@@ -68,7 +68,10 @@ exists so that error is easy to diagnose.
      other change until unlocked.
 
    To **swap two photos**, click one, then click another anywhere in the book; click the
-   first again or press Escape to cancel. A change that would cut a face, put one in the
+   first again or press Escape to cancel. To **adjust a crop**, drag the photo inside its
+   slot to move the window, or scroll over it to zoom; the window keeps the slot's shape and
+   is saved when you let go. Regenerating that opening or swapping the photo away recomputes
+   its crop, because the slot it was chosen for is gone. A change that would cut a face, put one in the
    gutter or the safe margin, or print below 200 DPI is refused with the reason, and the book
    stays as it was. Every change is saved immediately.
 4. **Export.** Choose an output folder and export. Pre-flight runs first; anything that would

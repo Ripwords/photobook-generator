@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
+  cropMoved,
+  cropStyle,
+  cropZoomed,
   gutterRect,
   pageSlots,
   rectStyle,
@@ -11,6 +14,7 @@ import {
   type PageSide,
   type PlacementRef,
   type PreviewPage,
+  type PreviewRect,
 } from "~/types/preview";
 
 const {
@@ -39,7 +43,108 @@ const {
 const emit = defineEmits<{
   /** The user clicked a photo while swapping -- see `nextSwapStep`. */
   select: [placement: PlacementRef];
+  /** The user dragged or zoomed a photo inside its slot and let go. */
+  crop: [placement: PlacementRef, crop: PreviewRect];
 }>();
+
+/**
+ * Hand-cropping, as a gesture on the slot itself: drag the photo to move the
+ * window, scroll to zoom it. The window is drawn live from a local copy while
+ * the pointer is down and sent as ONE edit on release, so a drag is one save
+ * and one round trip, not one per pixel. Rust re-derives the height from the
+ * slot, keeps the window inside the photo and re-runs the hard constraints;
+ * whatever it returns is what stays on screen. A press that never moved past
+ * `DRAG_THRESHOLD_PX` is a click, which selects the photo for a swap.
+ */
+const DRAG_THRESHOLD_PX = 3;
+const ZOOM_PER_WHEEL_UNIT = 0.0015;
+/** Live crops for slots mid-gesture, keyed like `PreviewSlot.key`. */
+const liveCrops = ref<Record<string, PreviewRect>>({});
+interface Drag {
+  key: string;
+  ref: PlacementRef;
+  startX: number;
+  startY: number;
+  origin: PreviewRect;
+  slotW: number;
+  slotH: number;
+  moved: boolean;
+}
+let drag: Drag | null = null;
+
+function cropOf(key: string, fallback: PreviewRect): PreviewRect {
+  return liveCrops.value[key] ?? fallback;
+}
+
+function onPointerDown(event: PointerEvent, key: string, ref: PlacementRef, crop: PreviewRect) {
+  if (!selectable || event.button !== 0) return;
+  const el = event.currentTarget as HTMLElement;
+  const box = el.getBoundingClientRect();
+  drag = {
+    key,
+    ref,
+    startX: event.clientX,
+    startY: event.clientY,
+    origin: cropOf(key, crop),
+    slotW: box.width || 1,
+    slotH: box.height || 1,
+    moved: false,
+  };
+  el.setPointerCapture(event.pointerId);
+}
+
+function onPointerMove(event: PointerEvent) {
+  if (!drag) return;
+  const dxPx = event.clientX - drag.startX;
+  const dyPx = event.clientY - drag.startY;
+  if (!drag.moved && Math.hypot(dxPx, dyPx) < DRAG_THRESHOLD_PX) return;
+  drag.moved = true;
+  liveCrops.value = {
+    ...liveCrops.value,
+    [drag.key]: cropMoved(drag.origin, { dx: dxPx / drag.slotW, dy: dyPx / drag.slotH }),
+  };
+}
+
+function onPointerUp(event: PointerEvent) {
+  if (!drag) return;
+  const finished = drag;
+  drag = null;
+  (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+  if (finished.moved) {
+    const crop = liveCrops.value[finished.key];
+    if (crop) emit("crop", finished.ref, crop);
+  } else {
+    emit("select", finished.ref);
+  }
+}
+
+function onPointerCancel() {
+  if (!drag) return;
+  const { [drag.key]: _dropped, ...rest } = liveCrops.value;
+  liveCrops.value = rest;
+  drag = null;
+}
+
+function onWheel(event: WheelEvent, key: string, ref: PlacementRef, crop: PreviewRect) {
+  if (!selectable) return;
+  event.preventDefault();
+  // Scrolling up (negative deltaY) zooms in, as in every image viewer.
+  const next = cropZoomed(cropOf(key, crop), Math.exp(-event.deltaY * ZOOM_PER_WHEEL_UNIT));
+  liveCrops.value = { ...liveCrops.value, [key]: next };
+  clearTimeout(wheelTimer);
+  wheelTimer = setTimeout(() => emit("crop", ref, next), WHEEL_SETTLE_MS);
+}
+const WHEEL_SETTLE_MS = 250;
+let wheelTimer: ReturnType<typeof setTimeout> | undefined;
+
+// A new layout is the saved truth; whatever was being previewed is either in
+// it now or was refused, and either way the live copy is stale.
+watch(
+  () => layout,
+  () => {
+    liveCrops.value = {};
+  },
+);
 
 /**
  * Every slot on the page: which photo, where it lands, and which part of it
@@ -49,14 +154,22 @@ const emit = defineEmits<{
  */
 const boxes = computed(() => {
   if (!page) return [];
-  return pageSlots(layout, page).map((box) => ({
-    ...box,
-    // Thumbnails only. `tauri.conf.json`'s `assetProtocol.scope` is
-    // `$APPDATA/thumbnails/*`, so originals are not loadable without widening
-    // it -- and a 6718px spread is far past what WKWebView will composite.
-    src: box.photo?.thumbnailPath ? convertFileSrc(box.photo.thumbnailPath) : null,
-    ref: { page: page.number, z: box.z } satisfies PlacementRef,
-  }));
+  return pageSlots(layout, page).map((box) => {
+    const placement = page.placements.find((p) => p.z === box.z);
+    const saved = placement?.crop ?? { x: 0, y: 0, w: 1, h: 1 };
+    const live = liveCrops.value[box.key];
+    return {
+      ...box,
+      // Thumbnails only. `tauri.conf.json`'s `assetProtocol.scope` is
+      // `$APPDATA/thumbnails/*`, so originals are not loadable without widening
+      // it -- and a 6718px spread is far past what WKWebView will composite.
+      src: box.photo?.thumbnailPath ? convertFileSrc(box.photo.thumbnailPath) : null,
+      ref: { page: page.number, z: box.z } satisfies PlacementRef,
+      saved,
+      // Mid-gesture the live window is drawn; otherwise the saved one.
+      crop: live ? cropStyle(live) : box.crop,
+    };
+  });
 });
 
 function isSelected(ref: PlacementRef): boolean {
@@ -99,14 +212,19 @@ const gutter = computed(() => rectStyle(gutterRect(layout.geometry, side)));
         :type="selectable ? 'button' : undefined"
         class="absolute overflow-hidden bg-neutral-100 text-left dark:bg-neutral-800"
         :class="[
-          selectable && 'cursor-pointer focus-visible:outline-2 focus-visible:outline-primary',
+          selectable && 'cursor-grab touch-none focus-visible:outline-2 focus-visible:outline-primary',
           isSelected(box.ref) && 'z-10 ring-3 ring-primary ring-inset',
         ]"
         :style="box.slot"
         :title="[box.photo?.path, box.filename].filter(Boolean).join('\n')"
-        :aria-label="selectable ? `Photo on page ${page.number}, slot ${box.z}: ${isSelected(box.ref) ? 'selected for swap' : 'select to swap'}` : undefined"
+        :aria-label="selectable ? `Photo on page ${page.number}, slot ${box.z}: ${isSelected(box.ref) ? 'selected for swap' : 'click to swap, drag to move the crop, scroll to zoom'}` : undefined"
         :aria-pressed="selectable ? isSelected(box.ref) : undefined"
-        @click="selectable && emit('select', box.ref)"
+        @pointerdown="onPointerDown($event, box.key, box.ref, box.saved)"
+        @pointermove="onPointerMove"
+        @pointerup="onPointerUp"
+        @pointercancel="onPointerCancel"
+        @wheel="onWheel($event, box.key, box.ref, box.saved)"
+        @keydown.enter.space.prevent="selectable && emit('select', box.ref)"
       >
         <!--
           The CROP, not the photo. The image is enlarged to 1/crop of the slot

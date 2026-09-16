@@ -143,7 +143,8 @@ export type BookEdit =
   | { kind: "setTemplate"; opening: number; templateId: string }
   | { kind: "setLocked"; opening: number; locked: boolean }
   | { kind: "shuffle" }
-  | { kind: "swapPhotos"; a: PlacementRef; b: PlacementRef };
+  | { kind: "swapPhotos"; a: PlacementRef; b: PlacementRef }
+  | { kind: "setCrop"; placement: PlacementRef; x: number; y: number; w: number };
 
 /**
  * One printed opening: two facing pages with the fold between them, or ONE
@@ -479,4 +480,57 @@ export function templateLabel(id: string): string {
   const [base, side] = id.split(":");
   const words = (base ?? id).replace(/^\d+-/, "").replaceAll("-", " ");
   return side ? `${words} (${side} half)` : words;
+}
+
+/** How far a pointer moved, as a fraction of the SLOT's rendered size. */
+export interface SlotDelta {
+  dx: number;
+  dy: number;
+}
+
+/**
+ * The crop after dragging the photo by `delta` slot-widths and slot-heights.
+ *
+ * Dragging the photo right shows more of its left, so the window moves the
+ * other way; and because the window is drawn scaled to `1/crop.w` of the slot,
+ * one slot-width of pointer travel is `crop.w` of photo. The window stays
+ * inside the photo and keeps its size, so a drag can never distort or reveal
+ * pixels the photo does not have.
+ */
+export function cropMoved(crop: PreviewRect, delta: SlotDelta): PreviewRect {
+  const x = clamp(crop.x - delta.dx * crop.w, 0, 1 - crop.w);
+  const y = clamp(crop.y - delta.dy * crop.h, 0, 1 - crop.h);
+  return { x, y, w: crop.w, h: crop.h };
+}
+
+/**
+ * The crop after zooming by `factor` about its centre: `factor > 1` shows LESS
+ * of the photo (the window shrinks), `factor < 1` shows more. The window never
+ * grows past the photo on either axis, never shrinks below 2% of it, and keeps
+ * its shape, so the slot's aspect is preserved. Rust re-derives the height
+ * from the slot anyway and refuses a window that would print below 200 DPI.
+ */
+export function cropZoomed(crop: PreviewRect, factor: number): PreviewRect {
+  if (!(factor > 0) || !Number.isFinite(factor)) return crop;
+  const shape = crop.h / crop.w;
+  const largest = Math.min(1, 1 / shape);
+  const w = clamp(crop.w / factor, Math.min(0.02, largest), largest);
+  const h = w * shape;
+  const cx = crop.x + crop.w / 2;
+  const cy = crop.y + crop.h / 2;
+  return {
+    x: clamp(cx - w / 2, 0, 1 - w),
+    y: clamp(cy - h / 2, 0, 1 - h),
+    w,
+    h,
+  };
+}
+
+/** The edit that saves a crop the user dragged or zoomed into place. */
+export function setCropEdit(placement: PlacementRef, crop: PreviewRect): BookEdit {
+  return { kind: "setCrop", placement, x: crop.x, y: crop.y, w: crop.w };
+}
+
+function clamp(value: number, lo: number, hi: number): number {
+  return Math.min(Math.max(value, lo), Math.max(lo, hi));
 }

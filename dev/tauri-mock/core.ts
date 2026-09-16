@@ -88,6 +88,16 @@ function applyEdit(edit: BookEdit): BookLayout {
     }
     case "shuffle":
       break;
+    case "setCrop": {
+      const target = placement(edit.placement);
+      if (!target) throw new Error("there is no photo at that slot");
+      const shape = target.crop.h / target.crop.w;
+      if (edit.x < 0 || edit.y < 0 || edit.x + edit.w > 1 || edit.y + edit.w * shape > 1) {
+        throw new Error("the crop window has to stay inside the photo");
+      }
+      target.crop = { x: edit.x, y: edit.y, w: edit.w, h: edit.w * shape };
+      break;
+    }
     case "swapPhotos": {
       const a = placement(edit.a);
       const b = placement(edit.b);

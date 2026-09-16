@@ -3,7 +3,9 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   canRelayout,
+  cropMoved,
   cropStyle,
+  cropZoomed,
   gutterRect,
   leftOutPhotos,
   nextSwapStep,
@@ -13,6 +15,7 @@ import {
   photoFor,
   rectStyle,
   safeRect,
+  setCropEdit,
   spreadTemplates,
   templateLabel,
   toSpreads,
@@ -561,7 +564,60 @@ describe("the edit wire", () => {
       { kind: "setLocked", opening: 1, locked: true },
       { kind: "shuffle" },
       { kind: "swapPhotos", a: { page: 2, z: 1 }, b: { page: 5, z: 2 } },
+      { kind: "setCrop", placement: { page: 3, z: 2 }, x: 0.125, y: 0, w: 0.75 },
     ];
     expect(fixture).toEqual(typed);
+  });
+});
+
+describe("hand cropping", () => {
+  // A wide window on a tall photo: room to move on both axes.
+  const crop = { x: 0.2, y: 0.1, w: 0.5, h: 0.25 };
+
+  it("drags the window the other way from the pointer, scaled by the window", () => {
+    // Half a slot-width to the right shows the LEFT of the photo: x falls by 0.25.
+    expect(cropMoved(crop, { dx: 0.5, dy: 0 })).toEqual({ x: 0, y: 0.1, w: 0.5, h: 0.25 });
+    const moved = cropMoved(crop, { dx: 0.2, dy: -0.2 });
+    expect(moved.x).toBeCloseTo(0.1, 12);
+    expect(moved.y).toBeCloseTo(0.15, 12);
+    expect([moved.w, moved.h]).toEqual([0.5, 0.25]);
+  });
+
+  it("stops at the photo's edges without changing size", () => {
+    expect(cropMoved(crop, { dx: 5, dy: 5 })).toEqual({ x: 0, y: 0, w: 0.5, h: 0.25 });
+    expect(cropMoved(crop, { dx: -5, dy: -5 })).toEqual({ x: 0.5, y: 0.75, w: 0.5, h: 0.25 });
+  });
+
+  it("zooms about the centre and keeps the shape", () => {
+    const zoomed = cropZoomed(crop, 2);
+    expect(zoomed.w).toBeCloseTo(0.25, 12);
+    expect(zoomed.h).toBeCloseTo(0.125, 12);
+    expect(zoomed.x + zoomed.w / 2).toBeCloseTo(0.45, 12);
+    expect(zoomed.y + zoomed.h / 2).toBeCloseTo(0.225, 12);
+  });
+
+  it("never grows past the photo, sliding back inside when it must", () => {
+    const wide = cropZoomed(crop, 0.25);
+    expect(wide.w).toBe(1);
+    expect(wide.h).toBeCloseTo(0.5, 12);
+    expect(wide.x).toBe(0);
+    expect(wide.y).toBeGreaterThanOrEqual(0);
+    expect(wide.y + wide.h).toBeLessThanOrEqual(1 + 1e-12);
+  });
+
+  it("never shrinks below two percent, and ignores a nonsense factor", () => {
+    expect(cropZoomed(crop, 1000).w).toBeCloseTo(0.02, 12);
+    expect(cropZoomed(crop, 0)).toEqual(crop);
+    expect(cropZoomed(crop, Number.NaN)).toEqual(crop);
+  });
+
+  it("sends x, y and w only -- Rust derives the height from the slot", () => {
+    expect(setCropEdit({ page: 4, z: 1 }, { x: 0.1, y: 0.2, w: 0.3, h: 0.9 })).toEqual({
+      kind: "setCrop",
+      placement: { page: 4, z: 1 },
+      x: 0.1,
+      y: 0.2,
+      w: 0.3,
+    });
   });
 });
