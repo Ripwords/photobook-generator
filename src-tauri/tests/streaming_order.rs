@@ -28,7 +28,23 @@ fn main() {
         std::env::set_var("HOME", &fake_home);
     }
 
-    let fixture_dir = format!("{}/../sidecar/Fixtures", env!("CARGO_MANIFEST_DIR"));
+    // An isolated copy of the TOP-LEVEL fixtures only. `analyze_folder` now
+    // walks subfolders, and `sidecar/Fixtures/hostile/` holds deliberately
+    // broken images that are meant to fail -- this test is about event ordering,
+    // not decode robustness, so they are left out.
+    let source_dir = format!("{}/../sidecar/Fixtures", env!("CARGO_MANIFEST_DIR"));
+    let fixture_copy = std::env::temp_dir().join(format!(
+        "pbg-streaming-order-test-fixtures-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&fixture_copy).expect("failed to create fixture copy dir");
+    for entry in std::fs::read_dir(&source_dir).expect("read source fixtures") {
+        let entry = entry.expect("dir entry");
+        if entry.path().is_file() {
+            std::fs::copy(entry.path(), fixture_copy.join(entry.file_name())).expect("copy fixture");
+        }
+    }
+    let fixture_dir = fixture_copy.to_string_lossy().into_owned();
 
     let mut context = tauri::generate_context!();
     context.config_mut().app.windows.clear();
@@ -59,6 +75,7 @@ fn main() {
         .expect("analyze_folder run failed");
 
     let _ = std::fs::remove_dir_all(&fake_home);
+    let _ = std::fs::remove_dir_all(&fixture_copy);
 
     let events = seen.lock().unwrap().clone();
     let kinds: Vec<&str> = events.iter().map(|(k, _)| k.as_str()).collect();

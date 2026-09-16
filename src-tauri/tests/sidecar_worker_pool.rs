@@ -85,11 +85,23 @@ fn main() {
         .expect("failed to build tauri app");
     let handle = app.handle().clone();
 
-    // Only the top-level fixture files are used (`std::fs::read_dir` is not
-    // recursive), so the adversarial fixtures under
-    // `sidecar/Fixtures/hostile/` are not exercised here -- this test is
-    // about the worker pool, not decode robustness.
-    let fixture_dir = format!("{}/../sidecar/Fixtures", env!("CARGO_MANIFEST_DIR"));
+    // An isolated copy of the TOP-LEVEL fixtures only. `analyze_folder` now
+    // walks subfolders, and `sidecar/Fixtures/hostile/` holds deliberately
+    // broken images that are meant to fail -- this test is about the worker pool,
+    // not decode robustness, so they are left out.
+    let source_dir = format!("{}/../sidecar/Fixtures", env!("CARGO_MANIFEST_DIR"));
+    let fixture_copy = std::env::temp_dir().join(format!(
+        "pbg-worker-pool-test-fixtures-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&fixture_copy).expect("failed to create fixture copy dir");
+    for entry in std::fs::read_dir(&source_dir).expect("read source fixtures") {
+        let entry = entry.expect("dir entry");
+        if entry.path().is_file() {
+            std::fs::copy(entry.path(), fixture_copy.join(entry.file_name())).expect("copy fixture");
+        }
+    }
+    let fixture_dir = fixture_copy.to_string_lossy().into_owned();
 
     // Watchdog: drive the reproduction on its own OS thread, independent of
     // the constrained runtime, and report back over a channel with a
@@ -112,6 +124,7 @@ fn main() {
 
     let outcome = rx.recv_timeout(Duration::from_secs(60));
     let _ = std::fs::remove_dir_all(&fake_home);
+    let _ = std::fs::remove_dir_all(&fixture_copy);
 
     match outcome {
         Ok((elapsed, Ok(Ok(summary)))) => {
