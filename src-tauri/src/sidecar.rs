@@ -144,32 +144,6 @@ impl Sidecar {
         }
     }
 
-    /// Runs the `benchmark` request kind: same pipeline as `analyze`, but
-    /// the sidecar returns per-stage timings instead of features. Used by
-    /// `scripts/benchmark.sh`; not wired into the app's UI, since this is a
-    /// diagnostic tool, not a user-facing feature.
-    pub fn benchmark(
-        &mut self,
-        paths: Vec<String>,
-        thumbnail_dir: Option<&str>,
-    ) -> Result<Vec<serde_json::Value>, SidecarError> {
-        let timeout = timeout_for(paths.len());
-        let request_result = self.request(
-            RequestKind::Benchmark,
-            Some(paths),
-            thumbnail_dir.map(str::to_string),
-            None,
-            timeout,
-        )?;
-        match request_result {
-            ResponseResult::Benchmarked(records) => Ok(records),
-            ResponseResult::Error { message } => Err(SidecarError::Engine(message)),
-            ResponseResult::Pong { .. } | ResponseResult::Analyzed(_) | ResponseResult::Exported(_) => {
-                Err(SidecarError::Malformed("expected benchmarked".into()))
-            }
-        }
-    }
-
     /// Crops and writes one batch of already-laid-out photos. Returns the raw
     /// `ExportRecord` JSON, one per item in input order -- the caller
     /// (`export_batches_with_progress`) is what turns a transport failure into
