@@ -67,6 +67,23 @@ Rust unit tests plus the sweep and five live-sidecar binaries, 130 Swift, lint a
    the same hard constraints as every other edit. See the Phase 4 row under "What is NOT
    built" for exactly what is and is not there.
 9. `bun tauri build --bundles app` still produces `PhotobookGen.app` (run after item 6).
+10. **The UI was restructured into three screens.** The whole app used to be one page:
+    `index.vue` derived a `ViewState` and long-scrolled the contact sheet, the generate panel,
+    the book preview, the export report and a saved-books list into a single column. An open
+    project had no exit, the saved-book list was reachable only before the first analysis, and
+    "Edit the selection" was gated on the project carrying overrides, so a book generated with
+    none had no path back to its photos. Navigation is now one discriminated union,
+    `Screen` in `app/types/navigation.ts`, held in a single ref in `index.vue` (88 lines, a
+    router and nothing else). The screens are `ProjectLibrary`, `SelectPhotos` and
+    `BookEditor`, sharing `AppHeader`; `GenerateBook` is now only the "pick a length and
+    generate" panel. Two behaviours are new rather than moved: the editor states that every
+    change is already on disk (it always was, nothing said so), and because `generate_book`
+    always INSERTs, re-editing a selection now offers **Update** (which deletes the superseded
+    row) beside **Save as a new photobook**, instead of silently leaving two identically-named
+    books in the list. **The proper fix for that is Rust-side**: an update path that rewrites
+    the project in place would keep the export history the Update button currently destroys.
+    The browser harness (`dev/tauri-mock/`) now answers every command the UI can reach, so all
+    three screens can be driven end to end; that is how this was verified.
 
 **Still not done, and not fakeable:** the real-photo run and Pixajoy upload (see "The
 outstanding verification"). Nothing in this session changed that. The four scoring terms still
@@ -107,7 +124,7 @@ thumbnails, chapter dividers and burst-size badges.
 |---|---|---|
 | Swift sidecar | `sidecar/Sources/PhotobookEngine/` | NDJSON over stdin/stdout, standalone CLI, testable with `cat fixtures.ndjson \| ./PhotobookEngine` |
 | Rust backend | `src-tauri/src/` | `commands.rs` `db.rs` `cluster.rs` `ranking.rs` `sidecar.rs` `protocol.rs` |
-| Nuxt UI | `app/` | `pages/index.vue`, `components/PhotoTile.vue`, `composables/useAnalysis.ts`, `types/features.ts` |
+| Nuxt UI | `app/` | `pages/index.vue` routes over `types/navigation.ts`'s `Screen`; the screens are `components/ProjectLibrary.vue`, `SelectPhotos.vue`, `BookEditor.vue` |
 | Template library | `templates/` | Spread templates + validator at `tests/templates.test.ts`. Was 40 at end of Phase 1; **now 36** — see the Print geometry section. |
 
 **Test counts at last run (2026-09-16, `master`):** 633 TypeScript, **443 Rust lib tests, 0
