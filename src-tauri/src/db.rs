@@ -292,6 +292,22 @@ impl Db {
         Ok(())
     }
 
+    /// Replaces a project's book after an edit, re-deriving the denormalised
+    /// counts so the list stays truthful. Returns the rows affected (0 or 1),
+    /// like `rename_project`. The photo list and overrides are untouched: an
+    /// edit rearranges the book over the same photo slice, which is exactly
+    /// what keeps `Placement::photo_index` valid.
+    pub fn update_project_book(&self, id: i64, book: &Book) -> rusqlite::Result<usize> {
+        let book_json = serde_json::to_string(book)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let (page_count, photo_count) = project::book_counts(book);
+        self.conn.execute(
+            "UPDATE projects SET book_json = ?1, page_count = ?2, photo_count = ?3,
+             updated_at = unixepoch() WHERE id = ?4",
+            rusqlite::params![book_json, page_count, photo_count, id],
+        )
+    }
+
     /// Renames a project. Returns the number of rows affected (0 or 1), so a
     /// caller can tell "renamed" from "that id does not exist" without a
     /// separate lookup -- `rename_project` (the Tauri command) turns 0 into
@@ -354,6 +370,7 @@ mod tests {
     /// round-trip mutations this file pins.
     fn fixture_book() -> Book {
         Book {
+            controls: Default::default(),
             seed: 424_242,
             dropped: 3,
             pages: vec![

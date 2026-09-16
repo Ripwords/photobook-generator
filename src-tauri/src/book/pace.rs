@@ -12,6 +12,7 @@
 
 use crate::book::crop::choose_crop;
 use crate::book::cull::{cull, Overrides, Photo};
+use crate::book::edit::OpeningControls;
 use crate::book::pack::{pack, Buildable, Capacity, Group, IncludeOverflow, SlotKind};
 use crate::book::score::{best_spread, rejects, slot_aspect};
 use crate::geometry::{Rect, Side};
@@ -61,6 +62,13 @@ pub struct Book {
     /// cause: culled, trimmed to capacity, left unplaced by the packer, or
     /// overflowing a page half.
     pub dropped: usize,
+    /// What the user has said about each opening -- locked, rejected
+    /// templates, how often regenerated -- keyed by opening index (see
+    /// `book::edit`). Empty for a book straight out of `assemble`, and
+    /// omitted from the JSON then, so every project saved before edits
+    /// existed loads unchanged and the golden did not move.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub controls: BTreeMap<usize, OpeningControls>,
 }
 
 /// Deterministic tie-breaker. The ONLY stochastic choice in the engine is
@@ -84,7 +92,7 @@ pub(crate) fn tie_break(seed: u64, n: usize) -> usize {
 /// Builds the placements for one page layout given the photos assigned to it.
 /// Slot order is z order: 1-based, distinct, and the order the boxes are
 /// stacked in the editor.
-fn place(layout: &PageLayout, photo_indices: &[usize], photos: &[Photo]) -> Vec<Placement> {
+pub(crate) fn place(layout: &PageLayout, photo_indices: &[usize], photos: &[Photo]) -> Vec<Placement> {
     layout
         .slots
         .iter()
@@ -103,7 +111,7 @@ fn blank_page(side: Side) -> Page {
     Page { number: 0, side, template_id: BLANK_TEMPLATE_ID.to_string(), placements: Vec::new() }
 }
 
-fn half_id(template_id: &str, side: Side) -> String {
+pub(crate) fn half_id(template_id: &str, side: Side) -> String {
     match side {
         Side::Left => format!("{template_id}:left"),
         Side::Right => format!("{template_id}:right"),
@@ -128,7 +136,7 @@ fn half_pool(lib: &Library) -> Vec<(&str, &PageLayout)> {
 /// Photos are zipped to slots in group order rather than permuted. A half has
 /// at most a few slots and no spread-level terms to trade off, so the
 /// permutation search `best_spread` runs is not worth its cost here.
-fn single_fit(layout: &PageLayout, indices: &[usize], photos: &[Photo]) -> Option<f64> {
+pub(crate) fn single_fit(layout: &PageLayout, indices: &[usize], photos: &[Photo]) -> Option<f64> {
     let mut fit = 0.0;
     for (slot, &pi) in layout.slots.iter().zip(indices) {
         let photo = &photos[pi];
@@ -267,7 +275,7 @@ fn spread_pages<'a>(
 /// Lays `indices` (ordered as `assignment` indexes them) into a template's
 /// two halves. Shared by assembly and repacing so a swapped template can
 /// never keep the rects of the one it replaced.
-fn rebuild(
+pub(crate) fn rebuild(
     template: &SpreadTemplate,
     assignment: &[usize],
     indices: &[usize],
@@ -436,7 +444,7 @@ pub fn assemble(
         page.number = i as u32 + 1;
     }
 
-    let mut book = Book { pages: out, seed, dropped: 0 };
+    let mut book = Book { pages: out, seed, dropped: 0, controls: BTreeMap::new() };
     repace(&mut book, lib, photos, w, seed);
 
     // Counted from what actually survived into the book, after repacing, so

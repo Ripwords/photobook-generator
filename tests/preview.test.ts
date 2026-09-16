@@ -2,17 +2,22 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  canRelayout,
   cropStyle,
   gutterRect,
   leftOutPhotos,
+  nextSwapStep,
+  openingFor,
   pageSide,
   pageSlots,
   photoFor,
   rectStyle,
   safeRect,
   spreadTemplates,
+  templateLabel,
   toSpreads,
   trimRect,
+  type BookEdit,
   type BookLayout,
   type PreviewGeometry,
   type PreviewPage,
@@ -479,5 +484,84 @@ describe("leftOutPhotos", () => {
 
     expect(left.map((photo) => photo.path)).toEqual(["/c.jpg", "/e.jpg"]);
     expect(left).toHaveLength(layout.droppedPhotos);
+  });
+});
+
+describe("openings", () => {
+  it("carries one entry per opening, in toSpreads order", () => {
+    // The Rust side numbers openings the way `toSpreads` draws them; if the
+    // two ever disagree, the buttons act on a different spread than the one
+    // they sit beside.
+    expect(layout.openings.map((o) => o.index)).toEqual(toSpreads(layout.pages).map((_, i) => i));
+  });
+
+  it("reads an opening's controls off the payload, and falls back to nothing to offer", () => {
+    expect(openingFor(layout, 1)).toEqual({ index: 1, locked: false, rejected: [], alternatives: [] });
+    expect(openingFor(layout, 42)).toEqual({ index: 42, locked: false, rejected: [], alternatives: [] });
+  });
+
+  it("can only re-lay an unlocked opening that has somewhere else to go", () => {
+    expect(canRelayout({ index: 0, locked: false, rejected: [], alternatives: ["a"] })).toBe(true);
+    expect(canRelayout({ index: 0, locked: true, rejected: [], alternatives: ["a"] })).toBe(false);
+    expect(canRelayout({ index: 0, locked: false, rejected: ["b"], alternatives: [] })).toBe(false);
+  });
+});
+
+describe("nextSwapStep", () => {
+  const a = { page: 2, z: 1 };
+  const b = { page: 7, z: 2 };
+
+  it("selects on the first click and sends nothing", () => {
+    expect(nextSwapStep(null, a)).toEqual({ selected: a, edit: null });
+  });
+
+  it("deselects when the same photo is clicked again", () => {
+    expect(nextSwapStep(a, { ...a })).toEqual({ selected: null, edit: null });
+  });
+
+  it("swaps with a different photo, anywhere in the book, and clears the selection", () => {
+    expect(nextSwapStep(a, b)).toEqual({
+      selected: null,
+      edit: { kind: "swapPhotos", a, b },
+    });
+  });
+
+  it("treats the same z on a different page as a different photo", () => {
+    expect(nextSwapStep(a, { page: 3, z: 1 }).edit).not.toBeNull();
+  });
+});
+
+describe("templateLabel", () => {
+  it("drops the library's sort number and reads the slug as words", () => {
+    expect(templateLabel("07-two-up-symmetric-margin")).toBe("two-up symmetric margin".replaceAll("-", " "));
+  });
+
+  it("names the half for a single-page layout", () => {
+    expect(templateLabel("35-portrait-triptych-hero-left:right")).toBe(
+      "portrait triptych hero left (right half)",
+    );
+  });
+});
+
+describe("the edit wire", () => {
+  /**
+   * `book-edits.json` is what `edit::tests::edit_deserialises_the_camel_case_
+   * tagged_shape_the_webview_sends` parses on the Rust side. Building the
+   * same values through the TypeScript type here means a renamed tag or field
+   * on either side fails one suite against a fixture that did not move.
+   */
+  it("matches the shapes Rust parses, field for field", () => {
+    const fixture: unknown = JSON.parse(
+      readFileSync(fileURLToPath(new URL("./fixtures/wire/book-edits.json", import.meta.url)), "utf8"),
+    );
+    const typed: BookEdit[] = [
+      { kind: "regenerate", opening: 3 },
+      { kind: "rejectTemplate", opening: 0 },
+      { kind: "setTemplate", opening: 2, templateId: "07-two-up-symmetric-margin" },
+      { kind: "setLocked", opening: 1, locked: true },
+      { kind: "shuffle" },
+      { kind: "swapPhotos", a: { page: 2, z: 1 }, b: { page: 5, z: 2 } },
+    ];
+    expect(fixture).toEqual(typed);
   });
 });

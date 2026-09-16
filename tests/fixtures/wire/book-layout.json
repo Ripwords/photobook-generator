@@ -9,6 +9,26 @@
     "trimU": 0.017593998392426546,
     "trimV": 0.022149763885765686
   },
+  "openings": [
+    {
+      "alternatives": [],
+      "index": 0,
+      "locked": false,
+      "rejected": []
+    },
+    {
+      "alternatives": [],
+      "index": 1,
+      "locked": false,
+      "rejected": []
+    },
+    {
+      "alternatives": [],
+      "index": 2,
+      "locked": false,
+      "rejected": []
+    }
+  ],
   "pageCount": 4,
   "pages": [
     {

@@ -101,7 +101,49 @@ export interface BookLayout {
   /** Every analysed photo, in the order `photoIndex` indexes. */
   photos: PreviewPhoto[];
   pages: PreviewPage[];
+  /** One entry per opening, in `toSpreads` order -- see `openingFor`. */
+  openings: PreviewOpening[];
 }
+
+/**
+ * Mirrors `preview::PreviewOpening`: what the user has said about one
+ * opening and what the engine could still offer it. An opening is what the
+ * reader sees with the book open -- page 1 alone, then each pair of facing
+ * pages, then the last page alone -- and it is numbered the way `toSpreads`
+ * orders them, so `openings[i]` describes `toSpreads(pages)[i]`.
+ */
+export interface PreviewOpening {
+  index: number;
+  /** Skipped by "shuffle"; refuses every other edit until unlocked. */
+  locked: boolean;
+  /** Templates the user has rejected here; never offered again. */
+  rejected: string[];
+  /**
+   * Templates that could replace the current one. Empty when the opening
+   * holds nothing, or when every template for this many photos has been
+   * shown or rejected -- which is also when "regenerate" has nothing to do.
+   */
+  alternatives: string[];
+}
+
+/** Mirrors `edit::PlacementRef`: a slot named by printed page number and z. */
+export interface PlacementRef {
+  page: number;
+  z: number;
+}
+
+/**
+ * Mirrors `edit::BookEdit`, the one argument of the `edit_book` command.
+ * `kind` is the serde tag; every field name is the camelCase Rust accepts,
+ * pinned by `tests/fixtures/wire/book-edits.json` on both sides.
+ */
+export type BookEdit =
+  | { kind: "regenerate"; opening: number }
+  | { kind: "rejectTemplate"; opening: number }
+  | { kind: "setTemplate"; opening: number; templateId: string }
+  | { kind: "setLocked"; opening: number; locked: boolean }
+  | { kind: "shuffle" }
+  | { kind: "swapPhotos"; a: PlacementRef; b: PlacementRef };
 
 /**
  * One printed opening: two facing pages with the fold between them, or ONE
@@ -381,4 +423,60 @@ export function leftOutPhotos(layout: BookLayout): PreviewPhoto[] {
     layout.pages.flatMap((page) => page.placements.map((placement) => placement.photoIndex)),
   );
   return layout.photos.filter((_, index) => !placed.has(index));
+}
+
+/** No decisions and nothing to offer: what a payload without controls means. */
+const UNCONTROLLED: Omit<PreviewOpening, "index"> = { locked: false, rejected: [], alternatives: [] };
+
+/**
+ * The controls for the opening at `index` of `toSpreads(layout.pages)`.
+ *
+ * Falls back to "unlocked, nothing to offer" rather than throwing when the
+ * payload carries no entry, so a preview drawn from an older payload still
+ * renders every page; the buttons simply have nothing to do.
+ */
+export function openingFor(layout: BookLayout, index: number): PreviewOpening {
+  return layout.openings.find((opening) => opening.index === index) ?? { index, ...UNCONTROLLED };
+}
+
+/** Whether "regenerate", "reject" and "change layout" can do anything here. */
+export function canRelayout(opening: PreviewOpening): boolean {
+  return !opening.locked && opening.alternatives.length > 0;
+}
+
+export function samePlacement(a: PlacementRef, b: PlacementRef): boolean {
+  return a.page === b.page && a.z === b.z;
+}
+
+/** What a click on a photo does while swapping: the next selection, and the edit to send if any. */
+export interface SwapStep {
+  selected: PlacementRef | null;
+  edit: BookEdit | null;
+}
+
+/**
+ * The swap gesture as a pure function: the first click selects a photo, a
+ * second click on the SAME photo deselects it, and a click on any other photo
+ * -- on any page of the book -- swaps the two and clears the selection.
+ *
+ * Nothing about which swaps are allowed lives here. Rust refuses a swap that
+ * would cut a face, put one in the gutter or the margin, or print below 200
+ * DPI, and returns the untouched book with the reason; the webview shows the
+ * reason and the book it was given.
+ */
+export function nextSwapStep(selected: PlacementRef | null, clicked: PlacementRef): SwapStep {
+  if (selected === null) return { selected: clicked, edit: null };
+  if (samePlacement(selected, clicked)) return { selected: null, edit: null };
+  return { selected: null, edit: { kind: "swapPhotos", a: selected, b: clicked } };
+}
+
+/**
+ * A template id as a menu label: `07-two-up-symmetric-margin` reads
+ * "two-up symmetric margin", and a page half `...:right` says which half. The
+ * number is the library's own sort key, not something a user chooses by.
+ */
+export function templateLabel(id: string): string {
+  const [base, side] = id.split(":");
+  const words = (base ?? id).replace(/^\d+-/, "").replaceAll("-", " ");
+  return side ? `${words} (${side} half)` : words;
 }

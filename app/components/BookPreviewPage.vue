@@ -5,13 +5,21 @@ import {
   pageSlots,
   rectStyle,
   safeRect,
+  samePlacement,
   trimRect,
   type BookLayout,
   type PageSide,
+  type PlacementRef,
   type PreviewPage,
 } from "~/types/preview";
 
-const { layout, page = null, side } = defineProps<{
+const {
+  layout,
+  page = null,
+  side,
+  selectable = false,
+  selected = null,
+} = defineProps<{
   layout: BookLayout;
   /**
    * `null` renders the INSIDE COVER facing a single page -- page 1 faces the
@@ -22,6 +30,15 @@ const { layout, page = null, side } = defineProps<{
    */
   page?: PreviewPage | null;
   side: PageSide;
+  /** Whether a photo can be picked for a swap. Off while busy or locked. */
+  selectable?: boolean;
+  /** The photo currently picked for a swap, anywhere in the book. */
+  selected?: PlacementRef | null;
+}>();
+
+const emit = defineEmits<{
+  /** The user clicked a photo while swapping -- see `nextSwapStep`. */
+  select: [placement: PlacementRef];
 }>();
 
 /**
@@ -38,8 +55,13 @@ const boxes = computed(() => {
     // `$APPDATA/thumbnails/*`, so originals are not loadable without widening
     // it -- and a 6718px spread is far past what WKWebView will composite.
     src: box.photo?.thumbnailPath ? convertFileSrc(box.photo.thumbnailPath) : null,
+    ref: { page: page.number, z: box.z } satisfies PlacementRef,
   }));
 });
+
+function isSelected(ref: PlacementRef): boolean {
+  return selected !== null && samePlacement(selected, ref);
+}
 
 // The three guides, from the constants `geometry.rs` shipped on the wire --
 // the same predicates `book::score` and `book::preflight` enforce, so what is
@@ -62,19 +84,29 @@ const gutter = computed(() => rectStyle(gutterRect(layout.geometry, side)));
   >
     <template v-if="page">
       <!--
-        The title carries the source path and the basename the exporter writes
-        this placement under, so something odd on screen can be traced to its
-        file and checked against `manifest.json`. The filename comes from Rust's
-        `export::output_filename` -- the same function the exporter uses --
-        rather than being rebuilt here, because a preview naming files the
-        exporter does not write would be worse than one naming none.
+        A button while a swap is possible, a plain box otherwise, so the
+        photos are keyboard-reachable exactly when clicking them does
+        something. The title carries the source path and the basename the
+        exporter writes this placement under, so something odd on screen can
+        be traced to its file and checked against `manifest.json`. The
+        filename comes from Rust's `export::output_filename` -- the same
+        function the exporter uses -- rather than being rebuilt here.
       -->
-      <div
+      <component
+        :is="selectable ? 'button' : 'div'"
         v-for="box in boxes"
         :key="box.key"
-        class="absolute overflow-hidden bg-neutral-100 dark:bg-neutral-800"
+        :type="selectable ? 'button' : undefined"
+        class="absolute overflow-hidden bg-neutral-100 text-left dark:bg-neutral-800"
+        :class="[
+          selectable && 'cursor-pointer focus-visible:outline-2 focus-visible:outline-primary',
+          isSelected(box.ref) && 'z-10 ring-3 ring-primary ring-inset',
+        ]"
         :style="box.slot"
         :title="[box.photo?.path, box.filename].filter(Boolean).join('\n')"
+        :aria-label="selectable ? `Photo on page ${page.number}, slot ${box.z}: ${isSelected(box.ref) ? 'selected for swap' : 'select to swap'}` : undefined"
+        :aria-pressed="selectable ? isSelected(box.ref) : undefined"
+        @click="selectable && emit('select', box.ref)"
       >
         <!--
           The CROP, not the photo. The image is enlarged to 1/crop of the slot
@@ -94,12 +126,11 @@ const gutter = computed(() => rectStyle(gutterRect(layout.geometry, side)));
         <div v-else class="flex size-full items-center justify-center">
           <UIcon name="i-lucide-image-off" class="size-4 text-muted" />
         </div>
-      </div>
+      </component>
 
       <!--
-        A page that prints white, said out loud. Ten of the 36 templates put
-        every slot on one page half -- mostly text-zone layouts nothing
-        renders yet -- so this is a real printed page, not a preview gap.
+        A page that prints white, said out loud. It is a real printed page,
+        not a preview gap: the photos ran out before this slot.
       -->
       <div
         v-if="page.blank"
@@ -116,7 +147,7 @@ const gutter = computed(() => rectStyle(gutterRect(layout.geometry, side)));
       </div>
 
       <span
-        class="absolute bottom-1 font-mono text-[10px] text-neutral-400 tabular-nums"
+        class="pointer-events-none absolute bottom-1 font-mono text-[10px] text-neutral-400 tabular-nums"
         :class="side === 'left' ? 'left-1.5' : 'right-1.5'"
       >
         {{ page.number }}

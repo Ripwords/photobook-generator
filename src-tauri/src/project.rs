@@ -137,6 +137,7 @@ mod tests {
     #[test]
     fn book_counts_sums_placements_across_every_page_not_just_the_first() {
         let book = Book {
+            controls: Default::default(),
             seed: 1,
             dropped: 0,
             pages: vec![
@@ -163,7 +164,7 @@ mod tests {
 
     #[test]
     fn book_counts_of_an_empty_book_is_zero_and_zero() {
-        let book = Book { seed: 0, dropped: 0, pages: vec![] };
+        let book = Book { controls: Default::default(), seed: 0, dropped: 0, pages: vec![] };
         assert_eq!(book_counts(&book), (0, 0));
     }
 }

@@ -67,6 +67,7 @@ const {
   renameProject,
   pickOutputDir,
   exportBook,
+  editBook,
   loadProjects,
   reset,
   reveal,
@@ -366,14 +367,14 @@ onMounted(() => {
     </div>
 
     <!--
-      The book itself, spread by spread, as it will print. Read-only: this
-      is what makes any of the engine's decisions judgeable at all -- until
-      it existed the only way to see a layout was to open the exported files
-      in Finder and reassemble it mentally. Rendered for a book generated in
+      The book itself, spread by spread, as it will print, with the
+      spread-level controls: regenerate, reject, change layout, lock, shuffle,
+      and swapping two photos. Every control sends one `edit_book` and shows
+      what came back -- `useBook.editBook`. Rendered for a book generated in
       this session AND for one reopened from disk, since both are saved
       projects by the time `book_layout` reads them.
     -->
-    <BookPreview v-if="layout" :layout />
+    <BookPreview v-if="layout" :layout :busy @edit="editBook" />
 
     <!--
       Pre-flight. Blocks and Warns are rendered as two separate lists from

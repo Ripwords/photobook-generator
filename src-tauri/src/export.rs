@@ -180,6 +180,7 @@ mod tests {
     fn build_items_produces_one_item_per_placement_in_book_order() {
         let photos = vec![photo("/a.jpg", "haaa1111"), photo("/b.jpg", "hbbb2222")];
         let book = Book {
+            controls: Default::default(),
             seed: 1,
             dropped: 0,
             pages: vec![page_with_placements(1, Side::Right, &[0, 1])],
@@ -197,6 +198,7 @@ mod tests {
         let photos = vec![photo("/a.jpg", "haaa1111")];
         let crop = Rect::new(0.05, 0.1, 0.6, 0.7);
         let book = Book {
+            controls: Default::default(),
             seed: 1,
             dropped: 0,
             pages: vec![Page {
@@ -217,6 +219,7 @@ mod tests {
     fn build_items_skips_pages_with_no_placements() {
         let photos = vec![photo("/a.jpg", "haaa1111")];
         let book = Book {
+            controls: Default::default(),
             seed: 1,
             dropped: 0,
             pages: vec![
@@ -268,7 +271,7 @@ mod tests {
                 &indices,
             ));
         }
-        let book = Book { seed: 1, dropped: 0, pages };
+        let book = Book { controls: Default::default(), seed: 1, dropped: 0, pages };
 
         let items = build_items(&book, &photos);
         assert!(items.len() > 40, "fixture must actually exercise many placements: {}", items.len());
@@ -304,7 +307,7 @@ mod tests {
             }
             pages.push(page_with_placements(page_number, Side::Right, &indices));
         }
-        let book = Book { seed: 1, dropped: 0, pages };
+        let book = Book { controls: Default::default(), seed: 1, dropped: 0, pages };
 
         let items = build_items(&book, &photos);
         let traversal_order: Vec<&str> = items.iter().map(|i| i.filename.as_str()).collect();

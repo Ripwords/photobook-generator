@@ -1738,7 +1738,44 @@ pub async fn book_layout(app: AppHandle, project_id: i64) -> Result<BookLayout, 
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("project {project_id} no longer exists"))?;
         let photos = resolve_preview_photos(&db, &project.photo_hashes)?;
-        Ok(crate::preview::book_layout(project.id, &project.book, photos))
+        let lib = load_library(&app)?;
+        Ok(crate::preview::book_layout(project.id, &project.book, photos, &lib))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Applies one spread-level edit to a saved book, persists it, and returns
+/// the whole new layout -- never `{ok: true}`. The webview replaces what it
+/// shows with what came back, so a partial or refused edit can never leave
+/// the screen and the saved book disagreeing.
+///
+/// The photo slice is rebuilt from the hashes persisted with the project,
+/// exactly as `export_book` does, so an edit after a restart sees the same
+/// photos the book was assembled against.
+#[tauri::command]
+pub async fn edit_book(
+    app: AppHandle,
+    project_id: i64,
+    edit: crate::book::edit::BookEdit,
+) -> Result<BookLayout, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        let mut project = db
+            .load_project(project_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("project {project_id} no longer exists"))?;
+        let lib = load_library(&app)?;
+        let weights = load_weights(&app);
+        let parsed = resolve_photos(&db, &project.photo_hashes)?;
+        crate::book::edit::apply(&mut project.book, &edit, &lib, &parsed, &weights)
+            .map_err(|e| e.to_string())?;
+        let changed = db.update_project_book(project_id, &project.book).map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err(format!("project {project_id} no longer exists"));
+        }
+        let photos = resolve_preview_photos(&db, &project.photo_hashes)?;
+        Ok(crate::preview::book_layout(project.id, &project.book, photos, &lib))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -3225,6 +3262,7 @@ mod tests {
             z,
         };
         let book = Book {
+            controls: Default::default(),
             seed: 99,
             dropped: 0,
             pages: vec![

@@ -44,6 +44,7 @@ pub fn run() {
             commands::list_projects,
             commands::open_project,
             commands::book_layout,
+            commands::edit_book,
             commands::delete_project,
             commands::rename_project,
             commands::reveal_in_finder,

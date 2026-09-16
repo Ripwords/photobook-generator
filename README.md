@@ -45,6 +45,34 @@ resource path `binaries/photobook-engine-aarch64-apple-darwin` doesn't exist
 which points at the missing binary, not at the missing `bun run sidecar` step — this note
 exists so that error is easy to diagnose.
 
+## Using the app
+
+1. **Choose a photo folder.** Every supported image in it and in its subfolders is analysed
+   on this Mac (nothing leaves the machine). The contact sheet shows every photo, ranked
+   within the folder, with the ones the book would leave out dimmed. Use **+** and **−** on a
+   photo to include or exclude it yourself.
+2. **Pick a length and generate.** The app recommends the shortest Pixajoy length that fits
+   the keepers and says how many each length would leave out. Generating saves the book as a
+   project, so it survives quitting; saved books are listed on the home screen.
+3. **Adjust the spreads.** Under the generated book, every opening (page 1, each pair of
+   facing pages, the last page) has four controls on its right:
+   - **Regenerate** (dice) lays the same photos out on a layout this opening has not shown
+     yet. Click again to see the next one; when every layout for that many photos has been
+     shown, the button is disabled.
+   - **Reject** (thumbs down) does the same, and never offers the current layout here again.
+   - **Choose a layout** (grid) lists the other layouts that hold this many photos by name.
+   - **Lock** keeps the opening exactly as it is: **Shuffle** at the top of the book re-lays
+     every unlocked opening at once and skips locked ones, and a locked opening refuses every
+     other change until unlocked.
+
+   To **swap two photos**, click one, then click another anywhere in the book; click the
+   first again or press Escape to cancel. A change that would cut a face, put one in the
+   gutter or the safe margin, or print below 200 DPI is refused with the reason, and the book
+   stays as it was. Every change is saved immediately.
+4. **Export.** Choose an output folder and export. Pre-flight runs first; anything that would
+   print badly blocks the export and is listed. The output is one cropped file per photo
+   placement plus a `manifest.json` saying what went where, ready to upload to Pixajoy.
+
 ## Scripts
 
 - `bun run dev` — start the Tauri app in development mode (builds sidecar first)

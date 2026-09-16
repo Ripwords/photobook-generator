@@ -142,6 +142,7 @@ mod tests {
     fn manifest_carries_the_project_id_seed_and_page_count() {
         let photos = vec![photo("/a.jpg", "haaa1111")];
         let book = Book {
+            controls: Default::default(),
             seed: 4242,
             dropped: 0,
             pages: vec![Page {
@@ -171,6 +172,7 @@ mod tests {
     fn manifest_records_a_page_with_zero_placements_as_an_empty_entry() {
         let photos = vec![photo("/a.jpg", "haaa1111")];
         let book = Book {
+            controls: Default::default(),
             seed: 1,
             dropped: 0,
             pages: vec![
@@ -205,6 +207,7 @@ mod tests {
         let photos = vec![photo("/a.jpg", "haaa1111")];
         let slot_rect = Rect::new(0.1, 0.2, 0.3, 0.4);
         let book = Book {
+            controls: Default::default(),
             seed: 1,
             dropped: 0,
             pages: vec![Page {
@@ -233,6 +236,7 @@ mod tests {
         let photos = vec![photo("/photos/a.jpg", "deadbeef99")];
         let crop = Rect::new(0.05, 0.1, 0.6, 0.7);
         let book = Book {
+            controls: Default::default(),
             seed: 1,
             dropped: 0,
             pages: vec![Page {
@@ -264,6 +268,7 @@ mod tests {
             photo("/c.jpg", "hccc3333"),
         ];
         let book = Book {
+            controls: Default::default(),
             seed: 9,
             dropped: 0,
             pages: vec![

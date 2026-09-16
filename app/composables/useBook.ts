@@ -17,7 +17,7 @@ import {
   type GeneratedBook,
   type ProjectDetail,
 } from "~/types/book";
-import type { BookLayout } from "~/types/preview";
+import type { BookEdit, BookLayout } from "~/types/preview";
 import type { AnalyzedPhoto, PhotoOverrides } from "~/types/features";
 
 /**
@@ -240,6 +240,27 @@ export function useBook(
   }
 
   /**
+   * Applies one spread-level edit -- regenerate, reject, change layout, lock,
+   * shuffle, swap -- to the book on screen, and shows exactly the book Rust
+   * saved.
+   *
+   * The reply IS the new layout, and it replaces `layout` wholesale. Nothing
+   * is patched locally: a refused edit (a swap that would cut a face, a spread
+   * with no other layout to offer) comes back as an error with the reason and
+   * the layout is left as Rust last returned it, so the screen and the saved
+   * book cannot disagree.
+   */
+  async function editBook(edit: BookEdit) {
+    const projectId = exportProjectId.value;
+    if (projectId === null) return;
+    await guard(async () => {
+      layout.value = await invoke<BookLayout>("edit_book", { projectId, edit });
+      // An edit bumps the project's `updated_at`, which orders the saved list.
+      await loadProjects();
+    });
+  }
+
+  /**
    * Clears everything derived from one analysed set OR one opened project.
    * Called when the photos change: a generated book, an opened project, a
    * chosen output folder and an export report all belong to whichever
@@ -278,6 +299,7 @@ export function useBook(
     renameProject,
     pickOutputDir,
     exportBook,
+    editBook,
     loadProjects,
     reset,
     reveal,

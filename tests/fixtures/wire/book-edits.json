@@ -1,0 +1,34 @@
+[
+  {
+    "kind": "regenerate",
+    "opening": 3
+  },
+  {
+    "kind": "rejectTemplate",
+    "opening": 0
+  },
+  {
+    "kind": "setTemplate",
+    "opening": 2,
+    "templateId": "07-two-up-symmetric-margin"
+  },
+  {
+    "kind": "setLocked",
+    "opening": 1,
+    "locked": true
+  },
+  {
+    "kind": "shuffle"
+  },
+  {
+    "kind": "swapPhotos",
+    "a": {
+      "page": 2,
+      "z": 1
+    },
+    "b": {
+      "page": 5,
+      "z": 2
+    }
+  }
+]
