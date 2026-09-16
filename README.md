@@ -79,6 +79,10 @@ exists so that error is easy to diagnose.
 - `bun run build` — build the production app bundle (builds sidecar first)
 - `bun run sidecar` — build the Swift sidecar binary and copy it into
   `src-tauri/binaries/`
+- `bun run ui:mock` — open the webview in an ordinary browser on port 3123 with the Tauri
+  bridge replaced by `dev/tauri-mock/` (a saved mock book, no analysis), so a UI change can
+  be rasterised and looked at, or driven by a browser automation tool, without a Tauri
+  process. Nothing in the production build sees this alias.
 - `bun run test` — run frontend tests (Vitest)
 - `bun run test:rust` — run Rust tests (`cargo test`)
 - `bun run test:swift` — run Swift tests (`swift test`)

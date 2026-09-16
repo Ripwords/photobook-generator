@@ -7,6 +7,7 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "ui:dev": "nuxt dev",
+    "ui:mock": "PBG_MOCK_TAURI=1 nuxt dev --port 3123",
     "generate": "nuxt generate",
     "check:build": "nuxt generate",
     "sidecar": "bash scripts/build-sidecar.sh",

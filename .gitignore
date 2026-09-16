@@ -12,3 +12,4 @@ sidecar/.build
 .env
 .env.*
 !.env.example
+.playwright-mcp
