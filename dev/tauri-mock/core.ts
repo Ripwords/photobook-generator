@@ -4,21 +4,42 @@
  * no Tauri process behind it.
  *
  * `bun run ui:mock` aliases the real module to this one (see
- * `nuxt.config.ts`). Only the commands the book preview needs are answered,
- * from the same wire fixture the Rust and TypeScript suites pin; everything
- * else rejects loudly, so a screen that depends on analysis cannot be
- * mistaken for working. Edits are applied to the in-memory copy just far
- * enough to make each control's effect visible: lock toggles, regenerate and
- * choose-layout rename the template, swap exchanges the two photo indices.
+ * `nuxt.config.ts`). Every command the UI can reach is answered -- from the
+ * same wire fixtures the Rust and TypeScript suites pin where one exists, and
+ * from `photos.ts` where the fixture is a whole analysed folder. An unknown
+ * command still rejects loudly, so a screen that depends on something
+ * unmocked cannot be mistaken for working.
  *
- * Never imported by the app itself. It exists so a change to `BookPreview`
- * can be rasterised and inspected before it ships.
+ * The state below is deliberately mutable and module-scoped: generating,
+ * renaming and deleting have to be visible in the project list afterwards, or
+ * the navigation between the library, the select screen and the editor cannot
+ * be driven end to end.
+ *
+ * Never imported by the app itself. It exists so a change to the UI can be
+ * rasterised and inspected before it ships.
  */
-import fixture from "../../tests/fixtures/wire/book-layout.json";
+import layoutFixture from "../../tests/fixtures/wire/book-layout.json";
+import recommendationFixture from "../../tests/fixtures/wire/book-recommendation.json";
+import listFixture from "../../tests/fixtures/wire/project-list.json";
+import exportFixture from "../../tests/fixtures/wire/export-result.json";
 import type { BookEdit, BookLayout, PlacementRef } from "../../app/types/preview";
-import type { ProjectDetail, ProjectListItem } from "../../app/types/book";
+import type {
+  BookRecommendation,
+  ExportEvent,
+  ExportResult,
+  GeneratedBook,
+  ProjectDetail,
+  ProjectListItem,
+} from "../../app/types/book";
+import type {
+  AnalysisEvent,
+  AnalysisSummary,
+  AnalyzedPhoto,
+  PhotoOverrides,
+} from "../../app/types/features";
+import { mockPhotos, thumbnail } from "./photos";
 
-const layout: BookLayout = structuredClone(fixture) as BookLayout;
+const layout: BookLayout = structuredClone(layoutFixture) as BookLayout;
 // The fixture is pinned against an EMPTY library, so it offers no alternative
 // layouts. Give the spread two so the buttons have something to do.
 layout.openings[1] = {
@@ -27,33 +48,50 @@ layout.openings[1] = {
   rejected: [],
   alternatives: ["07-two-up-symmetric-margin", "08-two-up-symmetric-bleed-outer"],
 };
+// The fixture's thumbnail paths point at a disk this browser cannot read.
+layout.photos = layout.photos.map((photo, index) => ({
+  ...photo,
+  thumbnailPath: thumbnail(index + 3, photo.hash.slice(-4)),
+}));
 
-const project: ProjectDetail = {
-  id: 7,
-  name: "Mock book",
-  sourceFolder: "/mock/Holiday 2026",
-  sourceFolders: ["/mock/Holiday 2026", "/mock/Phone camera roll"],
-  createdAt: 1_757_000_000,
-  updatedAt: 1_757_000_000,
-  pageCount: layout.pageCount,
-  photoCount: layout.placedPhotos,
-  droppedPhotos: layout.droppedPhotos,
-  seed: layout.seed,
-  overrides: {},
-  exports: [],
-};
+const photos: AnalyzedPhoto[] = mockPhotos();
 
-const listed: ProjectListItem = {
-  id: project.id,
-  name: project.name,
-  sourceFolder: project.sourceFolder,
-  sourceFolders: project.sourceFolders,
-  pageCount: project.pageCount,
-  photoCount: project.photoCount,
-  createdAt: project.createdAt,
-  updatedAt: project.updatedAt,
-  lastExport: null,
-};
+const projects: ProjectListItem[] = structuredClone(listFixture) as ProjectListItem[];
+/** Decisions each saved project was generated with, so reopening restores them. */
+const savedOverrides = new Map<number, PhotoOverrides>();
+let nextProjectId = 100;
+
+function detailFor(id: number): ProjectDetail {
+  const listed = projects.find((project) => project.id === id);
+  if (!listed) throw new Error(`no saved photobook with id ${id}`);
+  return {
+    id: listed.id,
+    name: listed.name,
+    sourceFolder: listed.sourceFolder,
+    sourceFolders: listed.sourceFolders,
+    createdAt: listed.createdAt,
+    updatedAt: listed.updatedAt,
+    pageCount: listed.pageCount,
+    photoCount: listed.photoCount,
+    droppedPhotos: layout.droppedPhotos,
+    seed: layout.seed,
+    overrides: savedOverrides.get(id) ?? {},
+    exports: listed.lastExport ? [listed.lastExport] : [],
+  };
+}
+
+function keptPaths(overrides: PhotoOverrides): string[] {
+  return photos
+    .filter((photo) => {
+      const decision = overrides[photo.hash];
+      if (decision === "include") return true;
+      if (decision === "exclude") return false;
+      return photo.kept;
+    })
+    .map((photo) => photo.path);
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function placement(ref: PlacementRef) {
   const page = layout.pages.find((p) => p.number === ref.page);
@@ -129,16 +167,136 @@ function applyEdit(edit: BookEdit): BookLayout {
   return structuredClone(layout);
 }
 
-export async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+/** Streams `analyze_folders`'s events at a speed a person can watch. */
+async function analyze(channel: Channel<AnalysisEvent>): Promise<AnalysisSummary> {
+  channel.onmessage({ kind: "scanned", total: photos.length + 2 });
+  await sleep(250);
+
+  let analysed = 0;
+  for (let start = 0; start < photos.length; start += 6) {
+    const batch = photos.slice(start, start + 6);
+    analysed += batch.length;
+    channel.onmessage({ kind: "batch", photos: batch, analysed, cached: 0, failed: 0 });
+    await sleep(220);
+  }
+
+  // Paths are left exactly as `photos.ts` wrote them. `apply_photo_overrides`
+  // answers with kept PATHS, and the contact sheet matches on them, so
+  // rewriting one and not the other silently drops every photo from the book.
+  const summary: AnalysisSummary = {
+    runId: 1,
+    total: photos.length + 2,
+    failed: 2,
+    cached: 0,
+    photos,
+  };
+  channel.onmessage({ kind: "done", summary });
+  return summary;
+}
+
+async function runExport(channel: Channel<ExportEvent>): Promise<ExportResult> {
+  const total = layout.placedPhotos;
+  channel.onmessage({ kind: "started", total });
+  for (let completed = 1; completed <= total; completed += 1) {
+    await sleep(60);
+    channel.onmessage({ kind: "progress", completed, total });
+  }
+  return structuredClone(exportFixture) as ExportResult;
+}
+
+type Args = Record<string, unknown> | undefined;
+
+export async function invoke<T>(command: string, args?: Args): Promise<T> {
   switch (command) {
     case "list_projects":
-      return [listed] as T;
+      return structuredClone(projects) as T;
+
     case "open_project":
-      return project as T;
+      return detailFor(args?.id as number) as T;
+
     case "book_layout":
       return structuredClone(layout) as T;
+
     case "edit_book":
       return applyEdit(args?.edit as BookEdit) as T;
+
+    case "rename_project": {
+      const project = projects.find((p) => p.id === (args?.id as number));
+      if (!project) throw new Error("that photobook is no longer saved");
+      project.name = args?.name as string;
+      project.updatedAt = Math.floor(Date.now() / 1000);
+      return undefined as T;
+    }
+
+    case "delete_project": {
+      const index = projects.findIndex((p) => p.id === (args?.id as number));
+      if (index === -1) throw new Error("that photobook is no longer saved");
+      projects.splice(index, 1);
+      return undefined as T;
+    }
+
+    case "analyze_folders":
+      return (await analyze(args?.onEvent as Channel<AnalysisEvent>)) as T;
+
+    case "apply_photo_overrides":
+      return keptPaths((args?.overrides as PhotoOverrides) ?? {}) as T;
+
+    case "recommend_book": {
+      const overrides = (args?.overrides as PhotoOverrides) ?? {};
+      const base = structuredClone(recommendationFixture) as BookRecommendation;
+      return {
+        ...base,
+        keeperCount: keptPaths(overrides).length,
+        includedCount: Object.values(overrides).filter((state) => state === "include").length,
+      } as T;
+    }
+
+    case "generate_book": {
+      await sleep(400);
+      // Cloned on the way in: the webview hands over a Vue reactive proxy, and
+      // `structuredClone` on the next `list_projects` throws `DataCloneError`
+      // if the proxy is what got stored.
+      const folders = [...((args?.sourceFolders as string[]) ?? [])];
+      const id = nextProjectId++;
+      projects.unshift({
+        id,
+        name: (args?.name as string) || "Untitled photobook",
+        sourceFolder: folders[0] ?? "/mock",
+        sourceFolders: folders,
+        pageCount: (args?.pages as number) ?? layout.pageCount,
+        photoCount: layout.placedPhotos,
+        createdAt: Math.floor(Date.now() / 1000),
+        updatedAt: Math.floor(Date.now() / 1000),
+        lastExport: null,
+      });
+      savedOverrides.set(id, { ...(args?.overrides as PhotoOverrides | undefined) });
+      const book: GeneratedBook = {
+        projectId: id,
+        pageCount: (args?.pages as number) ?? layout.pageCount,
+        placedPhotos: layout.placedPhotos,
+        droppedPhotos: layout.droppedPhotos,
+        seed: layout.seed,
+      };
+      return book as T;
+    }
+
+    case "export_book": {
+      const result = await runExport(args?.onEvent as Channel<ExportEvent>);
+      const project = projects.find((p) => p.id === (args?.projectId as number));
+      if (project) {
+        project.lastExport = {
+          at: Math.floor(Date.now() / 1000),
+          outputDir: args?.outputDir as string,
+          format: result.format,
+          fileCount: result.written.length,
+        };
+      }
+      return { ...result, outputDir: (args?.outputDir as string) ?? result.outputDir } as T;
+    }
+
+    case "reveal_in_finder":
+      return undefined as T;
+
     default:
       throw new Error(`${command} is not available in the browser harness`);
   }
