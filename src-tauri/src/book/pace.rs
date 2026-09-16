@@ -154,10 +154,11 @@ fn single_fit(layout: &PageLayout, indices: &[usize], photos: &[Photo]) -> Optio
 /// * the half must be authored for the SIDE it lands on. Bleed edges and the
 ///   gutter are side-specific, so a left half on a right-hand page bleeds off
 ///   the fold.
-/// * the half must hold AT MOST the group, not exactly it. `pack` sizes every
-///   group by SPREAD counts, and two of the slots it sizes for are single
-///   pages that hold only a half's worth, so requiring `slots.len() == n`
-///   leaves the opening page blank whenever the first group is oversized.
+/// * the half must hold AT MOST the group, not exactly it. `pack` now sizes
+///   the two single groups against the halves of the side each prints on, so
+///   an oversized group should no longer arrive here -- but requiring
+///   `slots.len() == n` would turn any future mismatch into a blank opening
+///   page, where taking the largest half that fits loses at most a photo.
 ///
 /// Sizes are tried LARGEST FIRST and the first size with a surviving
 /// candidate wins. Committing to the largest size that fits and giving up
@@ -390,10 +391,10 @@ pub fn assemble(
     // cut is then a middle spread -- placing it on a page half regardless is
     // what used to let `strongest` silently trim it.
     let n = groups.len();
-    let opening = groups.first().filter(|g| g.slot == SlotKind::Single);
+    let opening = groups.first().filter(|g| g.slot.is_single());
     let closing = (n > 1)
         .then(|| &groups[n - 1])
-        .filter(|g| g.slot == SlotKind::Single);
+        .filter(|g| g.slot.is_single());
     let middle: Vec<&Group> =
         groups.iter().filter(|g| g.slot == SlotKind::Spread).collect();
 
@@ -1463,7 +1464,7 @@ mod tests {
         )
         .expect("no includes in the fixture");
         let singles: Vec<&Group> =
-            groups.iter().filter(|g| g.slot == SlotKind::Single).collect();
+            groups.iter().filter(|g| g.slot.is_single()).collect();
         assert!(
             !singles.is_empty(),
             "fixture must produce at least one single-page group, or the pin below is vacuous"
@@ -1477,7 +1478,7 @@ mod tests {
         }
 
         // Three photos onto a half that holds at most two.
-        let group = Group { photos: vec![0, 1, 2], event_cluster: 0, slot: SlotKind::Single };
+        let group = Group { photos: vec![0, 1, 2], event_cluster: 0, slot: SlotKind::Single(Side::Right) };
         let page = single_page(Side::Right, Some(&group), &half_pool(&lib), &photos, 5);
         assert_ne!(page.template_id, BLANK_TEMPLATE_ID, "a blank page is the wrong answer here");
         assert_eq!(
@@ -1567,7 +1568,7 @@ mod tests {
         assert_eq!(photos[3].aesthetic_pct, 11);
         photos[1].aesthetic_pct = 5; // now the weakest of the group
 
-        let group = Group { photos: vec![1, 2, 3], event_cluster: 0, slot: SlotKind::Single };
+        let group = Group { photos: vec![1, 2, 3], event_cluster: 0, slot: SlotKind::Single(Side::Left) };
         assert_eq!(
             strongest(&group, &photos, 2),
             vec![2, 3],
@@ -1651,8 +1652,8 @@ mod tests {
         let placed = placed_indices(&book);
         let unique: BTreeSet<usize> = placed.iter().copied().collect();
         assert_eq!(unique.len(), placed.len(), "a photo must not be placed twice");
-        assert_eq!(placed.len(), 24, "placed count");
-        assert_eq!(book.dropped, 6, "5 utility + 1 that overflowed the opening page");
+        assert_eq!(placed.len(), 25, "placed count: every keeper");
+        assert_eq!(book.dropped, 5, "the 5 utility photos, and nothing else");
         assert_eq!(book.dropped, photos.len() - unique.len(), "dropped must reconcile");
 
         // Every spread slot carries a group: no photo is stranded behind a
@@ -1680,17 +1681,13 @@ mod tests {
     /// `pace_records_how_many_photos_were_dropped` covers the over-capacity
     /// case, where dropping is correct.
     ///
-    /// # This sweep's range is 10..=51 keepers, and the invariant is FALSE above it
+    /// # This sweep's range is 10..=51 keepers
     ///
     /// The six counts cull to 10, 17, 21, 25, 34 and 51 keepers (158 per seed,
-    /// 474 over the three). Do not read the green as "every keeper is always
-    /// placed": swept independently at 40..=64 keepers on the same real library,
-    /// this engine loses up to **6 of 64**, with zero blank pages throughout.
-    /// The per-count table and both mechanisms are in `docs/PROJECT-STATUS.md`
-    /// open item 14. Widening the range here would simply turn this test red;
-    /// it is left at the range it can honestly assert, and the failure above it
-    /// is tracked as an open item rather than hidden behind a narrow sweep
-    /// nobody documented the edges of.
+    /// 474 over the three). The whole 10..=65 range, over four chapter shapes,
+    /// is swept by `tests/pack_sweep.rs`, which is the instrument that found
+    /// the losses above 51 keepers (`docs/PROJECT-STATUS.md` items 12 and 14)
+    /// and now guards their fix.
     #[test]
     fn pace_places_every_keeper_across_the_real_library_sweep() {
         let lib = real_library();

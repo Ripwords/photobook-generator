@@ -7,6 +7,7 @@
 //! different split rather than an unfillable spread.
 
 use crate::book::cull::{Override, Overrides, Photo};
+use crate::geometry::Side;
 use crate::templates::Library;
 
 /// The user asked for more photos than the book they chose can hold.
@@ -82,13 +83,17 @@ impl Capacity {
     pub fn from_buildable(pages: u32, b: &Buildable) -> Capacity {
         let singles = 2u32;
         let spreads = (pages.saturating_sub(2)) / 2;
-        let (_, single_hi) = bounds_of(&b.single);
-        let (_, spread_hi) = bounds_of(&b.spread);
+        let slots = spreads as usize + singles as usize;
+        // Summed slot by slot, each against the set of the side it prints on:
+        // the opening page is a RIGHT half and the closing page a LEFT half,
+        // and on the real library those hold 5 and 4. `2 x largest single`
+        // read 64 here for a book whose true ceiling is 63, and the UI then
+        // reported 0 dropped for a book that dropped photos.
         Capacity {
             pages,
             singles,
             spreads,
-            max_photos: spreads as usize * spread_hi + singles as usize * single_hi,
+            max_photos: (0..slots).map(|i| b.bounds_at(i, slots).1).sum(),
         }
     }
 }
@@ -135,17 +140,14 @@ pub fn recommend_pages_with(keeper_count: usize, buildable: &[usize]) -> u32 {
 ///
 /// Deliberately not `recommend_pages_with(keeper_count, &buildable_sizes(lib))`:
 /// that measures against the over-estimate, so for a keeper count in the gap
-/// between the two figures (65 or 66 against the real library, whose
-/// `from_library` 20-page capacity is 64 and whose over-estimate is 66) it
+/// between the two figures (64 to 66 against the real library, whose
+/// `from_library` 20-page capacity is 63 and whose over-estimate is 66) it
 /// recommends a 20-page book that then silently drops photos a 40-page book
 /// would have kept. `pace::assemble` packs against `from_library`, so this is
 /// also the only figure that agrees with the book the recommendation leads to.
 ///
-/// **"More accurate" is not "accurate."** That 64 is itself an overclaim by one:
-/// the true 20-page ceiling is 63, because `Buildable::from_library`'s `single`
-/// set is side-blind. See the warning block on that function and
-/// `docs/PROJECT-STATUS.md` open item 14 — including why the obvious fix was
-/// measured and rejected.
+/// On the real library the 20-page figure is 63: nine spreads of six, a
+/// right-hand opening page of five and a left-hand closing page of four.
 pub fn recommend_pages(keeper_count: usize, lib: &Library) -> u32 {
     if keeper_count <= Capacity::from_library(20, lib).max_photos {
         20
@@ -165,22 +167,34 @@ pub fn recommend_pages(keeper_count: usize, lib: &Library) -> u32 {
 /// then NOT the closing single.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotKind {
-    /// The first or last page of the book: one page-half.
-    Single,
+    /// The first or last page of the book: one page-half, on the side it
+    /// prints on. Page 1 is a RIGHT half facing the inside front cover; the
+    /// last page is a LEFT half facing the inside back cover. The side is
+    /// carried because the two halves are authored separately and do not
+    /// hold the same number of photos.
+    Single(Side),
     /// Any of the (N-2)/2 spreads between them: two page-halves.
     Spread,
 }
 
+impl SlotKind {
+    pub fn is_single(self) -> bool {
+        matches!(self, SlotKind::Single(_))
+    }
+}
+
 /// Which kind of slot sits at `index`, in a book of `slots` slots.
 ///
-/// Slot 0 and slot `slots - 1` are the two single pages facing the inside
-/// covers; everything between them is a spread. Extracted rather than
+/// Slot 0 is the right-hand opening page and slot `slots - 1` the left-hand
+/// closing page; everything between them is a spread. Extracted rather than
 /// written inline because more than one caller needs the answer, and two
 /// copies of the rule deciding which slot is a single is the same
 /// duplicated-authority defect `book::cull` already had to consolidate.
 fn slot_kind_at(index: usize, slots: usize) -> SlotKind {
-    if index == 0 || index + 1 == slots {
-        SlotKind::Single
+    if index == 0 {
+        SlotKind::Single(Side::Right)
+    } else if index + 1 == slots {
+        SlotKind::Single(Side::Left)
     } else {
         SlotKind::Spread
     }
@@ -205,68 +219,48 @@ const SPREAD_MIN_PHOTOS: usize = 2;
 /// surplus away.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Buildable {
-    /// Sizes for the first and last page: `1 ..= largest page half`.
-    pub single: Vec<usize>,
+    /// Sizes for the closing page, a LEFT half: the slot counts of the
+    /// library's left halves.
+    pub single_left: Vec<usize>,
+    /// Sizes for the opening page, a RIGHT half: the slot counts of the
+    /// library's right halves.
+    pub single_right: Vec<usize>,
     /// Sizes for the (N-2)/2 spreads: the library's spread counts, less 1.
     pub spread: Vec<usize>,
 }
 
 impl Buildable {
-    /// Derived from the loaded library, never hardcoded, and BOTH sets are
-    /// derived: `single` from the slot counts the page halves actually have,
-    /// `spread` from the spread templates' photo counts less the sub-minimum
-    /// ones. Neither is a contiguous range invented from a maximum -- a range
-    /// claims the library can build every count below the largest, which is a
-    /// claim only the library itself can make.
+    /// Derived from the loaded library, never hardcoded, and every set is
+    /// derived: the two single sets from the slot counts the page halves of
+    /// EACH SIDE actually have, `spread` from the spread templates' photo
+    /// counts less the sub-minimum ones. None is a contiguous range invented
+    /// from a maximum -- a range claims the library can build every count
+    /// below the largest, which is a claim only the library itself can make.
     ///
-    /// # KNOWN DEFECT: `single` is SIDE-BLIND, and a fix was measured and rejected
-    ///
-    /// `page_half_pool()` pools BOTH sides, so `single` is the union of what
-    /// left halves and right halves can build. But a page half is authored for
-    /// the side it prints on -- bleed edges and the gutter are side-specific --
-    /// so `pace::best_single` filters the pool by `l.side == side`, and
-    /// `pace::assemble` places the opening single on the RIGHT and the closing
-    /// single on the LEFT. The two slots therefore do NOT have the same set.
-    ///
-    /// On the real library: LEFT halves offer `{1,2,3,4}`, RIGHT `{1,2,3,4,5}`,
-    /// so the union is `{1,2,3,4,5}`. Two consequences, both measured:
-    ///
-    /// * `pack` may cut a `(5, Single)` CLOSING group, which no left half can
-    ///   build. `best_single` falls back to a 4-slot left half and
-    ///   `pace::strongest` silently trims one photo.
-    /// * `Capacity::from_buildable` reads `single_hi = 5` off this set, so
-    ///   `Capacity::from_library(20, lib).max_photos` reports **64** when the
-    ///   true ceiling is **63** (9 spreads x 6, plus a right-hand 5 opening and
-    ///   a left-hand 4 closing). `commands::…dropped_photos` is
-    ///   `keeper_count.saturating_sub(max_photos)`, so at 64 keepers the UI
-    ///   reports 0 dropped for a book that actually drops 6.
-    ///
-    /// **Replacing the union with the INTERSECTION (`{1,2,3,4}`) was tried and
-    /// measured NET NEGATIVE. Do not re-attempt it.** The intersection is not
-    /// conservative, because the union is not uniformly an overclaim: 5 is a
-    /// size the closing slot cannot take but the OPENING slot genuinely can.
-    /// Measured on the real library, 20 pages, `pace::assemble`:
-    ///
-    /// * page 1 really does lay out five photos on
-    ///   `25-six-up-mosaic-hero-five:right`. Under the intersection it drops to
-    ///   four, losing a photo the library could print.
-    /// * `max_photos` falls to 62 -- an UNDERclaim, since the true ceiling is
-    ///   63 -- so `pack`'s capacity trim pre-emptively discards keepers at 63
-    ///   and 64 that reached the page before.
-    /// * across four synthetic chapter shapes x three seeds at 60..=64 keepers,
-    ///   three of the four shapes lose 1-2 photos per book and none gains one.
-    ///
-    /// **The correct fix is a per-SIDE single set** -- `single_left` and
-    /// `single_right`, each slot measured against the side it actually prints
-    /// on, with `Capacity` summing `right_hi + left_hi` rather than
-    /// `2 * single_hi`. That is a fourth change to `pack`'s contract and is
-    /// deliberately deferred, not forgotten; see `docs/PROJECT-STATUS.md`
-    /// known-open item 14, which carries the full 40..=64-keeper sweep.
+    /// Per side, deliberately. A page half is authored for the side it prints
+    /// on -- bleed edges and the gutter are side-specific -- so
+    /// `pace::best_single` filters the pool by `l.side == side`, and the
+    /// opening page is a RIGHT half while the closing page is a LEFT half. On
+    /// the real library LEFT halves offer `{1,2,3,4}` and RIGHT `{1,2,3,4,5}`.
+    /// One pooled set was wrong both ways: its union let `pack` cut a
+    /// 5-photo closing group no left half could build (so `pace::strongest`
+    /// silently trimmed one), and its intersection was measured to lose the
+    /// genuinely buildable 5-photo opening page. Only a per-side set gets
+    /// both slots right, and only it makes `Capacity` read the true ceiling.
     pub fn from_library(lib: &Library) -> Buildable {
-        let halves: std::collections::BTreeSet<usize> =
-            lib.page_half_pool().iter().map(|p| p.slots.len()).filter(|&n| n > 0).collect();
+        let sizes = |side: Side| -> Vec<usize> {
+            lib.page_half_pool()
+                .iter()
+                .filter(|p| p.side == side)
+                .map(|p| p.slots.len())
+                .filter(|&n| n > 0)
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        };
         Buildable {
-            single: halves.into_iter().collect(),
+            single_left: sizes(Side::Left),
+            single_right: sizes(Side::Right),
             spread: buildable_sizes(lib)
                 .into_iter()
                 .filter(|&s| s >= SPREAD_MIN_PHOTOS)
@@ -278,31 +272,34 @@ impl Buildable {
     /// largest page half -- so the callers that have no `Library` (chiefly
     /// `recommend_pages_with`) can still get a figure.
     ///
-    /// This one DOES invent `1 ..= largest_half` for the singles, and that is
-    /// its documented weakness: it presumes a page half exists at every count
-    /// up to the largest, which only the library can confirm. Anything holding
-    /// a real `Library` must use `from_library` above.
+    /// This one DOES invent `1 ..= largest_half` for both singles, and that
+    /// is its documented weakness: it presumes a page half exists at every
+    /// count up to the largest, on both sides, which only the library can
+    /// confirm. Anything holding a real `Library` must use `from_library`.
     pub fn from_sizes(spread_sizes: &[usize], largest_half: usize) -> Buildable {
+        let singles: Vec<usize> = (1..=largest_half.max(1)).collect();
         Buildable {
-            single: (1..=largest_half.max(1)).collect(),
+            single_left: singles.clone(),
+            single_right: singles,
             spread: spread_sizes.iter().copied().filter(|&s| s >= SPREAD_MIN_PHOTOS).collect(),
         }
     }
 
     pub fn for_kind(&self, kind: SlotKind) -> &[usize] {
         match kind {
-            SlotKind::Single => &self.single,
+            SlotKind::Single(Side::Left) => &self.single_left,
+            SlotKind::Single(Side::Right) => &self.single_right,
             SlotKind::Spread => &self.spread,
         }
     }
 
-    /// Bounds over BOTH sets, for the two places that need a book-wide
-    /// figure rather than a per-slot one: `apportion_slots`, which divides
-    /// slot COUNTS across chapters, and `Capacity`. Both use these as
-    /// bounds, not as exact sizes, so the union is the honest answer.
-    pub fn union_bounds(&self) -> (usize, usize) {
-        let all = || self.single.iter().chain(self.spread.iter()).copied().filter(|&s| s > 0);
-        (all().min().unwrap_or(1), all().max().unwrap_or(1))
+    /// Smallest and largest group the slot at `index` can be cut to, in a
+    /// book of `slots` slots. The one place slot position is turned into a
+    /// photo count; `Capacity`, `apportion_slots`, `lookahead` and the
+    /// stranding guard in `pack` all read it rather than re-deriving which
+    /// slot is which.
+    pub fn bounds_at(&self, index: usize, slots: usize) -> (usize, usize) {
+        bounds_of(self.for_kind(slot_kind_at(index, slots)))
     }
 }
 
@@ -312,9 +309,11 @@ pub struct Group {
     pub photos: Vec<usize>,
     /// The chapter this group was cut from -- but NOT reliably the cluster its
     /// photos were originally assigned. `merge_sub_spread_chapters` folds a
-    /// chapter too small to fill a spread into the next one chronologically and
-    /// re-keys the folded photos onto the LATER cluster id, so after a merge
-    /// this names the chapter that absorbed them, not the one they came from.
+    /// chapter too small to fill a spread into the next one chronologically,
+    /// and `merge_chapters_the_slots_cannot_seat` folds the smallest chapter
+    /// into a neighbour when the slots cannot seat them all; both re-key the
+    /// folded photos onto the ABSORBING cluster id, so after a merge this names
+    /// the chapter that absorbed them, not the one they came from.
     ///
     /// Inert today: the only non-test reader is the pass-through in
     /// `pace::assemble`. It stops being inert the moment Phase 3 derives a
@@ -328,7 +327,11 @@ pub struct Group {
 
 /// Walks chapters in chronological order, cutting each into buildable
 /// groups. A group never spans two chapters: a new chapter opening halfway
-/// through a spread reads as an accident rather than a decision.
+/// through a spread reads as an accident rather than a decision. The one
+/// exception is deliberate and bounded: when the chapters between them need
+/// more slots than the book has, the smallest is folded into a neighbour
+/// first, because a chapter boundary is the engine's own guess and a lost
+/// photograph is not -- see `merge_chapters_the_slots_cannot_seat`.
 ///
 /// Groups are sized against how many photos and slots REMAIN, not against
 /// the largest size that fits, so the photos are spread over the whole book
@@ -341,12 +344,13 @@ pub struct Group {
 /// dropped first, chapter proportions preserved.
 ///
 /// **A photo the user marked `Include` is never one of the dropped.** It is
-/// protected from the capacity trim, its chapter is apportioned a slot ahead
-/// of a chapter with nothing explicitly wanted in it, and a crowded chapter
-/// strands an `Auto` photo rather than an explicit choice. When the `Include`
-/// photos ALONE exceed what the book can hold there is no honest way to
-/// choose between them, so this returns `Err(IncludeOverflow)` rather than
-/// picking -- see that type.
+/// protected from the capacity trim, and the trim is the only place this
+/// function discards a photo: once the keepers fit the book, chapters are
+/// folded together until the slots can seat every one of them
+/// (`merge_chapters_the_slots_cannot_seat`). When the `Include` photos ALONE
+/// exceed what the book can hold there is no honest way to choose between
+/// them, so this returns `Err(IncludeOverflow)` rather than picking -- see
+/// that type.
 pub fn pack(
     photos: &[Photo],
     capacity: &Capacity,
@@ -355,7 +359,11 @@ pub fn pack(
 ) -> Result<Vec<Group>, IncludeOverflow> {
     use std::collections::BTreeMap;
 
-    if photos.is_empty() || (buildable.single.is_empty() && buildable.spread.is_empty()) {
+    if photos.is_empty()
+        || (buildable.single_left.is_empty()
+            && buildable.single_right.is_empty()
+            && buildable.spread.is_empty())
+    {
         return Ok(Vec::new());
     }
 
@@ -409,54 +417,24 @@ pub fn pack(
         chapters.retain(|_, v| !v.is_empty());
     }
 
+    let slots = capacity.spreads as usize + capacity.singles as usize;
     let chapters = merge_sub_spread_chapters(chapters, spread_minimum(buildable));
+    let chapters = merge_chapters_the_slots_cannot_seat(chapters, slots, buildable);
 
     let mut groups = Vec::new();
-    let slots = capacity.spreads as usize + capacity.singles as usize;
 
     // Slots are a BOOK-WIDE budget; groups are cut per chapter. Apportion the
     // budget across chapters up front rather than letting each chapter take
     // what it likes from a shared counter -- otherwise the first chapter
     // drains the book and the last ones never appear.
     let counts: Vec<usize> = chapters.values().map(Vec::len).collect();
-    let wants: Vec<usize> =
-        chapters.values().map(|b| b.iter().filter(|&&i| wanted(i)).count()).collect();
-    // The union bounds, deliberately: `apportion_slots` divides slot COUNTS
-    // across chapters and uses these only as "fewest slots that hold all its
-    // photos" and "most slots it could fill". A chapter CAN legitimately fill
-    // a slot with one photo -- the two single pages take one -- so narrowing
-    // the divisor to the spread minimum under-allots and strands the tail of a
-    // chapter that would have fitted. Handing out a slot a chapter cannot fill
-    // is instead caught where it belongs, in the feasible band, which knows
-    // which kinds those slots actually are.
-    let (smallest, largest) = buildable.union_bounds();
-    let allowance = apportion_slots(&counts, &wants, slots, smallest, largest);
+    let allowance = apportion_slots(&counts, slots, buildable);
 
     for ((cluster, mut members), mut slots_left) in chapters.into_iter().zip(allowance) {
         // Chronological within the chapter is not knowable without capture
         // times here, so path order is used -- stable, and the same order
         // `finalize_photos` already established.
         members.sort_by(|&a, &b| photos[a].path.cmp(&photos[b].path));
-
-        // A chapter apportioned fewer slots than its photos need strands
-        // whatever the loop below does not reach, which is its TAIL in path
-        // order -- and that tail is chosen by filename, so an explicit choice
-        // is as likely to be in it as anything else. Where the chapter holds
-        // one, the surplus is taken off the WEAKEST `Auto` members instead.
-        //
-        // Gated on the chapter actually holding an include, deliberately.
-        // Unconditionally re-choosing which photo a starved chapter strands
-        // would change books that have no overrides in them at all, and this
-        // feature has no business doing that.
-        let seatable = slots_left.saturating_mul(largest);
-        if members.len() > seatable && members.iter().any(|&i| wanted(i)) {
-            let mut droppable: Vec<usize> =
-                members.iter().copied().filter(|&i| !wanted(i)).collect();
-            droppable.sort_by(weakest_first);
-            let dropped: std::collections::BTreeSet<usize> =
-                droppable.into_iter().take(members.len() - seatable).collect();
-            members.retain(|i| !dropped.contains(i));
-        }
 
         let mut i = 0;
         while i < members.len() && slots_left > 0 {
@@ -580,18 +558,198 @@ fn merge_sub_spread_chapters(
     out
 }
 
-/// How many spread slots each chapter may cut groups from, given the whole
-/// book's budget. `counts` is per chapter in chronological (cluster id)
-/// order; the return is the same length and order.
+/// The slot bounds a chapter would occupy if it were given `k` slots.
 ///
-/// Each chapter has two figures that bound its share:
+/// Which slots those are follows from the chapter's position, because
+/// `pack` hands slots out in chapter order:
 ///
-/// * **`need = count / largest`, rounded up** -- the fewest slots that can
-///   hold all its photos. Below this the chapter silently drops photos, with
-///   no blank spread anywhere to show for it. That is the same failure this
-///   whole module exists to remove, so `need` is a FLOOR, not a preference.
-/// * **`cap = count / smallest`** -- the most slots it could possibly fill.
+/// * the FIRST chapter's run starts at slot 0, the right-hand opening page;
+/// * the LAST chapter's run ends at the left-hand closing page -- but only
+///   when the book fills (`full`). When the photos run out before the last
+///   slot, its run ends on a spread and the closing page is never reached;
+/// * every other chapter sits wholly in the spread region.
+///
+/// Position matters because the kinds differ: a single page holds one photo
+/// at the least where a spread holds two, and on the real library the
+/// opening page holds five at the most, the closing page four, a spread six.
+/// Sizing a chapter against a book-wide floor of one was how a chapter of
+/// eight photos came to be handed five spread slots that between them need
+/// ten -- `docs/PROJECT-STATUS.md` open item 12.
+fn chapter_slot_bounds(
+    chapter: usize,
+    chapters: usize,
+    k: usize,
+    slots: usize,
+    full: bool,
+    b: &Buildable,
+) -> Vec<(usize, usize)> {
+    let k = k.min(slots);
+    if chapter == 0 {
+        (0..k).map(|i| b.bounds_at(i, slots)).collect()
+    } else if chapter + 1 == chapters && full {
+        (slots - k..slots).map(|i| b.bounds_at(i, slots)).collect()
+    } else {
+        // Spreads only. Index 1 is a spread in any book of three or more
+        // slots; the degenerate smaller books have no middle chapter.
+        let spread = bounds_of(&b.spread);
+        vec![spread; k]
+    }
+}
+
+/// The MOST slots a chapter of `count` photos can fill, every one of them
+/// with at least its smallest group. One more and a slot comes out blank.
+fn most_slots(
+    count: usize,
+    chapter: usize,
+    chapters: usize,
+    slots: usize,
+    full: bool,
+    b: &Buildable,
+) -> usize {
+    (1..=slots)
+        .take_while(|&k| {
+            chapter_slot_bounds(chapter, chapters, k, slots, full, b)
+                .iter()
+                .map(|&(lo, _)| lo)
+                .sum::<usize>()
+                <= count
+        })
+        .count()
+}
+
+/// The FEWEST slots that hold `count` photos, each at its largest. One fewer
+/// and a photo has nowhere to go.
+fn fewest_slots(
+    count: usize,
+    chapter: usize,
+    chapters: usize,
+    slots: usize,
+    full: bool,
+    b: &Buildable,
+) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    (1..=slots)
+        .find(|&k| {
+            chapter_slot_bounds(chapter, chapters, k, slots, full, b)
+                .iter()
+                .map(|&(_, hi)| hi)
+                .sum::<usize>()
+                >= count
+        })
+        .unwrap_or(slots)
+}
+
+/// Folds chapters together until the slots can seat every photo and, when
+/// there are enough photos to fill the book, until every slot can be filled.
+///
+/// "A group never spans two chapters" protects the reader from a chapter
+/// boundary falling in the middle of a spread. It is a rule about how the
+/// book READS, and it was being paid for twice over:
+///
+/// * **in photos.** 26 chapters of two or three into 11 slots kept 11 of
+///   them and silently dropped the other 15 chapters whole; eight chapters of
+///   eight into the same 11 slots -- 64 photos, one over a 63-photo book --
+///   each needed two slots, got one, and stranded their tails.
+/// * **in blank pages.** 20 photos in chapters of 8, 8 and 4 can fill only
+///   ten of the eleven slots while every chapter keeps its own spreads, so
+///   the closing page printed white with a photo count that fills the book
+///   exactly. The first thing the first real-photo run complained about was
+///   pages left blank for no visible reason.
+///
+/// The clusters are the engine's own time-gap guess, not something the user
+/// drew, and both a lost photograph and an unexplained white page are worse
+/// than a chapter boundary landing mid-spread. So two adjacent chapters are
+/// folded into one -- adjacent only, so chronology is preserved -- while
+/// either holds:
+///
+/// 1. the chapters between them NEED more slots than the book has (a photo
+///    would be stranded), choosing the fold that leaves the fewest slots
+///    needed in total;
+/// 2. the chapters between them CAN FILL fewer slots than the book has while
+///    the photos could fill every one of them (a slot would print white),
+///    choosing the fold that leaves the most slots fillable.
+///
+/// Ties go to the smaller resulting chapter, then the earlier one. Folding
+/// the smallest chapter into its smaller neighbour was tried first and
+/// over-folded badly: twelve chapters of two under a largest group of three
+/// fold pairwise into fours that need two slots each -- no saving at all --
+/// and it kept folding down to five chapters, when folding one two into ONE
+/// neighbour already fits. Nothing is folded when the slots already suffice,
+/// which keeps every book that fitted before packed exactly as before.
+fn merge_chapters_the_slots_cannot_seat(
+    mut chapters: std::collections::BTreeMap<u32, Vec<usize>>,
+    slots: usize,
+    b: &Buildable,
+) -> std::collections::BTreeMap<u32, Vec<usize>> {
+    // Both figures are measured against a FULL book throughout, deliberately:
+    // a book whose chapters need more slots than exist is full by definition,
+    // and the second rule only fires when the photos could fill it.
+    let total_need = |counts: &[usize]| -> usize {
+        let n = counts.len();
+        (0..n).map(|j| fewest_slots(counts[j], j, n, slots, true, b)).sum()
+    };
+    let total_cap = |counts: &[usize]| -> usize {
+        let n = counts.len();
+        (0..n).map(|j| most_slots(counts[j], j, n, slots, true, b)).sum()
+    };
+    let fewest_to_fill: usize = (0..slots).map(|i| b.bounds_at(i, slots).0).sum();
+    loop {
+        let n = chapters.len();
+        let counts: Vec<usize> = chapters.values().map(Vec::len).collect();
+        let total: usize = counts.iter().sum();
+        let stranding = total_need(&counts) > slots;
+        let blanking = total >= fewest_to_fill && total_cap(&counts) < slots;
+        if n <= 1 || !(stranding || blanking) {
+            return chapters;
+        }
+        let best = (0..n - 1)
+            .map(|j| {
+                let mut folded = counts.clone();
+                folded[j] += folded.remove(j + 1);
+                let score = if stranding {
+                    total_need(&folded)
+                } else {
+                    slots.saturating_sub(total_cap(&folded))
+                };
+                (score, folded[j], j)
+            })
+            .min()
+            .map(|(_, _, j)| j);
+        let Some(j) = best else {
+            return chapters;
+        };
+        let keys: Vec<u32> = chapters.keys().copied().collect();
+        let mut moved = chapters.remove(&keys[j + 1]).unwrap_or_default();
+        if let Some(target) = chapters.get_mut(&keys[j]) {
+            target.append(&mut moved);
+        }
+    }
+}
+
+/// How many slots each chapter may cut groups from, given the whole book's
+/// budget. `counts` is per chapter in chronological (cluster id) order; the
+/// return is the same length and order.
+///
+/// Each chapter has two figures that bound its share, both measured against
+/// the KINDS of slot it would actually occupy (`chapter_slot_bounds`):
+///
+/// * **`need`** (`fewest_slots`) -- the fewest slots that can hold all its
+///   photos. Below this the chapter silently drops photos, with no blank
+///   spread anywhere to show for it. That is the same failure this whole
+///   module exists to remove, so `need` is a FLOOR, not a preference.
+/// * **`cap`** (`most_slots`) -- the most slots it could possibly fill.
 ///   Above this the surplus slots can only come out blank.
+///
+/// Whether the book FILLS decides which slots the last chapter ends on, and
+/// that is settled first: if the chapters' caps measured against a full book
+/// cover every slot, every slot is handed out and the last chapter really
+/// does close on the left-hand page. If they do not, the photos run out
+/// before the closing page and the last chapter is measured against spreads
+/// alone -- otherwise it is credited with a one-photo closing slot it will
+/// never reach, handed one slot too many, and strands a photo at a spread it
+/// cannot build.
 ///
 /// Three passes, all deterministic and all independent of the input slice's
 /// ordering (they see only per-chapter counts, in cluster order):
@@ -599,13 +757,13 @@ fn merge_sub_spread_chapters(
 /// 1. **One slot each, longest chapter first.** A chapter with no slot does
 ///    not appear in the book at all -- a group never spans chapters, so
 ///    there is no way for its photos to ride along in someone else's group.
-///    Losing a chapter outright is a worse outcome than a crowded one, so
-///    representation is bought before proportionality. When there are more
-///    chapters than slots not every chapter can be represented; the longest
-///    ones win, which is the same rule the over-capacity trim already uses
-///    (keep the most, drop the least).
+///    `merge_chapters_the_slots_cannot_seat` has already made sure there are
+///    no more chapters than slots, so this pass always completes; the
+///    ordering is kept so the rule is total if that ever stops being true.
 /// 2. **Every chapter up to its `need`**, before any chapter is given a slot
-///    it merely *wants*. Whenever the budget can seat every photo, it does.
+///    it merely *wants*. The merge above guarantees `sum(need) <= slots`, so
+///    every chapter reaches its need and no photo is stranded for want of a
+///    slot.
 /// 3. **Highest averages (D'Hondt) for whatever is left over.** Each
 ///    remaining slot goes to whichever chapter would otherwise be the most
 ///    crowded -- the one with the largest `photos / (slots + 1)`. Repeated,
@@ -620,34 +778,34 @@ fn merge_sub_spread_chapters(
 /// Ties go to the earlier chapter, which is arbitrary but total; nothing
 /// here may depend on iteration order.
 ///
-/// `wants` is how many photos in each chapter the user explicitly marked
-/// `Include`. It outranks every other consideration in both passes: a chapter
-/// with no slot does not appear in the book at all, so a chapter holding an
-/// explicit choice is represented before a longer one holding none, and it is
-/// brought up to the slots THOSE photos need before any chapter is given a
-/// slot for its automatic ones. With no overrides `wants` is all zeros and
-/// both rules are inert, which is what keeps books with no decisions in them
-/// packed exactly as before.
-fn apportion_slots(
-    counts: &[usize],
-    wants: &[usize],
-    slots: usize,
-    smallest: usize,
-    largest: usize,
-) -> Vec<usize> {
+/// The user's `Include` decisions do not appear here, and that is not an
+/// omission. `merge_chapters_the_slots_cannot_seat` runs first and guarantees
+/// `sum(need) <= slots`, so pass 2 brings EVERY chapter up to its need and no
+/// chapter -- with or without an explicit choice in it -- is ever starved of
+/// a slot. An earlier version ranked chapters holding an `Include` first in
+/// both passes; with starvation impossible that ranking could never change
+/// an outcome, and it was removed rather than kept as a guard no test could
+/// reach. `pace::assemble`'s post-condition remains the check that an
+/// `Include` reached the page.
+fn apportion_slots(counts: &[usize], slots: usize, b: &Buildable) -> Vec<usize> {
     let n = counts.len();
     let mut out = vec![0usize; n];
     if n == 0 || slots == 0 {
         return out;
     }
-    let caps: Vec<usize> = counts.iter().map(|&c| c / smallest.max(1)).collect();
-    let needs: Vec<usize> = counts.iter().map(|&c| c.div_ceil(largest.max(1))).collect();
-    let want_needs: Vec<usize> = wants.iter().map(|&c| c.div_ceil(largest.max(1))).collect();
+    let caps_if = |full: bool| -> Vec<usize> {
+        (0..n).map(|j| most_slots(counts[j], j, n, slots, full, b)).collect()
+    };
+    let mut caps = caps_if(true);
+    let full = caps.iter().sum::<usize>() >= slots;
+    if !full {
+        caps = caps_if(false);
+    }
+    let needs: Vec<usize> =
+        (0..n).map(|j| fewest_slots(counts[j], j, n, slots, full, b)).collect();
 
     let mut longest_first: Vec<usize> = (0..n).collect();
-    longest_first.sort_by(|&a, &b| {
-        (wants[b] > 0).cmp(&(wants[a] > 0)).then(counts[b].cmp(&counts[a])).then(a.cmp(&b))
-    });
+    longest_first.sort_by(|&a, &b| counts[b].cmp(&counts[a]).then(a.cmp(&b)));
     let mut left = slots;
     for &i in &longest_first {
         if left == 0 {
@@ -664,12 +822,10 @@ fn apportion_slots(
         // comparison is exact rather than float-rounded. `max_by` yields the
         // LAST maximum, so the tie-break is inverted to leave the earliest
         // chapter as the strict maximum.
-        let short_wanted = |i: usize| usize::from(out[i] < want_needs[i]);
         let short = |i: usize| usize::from(out[i] < needs[i]);
         let pick = (0..n).filter(|&i| out[i] < caps[i]).max_by(|&a, &b| {
-            short_wanted(a)
-                .cmp(&short_wanted(b))
-                .then(short(a).cmp(&short(b)))
+            short(a)
+                .cmp(&short(b))
                 .then((counts[a] * (out[b] + 1)).cmp(&(counts[b] * (out[a] + 1))))
                 .then(b.cmp(&a))
         });
@@ -904,8 +1060,10 @@ mod tests {
     /// group of one photo under a library declared to build only 2s and 3s.
     /// A fixture must not be able to build a size its own declaration denies.
     fn buildable_for(sizes: &[usize]) -> Buildable {
+        let singles: Vec<usize> = sizes.iter().copied().filter(|&s| s > 0).collect();
         Buildable {
-            single: sizes.iter().copied().filter(|&s| s > 0).collect(),
+            single_left: singles.clone(),
+            single_right: singles,
             spread: sizes.iter().copied().filter(|&s| s >= SPREAD_MIN_PHOTOS).collect(),
         }
     }
@@ -1023,60 +1181,44 @@ mod tests {
         assert_eq!(placed_paths(&photos, &groups).len(), 33);
     }
 
-    /// Capacity trimming is not the only way a photo disappears: a chapter
-    /// that is apportioned fewer slots than it needs strands the tail of
-    /// itself, with no blank spread anywhere to show for it. An explicit
-    /// choice must not be what gets stranded.
+    /// **Chapters that between them need more slots than the book has are
+    /// folded together, not starved.**
     ///
     /// Chapters of 31 and 2 with `buildable = {1,2,3}` sum to exactly the
-    /// 33-photo capacity, so nothing is trimmed for capacity at all -- but
-    /// `sum(need) = 11 + 1 = 12` exceeds the 11 slots, so chapter 1 is
-    /// apportioned 10 slots for 31 photos and must strand one. `/c0p030.jpg`
-    /// sorts last in its chapter, which is precisely the one the packer
-    /// reaches after its slots run out.
+    /// 33-photo capacity, so nothing is trimmed -- but chapter 0 alone needs
+    /// all 11 slots (right half of 3, nine spreads of 3, left half of 3), and
+    /// chapter 1 needs one more. Apportioning 10 to chapter 0 stranded
+    /// `/c0p030.jpg`, the last in path order, with no blank page to show for
+    /// it. Folding the two-photo chapter into its neighbour seats all 33.
+    ///
+    /// Mutation: with `merge_chapters_the_slots_cannot_seat` returning its
+    /// input unchanged, 32 are placed and `/c0p030.jpg` is the one missing.
     #[test]
-    fn pack_strands_an_auto_photo_rather_than_an_included_one_in_a_crowded_chapter() {
+    fn pack_folds_a_chapter_in_rather_than_stranding_a_photo_when_the_slots_run_short() {
         let mut photos: Vec<Photo> =
             (0..31).map(|i| photo(&format!("/c0p{i:03}.jpg"), 0, 50)).collect();
         photos.extend((0..2).map(|i| photo(&format!("/c1p{i:03}.jpg"), 1, 50)));
         let c = capacity_for(20, &sizes());
         assert_eq!(photos.len(), c.max_photos, "fixture: exactly at capacity, so nothing is trimmed");
 
-        let without = pack(&photos, &c, &buildable_for(&sizes()), &Overrides::new()).expect("no includes");
-        let stranded = placed_paths(&photos, &without);
-        assert!(
-            !stranded.contains(&"/c0p030.jpg".to_string()),
-            "fixture must actually strand this photo without an override, else the test is inert"
-        );
-
-        let groups = pack(&photos, &c, &buildable_for(&sizes()), &include(&["/c0p030.jpg"]))
-            .expect("one include is well inside capacity");
+        let groups = pack(&photos, &c, &buildable_for(&sizes()), &Overrides::new()).expect("no includes");
 
         let placed = placed_paths(&photos, &groups);
+        assert_eq!(placed.len(), 33, "every photo the book can hold is seated: {:?}", group_sizes(&groups));
         assert!(placed.contains(&"/c0p030.jpg".to_string()), "{placed:?}");
-        assert!(
-            placed.len() >= stranded.len(),
-            "seating the explicit choice must cost an Auto photo's place, never a slot: \
-             {} placed with the override, {} without",
-            placed.len(),
-            stranded.len()
-        );
     }
 
-    /// A chapter can be apportioned NO slot at all when there are more
-    /// chapters than slots -- pass 1 hands one slot each, longest first, and
-    /// runs out. Every photo in an unslotted chapter vanishes from the book.
+    /// **More chapters than slots loses no chapter.** Twelve two-photo
+    /// chapters into 11 slots used to drop the twelfth whole -- pass 1 of
+    /// `apportion_slots` handed one slot each, longest first, and ran out.
+    /// The smallest chapter is now folded into a chronological neighbour, so
+    /// all 24 photos are placed and the folded pair land in ONE group beside
+    /// the chapter that absorbed them rather than scattered.
     ///
-    /// Twelve TWO-photo chapters into 11 slots: without an override the last
-    /// chapter loses (ties go to the earlier chapter), so the photos the user
-    /// asked for are exactly the ones the engine would have thrown away.
-    ///
-    /// Two photos per chapter rather than one, because a spread slot can no
-    /// longer be cut to a single photo -- a one-photo chapter is now dropped
-    /// wherever it lands but the closing single, which would make the fixture
-    /// measure that instead of apportionment.
+    /// Mutation: with the fold disabled, 22 are placed and `/p11a.jpg`,
+    /// `/p11b.jpg` are the ones missing.
     #[test]
-    fn pack_gives_a_slot_to_a_chapter_whose_photo_the_user_asked_for() {
+    fn pack_folds_chapters_together_rather_than_dropping_one_when_they_outnumber_the_slots() {
         let photos: Vec<Photo> = (0..12)
             .flat_map(|i| {
                 [photo(&format!("/p{i:02}a.jpg"), i, 50), photo(&format!("/p{i:02}b.jpg"), i, 50)]
@@ -1084,34 +1226,42 @@ mod tests {
             .collect();
         let c = capacity_for(20, &sizes());
 
-        let without = pack(&photos, &c, &buildable_for(&sizes()), &Overrides::new()).expect("no includes");
-        assert!(
-            !placed_paths(&photos, &without).contains(&"/p11a.jpg".to_string()),
-            "fixture must lose this chapter without an override, else the test is inert"
-        );
+        let groups = pack(&photos, &c, &buildable_for(&sizes()), &Overrides::new()).expect("no includes");
 
-        let groups = pack(&photos, &c, &buildable_for(&sizes()), &include(&["/p11a.jpg"])).expect("one include");
-
-        assert!(
-            placed_paths(&photos, &groups).contains(&"/p11a.jpg".to_string()),
-            "the chapter holding an explicit choice must be represented: {:?}",
-            placed_paths(&photos, &groups)
+        assert_eq!(placed_paths(&photos, &groups).len(), 24, "{:?}", by_path(&photos, &groups));
+        assert_eq!(groups.len(), 11, "one group per slot");
+        let folded = groups
+            .iter()
+            .find(|g| g.photos.iter().any(|&i| photos[i].path == "/p00a.jpg"))
+            .expect("the first chapter is placed");
+        let mut members: Vec<&str> = folded.photos.iter().map(|&i| photos[i].path.as_str()).collect();
+        members.sort_unstable();
+        assert_eq!(
+            members,
+            vec!["/p00a.jpg", "/p00b.jpg", "/p01a.jpg"],
+            "the smallest chapter folds into its chronological neighbour, and the two are cut as one chapter"
         );
     }
 
-    /// An empty override map must leave the packer's output byte-identical to
-    /// what it produced before overrides existed. Asserted against a fixture
-    /// that exercises the trim, several chapters and the density swing at
-    /// once.
+    /// Overrides reach `pack` through exactly one door: the capacity trim,
+    /// which refuses to discard an `Include`. Everything after the trim --
+    /// merging, apportionment, cutting -- sees only per-chapter counts, so an
+    /// override that changes nothing about WHICH photos survive the trim
+    /// cannot change the groups. Pinned by packing the same 60 photos with an
+    /// empty map and with every one of them marked `Include`.
     #[test]
-    fn pack_with_no_overrides_packs_exactly_as_before() {
+    fn pack_cuts_the_same_groups_whether_or_not_the_survivors_are_marked_include() {
         let photos: Vec<Photo> = (0..60)
             .map(|i| photo(&format!("/p{i:02}.jpg"), (i % 4) as u32, (i * 7 % 100) as u8))
             .collect();
         let c = capacity_for(20, &full());
-        let groups = pack(&photos, &c, &buildable_for(&full()), &Overrides::new()).expect("no includes");
+        let all: Overrides = photos.iter().map(|p| (p.hash.clone(), Override::Include)).collect();
 
-        assert_eq!(group_sizes(&groups), vec![4, 6, 5, 6, 4, 5, 4, 6, 5, 6, 6]);
+        let plain = pack(&photos, &c, &buildable_for(&full()), &Overrides::new()).expect("no includes");
+        let marked = pack(&photos, &c, &buildable_for(&full()), &all).expect("60 fit in 66");
+
+        assert_eq!(by_path(&photos, &plain), by_path(&photos, &marked));
+        assert_eq!(placed_paths(&photos, &plain).len(), 60);
     }
 
     /// A zero in `buildable` is malformed input (the validator forbids an
@@ -1434,13 +1584,13 @@ mod tests {
         assert_eq!(photos.len(), c.max_photos, "fixture: exactly at capacity, so nothing is trimmed");
 
         let groups = pack(&photos, &c, &buildable_for(&full()), &Overrides::new()).expect("the fixture must fit the included photos");
-        let chapters: std::collections::BTreeSet<u32> =
-            groups.iter().map(|g| g.event_cluster).collect();
-        assert_eq!(
-            chapters,
-            [1, 2, 3].into_iter().collect(),
-            "a chapter vanished from the book: sizes {:?}",
-            group_sizes(&groups)
+        let placed = placed_paths(&photos, &groups);
+        assert_eq!(placed.len(), 66, "a chapter vanished from the book: sizes {:?}", group_sizes(&groups));
+        assert!(placed.contains(&"/b0.jpg".to_string()) && placed.contains(&"/c2.jpg".to_string()));
+        assert!(
+            groups.iter().filter(|g| g.event_cluster == 1).count() < groups.len(),
+            "the first chapter must not take every slot: {:?}",
+            by_path(&photos, &groups)
         );
     }
 
@@ -1545,8 +1695,8 @@ mod tests {
         .expect("packs");
 
         assert_eq!(groups.len(), 11, "11 slots should yield 11 groups");
-        assert_eq!(groups[0].slot, SlotKind::Single, "group 0 fills the opening page");
-        assert_eq!(groups[10].slot, SlotKind::Single, "group 10 fills the closing page");
+        assert_eq!(groups[0].slot, SlotKind::Single(Side::Right), "group 0 fills the opening page");
+        assert_eq!(groups[10].slot, SlotKind::Single(Side::Left), "group 10 fills the closing page");
         for (i, g) in groups.iter().enumerate().take(10).skip(1) {
             assert_eq!(g.slot, SlotKind::Spread, "group {i} fills a spread");
         }
@@ -1608,7 +1758,7 @@ mod tests {
         );
         assert_eq!(
             groups[0].slot,
-            SlotKind::Single,
+            SlotKind::Single(Side::Right),
             "one photo belongs on the opening single page, the only slot that can hold it"
         );
     }
