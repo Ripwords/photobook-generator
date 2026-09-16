@@ -39,7 +39,7 @@
 //! list is cleared from the config before `.build()` so this doesn't
 //! actually flash a window on screen.
 
-use app_lib::commands::analyze_folder;
+use app_lib::commands::analyze_folders;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -116,7 +116,7 @@ fn main() {
         // starvation deadlock, not the progress events `analyze_folder`
         // emits alongside its final result.
         let join = tauri::async_runtime::spawn(async move {
-            analyze_folder(handle, fixture_dir, tauri::ipc::Channel::new(|_| Ok(()))).await
+            analyze_folders(handle, vec![fixture_dir], tauri::ipc::Channel::new(|_| Ok(()))).await
         });
         let result = tauri::async_runtime::block_on(join);
         let _ = tx.send((started.elapsed(), result));

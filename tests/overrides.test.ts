@@ -29,6 +29,10 @@ const { usePhotoOverrides, OVERRIDE_SETTLE_MS } = await import(
   "../app/composables/usePhotoOverrides"
 );
 
+/** The run every fixture set below came from; Rust refuses a mismatch. */
+const RUN_ID = 3;
+const runId = ref(RUN_ID);
+
 function photo(hash: string, kept: boolean): AnalyzedPhoto {
   return {
     status: "ok",
@@ -58,7 +62,7 @@ describe("usePhotoOverrides", () => {
 
   it("starts with the analysed set and no decisions", () => {
     const source = ref([photo("a", true), photo("b", false)]);
-    const { overrides, photos } = usePhotoOverrides(source);
+    const { overrides, photos } = usePhotoOverrides(source, runId);
 
     expect(overrides.value).toEqual({});
     expect(photos.value.map((p) => p.hash)).toEqual(["a", "b"]);
@@ -78,11 +82,12 @@ describe("usePhotoOverrides", () => {
   it("sends the decision to Rust and takes the verdict back from it", async () => {
     const source = ref([photo("a", true), photo("b", false)]);
     invoke.mockResolvedValue(paths("b"));
-    const { overrides, photos, setOverride } = usePhotoOverrides(source);
+    const { overrides, photos, setOverride } = usePhotoOverrides(source, runId);
 
     await setOverride("b", "exclude");
 
     expect(invoke).toHaveBeenCalledWith("apply_photo_overrides", {
+      runId: RUN_ID,
       overrides: { b: "exclude" },
     });
     expect(invoke).toHaveBeenCalledTimes(1);
@@ -102,24 +107,24 @@ describe("usePhotoOverrides", () => {
   it("uploads only the decisions, never the analysed records", async () => {
     const source = ref([photo("a", true), photo("b", false)]);
     invoke.mockResolvedValue(paths("a"));
-    const { setOverride } = usePhotoOverrides(source);
+    const { setOverride } = usePhotoOverrides(source, runId);
 
     await setOverride("b", "include");
 
     const [, payload] = invoke.mock.calls[0] as [string, Record<string, unknown>];
-    expect(Object.keys(payload)).toEqual(["overrides"]);
+    expect(Object.keys(payload).toSorted()).toEqual(["overrides", "runId"]);
   });
 
   it("returning a photo to auto sends a map with the decision removed", async () => {
     const source = ref([photo("a", true)]);
     invoke.mockResolvedValue(paths("a"));
-    const { overrides, setOverride } = usePhotoOverrides(source);
+    const { overrides, setOverride } = usePhotoOverrides(source, runId);
 
     await setOverride("a", "include");
     await setOverride("a", "auto");
 
     expect(overrides.value).toEqual({});
-    expect(invoke).toHaveBeenLastCalledWith("apply_photo_overrides", { overrides: {} });
+    expect(invoke).toHaveBeenLastCalledWith("apply_photo_overrides", { runId: RUN_ID, overrides: {} });
   });
 
   /**
@@ -130,7 +135,7 @@ describe("usePhotoOverrides", () => {
   it("reports a failed re-check rather than swallowing it", async () => {
     const source = ref([photo("a", true)]);
     invoke.mockRejectedValue(new Error("sidecar unavailable"));
-    const { overrides, error, busy, setOverride } = usePhotoOverrides(source);
+    const { overrides, error, busy, setOverride } = usePhotoOverrides(source, runId);
 
     await setOverride("a", "exclude");
 
@@ -156,7 +161,7 @@ describe("usePhotoOverrides", () => {
     invoke.mockImplementation(
       () => new Promise<string[]>((resolve) => resolvers.push(resolve)),
     );
-    const { photos, setOverride } = usePhotoOverrides(source);
+    const { photos, setOverride } = usePhotoOverrides(source, runId);
 
     vi.useFakeTimers();
     const first = setOverride("a", "exclude");
@@ -186,7 +191,7 @@ describe("usePhotoOverrides", () => {
   it("coalesces a burst of clicks into a single command", async () => {
     const source = ref([photo("a", true), photo("b", true), photo("c", true)]);
     invoke.mockResolvedValue(paths("a"));
-    const { setOverride } = usePhotoOverrides(source);
+    const { setOverride } = usePhotoOverrides(source, runId);
 
     vi.useFakeTimers();
     void setOverride("a", "exclude");
@@ -198,6 +203,7 @@ describe("usePhotoOverrides", () => {
 
     expect(invoke).toHaveBeenCalledTimes(1);
     expect(invoke).toHaveBeenCalledWith("apply_photo_overrides", {
+      runId: RUN_ID,
       overrides: { a: "exclude", b: "exclude", c: "include" },
     });
   });
@@ -211,7 +217,7 @@ describe("usePhotoOverrides", () => {
   it("forgets every decision when a different folder is analysed", async () => {
     const source = ref([photo("a", true)]);
     invoke.mockResolvedValue(paths("a"));
-    const { overrides, photos, setOverride } = usePhotoOverrides(source);
+    const { overrides, photos, setOverride } = usePhotoOverrides(source, runId);
     await setOverride("a", "exclude");
     expect(overrides.value).toEqual({ a: "exclude" });
 
@@ -235,7 +241,7 @@ describe("usePhotoOverrides", () => {
   it("bumps the photo-set identity once per analysis and never on a toggle", async () => {
     const source = ref([photo("a", true), photo("b", true)]);
     invoke.mockResolvedValue(paths("a"));
-    const { photoSetId, setOverride } = usePhotoOverrides(source);
+    const { photoSetId, setOverride } = usePhotoOverrides(source, runId);
     const afterFirstSet = photoSetId.value;
 
     await setOverride("a", "exclude");
@@ -259,11 +265,12 @@ describe("usePhotoOverrides", () => {
   it("restores a saved selection through the same Rust round trip", async () => {
     const source = ref([photo("a", true), photo("b", false)]);
     invoke.mockResolvedValue(paths("b"));
-    const { overrides, photos, restore } = usePhotoOverrides(source);
+    const { overrides, photos, restore } = usePhotoOverrides(source, runId);
 
     await restore({ a: "exclude", b: "include" });
 
     expect(invoke).toHaveBeenCalledWith("apply_photo_overrides", {
+      runId: RUN_ID,
       overrides: { a: "exclude", b: "include" },
     });
     expect(overrides.value).toEqual({ a: "exclude", b: "include" });
@@ -276,7 +283,7 @@ describe("usePhotoOverrides", () => {
   it("counts the decisions for display without recomputing the verdict", async () => {
     const source = ref([photo("a", true), photo("b", true), photo("c", true)]);
     invoke.mockResolvedValue(paths("a"));
-    const { includedCount, excludedCount, setOverride } = usePhotoOverrides(source);
+    const { includedCount, excludedCount, setOverride } = usePhotoOverrides(source, runId);
 
     await setOverride("a", "include");
     await setOverride("b", "include");

@@ -31,12 +31,13 @@ export const OVERRIDE_SETTLE_MS = 120;
  * applying an answer, not deciding one -- the ranking, the cluster rule, the
  * capture-quality tie-break and the override semantics all stay in Rust.
  *
- * The command takes only the override map: the analysed set is cached in
- * `AppState` on the Rust side. Sending the records instead was ~2.5 KB per
- * photo each way, which is ~20 MB of round trip per click on a 1000-photo
- * folder.
+ * The command takes only the override map and the run id: the analysed set
+ * is cached in `AppState` on the Rust side. Sending the records instead was
+ * ~2.5 KB per photo each way, which is ~20 MB of round trip per click on a
+ * 1000-photo folder. The run id is what makes that cache safe to answer
+ * from -- Rust refuses to judge a set other than the one this screen shows.
  */
-export function usePhotoOverrides(source: Ref<AnalyzedPhoto[]>) {
+export function usePhotoOverrides(source: Ref<AnalyzedPhoto[]>, runId: Ref<number>) {
   const overrides = ref<PhotoOverrides>({});
   /** The analysed records carrying Rust's latest verdict in `kept`. */
   const photos = ref<AnalyzedPhoto[]>([]) as Ref<AnalyzedPhoto[]>;
@@ -91,7 +92,10 @@ export function usePhotoOverrides(source: Ref<AnalyzedPhoto[]>) {
     error.value = null;
     try {
       const kept = new Set(
-        await invoke<string[]>("apply_photo_overrides", { overrides: overrides.value }),
+        await invoke<string[]>("apply_photo_overrides", {
+          runId: runId.value,
+          overrides: overrides.value,
+        }),
       );
       // A reply from a superseded click, or from a previous folder, must not
       // overwrite a newer verdict.

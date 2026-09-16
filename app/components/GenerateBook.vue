@@ -19,7 +19,8 @@ const {
   photos = [],
   overrides = {},
   photoSetId = 0,
-  folder = null,
+  runId = 0,
+  folders = [],
   openProjectId = null,
 } = defineProps<{
   /** The analysed photos, exactly as Rust sent them -- see `useBook`. Omitted when this is mounted to view a project opened from disk rather than a freshly analysed folder. */
@@ -32,22 +33,26 @@ const {
    * `photos`, whose array identity changes on every toggle.
    */
   photoSetId?: number;
-  folder?: string | null;
+  /** The analysis `photos` came from -- see `AnalysisSummary.runId`. */
+  runId?: number;
+  /** The folders the analysed set was drawn from, first picked first. */
+  folders?: string[];
   /** A saved project to load on mount, without analysing anything -- see `useBook`'s `openProject`. */
   openProjectId?: number | null;
 }>();
 
 const emit = defineEmits<{
   /** The user wants to edit a reopened project's photo selection: re-analyse its folder, then restore these decisions. */
-  editSelection: [payload: { sourceFolder: string; overrides: PhotoOverrides }];
+  editSelection: [payload: { sourceFolders: string[]; overrides: PhotoOverrides }];
 }>();
 
 // `toRef` rather than passing the props straight through: `useBook` holds
 // these across async command calls, and a plain value captured at setup time
 // would go stale the moment the user analyses a different folder.
 const photosRef = toRef(() => photos);
-const folderRef = toRef<string | null>(() => folder);
+const foldersRef = toRef(() => folders);
 const overridesRef = toRef(() => overrides);
+const runIdRef = toRef(() => runId);
 
 const {
   recommendation,
@@ -71,9 +76,9 @@ const {
   loadProjects,
   reset,
   reveal,
-} = useBook(photosRef, folderRef, overridesRef);
+} = useBook(photosRef, foldersRef, overridesRef, runIdRef);
 
-const name = ref(defaultProjectName(folder ?? ""));
+const name = ref(defaultProjectName(folders[0] ?? ""));
 /**
  * `null` only before the first recommendation arrives -- the watcher below
  * seeds it with the recommended length, so the control is never rendered
@@ -159,7 +164,7 @@ watch(
     // and its export report. Carrying any of them across would leave an
     // "Export" button wired to a book that is no longer on screen.
     reset();
-    name.value = defaultProjectName(folder ?? "");
+    name.value = defaultProjectName(folders[0] ?? "");
     chosenPages.value = null;
     if (canGenerate.value) void refreshRecommendation();
   },
@@ -306,7 +311,7 @@ onMounted(() => {
             Reopening a project restores its decisions, but they cannot be
             EDITED without the photos they refer to -- and a saved project is
             deliberately reopened without re-running Vision. This re-analyses
-            the project's own folder (every photo is a features-cache hit, so
+            the project's own folders (every photo is a features-cache hit, so
             no Vision work) and hands the decisions back to the contact sheet.
           -->
           <UButton
@@ -318,7 +323,7 @@ onMounted(() => {
             :disabled="busy"
             @click="
               emit('editSelection', {
-                sourceFolder: activeProject.sourceFolder,
+                sourceFolders: activeProject.sourceFolders,
                 overrides: activeProject.overrides,
               })
             "

@@ -12,7 +12,7 @@
 //! `sidecar_worker_pool.rs` and `cache_hit.rs` (see those files' doc
 //! comments for the full explanation of why `#[test]` cannot be used here).
 
-use app_lib::commands::analyze_folder;
+use app_lib::commands::analyze_folders;
 use tauri::ipc::{Channel, InvokeResponseBody};
 
 fn main() {
@@ -71,7 +71,7 @@ fn main() {
         Ok(())
     });
 
-    let summary = tauri::async_runtime::block_on(analyze_folder(handle, fixture_dir, on_event))
+    let summary = tauri::async_runtime::block_on(analyze_folders(handle, vec![fixture_dir], on_event))
         .expect("analyze_folder run failed");
 
     let _ = std::fs::remove_dir_all(&fake_home);

@@ -17,9 +17,17 @@ export function useAnalysis() {
   const stream = ref<StreamState>(initialStreamState);
   const running = ref(false);
   const error = ref<string | null>(null);
-  const folder = ref<string | null>(null);
+  /**
+   * The folders the set on screen was analysed from, first picked first.
+   * Several folders are one population: every photo is ranked against all of
+   * them, and photos from two folders shot the same afternoon fall into one
+   * event. That is deliberate -- a book is the union of what it draws from.
+   */
+  const folders = ref<string[]>([]);
 
   const summary = computed(() => stream.value.summary);
+  /** The run the set on screen came from -- see `AnalysisSummary.runId`. `0` before any analysis. */
+  const runId = computed(() => stream.value.summary?.runId ?? 0);
   const scannedTotal = computed(() => stream.value.scannedTotal);
   /** Cumulative count of photos accounted for so far (analysed + cached + failed), out of `scannedTotal`. */
   const processed = computed(
@@ -28,8 +36,9 @@ export function useAnalysis() {
   /** Partial photos in arrival order, for the growing grid while `running` is true. */
   const partialPhotos = computed(() => stream.value.partialPhotos);
 
-  async function analyze(path: string) {
-    folder.value = path;
+  async function analyze(paths: string[]) {
+    if (paths.length === 0) return;
+    folders.value = [...paths];
     running.value = true;
     error.value = null;
     stream.value = initialStreamState;
@@ -63,7 +72,10 @@ export function useAnalysis() {
       // *after* this `invoke` promise resolves. So both paths call
       // `applyAnalysisEvent` with a `done` event, and that reducer case
       // must be idempotent -- see the test in `tests/features.test.ts`.
-      const finalSummary = await invoke<AnalysisSummary>("analyze_folder", { folder: path, onEvent });
+      const finalSummary = await invoke<AnalysisSummary>("analyze_folders", {
+        folders: paths,
+        onEvent,
+      });
       stream.value = applyAnalysisEvent(stream.value, { kind: "done", summary: finalSummary });
     } catch (e) {
       error.value = String(e);
@@ -72,30 +84,33 @@ export function useAnalysis() {
     }
   }
 
+  /** Opens the picker for one or more folders. Their union is one analysed set. */
   async function pickFolderAndAnalyze() {
-    const picked = await open({ directory: true, multiple: false });
-    if (typeof picked !== "string") return;
-    await analyze(picked);
+    const picked = await open({ directory: true, multiple: true });
+    const paths = typeof picked === "string" ? [picked] : (picked ?? []);
+    if (paths.length === 0) return;
+    await analyze(paths);
   }
 
-  /** Re-runs analysis on the last picked folder, or opens the picker if none yet. */
+  /** Re-runs analysis on the last picked folders, or opens the picker if none yet. */
   async function retry() {
-    if (folder.value) {
-      await analyze(folder.value);
+    if (folders.value.length > 0) {
+      await analyze(folders.value);
     } else {
       await pickFolderAndAnalyze();
     }
   }
 
   return {
-    // Exposed so a reopened project can re-analyse its OWN folder without the
-    // user picking it again -- see `index.vue`'s "Edit the selection". Every
+    // Exposed so a reopened project can re-analyse its OWN folders without the
+    // user picking them again -- see `index.vue`'s "Edit the selection". Every
     // photo is a features-cache hit by then, so it costs no Vision work.
     analyze,
     summary,
+    runId,
     running,
     error,
-    folder,
+    folders,
     scannedTotal,
     processed,
     partialPhotos,

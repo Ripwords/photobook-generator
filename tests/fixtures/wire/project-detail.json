@@ -2,6 +2,9 @@
   "id": 7,
   "name": "Japan 2026",
   "sourceFolder": "/Users/jj/Pictures/Japan",
+  "sourceFolders": [
+    "/Users/jj/Pictures/Japan"
+  ],
   "createdAt": 1755100000,
   "updatedAt": 1755103600,
   "pageCount": 20,

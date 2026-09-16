@@ -47,10 +47,12 @@ exists so that error is easy to diagnose.
 
 ## Using the app
 
-1. **Choose a photo folder.** Every supported image in it and in its subfolders is analysed
-   on this Mac (nothing leaves the machine). The contact sheet shows every photo, ranked
-   within the folder, with the ones the book would leave out dimmed. Use **+** and **−** on a
-   photo to include or exclude it yourself.
+1. **Choose one or more photo folders.** Every supported image in them and in their
+   subfolders is analysed on this Mac (nothing leaves the machine). Several folders are one
+   set: every photo is ranked against all the others, and photos shot the same afternoon
+   fall into one event whichever folder they came from. The contact sheet shows every photo
+   with the ones the book would leave out dimmed. Use **+** and **−** on a photo to include or
+   exclude it yourself.
 2. **Pick a length and generate.** The app recommends the shortest Pixajoy length that fits
    the keepers and says how many each length would leave out. Generating saves the book as a
    project, so it survives quitting; saved books are listed on the home screen.

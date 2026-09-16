@@ -36,7 +36,7 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
 pub fn run() {
     builder()
         .invoke_handler(tauri::generate_handler![
-            commands::analyze_folder,
+            commands::analyze_folders,
             commands::apply_photo_overrides,
             commands::recommend_book,
             commands::generate_book,

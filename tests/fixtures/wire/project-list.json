@@ -3,6 +3,9 @@
     "id": 7,
     "name": "Japan 2026",
     "sourceFolder": "/Users/jj/Pictures/Japan",
+    "sourceFolders": [
+      "/Users/jj/Pictures/Japan"
+    ],
     "pageCount": 20,
     "photoCount": 24,
     "createdAt": 1755100000,
@@ -18,6 +21,9 @@
     "id": 8,
     "name": "Kyoto draft",
     "sourceFolder": "/Users/jj/Pictures/Kyoto",
+    "sourceFolders": [
+      "/Users/jj/Pictures/Kyoto"
+    ],
     "pageCount": 40,
     "photoCount": 54,
     "createdAt": 1755200000,

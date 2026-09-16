@@ -39,7 +39,7 @@ import type { AnalyzedPhoto, PhotoOverrides } from "~/types/features";
  */
 export function useBook(
   photos: Ref<AnalyzedPhoto[]>,
-  folder: Ref<string | null>,
+  folders: Ref<string[]>,
   /**
    * The user's own include/exclude decisions. Sent with BOTH commands:
    * `recommend_book` so the length chooser can say a length cannot hold every
@@ -47,6 +47,8 @@ export function useBook(
    * finally gives the decisions somewhere durable to live.
    */
   overrides: Ref<PhotoOverrides>,
+  /** The analysis the photos came from -- see `AnalysisSummary.runId`. */
+  runId: Ref<number>,
 ) {
   const recommendation = ref<BookRecommendation | null>(null);
   const generated = ref<GeneratedBook | null>(null);
@@ -125,13 +127,14 @@ export function useBook(
       // feature records to answer "how many keepers now?" is what made the
       // toggle unusable on a real folder.
       recommendation.value = await invoke<BookRecommendation>("recommend_book", {
+        runId: runId.value,
         overrides: overrides.value,
       });
     });
   }
 
   async function generate(name: string, pages: number) {
-    if (!folder.value) return;
+    if (folders.value.length === 0) return;
     await guard(async () => {
       // Generation SAVES: the returned id is a row that already exists, so
       // quitting here cannot lose the book.
@@ -139,7 +142,7 @@ export function useBook(
         photos: photos.value,
         pages,
         name,
-        sourceFolder: folder.value,
+        sourceFolders: folders.value,
         overrides: overrides.value,
       });
       // Supersedes anything previously opened from disk -- see

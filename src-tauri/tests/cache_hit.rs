@@ -16,7 +16,7 @@
 //! `sidecar_worker_pool.rs` (see that file's doc comment for the full
 //! explanation of why `#[test]` cannot be used here).
 
-use app_lib::commands::analyze_folder;
+use app_lib::commands::analyze_folders;
 
 fn main() {
     // Redirect HOME so the sqlite cache and thumbnails dir land in a
@@ -63,9 +63,9 @@ fn main() {
     // A no-op streaming channel: this test only cares about the final
     // `AnalysisSummary`, not the progress events `analyze_folder` now emits
     // alongside it.
-    let first = tauri::async_runtime::block_on(analyze_folder(
+    let first = tauri::async_runtime::block_on(analyze_folders(
         handle.clone(),
-        fixture_dir_str.clone(),
+        vec![fixture_dir_str.clone()],
         tauri::ipc::Channel::new(|_| Ok(())),
     ))
     .expect("first analyze_folder run failed");
@@ -78,9 +78,9 @@ fn main() {
         "first run over an empty cache must have zero cache hits"
     );
 
-    let second = tauri::async_runtime::block_on(analyze_folder(
+    let second = tauri::async_runtime::block_on(analyze_folders(
         handle,
-        fixture_dir_str,
+        vec![fixture_dir_str],
         tauri::ipc::Channel::new(|_| Ok(())),
     ))
     .expect("second analyze_folder run failed");

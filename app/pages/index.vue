@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { lastExportedOn } from "~/types/book";
+import { folderListLabel, lastExportedOn } from "~/types/book";
 import {
-  basename,
   burstSizes,
   groupByEvent,
   keepers,
@@ -16,9 +15,10 @@ import {
 const {
   analyze,
   summary,
+  runId,
   running,
   error,
-  folder,
+  folders,
   scannedTotal,
   processed,
   partialPhotos,
@@ -48,7 +48,7 @@ const selectedProjectId = ref<number | null>(null);
 // analysis after picking a folder from the "entry" screen (while a project
 // was still selected) would keep showing that project's panel instead of the
 // newly analysed folder's results.
-watch(folder, () => {
+watch(folders, () => {
   selectedProjectId.value = null;
 });
 
@@ -78,7 +78,7 @@ const {
   error: overrideError,
   setOverride,
   restore,
-} = usePhotoOverrides(analysed);
+} = usePhotoOverrides(analysed, runId);
 
 const kept = computed(() => keepers(photos.value));
 
@@ -128,12 +128,12 @@ function onSetOverride(photo: AnalyzedPhoto, decision: PhotoOverride) {
  * different folder). `restore` therefore runs after it has resolved, never
  * before.
  */
-async function onEditSelection(payload: { sourceFolder: string; overrides: PhotoOverrides }) {
+async function onEditSelection(payload: { sourceFolders: string[]; overrides: PhotoOverrides }) {
   selectedProjectId.value = null;
-  await analyze(payload.sourceFolder);
+  await analyze(payload.sourceFolders);
   await restore(payload.overrides);
 }
-const folderLabel = computed(() => (folder.value ? basename(folder.value) : "the selected folder"));
+const folderLabel = computed(() => folderListLabel(folders.value));
 
 const gridClass = "grid grid-cols-[repeat(auto-fill,minmax(160px,1fr))] gap-3";
 
@@ -171,7 +171,7 @@ const remainingSkeletonCount = computed(() =>
           :disabled="running"
           @click="pickFolderAndAnalyze"
         >
-          Choose a different folder
+          Choose different folders
         </UButton>
         <UColorModeButton size="sm" />
       </div>
@@ -207,7 +207,10 @@ const remainingSkeletonCount = computed(() =>
             >
               <template #meta>
                 <span class="font-mono tabular-nums">{{ project.pageCount }}</span> pages ·
-                {{ basename(project.sourceFolder) }} ·
+                <span :title="project.sourceFolders.join('\n')">{{
+                  folderListLabel(project.sourceFolders)
+                }}</span>
+                ·
                 <template v-if="lastExportedOn(project)"
                   >exported {{ lastExportedOn(project) }}</template
                 >
@@ -219,11 +222,11 @@ const remainingSkeletonCount = computed(() =>
 
         <UEmpty
           icon="i-lucide-images"
-          title="Choose a photo folder to begin"
-          description="PhotobookGen analyzes every photo in a folder on this Mac: sharpness, faces, color palette, and Apple's aesthetic model. It groups burst shots and events, then ranks each photo against the rest of the folder so you can see what's worth printing."
+          title="Choose one or more photo folders to begin"
+          description="PhotobookGen analyzes every photo in the folders you pick, and in their subfolders, on this Mac: sharpness, faces, color palette, and Apple's aesthetic model. It groups burst shots and events, then ranks each photo against all the others so you can see what's worth printing."
           :actions="[
             {
-              label: 'Choose photo folder',
+              label: 'Choose photo folders',
               icon: 'i-lucide-folder-open',
               color: 'primary',
               loading: running,
@@ -283,7 +286,7 @@ const remainingSkeletonCount = computed(() =>
         :actions="[
           { label: 'Try again', icon: 'i-lucide-rotate-ccw', color: 'primary', onClick: retry },
           {
-            label: 'Choose a different folder',
+            label: 'Choose different folders',
             icon: 'i-lucide-folder-open',
             color: 'neutral',
             variant: 'outline',
@@ -297,10 +300,10 @@ const remainingSkeletonCount = computed(() =>
         v-else-if="state === 'no-images'"
         icon="i-lucide-image-off"
         title="No photos found"
-        description="This folder does not contain any supported image files. Choose a different folder to continue."
+        description="The folders you chose do not contain any supported image files. Choose different folders to continue."
         :actions="[
           {
-            label: 'Choose a different folder',
+            label: 'Choose different folders',
             icon: 'i-lucide-folder-open',
             color: 'primary',
             onClick: pickFolderAndAnalyze,
@@ -316,7 +319,7 @@ const remainingSkeletonCount = computed(() =>
         :description="`${summary.failed} of ${summary.total} files failed. They may be corrupted or in an unsupported format.`"
         :actions="[
           {
-            label: 'Choose a different folder',
+            label: 'Choose different folders',
             icon: 'i-lucide-folder-open',
             color: 'primary',
             onClick: pickFolderAndAnalyze,
@@ -355,7 +358,8 @@ const remainingSkeletonCount = computed(() =>
             />
           </div>
           <p class="text-xs text-muted">
-            Percentiles are ranked within this folder. Sparkle is aesthetic, focus is sharpness.
+            Percentiles are ranked across everything you chose. Sparkle is aesthetic, focus is
+            sharpness.
             Use + and &minus; on a photo to override what the engine chose.
           </p>
           <UAlert
@@ -378,11 +382,12 @@ const remainingSkeletonCount = computed(() =>
           along so `generate_book` can persist the decisions with the project.
         -->
         <GenerateBook
-          v-if="folder"
+          v-if="folders.length > 0"
           :photos
           :overrides
           :photo-set-id="photoSetId"
-          :folder
+          :run-id="runId"
+          :folders
           @edit-selection="onEditSelection"
         />
 
@@ -393,7 +398,7 @@ const remainingSkeletonCount = computed(() =>
           description="Every analyzed photo was flagged as a screenshot, document, or similar non-photo image, or was excluded by you."
           :actions="[
             {
-              label: 'Choose a different folder',
+              label: 'Choose different folders',
               icon: 'i-lucide-folder-open',
               color: 'primary',
               onClick: pickFolderAndAnalyze,

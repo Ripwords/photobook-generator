@@ -121,7 +121,10 @@ export interface ExportSummary {
 export interface ProjectListItem {
   id: number;
   name: string;
+  /** The first folder; the list's one-line label. */
   sourceFolder: string;
+  /** Every folder the book was analysed from, first one first. */
+  sourceFolders: string[];
   pageCount: number;
   photoCount: number;
   createdAt: number;
@@ -133,6 +136,8 @@ export interface ProjectDetail {
   id: number;
   name: string;
   sourceFolder: string;
+  /** Every folder the book was analysed from -- what "edit the selection" re-analyses. */
+  sourceFolders: string[];
   createdAt: number;
   updatedAt: number;
   pageCount: number;
@@ -444,4 +449,18 @@ export function defaultProjectName(folder: string): string {
   const trimmed = folder.replace(/\/+$/, "");
   const segments = trimmed.split("/");
   return segments[segments.length - 1] || "Untitled photobook";
+}
+
+/**
+ * The folders a book draws from, as one short label: the first folder's
+ * name, and how many more there are. Several folders are one population --
+ * every photo is ranked against all of them -- so the label says "and 2
+ * more", never lists them, which is what the tooltip is for.
+ */
+export function folderListLabel(folders: readonly string[]): string {
+  const [first, ...rest] = folders;
+  if (!first) return "the selected folders";
+  const name = defaultProjectName(first);
+  if (rest.length === 0) return name;
+  return `${name} and ${rest.length} more folder${rest.length === 1 ? "" : "s"}`;
 }

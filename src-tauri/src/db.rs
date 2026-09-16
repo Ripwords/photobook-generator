@@ -86,6 +86,12 @@ impl Db {
                  hash       TEXT NOT NULL,
                  state      TEXT NOT NULL,
                  PRIMARY KEY (project_id, hash)
+             );
+             CREATE TABLE IF NOT EXISTS project_folders (
+                 project_id INTEGER NOT NULL REFERENCES projects(id),
+                 position   INTEGER NOT NULL,
+                 path       TEXT NOT NULL,
+                 PRIMARY KEY (project_id, position)
              );",
         )
     }
@@ -139,17 +145,42 @@ impl Db {
         photo_hashes: &[String],
         overrides: &Overrides,
     ) -> rusqlite::Result<i64> {
+        self.save_project_in(name, &[source_folder.to_string()], book, photo_hashes, overrides)
+    }
+
+    /// As `save_project`, for a book drawn from several folders. The first
+    /// folder also lands in `projects.source_folder`, which the list reads
+    /// for its label and which every row saved before `project_folders`
+    /// existed relies on; the full list lives in `project_folders`, in the
+    /// order the user picked them.
+    pub fn save_project_in(
+        &self,
+        name: &str,
+        source_folders: &[String],
+        book: &Book,
+        photo_hashes: &[String],
+        overrides: &Overrides,
+    ) -> rusqlite::Result<i64> {
         let book_json = serde_json::to_string(book)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         let (page_count, photo_count) = project::book_counts(book);
+        let first = source_folders.first().cloned().unwrap_or_default();
 
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
             "INSERT INTO projects (name, source_folder, page_count, photo_count, book_json)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![name, source_folder, page_count, photo_count, book_json],
+            rusqlite::params![name, first, page_count, photo_count, book_json],
         )?;
         let id = tx.last_insert_rowid();
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO project_folders (project_id, position, path) VALUES (?1, ?2, ?3)",
+            )?;
+            for (position, path) in source_folders.iter().enumerate() {
+                stmt.execute(rusqlite::params![id, position as i64, path])?;
+            }
+        }
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO project_photos (project_id, position, hash) VALUES (?1, ?2, ?3)",
@@ -231,6 +262,8 @@ impl Db {
             })?
             .collect::<rusqlite::Result<Overrides>>()?;
 
+        let source_folders = self.project_folders(id, &source_folder)?;
+
         let mut stmt = self.conn.prepare(
             "SELECT output_dir, format, file_count, exported_at
              FROM project_exports WHERE project_id = ?1 ORDER BY exported_at ASC, id ASC",
@@ -249,6 +282,7 @@ impl Db {
             id,
             name,
             source_folder,
+            source_folders,
             created_at,
             updated_at,
             book,
@@ -258,18 +292,32 @@ impl Db {
         }))
     }
 
+    /// The folders a project was analysed from, in the order they were
+    /// picked. A row saved before `project_folders` existed has none, and its
+    /// one `source_folder` column IS the list.
+    fn project_folders(&self, id: i64, source_folder: &str) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM project_folders WHERE project_id = ?1 ORDER BY position ASC")?;
+        let folders = stmt
+            .query_map(rusqlite::params![id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(if folders.is_empty() { vec![source_folder.to_string()] } else { folders })
+    }
+
     /// Summaries for every saved project, newest-updated first.
     pub fn list_projects(&self) -> rusqlite::Result<Vec<ProjectSummary>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, source_folder, page_count, photo_count, created_at, updated_at
              FROM projects ORDER BY updated_at DESC",
         )?;
-        let summaries = stmt
+        let rows = stmt
             .query_map([], |row| {
                 Ok(ProjectSummary {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     source_folder: row.get(2)?,
+                    source_folders: Vec::new(),
                     page_count: row.get(3)?,
                     photo_count: row.get(4)?,
                     created_at: row.get(5)?,
@@ -277,7 +325,12 @@ impl Db {
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(summaries)
+        rows.into_iter()
+            .map(|mut summary| {
+                summary.source_folders = self.project_folders(summary.id, &summary.source_folder)?;
+                Ok(summary)
+            })
+            .collect()
     }
 
     /// Appends an export to a project's history. The persisted timestamp
@@ -325,7 +378,7 @@ impl Db {
     }
 
     /// Removes a project, every export row recorded against it, its photo
-    /// list and the user's overrides for it. All four deletes are explicit rather than relying on a
+    /// list, its folder list and the user's overrides for it. The deletes are explicit rather than relying on a
     /// foreign-key cascade (neither child table declares
     /// `ON DELETE CASCADE`) -- the child rows must go first, since
     /// `migrate()` turns `PRAGMA foreign_keys` on for this connection and
@@ -338,6 +391,7 @@ impl Db {
             "DELETE FROM project_photo_overrides WHERE project_id = ?1",
             rusqlite::params![id],
         )?;
+        self.conn.execute("DELETE FROM project_folders WHERE project_id = ?1", rusqlite::params![id])?;
         self.conn.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])?;
         Ok(())
     }
@@ -414,6 +468,37 @@ mod tests {
                 },
             ],
         }
+    }
+
+    /// A book drawn from several folders remembers all of them, in the order
+    /// they were picked; a row saved before `project_folders` existed still
+    /// reports its one folder as the list.
+    #[test]
+    fn a_project_remembers_every_folder_it_was_analysed_from_in_order() {
+        let db = Db::open_in_memory().unwrap();
+        let folders = vec!["/Users/j/Photos/kyoto".to_string(), "/Users/j/Phone/2026-05".to_string()];
+        let id = db
+            .save_project_in("Kyoto", &folders, &fixture_book(), &["h0".into()], &Overrides::new())
+            .unwrap();
+
+        let loaded = db.load_project(id).unwrap().unwrap();
+        assert_eq!(loaded.source_folders, folders);
+        assert_eq!(loaded.source_folder, "/Users/j/Photos/kyoto", "the first folder is the label");
+        let listed = db.list_projects().unwrap();
+        assert_eq!(listed[0].source_folders, folders);
+
+        // A row from before the folder table: delete its folder rows to
+        // stand in for a database that never had them.
+        db.conn.execute("DELETE FROM project_folders WHERE project_id = ?1", rusqlite::params![id]).unwrap();
+        let legacy = db.load_project(id).unwrap().unwrap();
+        assert_eq!(legacy.source_folders, vec!["/Users/j/Photos/kyoto".to_string()]);
+
+        db.delete_project(id).unwrap();
+        let left: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM project_folders WHERE project_id = ?1", rusqlite::params![id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     #[test]

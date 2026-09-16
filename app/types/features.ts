@@ -176,6 +176,12 @@ export interface FailedPhoto {
 export type PhotoRecord = AnalyzedPhoto | FailedPhoto;
 
 export interface AnalysisSummary {
+  /**
+   * Which analysis produced this set. Sent back with every command that
+   * answers from Rust's cached copy, so a question about the photos on
+   * screen can never be answered from a different folder's set.
+   */
+  runId: number;
   total: number;
   failed: number;
   cached: number;

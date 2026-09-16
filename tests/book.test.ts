@@ -5,6 +5,7 @@ import {
   applyExportEvent,
   blockingMessages,
   defaultProjectName,
+  folderListLabel,
   exportOutcome,
   generatedLabel,
   initialBookState,
@@ -393,6 +394,21 @@ describe("override toggling", () => {
     expect(toggledOverride("include", "exclude")).toBe("exclude");
     expect(toggledOverride("exclude", "include")).toBe("include");
     expect(toggledOverride("auto", "include")).toBe("include");
+  });
+});
+
+describe("folderListLabel", () => {
+  it("names one folder by its last segment", () => {
+    expect(folderListLabel(["/Users/jj/Pictures/Japan 2026"])).toBe("Japan 2026");
+  });
+
+  it("counts the rest rather than listing them", () => {
+    expect(folderListLabel(["/a/Japan", "/b/Phone"])).toBe("Japan and 1 more folder");
+    expect(folderListLabel(["/a/Japan", "/b/Phone", "/c/Drone"])).toBe("Japan and 2 more folders");
+  });
+
+  it("has a neutral label before anything is chosen", () => {
+    expect(folderListLabel([])).toBe("the selected folders");
   });
 });
 

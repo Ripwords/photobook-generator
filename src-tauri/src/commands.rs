@@ -41,20 +41,25 @@ pub fn is_apple_double(name: &str) -> bool {
     name.starts_with("._")
 }
 
-/// Every supported image under `folder`, recursively, sorted by path.
+/// Every supported image under any of `folders`, recursively, sorted by
+/// path and listed once even when one folder lies inside another.
 ///
 /// Recursive because real photo exports are nested -- a camera import is a
 /// tree of dated folders, and a scan that stopped at the top level analysed
-/// nothing and reported "no photos found" for a folder full of them.
+/// nothing and reported "no photos found" for a folder full of them. Several
+/// roots because a book is often two or three folders' worth (a trip across
+/// a phone and a camera), and the union is one population: every photo is
+/// ranked against all the others the book draws from.
 ///
 /// Two kinds of entry are skipped on purpose. Hidden directories (a leading
 /// `.`), because `.Trashes`, `.Spotlight-V100` and their kind on a memory
 /// card hold nothing the user meant to print. Directory SYMLINKS, because
 /// following them can loop forever; a symlinked file still counts, as it
-/// always did. An unreadable entry is logged and skipped rather than failing
-/// the whole scan, so one bad permission does not cost the rest of the tree.
-pub(crate) fn collect_photo_paths(folder: &Path) -> std::io::Result<Vec<String>> {
-    fn walk(dir: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
+/// always did. An unreadable entry inside a folder is logged and skipped
+/// rather than failing the whole scan; a root that cannot be read at all is
+/// an error, because a missing folder must not read as an empty one.
+pub(crate) fn collect_photo_paths(folders: &[String]) -> std::io::Result<Vec<String>> {
+    fn walk(dir: &Path, out: &mut BTreeSet<String>) -> std::io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let entry = match entry {
                 Ok(e) => e,
@@ -76,15 +81,16 @@ pub(crate) fn collect_photo_paths(folder: &Path) -> std::io::Result<Vec<String>>
                     }
                 }
             } else if path.is_file() && !is_apple_double(name) && supported_extension(name) {
-                out.push(path.to_string_lossy().into_owned());
+                out.insert(path.to_string_lossy().into_owned());
             }
         }
         Ok(())
     }
-    let mut paths = Vec::new();
-    walk(folder, &mut paths)?;
-    paths.sort();
-    Ok(paths)
+    let mut paths = BTreeSet::new();
+    for folder in folders {
+        walk(Path::new(folder), &mut paths)?;
+    }
+    Ok(paths.into_iter().collect())
 }
 
 /// Trims a user-supplied project name and rejects an effectively-empty one.
@@ -115,11 +121,27 @@ pub fn hash_file(path: &Path) -> std::io::Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// The photo set one `analyze_folders` run produced, and which run it was.
+///
+/// `run_id` is the identity check that used to be missing: the override
+/// toggle and the length chooser answer from this cache, and without the id
+/// a second analysis would silently answer questions about the set that was
+/// on screen from the set that replaced it -- keeper marks and the keeper
+/// count become those of a different folder while the generated book stays
+/// right, which is harder to notice, not easier. Every reader hands the id
+/// its own summary carried, and a mismatch is refused, never answered.
+#[derive(Default)]
+pub struct AnalysedSet {
+    /// `0` before any analysis has finished; never a real run's id.
+    pub run_id: u64,
+    pub photos: Vec<Photo>,
+}
+
 #[derive(Default)]
 pub struct AppState {
     pub pool: Mutex<SidecarPool>,
     /// The photo set the contact sheet is currently showing, parsed once at
-    /// the end of `analyze_folder`.
+    /// the end of `analyze_folders`, together with the run that produced it.
     ///
     /// **This exists to keep the override toggle cheap.** Without it, every
     /// click has to ship the whole analysed array up to Rust so the verdict
@@ -128,16 +150,17 @@ pub struct AppState {
     /// 2.5 KB per photo. A 1000-photo folder is then a ~10 MB upload per
     /// click, per command, which is not a slow feature, it is an unusable
     /// one. With the set cached here the toggle sends only the override map
-    /// and gets back a list of surviving paths: tens of KB either way,
-    /// independent of what a record carries.
-    ///
-    /// Lifetime is deliberately tied to the webview's own copy rather than
-    /// managed: both live in this process and both are lost together (a
-    /// reload clears `useAnalysis`'s summary at the same moment it would
-    /// invalidate this). So an empty cache means "nothing has been analysed
-    /// in this session", which the readers report rather than paper over --
-    /// silently answering from a stale set would judge the wrong photos.
-    pub photos: Mutex<Vec<Photo>>,
+    /// and gets back only the surviving paths.
+    pub analysed: Mutex<AnalysedSet>,
+    /// Minted once per `analyze_folders` call, before any work starts, so two
+    /// overlapping runs get distinct ids and the later one wins the cache.
+    runs: std::sync::atomic::AtomicU64,
+}
+
+impl AppState {
+    pub fn next_run_id(&self) -> u64 {
+        self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    }
 }
 
 /// Wire-compatible counterpart of `AnalyzedPhoto`/`AnalysisSummary` in
@@ -149,6 +172,9 @@ pub struct AppState {
 /// `app/types/features.ts` in the same change, and vice versa.
 #[derive(Serialize, Clone)]
 pub struct AnalysisSummary {
+    /// Which analysis produced this set. Handed back with every command
+    /// that answers from the cached photos -- see `AnalysedSet`.
+    pub run_id: u64,
     pub total: usize,
     pub failed: usize,
     pub cached: usize,
@@ -595,14 +621,18 @@ pub(crate) fn gather_chunked(
 }
 
 #[tauri::command]
-pub async fn analyze_folder(
+pub async fn analyze_folders(
     app: AppHandle,
-    folder: String,
+    folders: Vec<String>,
     on_event: Channel<AnalysisEvent>,
 ) -> Result<AnalysisSummary, String> {
     let started = Instant::now();
+    if folders.is_empty() {
+        return Err("choose at least one folder".into());
+    }
+    let run_id = app.state::<AppState>().next_run_id();
 
-    let paths = collect_photo_paths(Path::new(&folder)).map_err(|e| e.to_string())?;
+    let paths = collect_photo_paths(&folders).map_err(|e| e.to_string())?;
 
     // A send failure (e.g. the webview navigated away mid-run) must not fail
     // an analysis that would otherwise succeed -- logged and swallowed, same
@@ -725,14 +755,20 @@ pub async fn analyze_folder(
     // analysis, and `photos_from_records` reports the same failure loudly at
     // the point a book is actually generated.
     match photos_from_records(&ok) {
-        Ok(parsed) => match app.state::<AppState>().photos.lock() {
-            Ok(mut cache) => *cache = parsed,
+        Ok(parsed) => match app.state::<AppState>().analysed.lock() {
+            // A run that finished after a newer one started must not put the
+            // older set back; the newer run's summary is what the screen has.
+            Ok(mut cache) if cache.run_id < run_id => {
+                *cache = AnalysedSet { run_id, photos: parsed }
+            }
+            Ok(_) => {}
             Err(err) => log::warn!("photo cache is poisoned, overrides will be slow: {err}"),
         },
         Err(err) => log::warn!("cannot cache the analysed photo set: {err}"),
     }
 
     let summary = AnalysisSummary {
+        run_id,
         total: paths.len(),
         failed,
         cached,
@@ -869,7 +905,10 @@ pub struct ExportSummary {
 pub struct ProjectListItem {
     pub id: i64,
     pub name: String,
+    /// The first folder, kept for the list's one-line label and for every
+    /// row saved before books could draw from several.
     pub source_folder: String,
+    pub source_folders: Vec<String>,
     pub page_count: i64,
     pub photo_count: i64,
     pub created_at: i64,
@@ -885,6 +924,9 @@ pub struct ProjectDetail {
     pub id: i64,
     pub name: String,
     pub source_folder: String,
+    /// Every folder the book was analysed from, so "edit the selection" can
+    /// re-analyse exactly the set it was generated over.
+    pub source_folders: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
     pub page_count: usize,
@@ -1160,7 +1202,9 @@ pub(crate) fn expected_photo_count(book: &Book) -> usize {
 /// between them compiles).
 pub(crate) struct NewProject<'a> {
     pub name: &'a str,
-    pub source_folder: &'a str,
+    /// Every folder the book draws from, first one first. See
+    /// `Project::source_folders`.
+    pub source_folders: Vec<String>,
     pub pages: u32,
     pub seed: u64,
 }
@@ -1190,7 +1234,7 @@ pub(crate) fn generate_and_save(
     // `Project::photo_hashes`.
     let photo_hashes: Vec<String> = photos.iter().map(|p| p.hash.clone()).collect();
     let project_id = db
-        .save_project(meta.name, meta.source_folder, &book, &photo_hashes, overrides)
+        .save_project_in(meta.name, &meta.source_folders, &book, &photo_hashes, overrides)
         .map_err(|e| e.to_string())?;
     Ok(GeneratedBook {
         project_id,
@@ -1424,33 +1468,50 @@ pub(crate) fn kept_paths(photos: &[Photo], overrides: &Overrides) -> Vec<String>
     crate::book::cull::cull(photos, overrides).into_iter().map(|p| p.path).collect()
 }
 
-/// The analysed photo set cached by the last `analyze_folder` in this
-/// session, or an error naming the remedy.
-fn cached_photos(app: &AppHandle) -> Result<Vec<Photo>, String> {
+/// The analysed photo set cached by `analyze_folders` for run `run_id`, or
+/// an error naming the remedy -- including when the cache holds a DIFFERENT
+/// run, which is the collision that used to be answered silently.
+fn cached_photos(app: &AppHandle, run_id: u64) -> Result<Vec<Photo>, String> {
     let state = app.state::<AppState>();
-    let photos = state
-        .photos
+    let cache = state
+        .analysed
         .lock()
         .map_err(|e| format!("the analysed photo set is unreadable: {e}"))?;
-    if photos.is_empty() {
+    select_run(&cache, run_id).map(<[Photo]>::to_vec)
+}
+
+/// The identity check itself, kept pure so it can be tested without an
+/// `AppHandle`: the cached set answers only for the run that produced it.
+pub(crate) fn select_run(cache: &AnalysedSet, run_id: u64) -> Result<&[Photo], String> {
+    if cache.run_id == 0 || cache.photos.is_empty() {
         return Err("No analysed photos are loaded -- analyse a folder first.".into());
     }
-    Ok(photos.clone())
+    if cache.run_id != run_id {
+        return Err(
+            "The photos on screen come from a different analysis than the one loaded here. \
+             Analyse the folder again."
+                .into(),
+        );
+    }
+    Ok(&cache.photos)
 }
 
 #[tauri::command]
 pub async fn apply_photo_overrides(
     app: AppHandle,
+    run_id: u64,
     overrides: Overrides,
 ) -> Result<Vec<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || Ok(kept_paths(&cached_photos(&app)?, &overrides)))
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(kept_paths(&cached_photos(&app, run_id)?, &overrides))
+    })
         .await
         .map_err(|e| e.to_string())?
 }
 
 /// How long a book would be, and what each length costs.
 ///
-/// Reads the photo set cached by `analyze_folder` rather than taking it from
+/// Reads the photo set cached by `analyze_folders` rather than taking it from
 /// the webview: this is re-run on every override toggle, and re-uploading
 /// several megabytes of feature records to answer "how many keepers now?" is
 /// what made the toggle unusable on a real folder. `generate_book` still
@@ -1459,11 +1520,12 @@ pub async fn apply_photo_overrides(
 #[tauri::command]
 pub async fn recommend_book(
     app: AppHandle,
+    run_id: u64,
     overrides: Option<Overrides>,
 ) -> Result<BookRecommendation, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let lib = load_library(&app)?;
-        let parsed = cached_photos(&app)?;
+        let parsed = cached_photos(&app, run_id)?;
         Ok(recommend(&parsed, &lib, &overrides.unwrap_or_default()))
     })
     .await
@@ -1477,7 +1539,7 @@ pub async fn generate_book(
     photos: Vec<serde_json::Value>,
     pages: Option<u32>,
     name: String,
-    source_folder: String,
+    source_folders: Vec<String>,
     seed: Option<u64>,
     // `overrides` carries the user's own include/exclude decisions, held in
     // webview state from the moment they are made on the contact sheet until
@@ -1503,7 +1565,7 @@ pub async fn generate_book(
                 .unwrap_or(0)
         });
         let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
-        let meta = NewProject { name: &name, source_folder: &source_folder, pages, seed };
+        let meta = NewProject { name: &name, source_folders, pages, seed };
         generate_and_save(&db, &meta, &parsed, &lib, &weights, &overrides)
     })
     .await
@@ -1655,6 +1717,7 @@ pub async fn list_projects(app: AppHandle) -> Result<Vec<ProjectListItem>, Strin
                 id: summary.id,
                 name: summary.name,
                 source_folder: summary.source_folder,
+                source_folders: summary.source_folders,
                 page_count: summary.page_count,
                 photo_count: summary.photo_count,
                 created_at: summary.created_at,
@@ -1682,6 +1745,7 @@ pub(crate) fn project_detail(project: Project) -> ProjectDetail {
         id: project.id,
         name: project.name,
         source_folder: project.source_folder,
+        source_folders: project.source_folders,
         created_at: project.created_at,
         updated_at: project.updated_at,
         page_count: project.book.pages.len(),
@@ -1934,7 +1998,7 @@ mod tests {
             std::fs::write(root.join(rel), b"x").unwrap();
         }
 
-        let found = collect_photo_paths(root).unwrap();
+        let found = collect_photo_paths(&[root.to_string_lossy().into_owned()]).unwrap();
 
         let rel: Vec<String> = found
             .iter()
@@ -1955,7 +2019,7 @@ mod tests {
         std::fs::write(root.join("real/one.jpg"), b"x").unwrap();
         std::os::unix::fs::symlink(root, root.join("real/loop")).unwrap();
 
-        let found = collect_photo_paths(root).unwrap();
+        let found = collect_photo_paths(&[root.to_string_lossy().into_owned()]).unwrap();
 
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].ends_with("real/one.jpg"), "{found:?}");
@@ -1965,7 +2029,72 @@ mod tests {
     /// scan that reads as "no photos here".
     #[test]
     fn collect_photo_paths_reports_a_missing_folder() {
-        assert!(collect_photo_paths(Path::new("/nonexistent/pbg-scan-test")).is_err());
+        assert!(collect_photo_paths(&["/nonexistent/pbg-scan-test".to_string()]).is_err());
+    }
+
+    /// Several folders are one population: listed once each even when one
+    /// root sits inside another, and sorted across roots by path. A missing
+    /// SECOND folder still fails the scan -- a folder the user chose and
+    /// cannot be read must not quietly contribute nothing.
+    #[test]
+    fn collect_photo_paths_unions_several_folders_without_repeating_a_nested_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("a/inner")).unwrap();
+        std::fs::create_dir_all(root.join("b")).unwrap();
+        for rel in ["a/one.jpg", "a/inner/two.jpg", "b/three.jpg"] {
+            std::fs::write(root.join(rel), b"x").unwrap();
+        }
+        let folder = |rel: &str| root.join(rel).to_string_lossy().into_owned();
+
+        let found = collect_photo_paths(&[folder("b"), folder("a"), folder("a/inner")]).unwrap();
+
+        let rel: Vec<String> = found
+            .iter()
+            .map(|p| p.strip_prefix(&root.to_string_lossy().into_owned()).unwrap().trim_start_matches('/').to_string())
+            .collect();
+        assert_eq!(rel, vec!["a/inner/two.jpg", "a/one.jpg", "b/three.jpg"]);
+        assert!(collect_photo_paths(&[folder("a"), folder("missing")]).is_err());
+    }
+
+    /// The cached set answers ONLY the run that produced it. Before the id
+    /// existed, analysing a second folder made the override toggle judge the
+    /// first folder's screen against the second folder's photos, with no
+    /// error anywhere -- the keeper marks simply became another folder's.
+    #[test]
+    fn select_run_refuses_a_run_other_than_the_one_cached() {
+        let photo = Photo {
+            path: "/a.jpg".into(),
+            hash: "h".into(),
+            width: 4000,
+            height: 3000,
+            is_utility: false,
+            aesthetic_pct: 50,
+            sharpness_pct: 50,
+            near_dup_cluster: 0,
+            event_cluster: 0,
+            faces: Vec::new(),
+            face_area_fraction: 0.0,
+            saliency_box: None,
+            palette: Vec::new(),
+            capture_quality: None,
+            scene_tags: Vec::new(),
+            captured_at: None,
+        };
+        let cache = AnalysedSet { run_id: 4, photos: vec![photo] };
+
+        assert_eq!(select_run(&cache, 4).map(<[Photo]>::len), Ok(1));
+        let stale = select_run(&cache, 3).unwrap_err();
+        assert!(stale.contains("different analysis"), "{stale}");
+        let empty = select_run(&AnalysedSet::default(), 0).unwrap_err();
+        assert!(empty.contains("analyse a folder first"), "{empty}");
+    }
+
+    #[test]
+    fn run_ids_are_minted_in_order_and_never_zero() {
+        let state = AppState::default();
+        assert_eq!(state.next_run_id(), 1);
+        assert_eq!(state.next_run_id(), 2);
     }
 
     #[test]
@@ -3507,7 +3636,7 @@ mod tests {
         let lib = fixture_library();
         let photos = photos_from_records(&distinct_records(12)).unwrap();
 
-        let meta = NewProject { name: "Japan 2026", source_folder: "/photos", pages: 20, seed: 7 };
+        let meta = NewProject { name: "Japan 2026", source_folders: vec!["/photos".into()], pages: 20, seed: 7 };
         let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
 
         let loaded = db
@@ -3547,7 +3676,7 @@ mod tests {
         overrides.set(photos[3].hash.clone(), crate::book::cull::Override::Include);
         overrides.set(photos[9].hash.clone(), crate::book::cull::Override::Exclude);
 
-        let meta = NewProject { name: "Japan 2026", source_folder: "/photos", pages: 20, seed: 7 };
+        let meta = NewProject { name: "Japan 2026", source_folders: vec!["/photos".into()], pages: 20, seed: 7 };
         let generated =
             generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &overrides).unwrap();
 
@@ -3584,7 +3713,7 @@ mod tests {
         let mut overrides = Overrides::new();
         overrides.set(photos[3].hash.clone(), crate::book::cull::Override::Include);
         overrides.set(photos[9].hash.clone(), crate::book::cull::Override::Exclude);
-        let meta = NewProject { name: "Japan 2026", source_folder: "/photos", pages: 20, seed: 7 };
+        let meta = NewProject { name: "Japan 2026", source_folders: vec!["/photos".into()], pages: 20, seed: 7 };
         let generated =
             generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &overrides).unwrap();
 
@@ -3618,7 +3747,7 @@ mod tests {
             .map(|p| (p.hash.clone(), crate::book::cull::Override::Include))
             .collect();
 
-        let meta = NewProject { name: "Too many", source_folder: "/photos", pages: 20, seed: 7 };
+        let meta = NewProject { name: "Too many", source_folders: vec!["/photos".into()], pages: 20, seed: 7 };
         let err = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &overrides)
             .expect_err("a book that cannot hold every explicit choice must not be built");
 
@@ -3638,7 +3767,7 @@ mod tests {
         let lib = fixture_library();
         let photos = photos_from_records(&distinct_records(12)).unwrap();
 
-        let meta = NewProject { name: "Japan 2026", source_folder: "/photos", pages: 20, seed: 7 };
+        let meta = NewProject { name: "Japan 2026", source_folders: vec!["/photos".into()], pages: 20, seed: 7 };
         let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
 
         let listed = db.list_projects().unwrap();
@@ -3653,7 +3782,7 @@ mod tests {
         let lib = fixture_library();
         let photos = photos_from_records(&distinct_records(30)).unwrap();
 
-        let meta = NewProject { name: "b", source_folder: "/photos", pages: 40, seed: 3 };
+        let meta = NewProject { name: "b", source_folders: vec!["/photos".into()], pages: 40, seed: 3 };
         let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
 
         assert_eq!(generated.page_count, 40);
@@ -4075,6 +4204,7 @@ mod tests {
                 id: 7,
                 name: "Japan 2026".into(),
                 source_folder: "/Users/jj/Pictures/Japan".into(),
+                source_folders: vec!["/Users/jj/Pictures/Japan".into()],
                 page_count: 20,
                 photo_count: 24,
                 created_at: 1_755_100_000,
@@ -4090,6 +4220,7 @@ mod tests {
                 id: 8,
                 name: "Kyoto draft".into(),
                 source_folder: "/Users/jj/Pictures/Kyoto".into(),
+                source_folders: vec!["/Users/jj/Pictures/Kyoto".into()],
                 page_count: 40,
                 photo_count: 54,
                 created_at: 1_755_200_000,
@@ -4106,6 +4237,7 @@ mod tests {
             id: 7,
             name: "Japan 2026".into(),
             source_folder: "/Users/jj/Pictures/Japan".into(),
+            source_folders: vec!["/Users/jj/Pictures/Japan".into()],
             created_at: 1_755_100_000,
             updated_at: 1_755_103_600,
             page_count: 20,
@@ -4251,7 +4383,7 @@ mod tests {
             cache_records(&db, &records);
             let photos = photos_from_records(&records).unwrap();
             let meta =
-                NewProject { name: "Japan", source_folder: "/photos", pages: 20, seed: 11 };
+                NewProject { name: "Japan", source_folders: vec!["/photos".into()], pages: 20, seed: 11 };
             let generated =
                 generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
             let book = db.load_project(generated.project_id).unwrap().unwrap().book;
@@ -4280,7 +4412,7 @@ mod tests {
         let lib = fixture_library();
         let records = records_with_hashes_out_of_slice_order(12);
         let photos = photos_from_records(&records).unwrap();
-        let meta = NewProject { name: "b", source_folder: "/photos", pages: 20, seed: 2 };
+        let meta = NewProject { name: "b", source_folders: vec!["/photos".into()], pages: 20, seed: 2 };
 
         let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
 

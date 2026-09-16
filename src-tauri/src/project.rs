@@ -35,7 +35,13 @@ use serde::{Deserialize, Serialize};
 pub struct Project {
     pub id: i64,
     pub name: String,
+    /// The first of `source_folders`, kept as its own column for the list's
+    /// label and for rows saved before a book could draw from several.
     pub source_folder: String,
+    /// Every folder the book was analysed from, in the order the user picked
+    /// them. Re-analysing exactly this list is what "edit the selection" on a
+    /// reopened project does.
+    pub source_folders: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
     pub book: Book,
@@ -102,6 +108,7 @@ pub struct ProjectSummary {
     pub id: i64,
     pub name: String,
     pub source_folder: String,
+    pub source_folders: Vec<String>,
     pub page_count: i64,
     pub photo_count: i64,
     pub created_at: i64,
