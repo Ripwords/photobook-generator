@@ -4,10 +4,9 @@ import type { ProjectListItem } from "~/types/book";
 /**
  * The list of saved projects: every book that has ever been generated,
  * newest-updated first. This is the one place `list_projects`,
- * `delete_project` and `rename_project` are called from -- the home page's
- * "open a saved project" picker and `useBook`'s "Saved books" panel both read
- * from an instance of this rather than each keeping their own copy of the
- * same invoke calls.
+ * `delete_project` and `rename_project` are called from -- the library screen
+ * and `useBook` both read from an instance of this rather than each keeping
+ * their own copy of the same invoke calls.
  *
  * `busy`/`error` cover ONLY the calls made here (delete, rename, refresh) --
  * `useBook`'s own `busy`/`error` are a separate flag for generate/open/export,
@@ -39,6 +38,21 @@ export function useProjects() {
   }
 
   /**
+   * Refreshes the list, reporting a failure through `error` instead of
+   * throwing.
+   *
+   * `refresh` above stays raw on purpose: `useBook` calls it from inside its
+   * OWN `guard` after generating, deleting and exporting, and a swallowed
+   * exception there would report those as successes. Callers that only want
+   * the list, and have nowhere to catch, use this one -- otherwise a failing
+   * `list_projects` is an unhandled rejection that leaves a stale list on
+   * screen with nothing said.
+   */
+  async function reload() {
+    await guard(refresh);
+  }
+
+  /**
    * Deletes a saved project and refreshes the list. Irreversible: the
    * project's layout, include/exclude decisions and export history are gone
    * from the app, though the confirmation the caller shows before this runs
@@ -61,5 +75,5 @@ export function useProjects() {
     });
   }
 
-  return { projects, busy, error, refresh, deleteProject, renameProject };
+  return { projects, busy, error, refresh, reload, deleteProject, renameProject };
 }

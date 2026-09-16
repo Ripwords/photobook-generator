@@ -342,13 +342,15 @@ export const initialBookState: BookState = Object.freeze({
 /**
  * A book generated in this session supersedes any project opened from disk,
  * and its stale export report goes with it -- but the chosen output folder
- * is carried over, not cleared. Regenerating (picking a different page
- * length for the SAME analysed folder) is the one path that produces
- * several `GeneratedBook`s in a row without the user ever leaving the
- * "results" screen, and re-asking them to pick the output folder on every
- * regenerate would be a genuine regression, not a safety measure -- unlike
- * `outputDir` surviving a *project switch*, which is exactly the mixing this
- * feature exists to prevent (see `withOpenedProject` below).
+ * is carried over, not cleared.
+ *
+ * Carrying it is currently unobservable: generating navigates to the editor
+ * screen, which mounts its own `useBook` with no output folder chosen yet, so
+ * nothing survives a regenerate any more. It is kept because the alternative
+ * -- clearing it -- would be the wrong default the moment a caller does
+ * generate twice without remounting, and because `outputDir` surviving a
+ * *project switch* is the mixing this whole state machine exists to prevent
+ * (see `withOpenedProject` below), which is a different question.
  */
 export function withGeneratedBook(state: BookState, generated: GeneratedBook): BookState {
   return { generated, activeProject: null, exportResult: null, outputDir: state.outputDir };

@@ -8,6 +8,12 @@ import {
   type StreamState,
 } from "~/types/features";
 
+/** Opens the folder picker and returns what was chosen, without analysing it. */
+async function pickFolders(): Promise<string[]> {
+  const picked = await open({ directory: true, multiple: true });
+  return typeof picked === "string" ? [picked] : (picked ?? []);
+}
+
 export function useAnalysis() {
   // The whole streaming accumulation (partial photos, running counts, the
   // final summary) lives in one `StreamState`, updated by the pure
@@ -86,8 +92,7 @@ export function useAnalysis() {
 
   /** Opens the picker for one or more folders. Their union is one analysed set. */
   async function pickFolderAndAnalyze() {
-    const picked = await open({ directory: true, multiple: true });
-    const paths = typeof picked === "string" ? [picked] : (picked ?? []);
+    const paths = await pickFolders();
     if (paths.length === 0) return;
     await analyze(paths);
   }
@@ -103,8 +108,8 @@ export function useAnalysis() {
 
   return {
     // Exposed so a reopened project can re-analyse its OWN folders without the
-    // user picking them again -- see `index.vue`'s "Edit the selection". Every
-    // photo is a features-cache hit by then, so it costs no Vision work.
+    // user picking them again -- see `SelectPhotos.vue`'s mount. Every photo is
+    // a features-cache hit by then, so it costs no Vision work.
     analyze,
     summary,
     runId,
@@ -114,6 +119,10 @@ export function useAnalysis() {
     scannedTotal,
     processed,
     partialPhotos,
+    // Split out so navigation can move to the select screen the instant the
+    // picker resolves, rather than leaving the user on the library for the
+    // whole Vision pass.
+    pickFolders,
     pickFolderAndAnalyze,
     retry,
   };

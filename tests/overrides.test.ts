@@ -323,14 +323,26 @@ describe("GenerateBook's reset is keyed on the photo set, not the array", () => 
     expect(source).not.toMatch(/watch\(\s*\(\)\s*=>\s*photos\s*,/);
   });
 
-  /**
-   * The other half of "restored overrides are inert": `selectionLabel` is
-   * unit-tested above, but a project's decisions are only actually visible if
-   * the panel RENDERS it, and only editable if the button that re-analyses
-   * the folder exists. Same source-pin caveat as the watchers.
-   */
+});
+
+/**
+ * The other half of "restored overrides are inert": `selectionLabel` is
+ * unit-tested above, but a project's decisions are only actually visible if
+ * the screen RENDERS it, and only editable if the control that re-analyses
+ * the folders exists. Same source-pin caveat as the watchers above.
+ *
+ * Both live on `BookEditor.vue`, which is the screen a saved book opens into.
+ * They were on `GenerateBook.vue` until that component was split into the
+ * "pick a length and generate" panel and the editor screen.
+ */
+describe("the editor renders a project's restored selection and can edit it", () => {
+  const source = readFileSync(
+    fileURLToPath(new URL("../app/components/BookEditor.vue", import.meta.url)),
+    "utf-8",
+  );
+
   it("renders the restored selection and offers a way to edit it", () => {
     expect(source).toContain("restoredSelection");
-    expect(source).toMatch(/emit\(\s*["']editSelection["']/);
+    expect(source).toMatch(/emit\(\s*["']editPhotos["']/);
   });
 });

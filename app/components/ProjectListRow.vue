@@ -2,18 +2,13 @@
 import type { ProjectListItem } from "~/types/book";
 
 /**
- * One row in a saved-projects list, shared by `app/pages/index.vue`'s home
- * picker and `GenerateBook.vue`'s "Saved books" panel -- the two places
- * `list_projects` is rendered. Display of the metadata line differs between
- * the two callers (one shows "exported on <date>", the other the full
- * `lastExportLabel`), so that line is a slot rather than baked in here; what
- * IS shared is renaming and deleting, which behave identically everywhere a
- * project can be listed.
+ * One row in a saved-projects list. The metadata line is a slot rather than
+ * baked in here so a caller can show whatever part of the project it cares
+ * about; what IS shared is renaming and deleting, which behave identically
+ * everywhere a project can be listed.
  *
- * Deleting and renaming are emitted up rather than invoked here, because the
- * two callers need different state handling on success: `index.vue` has no
- * book state to worry about (its list is only ever shown before a project is
- * open), while `GenerateBook.vue` must route through `useBook`'s
+ * Deleting and renaming are emitted up rather than invoked here, because a
+ * caller holding book state must route them through `useBook`'s
  * `deleteProject`/`renameProject` so deleting the CURRENTLY OPEN project
  * clears it rather than leaving Export wired to a row that no longer exists.
  */
@@ -70,11 +65,38 @@ function confirmDelete() {
   confirmOpen.value = false;
   emit("delete", project.id);
 }
+
+/**
+ * A click anywhere on the row opens it, but not while the name field is live
+ * and not while another action is in flight.
+ *
+ * `editing` alone is not a sufficient guard. Clicking the row to dismiss the
+ * name field blurs it first, and that commits the rename and clears `editing`
+ * before the click ever lands, so a click meant to close an editor would
+ * navigate away from the list instead. `mousedown` runs before `blur`, which
+ * is the only moment the state is still true, and it re-reads on every press
+ * so it cannot go stale.
+ */
+const editingAtPress = ref(false);
+
+function notePress() {
+  editingAtPress.value = editing.value;
+}
+
+function openFromRow() {
+  if (editing.value || editingAtPress.value || busy) return;
+  emit("open", project.id);
+}
 </script>
 
 <template>
   <li
-    class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-lg border border-default px-3 py-2"
+    class="flex cursor-pointer flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-lg border border-default px-3 py-2 transition-colors hover:bg-elevated/50"
+    role="button"
+    tabindex="0"
+    @mousedown="notePress"
+    @click="openFromRow"
+    @keydown.enter="openFromRow"
   >
     <div class="min-w-0 flex-1 space-y-0.5">
       <UInput
@@ -91,7 +113,13 @@ function confirmDelete() {
       <p v-else class="truncate text-sm text-default">{{ project.name }}</p>
       <p class="text-xs text-muted"><slot name="meta" /></p>
     </div>
-    <div class="flex items-center gap-1">
+    <!--
+      Both handlers, not just `@click.stop`. Enter on a focused action button
+      bubbles a keydown to the row before the browser turns it into a click, so
+      without this Enter on the pencil or the trash opens the project instead of
+      renaming or deleting.
+    -->
+    <div class="flex items-center gap-1" @click.stop @keydown.enter.stop>
       <UButton
         icon="i-lucide-pencil"
         color="neutral"
@@ -120,26 +148,26 @@ function confirmDelete() {
       >
         Open
       </UButton>
-    </div>
 
-    <UModal v-model:open="confirmOpen" :title="`Delete “${project.name}”?`" :ui="{ footer: 'justify-end' }">
-      <template #body>
-        <div class="space-y-3 text-sm">
-          <p class="text-default">
-            This permanently deletes <span class="font-medium">{{ project.name }}</span
-            >'s page layout, your include/exclude decisions, and its export history from
-            PhotobookGen. This cannot be undone.
-          </p>
-          <p class="text-muted">
-            Files you already exported to disk are not touched, and the photo analysis cache is
-            kept -- reopening this folder later will not re-scan your photos.
-          </p>
-        </div>
-      </template>
-      <template #footer>
-        <UButton color="neutral" variant="outline" @click="confirmOpen = false">Cancel</UButton>
-        <UButton color="error" @click="confirmDelete">Delete photobook</UButton>
-      </template>
-    </UModal>
+      <UModal v-model:open="confirmOpen" :title="`Delete “${project.name}”?`" :ui="{ footer: 'justify-end' }">
+        <template #body>
+          <div class="space-y-3 text-sm">
+            <p class="text-default">
+              This permanently deletes <span class="font-medium">{{ project.name }}</span
+              >'s page layout, your include/exclude decisions, and its export history from
+              PhotobookGen. This cannot be undone.
+            </p>
+            <p class="text-muted">
+              Files you already exported to disk are not touched, and the photo analysis cache is
+              kept -- reopening this folder later will not re-scan your photos.
+            </p>
+          </div>
+        </template>
+        <template #footer>
+          <UButton color="neutral" variant="outline" @click="confirmOpen = false">Cancel</UButton>
+          <UButton color="error" @click="confirmDelete">Delete photobook</UButton>
+        </template>
+      </UModal>
+    </div>
   </li>
 </template>

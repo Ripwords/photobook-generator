@@ -36,19 +36,23 @@ import type { AnalyzedPhoto, PhotoOverrides } from "~/types/features";
  * hash of every photo it was assembled against, and export rebuilds the
  * slice from those -- so exporting works after a restart, and cannot be fed
  * a different photo set than the book was built from.
+ *
+ * All four parameters feed `recommend_book`/`generate_book` only, so the
+ * editor screen constructs this with none of them. It opens, previews, edits
+ * and exports a saved book, and never generates one.
  */
 export function useBook(
-  photos: Ref<AnalyzedPhoto[]>,
-  folders: Ref<string[]>,
+  photos: Ref<AnalyzedPhoto[]> = ref([]),
+  folders: Ref<string[]> = ref([]),
   /**
    * The user's own include/exclude decisions. Sent with BOTH commands:
    * `recommend_book` so the length chooser can say a length cannot hold every
    * photo they asked for, and `generate_book` because that call is what
    * finally gives the decisions somewhere durable to live.
    */
-  overrides: Ref<PhotoOverrides>,
+  overrides: Ref<PhotoOverrides> = ref({}),
   /** The analysis the photos came from -- see `AnalysisSummary.runId`. */
-  runId: Ref<number>,
+  runId: Ref<number> = ref(0),
 ) {
   const recommendation = ref<BookRecommendation | null>(null);
   const generated = ref<GeneratedBook | null>(null);
@@ -146,10 +150,13 @@ export function useBook(
         overrides: overrides.value,
       });
       // Supersedes anything previously opened from disk -- see
-      // `withGeneratedBook`'s doc comment. The current `outputDir` is
-      // threaded through deliberately: it survives a regenerate.
+      // `withGeneratedBook`'s doc comment.
+      //
+      // The layout is deliberately NOT loaded here. Generating navigates
+      // straight to the editor screen, which mounts a fresh `useBook` and
+      // opens the project itself, so fetching it here is a `book_layout` round
+      // trip whose result nothing renders before this instance is torn down.
       applyBookState(withGeneratedBook(currentBookState(), result));
-      await loadLayout(result.projectId);
       await loadProjects();
     });
   }

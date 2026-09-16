@@ -1,19 +1,13 @@
 <script setup lang="ts">
 import {
   defaultProjectName,
-  exportOutcome,
-  generatedLabel,
-  lastExportLabel,
   canGenerateAt,
   includeOverflowLabel,
   optionFor,
-  projectDetailLabel,
-  selectionLabel,
   recommendedOption,
-  revealTarget,
-  summarizeExport,
 } from "~/types/book";
 import type { AnalyzedPhoto, PhotoOverrides } from "~/types/features";
+import type { ReplacedProject } from "~/types/navigation";
 
 const {
   photos = [],
@@ -21,9 +15,9 @@ const {
   photoSetId = 0,
   runId = 0,
   folders = [],
-  openProjectId = null,
+  replacing = null,
 } = defineProps<{
-  /** The analysed photos, exactly as Rust sent them -- see `useBook`. Omitted when this is mounted to view a project opened from disk rather than a freshly analysed folder. */
+  /** The analysed photos, exactly as Rust sent them -- see `useBook`. */
   photos?: AnalyzedPhoto[];
   /** The user's own include/exclude decisions, persisted with the project by `generate_book`. */
   overrides?: PhotoOverrides;
@@ -37,13 +31,12 @@ const {
   runId?: number;
   /** The folders the analysed set was drawn from, first picked first. */
   folders?: string[];
-  /** A saved project to load on mount, without analysing anything -- see `useBook`'s `openProject`. */
-  openProjectId?: number | null;
+  /** The saved book this selection was re-opened from, and can be generated back over. */
+  replacing?: ReplacedProject | null;
 }>();
 
 const emit = defineEmits<{
-  /** The user wants to edit a reopened project's photo selection: re-analyse its folder, then restore these decisions. */
-  editSelection: [payload: { sourceFolders: string[]; overrides: PhotoOverrides }];
+  generated: [projectId: number];
 }>();
 
 // `toRef` rather than passing the props straight through: `useBook` holds
@@ -57,28 +50,15 @@ const runIdRef = toRef(() => runId);
 const {
   recommendation,
   generated,
-  activeProject,
-  exportResult,
-  layout,
-  progress,
-  projects,
-  outputDir,
   busy,
   error,
   refreshRecommendation,
   generate,
-  openProject,
   deleteProject,
-  renameProject,
-  pickOutputDir,
-  exportBook,
-  editBook,
-  loadProjects,
   reset,
-  reveal,
 } = useBook(photosRef, foldersRef, overridesRef, runIdRef);
 
-const name = ref(defaultProjectName(folders[0] ?? ""));
+const name = ref(replacing?.name ?? defaultProjectName(folders[0] ?? ""));
 /**
  * `null` only before the first recommendation arrives -- the watcher below
  * seeds it with the recommended length, so the control is never rendered
@@ -89,9 +69,8 @@ const chosenPages = ref<number | null>(null);
 
 /**
  * The "pick a length and generate" flow needs an analysed photo set to
- * recommend against -- it is hidden entirely (rather than rendered disabled)
- * when this component is showing a project opened straight from disk, since
- * there is nothing to regenerate it from.
+ * recommend against, so it is hidden entirely rather than rendered disabled
+ * when there is nothing to recommend over.
  */
 const canGenerate = computed(() => photos.length > 0);
 
@@ -120,31 +99,6 @@ const pageItems = computed(() =>
 const overflowMessage = computed(() =>
   chosenOption.value ? includeOverflowLabel(chosenOption.value) : null,
 );
-const counts = computed(() => (exportResult.value ? summarizeExport(exportResult.value) : null));
-const outcome = computed(() => (exportResult.value ? exportOutcome(exportResult.value) : null));
-const revealPath = computed(() => (exportResult.value ? revealTarget(exportResult.value) : null));
-const exportPercent = computed(() =>
-  progress.value.total > 0
-    ? Math.round((progress.value.completed / progress.value.total) * 100)
-    : 0,
-);
-/** The "Generated and saved" panel's heading: the loaded project's own name, or the name the user is generating one under. */
-const panelTitle = computed(() => activeProject.value?.name ?? name.value);
-/** The panel's subheading: the loaded project's counts and export history, or what THIS generation just produced. */
-/**
- * The decisions a reopened project was generated with, or `null`. Shown so
- * they are visible at all -- returning them over the wire and rendering
- * nothing is the same "persisted but unreachable" defect this feature exists
- * to fix.
- */
-const restoredSelection = computed(() =>
-  activeProject.value ? selectionLabel(activeProject.value) : null,
-);
-
-const panelSubtitle = computed(() => {
-  if (activeProject.value) return projectDetailLabel(activeProject.value);
-  return generated.value ? generatedLabel(generated.value) : "";
-});
 
 // A DIFFERENT ANALYSED SET -- not a different array.
 //
@@ -159,12 +113,12 @@ const panelSubtitle = computed(() => {
 watch(
   () => photoSetId,
   () => {
-    // Everything below belongs to the PREVIOUS folder (or opened project): a
-    // generated book, an opened project, the output directory chosen for it,
-    // and its export report. Carrying any of them across would leave an
-    // "Export" button wired to a book that is no longer on screen.
+    // Everything below belongs to the PREVIOUS folder: a generated book, the
+    // output directory chosen for it, and its export report. Carrying any of
+    // them across would leave an "Export" button wired to a book that is no
+    // longer on screen.
     reset();
-    name.value = defaultProjectName(folders[0] ?? "");
+    name.value = replacing?.name ?? defaultProjectName(folders[0] ?? "");
     chosenPages.value = null;
     if (canGenerate.value) void refreshRecommendation();
   },
@@ -189,18 +143,27 @@ watch(recommendation, (next) => {
   if (next && chosenPages.value === null) chosenPages.value = next.recommendedPages;
 });
 
-function onGenerate() {
+/**
+ * `generate_book` always INSERTs, so regenerating a re-edited selection leaves
+ * two rows with the same name unless the old one goes. `deleteProject` here is
+ * `useBook`'s, which routes through `withProjectDeleted`; the id being deleted
+ * is never the one just generated, so the book state is untouched.
+ *
+ * A failed delete is swallowed on purpose. We navigate regardless, and this
+ * screen unmounts in the same tick, so `useBook.error` never gets a frame to
+ * render in -- the user is left with a duplicate row in the library and no
+ * explanation. That is the deliberate trade: a duplicate is recoverable by
+ * deleting it, and a freshly generated book stranded behind an error alert is
+ * not.
+ */
+async function onGenerate(replace: boolean) {
   if (pages.value === null || overflowMessage.value !== null) return;
-  void generate(name.value, pages.value);
+  await generate(name.value, pages.value);
+  const projectId = generated.value?.projectId;
+  if (projectId === undefined) return;
+  if (replace && replacing) await deleteProject(replacing.id);
+  emit("generated", projectId);
 }
-
-onMounted(() => {
-  void loadProjects();
-  // Runs AFTER the `photos` watcher's `reset()` above (which fires
-  // synchronously during setup, before `onMounted`), so this is never
-  // clobbered by it.
-  if (openProjectId !== null) void openProject(openProjectId);
-});
 </script>
 
 <template>
@@ -220,16 +183,42 @@ onMounted(() => {
         />
       </UFormField>
 
+      <template v-if="replacing">
+        <UButton
+          icon="i-lucide-book-open"
+          color="primary"
+          :loading="busy"
+          :disabled="busy || !recommendation || overflowMessage !== null"
+          @click="onGenerate(true)"
+        >
+          Update &ldquo;{{ replacing.name }}&rdquo;
+        </UButton>
+        <UButton
+          icon="i-lucide-copy-plus"
+          color="neutral"
+          variant="outline"
+          :loading="busy"
+          :disabled="busy || !recommendation || overflowMessage !== null"
+          @click="onGenerate(false)"
+        >
+          Save as a new photobook
+        </UButton>
+      </template>
       <UButton
+        v-else
         icon="i-lucide-book-open"
         color="primary"
         :loading="busy"
         :disabled="busy || !recommendation || overflowMessage !== null"
-        @click="onGenerate"
+        @click="onGenerate(false)"
       >
         Generate book
       </UButton>
     </div>
+
+    <p v-if="canGenerate && replacing" class="text-xs text-muted">
+      Updating replaces the saved book and its export history. Saving as new keeps both.
+    </p>
 
     <!--
       The recommendation and its cost, stated before the user commits: a page
@@ -290,220 +279,5 @@ onMounted(() => {
       :description="error"
       :ui="{ description: 'break-words' }"
     />
-
-    <!--
-      Generated and saved, OR opened from disk -- either way the book
-      already survived a quit, and export works identically for both. See
-      `panelTitle`/`panelSubtitle` for which one is showing.
-    -->
-    <div v-if="generated || activeProject" class="space-y-4 rounded-lg border border-default p-4">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div class="space-y-1">
-          <h3 class="text-sm font-medium text-highlighted">{{ panelTitle }}</h3>
-          <p class="text-sm text-muted">{{ panelSubtitle }}</p>
-          <p v-if="restoredSelection" class="flex items-center gap-1.5 text-xs text-muted">
-            <UIcon name="i-lucide-hand" class="size-3 shrink-0" />
-            <span>{{ restoredSelection }}</span>
-          </p>
-        </div>
-        <div class="flex items-center gap-2">
-          <!--
-            Reopening a project restores its decisions, but they cannot be
-            EDITED without the photos they refer to -- and a saved project is
-            deliberately reopened without re-running Vision. This re-analyses
-            the project's own folders (every photo is a features-cache hit, so
-            no Vision work) and hands the decisions back to the contact sheet.
-          -->
-          <UButton
-            v-if="activeProject && restoredSelection"
-            icon="i-lucide-square-pen"
-            color="neutral"
-            variant="outline"
-            size="sm"
-            :disabled="busy"
-            @click="
-              emit('editSelection', {
-                sourceFolders: activeProject.sourceFolders,
-                overrides: activeProject.overrides,
-              })
-            "
-          >
-            Edit the selection
-          </UButton>
-          <UButton
-            icon="i-lucide-folder-output"
-            color="neutral"
-            variant="outline"
-            size="sm"
-            :disabled="busy"
-            @click="pickOutputDir"
-          >
-            {{ outputDir ? "Change output folder" : "Choose output folder" }}
-          </UButton>
-          <UButton
-            icon="i-lucide-download"
-            color="primary"
-            size="sm"
-            :loading="busy"
-            :disabled="busy || !outputDir"
-            @click="exportBook"
-          >
-            Export
-          </UButton>
-        </div>
-      </div>
-
-      <p v-if="outputDir" class="truncate text-xs text-muted">Exporting to {{ outputDir }}</p>
-      <p v-else class="text-xs text-muted">Choose where the print files should be written.</p>
-
-      <div v-if="progress.running" class="max-w-sm space-y-2">
-        <UProgress
-          color="primary"
-          size="sm"
-          :model-value="progress.completed"
-          :max="progress.total"
-        />
-        <p class="text-sm text-muted">
-          <span class="font-mono tabular-nums text-default">{{ progress.completed }}</span> /
-          <span class="font-mono tabular-nums text-default">{{ progress.total }}</span> photos
-          exported ({{ exportPercent }}%)
-        </p>
-      </div>
-    </div>
-
-    <!--
-      The book itself, spread by spread, as it will print, with the
-      spread-level controls: regenerate, reject, change layout, lock, shuffle,
-      and swapping two photos. Every control sends one `edit_book` and shows
-      what came back -- `useBook.editBook`. Rendered for a book generated in
-      this session AND for one reopened from disk, since both are saved
-      projects by the time `book_layout` reads them.
-    -->
-    <BookPreview v-if="layout" :layout :busy @edit="editBook" />
-
-    <!--
-      Pre-flight. Blocks and Warns are rendered as two separate lists from
-      two separate arrays, never one filtered list: they are not the same
-      kind of thing, and the difference between them is whether any file was
-      written at all.
-    -->
-    <div v-if="exportResult && counts" class="space-y-4">
-      <UAlert
-        v-if="outcome === 'blocked'"
-        icon="i-lucide-octagon-x"
-        color="error"
-        variant="subtle"
-        title="Nothing was exported"
-        description="Pre-flight found problems that would print badly. No files were written; fix these and export again."
-      />
-      <!--
-        `blocked: false` with nothing written is an export where every single
-        item failed. It is not a success and must not be dressed as one.
-      -->
-      <UAlert
-        v-else-if="outcome === 'failed'"
-        icon="i-lucide-triangle-alert"
-        color="error"
-        variant="subtle"
-        title="No files could be written"
-        description="Pre-flight passed, but every photo failed to export. The reasons are listed below."
-      />
-      <UAlert
-        v-else
-        :icon="outcome === 'partial' ? 'i-lucide-triangle-alert' : 'i-lucide-check'"
-        :color="outcome === 'partial' ? 'warning' : 'success'"
-        variant="subtle"
-        :title="`${counts.writtenCount} ${counts.writtenCount === 1 ? 'file' : 'files'} written to ${exportResult.outputDir}`"
-        :description="
-          exportResult.manifestError
-            ? `Format: ${exportResult.format}. The files are there, but manifest.json could not be written: ${exportResult.manifestError}`
-            : `Format: ${exportResult.format}. A manifest of what went where is in the same folder.`
-        "
-        :ui="{ description: 'break-words' }"
-        :actions="[
-          {
-            label: 'Reveal in Finder',
-            icon: 'i-lucide-folder-open',
-            color: 'neutral',
-            variant: 'outline',
-            onClick: () => revealPath && reveal(revealPath),
-          },
-        ]"
-      />
-
-      <div v-if="counts.blockingCount > 0" class="space-y-2">
-        <h4 class="flex items-center gap-2 text-sm font-medium text-highlighted">
-          <UIcon name="i-lucide-octagon-x" class="size-4 text-error" />
-          Blocking ({{ counts.blockingCount }})
-        </h4>
-        <ul class="space-y-1 text-sm text-muted">
-          <li v-for="(f, i) in exportResult.blocking" :key="`block-${i}`" class="break-words">
-            <span v-if="f.page > 0" class="font-mono tabular-nums text-default"
-              >p{{ f.page }}</span
-            >
-            {{ f.message }}
-          </li>
-        </ul>
-      </div>
-
-      <div v-if="counts.warningCount > 0" class="space-y-2">
-        <h4 class="flex items-center gap-2 text-sm font-medium text-highlighted">
-          <UIcon name="i-lucide-triangle-alert" class="size-4 text-warning" />
-          Warnings ({{ counts.warningCount }})
-        </h4>
-        <ul class="space-y-1 text-sm text-muted">
-          <li v-for="(f, i) in exportResult.warnings" :key="`warn-${i}`" class="break-words">
-            <span v-if="f.page > 0" class="font-mono tabular-nums text-default"
-              >p{{ f.page }}</span
-            >
-            {{ f.message }}
-          </li>
-        </ul>
-      </div>
-
-      <div v-if="counts.failedCount > 0" class="space-y-2">
-        <h4 class="text-sm font-medium text-highlighted">
-          Failed to write ({{ counts.failedCount }})
-        </h4>
-        <ul class="space-y-1 text-sm text-muted">
-          <li v-for="failure in exportResult.failures" :key="failure.filename" class="break-words">
-            <span class="font-mono text-default">{{ failure.filename }}</span>
-            {{ failure.message }}
-          </li>
-        </ul>
-      </div>
-    </div>
-
-    <!-- Saved books, with what each one last produced. -->
-    <div v-if="projects.length > 0" class="space-y-3 border-t border-default pt-6">
-      <h3 class="text-sm font-medium text-highlighted">Saved books</h3>
-      <ul class="space-y-2">
-        <!--
-          `@open` reopens a SAVED project without re-analysing anything: this
-          is what makes it possible to export a book from a previous session
-          without paying for another Vision pass over the same folder.
-          `@delete` routes through `useBook.deleteProject`, which clears
-          `generated`/`activeProject` through `withProjectDeleted` when the
-          project deleted is the one THIS panel is currently showing -- so
-          deleting it here can never leave the panel displayed or leave
-          Export still wired to it.
-        -->
-        <ProjectListRow
-          v-for="project in projects"
-          :key="project.id"
-          :project
-          :busy
-          @open="openProject"
-          @rename="renameProject"
-          @delete="deleteProject"
-        >
-          <template #meta>
-            <span class="font-mono tabular-nums">{{ project.pageCount }}</span> pages ·
-            <span class="font-mono tabular-nums">{{ project.photoCount }}</span> photos ·
-            {{ lastExportLabel(project) }}
-          </template>
-        </ProjectListRow>
-      </ul>
-    </div>
   </section>
 </template>
