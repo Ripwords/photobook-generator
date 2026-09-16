@@ -1,7 +1,7 @@
 # PhotobookGen — Project Status
 
-**Last updated:** 2026-08-15
-**Branch:** `feat/phase-2-completion` (not yet merged)
+**Last updated:** 2026-09-16
+**Branch:** `master`
 
 This document exists so a new agent can pick the project up without re-deriving what
 was already learned. Read it before touching code. The authoritative documents are:
@@ -21,6 +21,51 @@ are long but they are where the reasoning lives.
 
 **If you read only one section, read "Phase 2 open items" — every entry there is a real,
 deliberately-parked decision that this file is the only surviving record of.**
+
+---
+
+## What changed on 2026-09-16
+
+One session on `master`, nine commits, every suite green at the end (620 TypeScript, 439 Rust
+unit tests plus the sweep and five live-sidecar binaries, 130 Swift, lint and `nuxt generate`
+clean). In the order it happened:
+
+1. **The packer was redesigned, closing open items 12 and 14** (`23d757f`). `Buildable` is per
+   side (`single_left`, `single_right`), so the opening page is measured against right halves
+   and the closing page against left ones; `Capacity::from_library(20)` reads the true **63**,
+   not 64. `apportion_slots` measures each chapter's `need` and `cap` against the kinds of slot
+   it will actually occupy (`chapter_slot_bounds`) and settles whether the book fills before
+   crediting the last chapter with the closing page. New: `merge_chapters_the_slots_cannot_seat`
+   folds adjacent chapters while the slots cannot seat every photo, or cannot all be filled
+   although the photos could fill them — a third defect the sweep surfaced (26 tiny chapters
+   into 11 slots used to drop 15 chapters whole). The include-priority ranking in
+   `apportion_slots` and the `seatable` trim in `pack` were removed: with `sum(need) <= slots`
+   guaranteed, neither could change an outcome. **Measured with the new
+   `src-tauri/tests/pack_sweep.rs`** (real library, 20 pages, 10..=65 keepers, four chapter
+   shapes, three seeds, 672 books): photos lost **2640 -> 36** (all 36 at 64 and 65 keepers,
+   above capacity), blank pages **894 -> 840**, every remaining blank page in a book with
+   fewer photos than the slots' minimum fill. The sweep asserts both properties and a
+   blank-page ceiling, and takes ~24 s; it is the instrument to run after any packer change.
+   Golden `book-20.json` moved 24 -> 25 placed, 6 -> 5 dropped (the overflow on page 1 is gone).
+2. **Open item 13 closed** (`2bd4e66`): `tests/templates.test.ts` fails on a slot overlapping
+   a text zone.
+3. **The scan walks subfolders** (`847243f`), skipping hidden directories and directory
+   symlinks. The live-sidecar tests analyse an isolated top-level copy of the fixtures because
+   the walk now reaches `sidecar/Fixtures/hostile/` (`693a78d`).
+4. **Phase 3 is built** (`b8fa700`): `book::edit` and the `edit_book` command. See "Phase 3:
+   spread-level controls" below.
+5. **A browser harness** (`574df3c`): `bun run ui:mock` serves the webview with the Tauri bridge
+   stubbed from the wire fixtures, so a UI change can be rasterised and driven with a browser
+   automation tool. The spread controls were verified that way — selection ring, swap alert, the
+   swap exchanging two photo indices, the locked badge with the other controls disabled, the
+   layout menu — not only by tests.
+6. **Several folders are one analysed set, and the `AppState` collision is fixed** (`a84ba97`).
+   See "Multiple source folders" below; the old "Requested, not yet specced" section is gone.
+7. `no-explicit-any` is a lint error; the dead `Sidecar::benchmark` is removed (`4e69085`).
+
+**Still not done, and not fakeable:** the real-photo run and Pixajoy upload (see "The
+outstanding verification"). Nothing in this session changed that. The four scoring terms still
+ship at weight `0.0`. Phases 4 and 5 are not built.
 
 ---
 
@@ -60,10 +105,9 @@ thumbnails, chapter dividers and burst-size badges.
 | Nuxt UI | `app/` | `pages/index.vue`, `components/PhotoTile.vue`, `composables/useAnalysis.ts`, `types/features.ts` |
 | Template library | `templates/` | Spread templates + validator at `tests/templates.test.ts`. Was 40 at end of Phase 1; **now 36** — see the Print geometry section. |
 
-**Test counts at last run (2026-08-15, end of `feat/phase-2-completion`):** 571 TypeScript,
-**413 Rust lib tests, 0 failed, 0 ignored** — the three that used to be ignored now run —
-plus 2 harness'd and 4 `harness = false` integration binaries, 130 Swift. All green, lint
-clean.
+**Test counts at last run (2026-09-16, `master`):** 620 TypeScript, **439 Rust lib tests, 0
+failed, 0 ignored**, plus the `pack_sweep` binary, 2 other harness'd and 4 `harness = false`
+integration binaries, 130 Swift. All green, lint clean.
 **Release build works:** `bun tauri build --bundles app` produces `PhotobookGen.app`.
 
 ### Unplanned additions beyond the plan
@@ -259,13 +303,11 @@ webview's own copy rather than managed: both live in this process, and a
 reload loses `useAnalysis`'s summary at the same moment it would invalidate
 the cache.
 
-*It is a single UNKEYED slot, and that is a real forward hazard.* It holds the
-last analysis only, and neither reader checks that it describes the set on
-screen. That is correct for today's one-folder-at-a-time UI and it breaks the
-moment there is more than one — silently, with the screen wrong and the
-generated book right. See **"Requested, not yet specced: multiple source
-folders"** for what collides, what the symptom looks like, and why widening
-the slot is not the fix.
+*It used to be a single UNKEYED slot, and that was a real forward hazard.*
+**Fixed 2026-09-16:** the cached set carries the `run_id` of the analysis that
+produced it, every reader hands back the id its own summary carried, and a
+mismatch is refused (`commands::select_run`). See **"Multiple source folders
+(built 2026-09-16)"** for the whole decision.
 
 **The contact sheet is not virtualized.** It renders every analysed photo so
 the include control has something to act on, but 500 photos is 500 tiles,
@@ -554,10 +596,14 @@ it.** A refusal is no longer invisible on any path. The related cosmetic error �
 doc attributing the `filter_map` to `from_features` rather than to its caller — was
 corrected at the same time.
 
-### 12. `apportion_slots` is slot-kind-blind, and it is the cause of the remaining blank pages
+### 12. `apportion_slots` is slot-kind-blind, and it is the cause of the remaining blank pages — **FIXED 2026-09-16**
 
-Added 2026-08-15. **This is the highest-value remaining follow-up in the project, and its
-mechanism is already known — do not re-derive it.**
+**Closed by `23d757f`**; see "What changed on 2026-09-16" for the measurement. `apportion_slots`
+now measures every chapter against the kinds of slot it will occupy, and chapters that
+cannot fill the slots between them are folded together. The history below is kept because
+the mechanism it describes is why the fix has the shape it has.
+
+Added 2026-08-15. **This was the highest-value remaining follow-up in the project.**
 
 `apportion_slots` divides the book-wide slot budget across chapters. To decide how many
 slots a chapter could possibly need it uses a floor taken from `Buildable::union_bounds()`,
@@ -593,7 +639,11 @@ and provably inert unless every candidate is already outside the band (measured:
 symptom is treated and the root cause is not.** Anyone attacking the blank pages is
 attacking the same floor.
 
-### 13. Nothing in the test suite checks a slot against a text zone
+### 13. Nothing in the test suite checks a slot against a text zone — **FIXED 2026-09-16**
+
+**Closed by `2bd4e66`**: `tests/templates.test.ts` now fails on any slot/text-zone overlap
+(mutation-checked by moving `20`'s first text zone onto a slot). The gutter-epsilon note at the
+end of this item is still open.
 
 Added 2026-08-15. There is **no overlap check between a template's photo slots and its
 `text_zones` anywhere in the suite** — not in `tests/templates.test.ts`, not in Rust.
@@ -608,7 +658,12 @@ Related, from the same review and deliberately left alone: template `20`'s four 
 exactly on `GUTTER_X0`/`GUTTER_X1` with zero margin, passing only via `clear_of_gutter`'s
 epsilon. A higher-precision re-derivation of the gutter constants would flip them.
 
-### 14. Photos are silently lost from ~41 keepers upward, and the UI reports zero dropped
+### 14. Photos are silently lost from ~41 keepers upward, and the UI reports zero dropped — **FIXED 2026-09-16**
+
+**Closed by `23d757f`**, with exactly the per-side single set this item prescribed: `single_left`
+and `single_right`, `Capacity` summing slot by slot, `max_photos` reading the true 63. The
+40..=64 table below is the pre-fix state; after the fix `tests/pack_sweep.rs` asserts that no
+photo is lost below capacity over 10..=65 keepers and four chapter shapes.
 
 Added 2026-08-15. **Read this before trusting any "every photo is placed" statement in this
 file.** It is a sibling of item 12, not the same defect: item 12 produces BLANK PAGES in
@@ -962,52 +1017,62 @@ implementing from the design doc alone.
 
 | Phase | Scope | Blocked on |
 |---|---|---|
-| **3** | Spread preview UI + spread-level controls (regenerate, swap, lock, reject) | Nothing — `best_spread` now takes a seed. But **read open item 3 first:** one global seed feeds every call, so re-rolling changes the whole book at once. "Regenerate THIS spread" needs a per-spread seed (`seed ^ spread_index`) mixed in at the call sites. |
-| **4** | Canvas editor: drag/resize/crop with snapping to the margin guides | Phase 3 |
-| **5** | AI SDK v7 + DeepSeek chat agent driving the layout tools | Phases 3-4 |
+| **3** | Spread preview UI + spread-level controls (regenerate, swap, lock, reject) | **Built 2026-09-16** — see "Phase 3: spread-level controls" below. |
+| **4** | Canvas editor: drag/resize/crop with snapping to the margin guides | Nothing. `geometry.rs`'s predicates are property-tested and travel on the wire (`PreviewGeometry`), `book::edit::swap` shows how an edit re-crops and re-checks, and `preflight_core` is pure and re-runnable per edit. A crop-drag inside a slot is the natural first step: it changes only `Placement::crop` and must still pass `rejects`. |
+| **5** | AI SDK v7 + DeepSeek chat agent driving the layout tools | Phase 4, an API key in the keychain (see "Build, run, test"), and the `buildAgentPayload()` privacy chokepoint the design specifies. `book::edit::BookEdit` is the tool surface the agent would drive. |
 
-### Requested, not yet specced: multiple source folders
+### Phase 3: spread-level controls (built 2026-09-16)
 
-The user has asked for the app to accept **more than one folder**. This is a design change,
-not a flag, and it should be specced alongside Phase 2 rather than bolted on. What it
-touches:
+`src-tauri/src/book/edit.rs` is the engine half, `edit_book` the one command, `BookPreview.vue`
+the UI. The unit of editing is the **opening** — page 1 alone, each pair of facing pages, the
+last page alone — numbered the way `toSpreads` draws them (`0 ..= S+1`), because a spread's two
+pages come from one template and cannot change separately.
 
-- **`analyze_folder(folder: String)`** becomes a list. The picker needs
-  `open({ directory: true, multiple: true })`, and the chunked gather needs to walk several
-  roots while still emitting one coherent progress stream.
-- **Population semantics.** `percentiles` ranks each photo against "the book". With several
-  folders the book is their union, so ranking across the union is correct — but that must be
-  a deliberate decision, not an accident of implementation, because it means adding a folder
-  silently rerankes every photo already on screen.
-- **Event clustering across roots.** `event_clusters` works on timestamps and does not care
-  about folders, so photos from two folders shot the same afternoon become one chapter. That
-  is probably right, but it is a behaviour worth confirming rather than assuming.
-- **Sort order.** `finalize_photos` sorts by path, which interleaves folders arbitrarily.
-  With multiple roots the sheet likely wants grouping by folder, or by capture time.
-- **Duplicates across folders** already resolve correctly — the cache is keyed by content
-  hash, so the same photo in two folders is analysed once.
-- **UI.** Photos probably need to show which folder they came from, and the empty and error
-  states currently assume a single `folder` string.
-- **`AppState.photos` is a single unkeyed slot, and it collides.** It caches the parsed
-  `Vec<Photo>` of the LAST `analyze_folder` (see "User-controlled selection"), and
-  `apply_photo_overrides` and `recommend_book` both answer from it with no check that it
-  describes the set the webview is showing. Analysing a second folder overwrites it. If
-  multiple folders are ever held on screen at once — or analysed sequentially without the
-  sheet being replaced — the override toggle judges **the wrong photo set**, and the symptom
-  is not an error: keeper marks and the keeper count simply become those of a different
-  folder, and `recommend_book` sizes the book against it too. The correct book is still
-  generated (`generate_book` takes the array from the webview, deliberately, so it does not
-  depend on this cache), which makes the divergence *harder* to notice, not easier — the
-  screen lies and the output is right. Fix it by keying the cache on the analysis it came
-  from — the folder list, or a run id minted per `analyze_folder` and passed back with every
-  override call — and rejecting a mismatch rather than answering from whatever is loaded.
-  **Do not simply widen the slot to a list; the bug is the missing identity check, not the
-  capacity.**
+| Edit | What it does | Refused when |
+|---|---|---|
+| `regenerate` | Lays the same photos out on the best template the opening has **not shown**. `best_spread`'s seed only breaks exact ties, so a fresh seed alone returns the same layout; excluding the current one is what makes the button browse. | locked; no alternative left (`NoAlternative`) |
+| `rejectTemplate` | Records the current template on the opening (`OpeningControls.rejected`), then regenerates. Checked first, so an opening with nowhere else to go keeps its template. | locked; no alternative |
+| `setTemplate` | Exactly the named template (a spread id, or `"<id>:left"`/`"<id>:right"` for a single page), and forgives a rejection of it. | locked; unknown; wrong photo count; every assignment breaks a hard constraint |
+| `setLocked` | Locked openings refuse every other edit and are skipped by shuffle. | never |
+| `shuffle` | `regenerate` over every unlocked opening; openings with no alternative are left alone. | never |
+| `swapPhotos` | Exchanges two placements anywhere in the book, re-crops both, and re-runs `score::rejects` on both **before** writing either. | same slot; missing slot; either opening locked; a face clipped / in the gutter / in the margin, or below `MIN_DPI` at the new slot |
 
-Nothing about the analysis pipeline blocks this; it is entirely a question of what "the
-book's population" means once there is more than one source — plus the one concrete
-collision noted above, which is the only place multi-folder support would break existing
-behaviour rather than merely extend it.
+`Book` gained `controls: BTreeMap<usize, OpeningControls>` (`locked`, `rejected`, `rerolls`),
+omitted from the JSON when empty, so the golden and every saved project are unchanged.
+`rerolls` feeds the per-opening seed (`opening_seed`) and is persisted so reopening a project and
+clicking again continues the sequence. `BookLayout` gained `openings` (locked, rejected,
+alternatives) so the buttons are disabled, not failing, when there is nothing to do.
+
+**Every write returns the whole `BookLayout`, never `{ok: true}`** — the design's rule 1, applied
+before the agent exists. `useBook.editBook` replaces the layout with what came back and never
+patches locally; a refused edit surfaces its reason and the screen still shows exactly the saved
+book. `tests/fixtures/wire/book-edits.json` pins the tagged shape from both sides.
+
+Not built here, on purpose: any change to `slot_rect` or `crop` by hand (that is Phase 4), and
+"regenerate the whole book with a new seed" — shuffle re-lays templates over fixed groups
+instead, because a fresh `assemble` would re-pack the groups and discard every lock.
+
+### Multiple source folders (built 2026-09-16)
+
+`analyze_folders(folders: Vec<String>)` replaces `analyze_folder`; the picker takes several
+folders. Decisions, each deliberate:
+
+- **The union is one population.** Percentiles rank every photo against all the others, and
+  time-gap event clustering does not care which folder a photo came from. A book is what it
+  draws from; adding a folder re-ranks everything on screen, and that is correct.
+- **Sort order is still by path**, which interleaves folders; the contact sheet groups by event,
+  so the interleave is only visible within an event.
+- **Duplicates across folders** were already handled by the hash-keyed cache; the walk lists a
+  path once even when one root sits inside another.
+- **Projects remember every folder** (`project_folders`, ordered). `projects.source_folder` keeps
+  the first for the list label and for rows saved before the table existed; `load_project` falls
+  back to it when a project has no folder rows. "Edit the selection" re-analyses exactly the
+  saved list. `sourceFolders` is on both project wire types and in both fixtures.
+- **The `AppState.photos` collision is fixed by identity, not capacity.** Every analysis mints a
+  `run_id` (never 0); `AnalysisSummary` carries it; `apply_photo_overrides` and `recommend_book`
+  hand it back; a mismatch is refused (`select_run`, pure and tested) rather than answered from
+  whatever set is cached. A run that finishes after a newer one started does not overwrite the
+  newer set.
 
 Also explicitly deferred:
 
@@ -1323,8 +1388,7 @@ beside it. The design calls for the OS keychain, read from Rust.
   `book::cull::cull` is the single authority and its verdict travels on the wire as
   `AnalyzedPhoto.kept`. See "One culling authority" above, and
   "User-controlled selection" for the include/exclude states layered on top of it.
-- `.oxlintrc.json` enables only `correctness` and `suspicious`, so `no-explicit-any` is
-  off and the "never use `any`" convention rests on discipline.
+- ~~`.oxlintrc.json` leaves `no-explicit-any` off.~~ **Enabled 2026-09-16** as an error.
 - No `typecheck` script; `nuxi typecheck` and `vue-tsc` both fail on environment issues.
 - Nothing pins the build to `aarch64-apple-darwin`. No universal config exists, so the
   constraint is not violated, but it is not enforced either.
@@ -1342,14 +1406,18 @@ beside it. The design calls for the OS keychain, read from Rust.
   check, and pass 2 decodes again). Hits PNGs, web-sized JPEGs and scans. Performance
   only, not correctness. Suggested guard: skip pass 2 when
   `min(sourceLongEdge, maxPixel) <= returnedLongEdge`.
-- `Sidecar::benchmark` and `ResponseResult::Benchmarked` (Rust) are dead code —
-  `scripts/benchmark.sh` drives the sidecar binary directly over stdin/stdout and never
-  goes through Rust.
+- `ResponseResult::Benchmarked` and `RequestKind::Benchmark` (Rust) have no Rust caller —
+  `scripts/benchmark.sh` drives the sidecar binary directly. They stay as the pin on the
+  Swift wire the script relies on; the unused `Sidecar::benchmark` method itself is gone.
 
 ---
 
 ## Immediate next steps
 
+0. **Run the app on a real folder and use the new controls.** Everything on 2026-09-16 was
+   verified by tests, the sweep and the browser harness with stubbed data — not in the packaged
+   app against real photographs. In particular: pick two folders at once, regenerate and swap
+   on a real spread, reopen the project and check the lock survived.
 1. **Generate a real book from your own photos and upload one page to Pixajoy.** This is
    the outstanding verification described above, and it is by far the highest-value thing
    remaining — it is the only thing that would turn "Phase 2 is internally verified" into
@@ -1364,10 +1432,14 @@ beside it. The design calls for the OS keychain, read from Rust.
    `feat/phase-2-completion` improves a book until this happens; it is a `weights.json` edit
    and a regenerate, no rebuild. Cheapest first move: `palette_harmony` down against
    `spread_diversity` up.
-4. **Then decide whether 45 white pages of 360 is acceptable** (open item 12). If it is not,
-   the fix is to make `apportion_slots` slot-kind-aware — the mechanism is written down, the
-   reason it was deferred is written down, and the number to beat is the pre-branch 6. Do it
-   with real photographs in front of you, not against fixtures.
+4. ~~Decide whether 45 white pages of 360 is acceptable (open item 12).~~ **Done 2026-09-16**:
+   every remaining blank page in the sweep is in a book with fewer photos than the slots'
+   minimum fill. What is worth judging on real photographs is the **chapter folding**: a book
+   whose chapters cannot fill the slots now folds adjacent chapters together rather than
+   printing a white page or dropping a photo, which puts a chapter boundary mid-spread. If
+   that reads badly, the knob is `merge_chapters_the_slots_cannot_seat`'s second rule.
+5. **Phase 4.** Start with a crop-drag inside a slot; the table under "What is NOT built" says
+   what it can lean on.
 
 Items 1 and 3 of the previous list are closed: the seed reaches `best_spread`, and the
 gutter-saliency penalty exists. Both have successor caveats — see open items 3 and 1.
