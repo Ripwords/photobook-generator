@@ -82,9 +82,8 @@ scripts/benchmark.sh sidecar/Fixtures --limit 20    # quick smoke test, no real 
 
 Flags:
 
-- `--recursive` — descend into subfolders (real photo exports are often nested; the app's
-  own folder scan is intentionally non-recursive today, see `docs/PROJECT-STATUS.md`'s
-  "known smaller debts", but this script isn't bound by that)
+- `--recursive` — descend into subfolders, as the app's own folder scan does (real photo
+  exports are often nested)
 - `--limit N` — only benchmark the first N matching files
 - `--thumbnails DIR` — also time the contact-sheet thumbnail write stage, writing into
   `DIR` (omit to skip that stage entirely, which is the default — most throughput

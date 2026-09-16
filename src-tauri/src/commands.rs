@@ -41,6 +41,52 @@ pub fn is_apple_double(name: &str) -> bool {
     name.starts_with("._")
 }
 
+/// Every supported image under `folder`, recursively, sorted by path.
+///
+/// Recursive because real photo exports are nested -- a camera import is a
+/// tree of dated folders, and a scan that stopped at the top level analysed
+/// nothing and reported "no photos found" for a folder full of them.
+///
+/// Two kinds of entry are skipped on purpose. Hidden directories (a leading
+/// `.`), because `.Trashes`, `.Spotlight-V100` and their kind on a memory
+/// card hold nothing the user meant to print. Directory SYMLINKS, because
+/// following them can loop forever; a symlinked file still counts, as it
+/// always did. An unreadable entry is logged and skipped rather than failing
+/// the whole scan, so one bad permission does not cost the rest of the tree.
+pub(crate) fn collect_photo_paths(folder: &Path) -> std::io::Result<Vec<String>> {
+    fn walk(dir: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(err) => {
+                    log::warn!("skipping unreadable directory entry in {}: {err}", dir.display());
+                    continue;
+                }
+            };
+            let path = entry.path();
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else { continue };
+            // `file_type` does not follow symlinks, which is the point: a
+            // symlinked directory is neither descended nor listed.
+            let is_real_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_real_dir {
+                if !name.starts_with('.') {
+                    if let Err(err) = walk(&path, out) {
+                        log::warn!("skipping unreadable directory {}: {err}", path.display());
+                    }
+                }
+            } else if path.is_file() && !is_apple_double(name) && supported_extension(name) {
+                out.push(path.to_string_lossy().into_owned());
+            }
+        }
+        Ok(())
+    }
+    let mut paths = Vec::new();
+    walk(folder, &mut paths)?;
+    paths.sort();
+    Ok(paths)
+}
+
 /// Trims a user-supplied project name and rejects an effectively-empty one.
 /// Extracted so the validation is reachable from a unit test without a live
 /// `AppHandle` -- `rename_project` needs one to open the database, but the
@@ -556,25 +602,7 @@ pub async fn analyze_folder(
 ) -> Result<AnalysisSummary, String> {
     let started = Instant::now();
 
-    let mut paths: Vec<String> = std::fs::read_dir(&folder)
-        .map_err(|e| e.to_string())?
-        .filter_map(|entry| match entry {
-            Ok(e) => Some(e),
-            Err(err) => {
-                log::warn!("skipping unreadable directory entry in {folder}: {err}");
-                None
-            }
-        })
-        .map(|entry| entry.path())
-        .filter(|p| p.is_file())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| !is_apple_double(n) && supported_extension(n))
-        })
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
-    paths.sort();
+    let paths = collect_photo_paths(Path::new(&folder)).map_err(|e| e.to_string())?;
 
     // A send failure (e.g. the webview navigated away mid-run) must not fail
     // an analysis that would otherwise succeed -- logged and swallowed, same
@@ -1846,6 +1874,61 @@ mod tests {
                 "{name} should not be flagged as an AppleDouble sidecar"
             );
         }
+    }
+
+    /// The scan walks nested folders, skips hidden directories and AppleDouble
+    /// files, ignores non-images, and returns a sorted list -- asserted on a
+    /// real temporary tree rather than a mock, so the recursion, the hidden-
+    /// directory rule and the file filter are all exercised on disk.
+    #[test]
+    fn collect_photo_paths_walks_nested_folders_and_skips_hidden_and_apple_double() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("2024-05-01/raw")).unwrap();
+        std::fs::create_dir_all(root.join(".Trashes")).unwrap();
+        for rel in [
+            "top.jpg",
+            "2024-05-01/a.HEIC",
+            "2024-05-01/raw/b.arw",
+            "2024-05-01/._a.HEIC",
+            "2024-05-01/notes.txt",
+            ".Trashes/hidden.jpg",
+        ] {
+            std::fs::write(root.join(rel), b"x").unwrap();
+        }
+
+        let found = collect_photo_paths(root).unwrap();
+
+        let rel: Vec<String> = found
+            .iter()
+            .map(|p| p.strip_prefix(&root.to_string_lossy().into_owned()).unwrap().trim_start_matches('/').to_string())
+            .collect();
+        assert_eq!(rel, vec!["2024-05-01/a.HEIC", "2024-05-01/raw/b.arw", "top.jpg"]);
+    }
+
+    /// A directory symlink is not followed: a link back to an ancestor would
+    /// otherwise recurse until the path length limit, and the scan would never
+    /// report anything. The file behind the link is still counted once, via
+    /// its real path.
+    #[test]
+    fn collect_photo_paths_does_not_follow_a_directory_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("real")).unwrap();
+        std::fs::write(root.join("real/one.jpg"), b"x").unwrap();
+        std::os::unix::fs::symlink(root, root.join("real/loop")).unwrap();
+
+        let found = collect_photo_paths(root).unwrap();
+
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].ends_with("real/one.jpg"), "{found:?}");
+    }
+
+    /// A folder that does not exist is an error the user sees, not an empty
+    /// scan that reads as "no photos here".
+    #[test]
+    fn collect_photo_paths_reports_a_missing_folder() {
+        assert!(collect_photo_paths(Path::new("/nonexistent/pbg-scan-test")).is_err());
     }
 
     #[test]

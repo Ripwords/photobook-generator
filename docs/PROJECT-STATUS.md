@@ -1328,7 +1328,6 @@ beside it. The design calls for the OS keychain, read from Rust.
 - No `typecheck` script; `nuxi typecheck` and `vue-tsc` both fail on environment issues.
 - Nothing pins the build to `aarch64-apple-darwin`. No universal config exists, so the
   constraint is not violated, but it is not enforced either.
-- `read_dir` is non-recursive. Real photo exports are often nested.
 - macOS AppleDouble files (`._IMG_1234.JPG`) pass the extension check and surface as
   spurious failures.
 - Two byte-identical files in the *same* scan both go to the sidecar; the cache only
