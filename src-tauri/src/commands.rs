@@ -1,3 +1,4 @@
+use crate::agent::view::{AgentView, SourcePhoto};
 use crate::book::cull::{Overrides, Photo};
 use crate::book::manifest::{manifest, Manifest};
 use crate::book::pace::Book;
@@ -313,7 +314,7 @@ pub(crate) fn finalize_photos(mut ok: Vec<serde_json::Value>) -> Vec<serde_json:
         .iter()
         .map(|f| f["exif"]["captureDate"].as_f64().map(|t| t as i64))
         .collect();
-    let event_ids = cluster::event_clusters(&times, 4 * 3600);
+    let event_ids = cluster::event_clusters(&times, cluster::EVENT_GAP_SECONDS);
 
     let aesthetic = ranking::percentiles(
         &ok.iter()
@@ -1804,6 +1805,36 @@ pub async fn book_layout(app: AppHandle, project_id: i64) -> Result<BookLayout, 
         let photos = resolve_preview_photos(&db, &project.photo_hashes)?;
         let lib = load_library(&app)?;
         Ok(crate::preview::book_layout(project.id, &project.book, photos, &lib))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The saved book as the agent may see it -- see `agent::view`.
+///
+/// Reads the cached records directly rather than going through
+/// `resolve_photos`, because the view ranks from the raw `aestheticScore` and
+/// `sharpness` that `Photo` does not keep.
+#[tauri::command]
+pub async fn agent_view(app: AppHandle, project_id: i64) -> Result<AgentView, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        let project = db
+            .load_project(project_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("project {project_id} no longer exists"))?;
+        let photos = cached_records(&db, &project.photo_hashes)?
+            .iter()
+            .map(|record| {
+                SourcePhoto::from_record(record).ok_or_else(|| {
+                    format!(
+                        "A cached photo record is missing fields the agent needs -- {RESOLVE_REMEDY}."
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let lib = load_library(&app)?;
+        Ok(crate::agent::view::agent_view(&project.book, &lib, &photos))
     })
     .await
     .map_err(|e| e.to_string())?

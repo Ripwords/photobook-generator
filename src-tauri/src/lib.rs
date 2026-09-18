@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod book;
 pub mod cluster;
 pub mod commands;
@@ -44,6 +45,7 @@ pub fn run() {
             commands::list_projects,
             commands::open_project,
             commands::book_layout,
+            commands::agent_view,
             commands::edit_book,
             commands::delete_project,
             commands::rename_project,

@@ -1,0 +1,114 @@
+{
+  "pageCount": 4,
+  "placedPhotos": 3,
+  "droppedPhotos": 1,
+  "openings": [
+    {
+      "index": 0,
+      "pages": [
+        1
+      ],
+      "templateId": "07-two-up-symmetric-margin:right",
+      "locked": true,
+      "alternatives": [
+        "08-two-up-symmetric-bleed-outer:right"
+      ],
+      "slots": [
+        {
+          "page": 1,
+          "z": 1,
+          "photo": 3
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "pages": [
+        2,
+        3
+      ],
+      "templateId": "07-two-up-symmetric-margin",
+      "locked": false,
+      "alternatives": [
+        "08-two-up-symmetric-bleed-outer"
+      ],
+      "slots": [
+        {
+          "page": 2,
+          "z": 1,
+          "photo": 1
+        },
+        {
+          "page": 3,
+          "z": 1,
+          "photo": 0
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "pages": [
+        4
+      ],
+      "templateId": "blank",
+      "locked": false,
+      "alternatives": [],
+      "slots": []
+    }
+  ],
+  "photos": [
+    {
+      "id": 0,
+      "day": 1,
+      "event": 1,
+      "faces": 1,
+      "faceArea": 0.0427,
+      "tags": [
+        "beach",
+        "sky",
+        "people"
+      ],
+      "aestheticPct": 75,
+      "sharpnessPct": 50,
+      "placed": true
+    },
+    {
+      "id": 1,
+      "day": 0,
+      "event": 0,
+      "faces": 1,
+      "faceArea": 0.0427,
+      "tags": [
+        "food"
+      ],
+      "aestheticPct": 25,
+      "sharpnessPct": 100,
+      "placed": true
+    },
+    {
+      "id": 2,
+      "day": 0,
+      "event": 0,
+      "faces": 0,
+      "faceArea": 0.0,
+      "tags": [],
+      "aestheticPct": 100,
+      "sharpnessPct": 25,
+      "placed": false
+    },
+    {
+      "id": 3,
+      "day": null,
+      "event": 2,
+      "faces": 1,
+      "faceArea": 0.0427,
+      "tags": [
+        "dog",
+        "grass"
+      ],
+      "aestheticPct": 50,
+      "sharpnessPct": 75,
+      "placed": true
+    }
+  ]
+}

@@ -38,6 +38,10 @@ pub fn near_duplicate_clusters(phashes: &[u64], max_distance: u32) -> Vec<usize>
         .collect()
 }
 
+/// The gap that starts a new event: `finalize_photos` clusters a folder with
+/// it, and the agent view re-clusters a book's photos with the same value.
+pub const EVENT_GAP_SECONDS: i64 = 4 * 3600;
+
 /// Splits a chronological sequence wherever the gap between consecutive
 /// timestamps exceeds `gap_seconds`. Photos with no timestamp are grouped
 /// together into one trailing cluster. Ids are returned in input order.

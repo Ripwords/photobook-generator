@@ -36,6 +36,9 @@ expect the other language's suite to tell you what else has to move.**
   in `commands.rs`, so it can reuse the `Book` fixture that module's other
   tests already build. Its TypeScript half is `tests/preview.test.ts`. The
   contract is otherwise identical.
+  **`agent-view.json`** follows the same pattern: its Rust half is in
+  `src-tauri/src/agent/view.rs` and its TypeScript half is
+  `tests/agent-view.test.ts`.
 - **`book-layout.json` is the only fixture carrying an irrational float**
   (`PreviewGeometry`, which is `0.197 / 11.197` and friends straight out of
   `geometry.rs`). serde_json's *default* float parser is the fast approximate
