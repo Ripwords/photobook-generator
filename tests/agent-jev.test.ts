@@ -8,6 +8,7 @@ import {
   type Intent,
   type JevDecision,
 } from "../app/agent/jev";
+import { MissingKeyError } from "../app/agent/fetch";
 import { AGENT_TOOLS, tagRanker } from "../app/agent/tools";
 import type { AgentPhoto, AgentView } from "../app/agent/view";
 import { POISON, leaksIn } from "./helpers/leak";
@@ -204,6 +205,43 @@ describe("checkProposal", () => {
   it("returns null when Jev does not answer", async () => {
     const { jev } = mockJev(() => json(500, {}));
     await expect(jev.checkProposal("zoom in", call)).resolves.toBeNull();
+  });
+});
+
+/** What `modelFetch("jev")` rejects with when Rust finds no key. */
+function keyless() {
+  const decisions: JevDecision[] = [];
+  const jev = createJev({
+    fetch: () => Promise.reject(new MissingKeyError("jev", "No Jev API key is set.")),
+    log: (d) => decisions.push(d),
+  });
+  return { jev, decisions };
+}
+
+describe("with no Jev key", () => {
+  const photos = [photo(3, ["beach"]), photo(7, ["dog", "grass"]), photo(9, ["food"])];
+  const call = { toolName: "set_crop" as const, input: { page: 4, z: 0, x: 0.1, y: 0.1, w: 0.5 } };
+
+  it("offers every tool, ranks by tags and warns about nothing", async () => {
+    const { jev } = keyless();
+    await expect(jev.routeIntent("crop page 4")).resolves.toBeNull();
+    await expect(jev.rankPhotos("dog", photos)).resolves.toEqual(await tagRanker("dog", photos));
+    await expect(jev.checkProposal("zoom in", call)).resolves.toBeNull();
+  });
+
+  it("logs nothing, since Jev decided nothing", async () => {
+    const { jev, decisions } = keyless();
+    await jev.routeIntent("crop page 4");
+    await jev.rankPhotos("dog", photos);
+    await jev.checkProposal("zoom in", call);
+    expect(decisions).toEqual([]);
+  });
+
+  it("still logs a failure that is not a missing key", async () => {
+    const decisions: JevDecision[] = [];
+    const jev = createJev({ fetch: () => Promise.reject(new Error("offline")), log: (d) => decisions.push(d) });
+    await jev.routeIntent("crop page 4");
+    expect(decisions).toEqual([{ role: "route", intent: null, probability: null, narrowed: false }]);
   });
 });
 

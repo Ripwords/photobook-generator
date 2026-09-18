@@ -15,7 +15,9 @@ or deny it.
   plain-language edit, the opening it touches, Jev's warning when the check is low, and
   **Apply** and **Don't apply** buttons. Refusals show the engine's reason.
 - New `ApiKeys.vue` in a modal reached from the header. It stores and clears keys and shows
-  which are set.
+  which are set. DeepSeek is required; Jev is marked optional. With no Jev key the agent
+  still works: `createJev` reads the missing-key rejection as "off", so routing offers every
+  tool, search uses `tagRanker`, no check runs, and nothing is written to the decision log.
 - `dev/tauri-mock/`: answers `agent_view`, the key commands and `model_request` with
   scripted streams, so every state can be driven in the browser.
 

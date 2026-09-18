@@ -3,15 +3,16 @@
  * tools it needs, ranking photos for `search_photos`, and checking a proposed
  * edit before the user is asked to approve it.
  *
- * Each role degrades to what DeepSeek alone would do. No key, a 429, a
- * malformed body or an answer outside the question all read as "no answer":
- * routing offers every tool, ranking falls back to `tagRanker`, and a check
- * has no opinion. Jev can make the agent better but never worse.
+ * Jev is optional. Each role degrades to what DeepSeek alone would do. No
+ * key, a 429, a malformed body or an answer outside the question all read as
+ * "no answer": routing offers every tool, ranking falls back to `tagRanker`,
+ * and a check has no opinion. Jev can make the agent better but never worse.
  *
  * What goes to Jev is the user's message, a tool call's input, and
  * `AgentPhoto` facts. Nothing else is in reach here.
  */
 import { z } from "zod";
+import { MissingKeyError } from "./fetch";
 import { tagRanker, type PhotoRanker, type ToolName } from "./tools";
 import type { AgentPhoto } from "./view";
 
@@ -78,6 +79,8 @@ export interface Jev {
 
 const ENDPOINT = "https://api.typesafe.ai/v1/systemone";
 
+const OFF = Symbol("no Jev key");
+
 const choiceAnswer = z.object({
   type: z.literal("choice"),
   probabilities: z.record(z.string(), z.number().min(0).max(1)),
@@ -104,13 +107,17 @@ function describePhoto(photo: AgentPhoto): string {
 }
 
 export function createJev({ fetch, log }: JevDeps): Jev {
-  /** Jev's answer to one question, or `null` whenever there is none to trust. */
+  /**
+   * Jev's answer to one question: `null` whenever there is none to trust, and
+   * `OFF` when no key is set. Jev is optional, so a missing key is not a
+   * failure and is left out of the decision log.
+   */
   async function ask<A>(
     state: unknown,
     id: string,
     question: Question,
     answer: z.ZodType<A>,
-  ): Promise<A | null> {
+  ): Promise<A | null | typeof OFF> {
     try {
       const res = await fetch(ENDPOINT, {
         method: "POST",
@@ -121,8 +128,8 @@ export function createJev({ fetch, log }: JevDeps): Jev {
       if (!body.success) return null;
       const parsed = answer.safeParse(body.data.answers[id]);
       return parsed.success ? parsed.data : null;
-    } catch {
-      return null;
+    } catch (error) {
+      return error instanceof MissingKeyError ? OFF : null;
     }
   }
 
@@ -140,6 +147,7 @@ export function createJev({ fetch, log }: JevDeps): Jev {
         },
         choiceAnswer,
       );
+      if (answer === OFF) return null;
       const top = answer && best(answer.probabilities);
       const intent = top && isIntent(top[0]) ? top[0] : null;
       const probability = intent && top ? top[1] : null;
@@ -160,6 +168,7 @@ export function createJev({ fetch, log }: JevDeps): Jev {
         },
         choiceAnswer,
       );
+      if (answer === OFF) return tagRanker(query, photos);
       if (!answer) {
         log({ role: "rank", photos: photos.length, kept: null, answered: false });
         return tagRanker(query, photos);
@@ -189,6 +198,7 @@ export function createJev({ fetch, log }: JevDeps): Jev {
         },
         noulAnswer,
       );
+      if (answer === OFF) return null;
       const probability = answer?.noul ?? null;
       log({ role: "check", tool: call.toolName, probability });
       return probability;

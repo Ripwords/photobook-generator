@@ -53,3 +53,17 @@ worse than DeepSeek alone.
   the message.
 - The browser harness answers every Jev request with a 529, so the panel runs on the
   no-answer paths there.
+
+## Jev is optional
+
+Added after Phase 7. A missing key is not a failure. `ask` tells a `MissingKeyError` apart from
+every other rejection. Each role then gives its no-answer result: every tool, `tagRanker`, no
+opinion. It writes no decision to the log, because Jev decided nothing. Any other failure still
+logs as before. Tests are in `tests/agent-jev.test.ts` under "with no Jev key". Each of these
+five mutations fails a test:
+
+- log a missing key as a failure;
+- treat every failure as a missing key;
+- log the route when Jev is off;
+- rank nothing when Jev is off;
+- warn when Jev is off.
