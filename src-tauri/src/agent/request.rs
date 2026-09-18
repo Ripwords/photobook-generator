@@ -865,4 +865,64 @@ mod tests {
         .unwrap();
         assert_eq!(requests.in_flight(), 0);
     }
+
+    // --- the wire ------------------------------------------------------------------
+
+    /// The Rust half of the wire pin. `tests/model-fetch.test.ts` replays the
+    /// same file through `app/agent/fetch.ts`.
+    #[tokio::test]
+    async fn model_events_and_errors_serialise_exactly_the_keys_the_webview_reads() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/wire/model-events.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("missing wire fixture {path:?}: {e}"));
+        let fixture: Value = serde_json::from_str(&text).expect("wire fixture must be valid JSON");
+
+        let header = |name: &str, value: &str| (name.to_string(), value.to_string());
+        let stream = vec![
+            ModelEvent::Head {
+                status: 200,
+                headers: vec![
+                    header("content-type", "text/event-stream; charset=utf-8"),
+                    header("vary", "origin"),
+                    header("vary", "accept-encoding"),
+                ],
+            },
+            // "data: €\n\n", split inside the euro sign's three bytes.
+            ModelEvent::Chunk {
+                bytes: vec![100, 97, 116, 97, 58, 32, 226, 130],
+            },
+            ModelEvent::Chunk {
+                bytes: vec![172, 10, 10],
+            },
+            ModelEvent::End,
+        ];
+        let failed = ModelEvent::Failed {
+            message: "error decoding response body: connection reset".into(),
+        };
+        let (channel, _, _) = recorder();
+        let refused = run(
+            &ModelRequests::new(),
+            outbound("wire", Provider::DeepSeek, "/v1/models"),
+            |_| unreachable!("a refused path never connects"),
+            keys(),
+            &channel,
+        )
+        .await
+        .unwrap_err();
+        let errors = vec![
+            ModelRequestError::from(KeyError::Missing(Provider::DeepSeek)),
+            ModelRequestError::from(KeyError::Missing(Provider::Jev)),
+            refused,
+            ModelRequestError::from(KeyError::Store("The keychain could not be read.".into())),
+        ];
+
+        let value = json!({
+            "stream": stream,
+            "failed": failed,
+            "cancelled": ModelEvent::Cancelled,
+            "errors": errors,
+        });
+        assert_eq!(value, fixture);
+    }
 }

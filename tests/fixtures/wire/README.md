@@ -39,6 +39,12 @@ expect the other language's suite to tell you what else has to move.**
   **`agent-view.json`** follows the same pattern: its Rust half is in
   `src-tauri/src/agent/view.rs` and its TypeScript half is
   `tests/agent-view.test.ts`.
+  **`model-events.json`** pins `model_request`'s channel events and its
+  rejection errors. Its Rust half is in `src-tauri/src/agent/request.rs`, which
+  builds the refused error by calling `run` with a bad path and the missing-key
+  and keychain errors through `From<KeyError>`, so their real messages are
+  pinned too. Its TypeScript half is `tests/model-fetch.test.ts`, which replays
+  the events and errors through `modelFetch` in `app/agent/fetch.ts`.
 - **`book-layout.json` is the only fixture carrying an irrational float**
   (`PreviewGeometry`, which is `0.197 / 11.197` and friends straight out of
   `geometry.rs`). serde_json's *default* float parser is the fast approximate

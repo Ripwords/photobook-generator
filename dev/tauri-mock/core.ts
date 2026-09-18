@@ -37,6 +37,7 @@ import type {
   AnalyzedPhoto,
   PhotoOverrides,
 } from "../../app/types/features";
+import { cancelModelRequest, modelRequest, type ModelRequestArgs } from "./model";
 import { mockPhotos, thumbnail } from "./photos";
 
 const layout: BookLayout = structuredClone(layoutFixture) as BookLayout;
@@ -296,6 +297,18 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
 
     case "reveal_in_finder":
       return undefined as T;
+
+    case "model_request":
+      return (await modelRequest({
+        id: args?.id as string,
+        provider: args?.provider as ModelRequestArgs["provider"],
+        path: args?.path as string,
+        body: args?.body as string,
+        onEvent: args?.onEvent as ModelRequestArgs["onEvent"],
+      })) as T;
+
+    case "cancel_model_request":
+      return cancelModelRequest(args?.id as string) as T;
 
     default:
       throw new Error(`${command} is not available in the browser harness`);
