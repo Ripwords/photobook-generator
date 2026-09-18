@@ -15,7 +15,11 @@
       "outputDir": "/Users/jj/Desktop/photobook-export",
       "format": "jpg",
       "fileCount": 24
-    }
+    },
+    "coverThumbnails": [
+      "/thumbs/a.jpg",
+      "/thumbs/b.jpg"
+    ]
   },
   {
     "id": 8,
@@ -28,6 +32,7 @@
     "photoCount": 54,
     "createdAt": 1755200000,
     "updatedAt": 1755200000,
-    "lastExport": null
+    "lastExport": null,
+    "coverThumbnails": []
   }
 ]

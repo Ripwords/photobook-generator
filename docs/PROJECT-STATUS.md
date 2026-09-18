@@ -127,7 +127,7 @@ thumbnails, chapter dividers and burst-size badges.
 | Nuxt UI | `app/` | `pages/index.vue` routes over `types/navigation.ts`'s `Screen`; the screens are `components/ProjectLibrary.vue`, `SelectPhotos.vue`, `BookEditor.vue` |
 | Template library | `templates/` | Spread templates + validator at `tests/templates.test.ts`. Was 40 at end of Phase 1; **now 36** — see the Print geometry section. |
 
-**Test counts at last run (2026-09-16, `master`):** 633 TypeScript, **443 Rust lib tests, 0
+**Test counts at last run (2026-09-18, `master`):** 834 TypeScript, **485 Rust lib tests, 0
 failed, 0 ignored**, plus the `pack_sweep` binary, 2 other harness'd and 4 `harness = false`
 integration binaries, 130 Swift. All green, lint clean.
 **Release build works:** `bun tauri build --bundles app` produces `PhotobookGen.app`.
@@ -137,9 +137,12 @@ integration binaries, 130 Swift. All green, lint clean.
 - **Thumbnails.** The sidecar writes a 400px JPEG per photo keyed by content hash and
   returns its path; the webview loads it via `convertFileSrc` and the asset protocol.
   Without this the UI showed a table of file paths, which is useless for judging photos.
-- **Contact-sheet UI + custom theme.** Steel blue primary, cool grey neutrals, with
-  lavender reserved for structural dividers and pastel yellow for the hero/keeper marker.
-  Palette derives from the app icon render.
+- **Desktop shell, monochrome theme.** A sidebar (library, every book, settings), a
+  per-screen toolbar under an overlay title bar, a Settings dialog (appearance, shortcuts,
+  API keys, about) and one shortcut table (`app/types/shortcuts.ts`) that drives the key
+  bindings, the tooltips and the list in Settings. Neutral black and white throughout
+  (`primary: "neutral"`); colour is kept for print guides and errors. The contact sheet
+  shows photos, not a table of file paths.
 - **App icon.** `app-icon.png` is masked to Apple's macOS squircle (superellipse n=5,
   824px inside a 1024px canvas). Regenerate the set with `bun tauri icon app-icon.png`.
 - **Completion notification** for long analysis runs, posted from Rust so no JS is

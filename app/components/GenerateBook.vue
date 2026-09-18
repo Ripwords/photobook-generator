@@ -167,14 +167,13 @@ async function onGenerate(replace: boolean) {
 </script>
 
 <template>
-  <section class="space-y-3">
+  <section class="space-y-4">
     <!--
-      One row, every control on a shared baseline. The length's help used to
-      sit under its select and push it above the name field; what it said now
-      closes the summary line instead.
+      A column, for the select screen's inspector: the fields, then what the
+      chosen length costs, then the action that commits to it.
     -->
-    <div v-if="canGenerate" class="flex flex-wrap items-end gap-x-4 gap-y-3">
-      <UFormField label="Book name" class="w-64">
+    <div v-if="canGenerate" class="space-y-4">
+      <UFormField label="Book name">
         <UInput v-model="name" :disabled="busy" placeholder="Untitled photobook" class="w-full" />
       </UFormField>
 
@@ -184,43 +183,9 @@ async function onGenerate(replace: boolean) {
           :items="pageItems"
           :disabled="busy || pageItems.length === 0"
           value-key="value"
-          class="w-36"
+          class="w-full"
         />
       </UFormField>
-
-      <div class="ml-auto flex flex-wrap items-center gap-2">
-        <template v-if="replacing">
-          <UButton
-            icon="i-lucide-copy-plus"
-            color="neutral"
-            variant="outline"
-            :loading="busy"
-            :disabled="busy || !recommendation || overflowMessage !== null"
-            @click="onGenerate(false)"
-          >
-            Save as a new photobook
-          </UButton>
-          <UButton
-            icon="i-lucide-book-open"
-            color="primary"
-            :loading="busy"
-            :disabled="busy || !recommendation || overflowMessage !== null"
-            @click="onGenerate(true)"
-          >
-            Update &ldquo;{{ replacing.name }}&rdquo;
-          </UButton>
-        </template>
-        <UButton
-          v-else
-          icon="i-lucide-book-open"
-          color="primary"
-          :loading="busy"
-          :disabled="busy || !recommendation || overflowMessage !== null"
-          @click="onGenerate(false)"
-        >
-          Generate book
-        </UButton>
-      </div>
     </div>
 
     <!--
@@ -252,6 +217,44 @@ async function onGenerate(replace: boolean) {
     <p v-if="canGenerate && replacing" class="text-xs text-muted">
       Updating replaces the saved book and its export history. Saving as new keeps both.
     </p>
+
+    <!-- The book's own update first: re-editing is usually to change it, not fork it. -->
+    <div v-if="canGenerate" class="flex flex-col gap-2">
+      <template v-if="replacing">
+        <UButton
+          block
+          icon="i-lucide-book-open"
+          color="primary"
+          :loading="busy"
+          :disabled="busy || !recommendation || overflowMessage !== null"
+          @click="onGenerate(true)"
+        >
+          Update &ldquo;{{ replacing.name }}&rdquo;
+        </UButton>
+        <UButton
+          block
+          icon="i-lucide-copy-plus"
+          color="neutral"
+          variant="outline"
+          :loading="busy"
+          :disabled="busy || !recommendation || overflowMessage !== null"
+          @click="onGenerate(false)"
+        >
+          Save as a new photobook
+        </UButton>
+      </template>
+      <UButton
+        v-else
+        block
+        icon="i-lucide-book-open"
+        color="primary"
+        :loading="busy"
+        :disabled="busy || !recommendation || overflowMessage !== null"
+        @click="onGenerate(false)"
+      >
+        Generate book
+      </UButton>
+    </div>
 
     <!--
       A length that cannot hold every photo the user explicitly asked for is

@@ -126,6 +126,26 @@ pub(crate) fn book_counts(book: &Book) -> (i64, i64) {
     (page_count, photo_count)
 }
 
+/// The photos a library cover shows: the first `limit` distinct photos in
+/// reading order, page by page and lowest `z` first within a page, as
+/// indices into the book's photo slice. A photo placed twice counts once.
+pub(crate) fn cover_photo_indices(book: &Book, limit: usize) -> Vec<usize> {
+    let mut picked: Vec<usize> = Vec::with_capacity(limit);
+    for page in &book.pages {
+        let mut placements: Vec<_> = page.placements.iter().collect();
+        placements.sort_by_key(|p| p.z);
+        for placement in placements {
+            if picked.len() == limit {
+                return picked;
+            }
+            if !picked.contains(&placement.photo_index) {
+                picked.push(placement.photo_index);
+            }
+        }
+    }
+    picked
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +187,34 @@ mod tests {
 
         assert_eq!(pages, 2);
         assert_eq!(photos, 3);
+    }
+
+    #[test]
+    fn cover_photos_are_the_first_distinct_photos_in_reading_order() {
+        let page = |number, placements| Page {
+            number,
+            side: Side::Right,
+            template_id: "t".into(),
+            placements,
+        };
+        let book = Book {
+            controls: Default::default(),
+            seed: 1,
+            dropped: 0,
+            pages: vec![
+                // Stacked out of order on purpose: z, not vector order, is reading order.
+                page(1, vec![placement(7, 2), placement(3, 1)]),
+                page(2, vec![placement(3, 1), placement(5, 2)]),
+                page(3, vec![placement(9, 1), placement(1, 2)]),
+            ],
+        };
+
+        assert_eq!(cover_photo_indices(&book, 4), vec![3, 7, 5, 9]);
+        assert_eq!(cover_photo_indices(&book, 2), vec![3, 7]);
+        assert_eq!(
+            cover_photo_indices(&Book { controls: Default::default(), seed: 0, dropped: 0, pages: vec![] }, 4),
+            Vec::<usize>::new()
+        );
     }
 
     #[test]

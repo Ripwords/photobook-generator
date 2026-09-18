@@ -921,6 +921,9 @@ pub struct ProjectListItem {
     /// The most recent export, or `None` for a book that has never been
     /// exported -- the distinction the project list exists to show.
     pub last_export: Option<ExportSummary>,
+    /// Up to four thumbnail paths for the card's cover, first placed photo
+    /// first. Empty when the cache no longer holds any of them.
+    pub cover_thumbnails: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1136,6 +1139,27 @@ pub(crate) fn resolve_preview_photos(
                 value["thumbnailPath"].as_str().map(std::string::ToString::to_string);
             Ok(crate::preview::preview_photo(&photo, thumbnail))
         })
+        .collect()
+}
+
+/// How many photos a library card's cover mosaic shows.
+const COVER_PHOTOS: usize = 4;
+
+/// The thumbnails a library card draws its cover from: the book's first
+/// placed photos in reading order, as far as the cache can still show them.
+///
+/// Unlike `cached_records` this never fails. A cover is decoration on a list
+/// that must stay readable, so a photo whose record or thumbnail is gone is
+/// skipped for the next one.
+pub(crate) fn cover_thumbnails(db: &Db, book: &Book, photo_hashes: &[String]) -> Vec<String> {
+    crate::project::cover_photo_indices(book, photo_hashes.len())
+        .into_iter()
+        .filter_map(|index| {
+            let json = db.get_features(photo_hashes.get(index)?).ok()??;
+            let record: serde_json::Value = serde_json::from_str(&json).ok()?;
+            record["thumbnailPath"].as_str().map(std::string::ToString::to_string)
+        })
+        .take(COVER_PHOTOS)
         .collect()
 }
 
@@ -1704,14 +1728,19 @@ pub async fn list_projects(app: AppHandle) -> Result<Vec<ProjectListItem>, Strin
             // no longer parses must not make the whole list unreadable, which
             // would leave the user with no way to see (or delete) any of their
             // other books.
-            let last_export = match db.load_project(summary.id) {
+            let project = match db.load_project(summary.id) {
                 Ok(project) => project,
                 Err(err) => {
                     log::warn!("cannot read project {}: {err}", summary.id);
                     None
                 }
-            }
-            .and_then(|project| project.exports.last().cloned())
+            };
+            let cover_thumbnails = project
+                .as_ref()
+                .map(|project| cover_thumbnails(&db, &project.book, &project.photo_hashes))
+                .unwrap_or_default();
+            let last_export = project
+                .and_then(|project| project.exports.last().cloned())
                 .map(|record| ExportSummary {
                     at: record.at,
                     output_dir: record.output_dir,
@@ -1728,6 +1757,7 @@ pub async fn list_projects(app: AppHandle) -> Result<Vec<ProjectListItem>, Strin
                 created_at: summary.created_at,
                 updated_at: summary.updated_at,
                 last_export,
+                cover_thumbnails,
             });
         }
         Ok(items)
@@ -4343,6 +4373,7 @@ mod tests {
                     format: "jpg".into(),
                     file_count: 24,
                 }),
+                cover_thumbnails: vec!["/thumbs/a.jpg".into(), "/thumbs/b.jpg".into()],
             },
             ProjectListItem {
                 id: 8,
@@ -4354,6 +4385,7 @@ mod tests {
                 created_at: 1_755_200_000,
                 updated_at: 1_755_200_000,
                 last_export: None,
+                cover_thumbnails: vec![],
             },
         ];
         assert_eq!(serde_json::to_value(&items).unwrap(), wire_fixture("project-list.json"));
@@ -4416,6 +4448,49 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    /// A library cover is decoration, so a photo it cannot show is skipped
+    /// for the next one rather than failing the list or leaving a hole.
+    #[test]
+    fn cover_thumbnails_skip_photos_without_a_thumbnail_and_stop_at_four() {
+        let db = Db::open_in_memory().unwrap();
+        let records: Vec<serde_json::Value> = (0..7)
+            .map(|i| {
+                let mut record = photo_record(i, false, i as u32, 0);
+                if i != 1 {
+                    record["thumbnailPath"] = format!("/thumbs/{i}.jpg").into();
+                }
+                record
+            })
+            .collect();
+        // Photo 2 was analysed but is no longer in the cache.
+        let cached: Vec<_> = records.iter().enumerate().filter(|(i, _)| *i != 2).map(|(_, r)| r.clone()).collect();
+        cache_records(&db, &cached);
+        let hashes: Vec<String> =
+            records.iter().map(|r| r["hash"].as_str().unwrap().to_string()).collect();
+        let placement = |photo_index: usize| Placement {
+            photo_index,
+            slot_rect: Rect::new(0.0, 0.0, 0.1, 0.1),
+            crop: Rect::new(0.0, 0.0, 1.0, 1.0),
+            z: 1,
+        };
+        let book = Book {
+            controls: Default::default(),
+            seed: 1,
+            dropped: 0,
+            pages: vec![Page {
+                number: 1,
+                side: Side::Right,
+                template_id: "t".into(),
+                placements: (0..7).map(placement).collect(),
+            }],
+        };
+
+        assert_eq!(
+            cover_thumbnails(&db, &book, &hashes),
+            vec!["/thumbs/0.jpg", "/thumbs/3.jpg", "/thumbs/4.jpg", "/thumbs/5.jpg"]
+        );
     }
 
     /// The preview's photo list is `resolve_photos` plus one field the

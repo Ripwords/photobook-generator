@@ -47,18 +47,39 @@ exists so that error is easy to diagnose.
 
 ## Using the app
 
-The app has three screens and you are always one click from the first of them.
+The window is a sidebar and one screen beside it. The sidebar is always there (⌘B hides
+and shows it): **New photobook** at the top, **Library** under it, then every book you have
+made, each with its cover, and **Settings** at the bottom. Click a book there to open it from
+wherever you are. Hover any icon button for its name and, where it has one, its shortcut.
 
-### 1. Your photobooks
+| Shortcut | Does | Where |
+|---|---|---|
+| ⌘N | New photobook (choose photo folders) | Anywhere |
+| ⌘B | Show or hide the sidebar | Anywhere |
+| ⌘, | Settings | Anywhere |
+| ⌘J | Show or hide the chat | Book editor |
+| ⌘E | Export | Book editor |
 
-The screen the app opens on: every book you have ever generated, newest first, with its
-length, photo count, source folders and last export. Click a row (or **Open**) to edit that
-book, the pencil to rename it, the bin to delete it. Deleting removes the book's layout, your
-include/exclude decisions and its export history; files you already exported to disk are not
-touched, and neither is the photo analysis cache, so reopening those folders later will not
-re-scan your photos.
+**Settings** has three tabs. **General** sets the appearance (System, Light or Dark) and
+lists the shortcuts above. **API keys** is where the chat's keys are saved. **About**
+shows the version and what leaves this Mac: no image ever does, and the chat sends only a
+description of the book (its layouts, page numbers and photo tags).
 
-**New photobook** starts the next screen.
+### 1. The library
+
+The screen the app opens on: every book you have made, as covers built from its own photos.
+The two buttons at the top right switch between covers and a list, which also shows each
+book's source folders and last export. Search matches a book's name or any of its folder
+names; the sort menu orders by last edited, date created, or name.
+
+Click a book to open it. Right-click it, or hover and click **…**, for **Open**, **Rename**
+and **Delete…**. Rename edits the name in place: Return saves, Escape cancels. Deleting asks
+first, then removes the book's layout, your include/exclude decisions and its export
+history; files you already exported to disk are not touched, and neither is the photo
+analysis cache, so reopening those folders later will not re-scan your photos.
+
+With no books yet, the library is a short explanation of the three steps and a **Choose
+photo folders** button, which does the same as **New photobook**.
 
 ### 2. Choosing the photos
 
@@ -69,7 +90,11 @@ folder they came from.
 
 The contact sheet shows every photo with the ones the book would leave out dimmed. Use **+**
 and **−** on a photo to include or exclude it yourself. The bar above the sheet stays pinned
-while you scroll it: name the book and pick a length there. The app recommends the shortest Pixajoy length that fits the keepers and says
+while you scroll it: **All photos** or **Keepers only**, the keeper count, and the tile
+size. The panel on the
+right is the book itself: name it and pick a length there, and below that are the selection
+counts and a key to the marks on the tiles. **Choose different folders** at the top starts
+again from other folders. The app recommends the shortest Pixajoy length that fits the keepers and says
 how many each length would leave out. A length that cannot hold every photo you explicitly
 marked **+** cannot be generated at all, and says so instead of quietly dropping one.
 
@@ -86,12 +111,15 @@ source is not an update of the old one.
 ### 3. Editing the book
 
 The book, spread by spread, as it will print. **Everything on this screen is written to disk
-as you do it** — the header says so — so there is nothing to save and you can leave whenever
-you like with **‹ All photobooks**.
+as you do it** (the check beside the title says when it last saved), so there is nothing to
+save and you can leave whenever you like through the sidebar.
 
-Rename the book with the pencil beside its title in the header. **Edit photos** in the header takes its
-photo selection back to the contact sheet; it re-analyses the book's own folders, which is
-every photo a cache hit and no new Vision work.
+The toolbar at the top holds the title, with a pencil to rename the book; **Edit photos**,
+which takes its photo selection back to the contact sheet and re-analyses the book's own
+folders (every photo a cache hit, no new Vision work); **Chat** (⌘J), which shows or hides
+the chat beside the book; and **Export** (⌘E). The bar along the bottom counts the book's
+pages, the photos placed, any blank pages and the photos left out, and says what dragging a
+photo does in the current mode.
 
 Every opening (page 1, each pair of facing pages, the last page) has four controls on its
 right. Page 1 is shown facing the inside front cover and the last page facing the inside
@@ -112,17 +140,17 @@ slot to move the window, or scroll over it to zoom; the window keeps the slot's 
 is saved when you let go. Regenerating that opening or swapping the photo away recomputes
 its crop, because the slot it was chosen for is gone.
 
-To **move or resize the boxes themselves**, turn on **Move and resize boxes** above the
-book. Drag a box to move it, drag a corner to resize it; edges snap to the trim, safe and
+To **move or resize the boxes themselves**, switch the bar above the book from **Crop and
+swap** to **Move and resize boxes**. Drag a box to move it, drag a corner to resize it; edges snap to the trim, safe and
 gutter guides, the page edge (which prints as bleed) and the other boxes on the page. A box
 cannot leave the page, shrink below 5% of it, or overlap another box, and the photo is
-re-cropped for the new shape under the same rules as everything else. Turn the switch off
-to go back to swapping and cropping. A change that would cut a face, put one in the
+re-cropped for the new shape under the same rules as everything else. Switch back to **Crop
+and swap** to go back to swapping and cropping. A change that would cut a face, put one in the
 gutter or the safe margin, or print below 200 DPI is refused with the reason, and the book
 stays as it was.
 
-**Export** is at the top of the same screen. Choose an output folder and export. Pre-flight
-runs first; anything that would print badly blocks the export and is listed. The output is
+**Export** opens a sheet from the right. Choose an output folder and export. Pre-flight
+runs first; anything that would print badly blocks the export and is listed in the sheet. The output is
 one cropped file per photo placement plus a `manifest.json` saying what went where, ready to
 upload to Pixajoy.
 

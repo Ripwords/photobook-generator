@@ -60,7 +60,11 @@ layout.photos = layout.photos.map((photo, index) => ({
 
 const photos: AnalyzedPhoto[] = mockPhotos();
 
-const projects: ProjectListItem[] = structuredClone(listFixture) as ProjectListItem[];
+// The fixture's cover paths point at a disk this browser cannot read, and
+// one of its two books has none; give each a cover from the mock folder.
+const projects: ProjectListItem[] = (structuredClone(listFixture) as ProjectListItem[]).map(
+  (project, index) => ({ ...project, coverThumbnails: coverFrom(index * 9) }),
+);
 /** Decisions each saved project was generated with, so reopening restores them. */
 const savedOverrides = new Map<number, PhotoOverrides>();
 let nextProjectId = 100;
@@ -257,6 +261,13 @@ async function runExport(channel: Channel<ExportEvent>): Promise<ExportResult> {
   return structuredClone(exportFixture) as ExportResult;
 }
 
+function coverFrom(start: number): string[] {
+  return photos
+    .slice(start, start + 4)
+    .map((photo) => photo.thumbnailPath)
+    .filter((path): path is string => typeof path === "string");
+}
+
 type Args = Record<string, unknown> | undefined;
 
 export async function invoke<T>(command: string, args?: Args): Promise<T> {
@@ -321,6 +332,7 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
         createdAt: Math.floor(Date.now() / 1000),
         updatedAt: Math.floor(Date.now() / 1000),
         lastExport: null,
+        coverThumbnails: coverFrom(0),
       });
       savedOverrides.set(id, { ...(args?.overrides as PhotoOverrides | undefined) });
       const book: GeneratedBook = {

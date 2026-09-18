@@ -130,6 +130,8 @@ export interface ProjectListItem {
   createdAt: number;
   updatedAt: number;
   lastExport: ExportSummary | null;
+  /** Up to four thumbnail paths for the card cover, first placed photo first. */
+  coverThumbnails: string[];
 }
 
 export interface ProjectDetail {

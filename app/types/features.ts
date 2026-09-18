@@ -393,7 +393,7 @@ export function basename(path: string): string {
 /**
  * Picks the single top-ranked photo from a group (an event chapter's kept
  * photos), by aesthetic percentile, tie-broken by sharpness percentile.
- * This is the one "hero" per group: the pastel-yellow accent marks exactly
+ * This is the one "hero" per group: the outline and star mark exactly
  * this photo and nothing else, so the marking stays meaningful.
  */
 export function pickHero(photos: AnalyzedPhoto[]): AnalyzedPhoto | undefined {

@@ -8,13 +8,15 @@ import {
   summarizeExport,
 } from "~/types/book";
 import type { PhotoOverrides } from "~/types/features";
+import { shortcutCombo, shortcutKbds } from "~/types/shortcuts";
 
 const { projectId } = defineProps<{
   projectId: number;
 }>();
 
 const emit = defineEmits<{
-  close: [];
+  /** The name changed, so any list showing it is stale. */
+  renamed: [];
   /**
    * The user wants this project's photo selection back on the contact sheet.
    * Re-analyse its folders, then restore these decisions.
@@ -46,9 +48,24 @@ const {
   reveal,
 } = useBook();
 
-/** The chat panel beside the book. Open by default; the header button folds it away. */
+/** The chat panel beside the book. Open by default; the toolbar button folds it away. */
 const chatOpen = ref(true);
-const keysOpen = ref(false);
+/** The export sheet: output folder, the export itself, and pre-flight's report. */
+const exportOpen = ref(false);
+/** Whether a drag moves photo boxes rather than crops -- see `BookPreview`. */
+const editSlots = ref(false);
+
+const { openSettings } = useShell();
+
+defineShortcuts({
+  [shortcutCombo("chat")]: { usingInput: true, handler: () => (chatOpen.value = !chatOpen.value) },
+  [shortcutCombo("export")]: { usingInput: true, handler: () => (exportOpen.value = true) },
+});
+
+/** How many printed pages come out white -- see `BookPreviewPage`. */
+const blankPages = computed(
+  () => layout.value?.pages.filter((page) => page.blank).length ?? 0,
+);
 
 const counts = computed(() => (exportResult.value ? summarizeExport(exportResult.value) : null));
 const outcome = computed(() => (exportResult.value ? exportOutcome(exportResult.value) : null));
@@ -120,7 +137,7 @@ function commitRenaming() {
   // anyway, and re-sending the same name just to bump `updated_at` would
   // reorder the library for nothing the user asked for.
   if (!trimmed || trimmed === project.name) return;
-  void renameProject(project.id, trimmed);
+  void renameProject(project.id, trimmed).then(() => emit("renamed"));
 }
 
 function requestEditPhotos() {
@@ -144,14 +161,8 @@ onMounted(() => {
     :title="activeProject?.name ?? 'Loading…'"
     :subtitle="folderLabel"
     :subtitle-title="folderTitle"
-    back="All photobooks"
-    @back="emit('close')"
   >
-    <!--
-      The book's name, set in the serif the library uses for titles, and
-      renamed in place. One title, not a header title plus a second heading
-      repeating it above the book.
-    -->
+    <!-- The book's name, renamed in place. -->
     <template #title>
       <UInput
         v-if="activeProject && renaming"
@@ -165,20 +176,21 @@ onMounted(() => {
         @keyup.escape="cancelRenaming"
         @blur="commitRenaming"
       />
-      <div v-else class="flex min-w-0 items-center gap-1">
-        <h1 class="truncate font-serif text-lg leading-tight text-highlighted">
+      <div v-else class="flex min-w-0 items-center gap-0.5">
+        <h1 class="truncate text-sm font-semibold text-highlighted">
           {{ activeProject?.name ?? "Loading…" }}
         </h1>
-        <UButton
-          v-if="activeProject"
-          icon="i-lucide-pencil"
-          color="neutral"
-          variant="ghost"
-          size="xs"
-          :disabled="busy"
-          aria-label="Rename this photobook"
-          @click="startRenaming"
-        />
+        <UTooltip v-if="activeProject" text="Rename">
+          <UButton
+            icon="i-lucide-pencil"
+            color="neutral"
+            variant="ghost"
+            size="xs"
+            :disabled="busy"
+            aria-label="Rename this photobook"
+            @click="startRenaming"
+          />
+        </UTooltip>
       </div>
     </template>
 
@@ -186,7 +198,7 @@ onMounted(() => {
       v-if="activeProject"
       text="Every change you make here is written to disk as you make it."
     >
-      <span class="flex items-center gap-1.5 text-xs text-muted">
+      <span class="mr-2 flex items-center gap-1.5 text-xs text-muted">
         <!--
           Keyed by name: Nuxt Icon's CSS mode, reused across a name change,
           writes the new name's rule with the old icon's image, and the check
@@ -209,236 +221,293 @@ onMounted(() => {
       needs it just as much as one that has them. It re-analyses the project's
       own folders, which is every photo a features-cache hit and no Vision work.
     -->
-    <UButton
-      icon="i-lucide-square-pen"
-      color="neutral"
-      variant="outline"
-      size="sm"
-      :disabled="busy || !activeProject"
-      @click="requestEditPhotos"
-    >
-      Edit photos
-    </UButton>
-
-    <UTooltip text="API keys">
+    <UTooltip text="Back to the contact sheet, with this book's choices">
       <UButton
-        icon="i-lucide-key-round"
+        icon="i-lucide-images"
         color="neutral"
         variant="ghost"
         size="sm"
-        aria-label="API keys"
-        @click="keysOpen = true"
-      />
+        :disabled="busy || !activeProject"
+        @click="requestEditPhotos"
+      >
+        Edit photos
+      </UButton>
     </UTooltip>
-    <UButton
-      icon="i-lucide-message-square"
-      color="neutral"
-      :variant="chatOpen ? 'soft' : 'ghost'"
-      size="sm"
-      :aria-pressed="chatOpen"
-      @click="chatOpen = !chatOpen"
-    >
-      Chat
-    </UButton>
+
+    <UTooltip text="Show or hide the chat" :kbds="shortcutKbds('chat')">
+      <UButton
+        icon="i-lucide-message-square"
+        color="neutral"
+        :variant="chatOpen ? 'soft' : 'ghost'"
+        size="sm"
+        :aria-pressed="chatOpen"
+        @click="chatOpen = !chatOpen"
+      >
+        Chat
+      </UButton>
+    </UTooltip>
+
+    <UTooltip text="Write the print files" :kbds="shortcutKbds('export')">
+      <UButton
+        icon="i-lucide-download"
+        color="primary"
+        size="sm"
+        :disabled="!activeProject"
+        @click="exportOpen = true"
+      >
+        Export
+      </UButton>
+    </UTooltip>
   </AppHeader>
 
-  <ApiKeys v-model:open="keysOpen" />
-
   <div class="flex min-h-0 flex-1">
+    <div class="flex min-w-0 flex-1 flex-col">
+      <!--
+        The desk the book lies on: a toned surface, so the white pages read as
+        paper and the controls around them recede.
+      -->
+      <main class="min-h-0 flex-1 overflow-y-auto bg-desk">
+        <div v-if="!layout" class="mx-auto max-w-[1400px] space-y-6 p-6">
+          <UAlert
+            v-if="error"
+            icon="i-lucide-triangle-alert"
+            color="error"
+            variant="subtle"
+            title="Something went wrong"
+            :description="error"
+            :ui="{ description: 'break-words' }"
+          />
+          <template v-else>
+            <USkeleton v-for="n in 3" :key="n" class="aspect-[2.518] w-full" />
+          </template>
+        </div>
 
-  <!--
-    The desk the book lies on: a toned surface, so the white pages read as
-    paper and the controls around them recede.
-  -->
-  <main class="min-w-0 flex-1 overflow-y-auto bg-charcoal-100 p-6 dark:bg-charcoal-950">
-    <div class="mx-auto max-w-[1400px] space-y-8">
-      <USkeleton v-if="!activeProject && !error" class="h-32 w-full" />
+        <UAlert
+          v-if="layout && error"
+          icon="i-lucide-triangle-alert"
+          color="error"
+          variant="subtle"
+          title="Something went wrong"
+          :description="error"
+          :ui="{ description: 'break-words' }"
+          class="mx-auto mt-6 max-w-[1352px]"
+        />
 
-      <UAlert
-        v-if="error"
-        icon="i-lucide-triangle-alert"
-        color="error"
-        variant="subtle"
-        title="Something went wrong"
-        :description="error"
-        :ui="{ description: 'break-words' }"
-      />
+        <!--
+          The book itself, spread by spread, as it will print, with the
+          spread-level controls: regenerate, reject, change layout, lock, shuffle,
+          and swapping two photos. Every control sends one `edit_book` and shows
+          what came back -- `useBook.editBook`.
+        -->
+        <BookPreview v-if="layout" v-model:edit-slots="editSlots" :layout :busy @edit="editBook" />
+      </main>
 
-      <div
-        v-if="activeProject"
-        class="space-y-3 rounded-lg bg-default p-4 ring ring-default"
+      <!-- What the book holds, and what a click or a drag does right now. -->
+      <footer
+        v-if="layout"
+        class="flex h-8 shrink-0 items-center gap-4 border-t border-default bg-default px-4 text-xs whitespace-nowrap text-muted tabular-nums"
       >
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <div class="space-y-1">
-            <p class="text-sm text-toned tabular-nums">{{ projectDetailLabel(activeProject) }}</p>
-            <p v-if="restoredSelection" class="flex items-center gap-1.5 text-xs text-muted">
-              <UIcon name="i-lucide-hand" class="size-3 shrink-0" />
-              <span>{{ restoredSelection }}</span>
+        <span><span class="text-default">{{ layout.pageCount }}</span> pages</span>
+        <span><span class="text-default">{{ layout.placedPhotos }}</span> photos placed</span>
+        <span v-if="blankPages > 0">
+          <span class="text-default">{{ blankPages }}</span>
+          {{ blankPages === 1 ? "page prints" : "pages print" }} blank
+        </span>
+        <span v-if="layout.droppedPhotos > 0">
+          <span class="text-default">{{ layout.droppedPhotos }}</span> left out
+        </span>
+        <span class="ml-auto flex min-w-0 items-center gap-1.5">
+          <UIcon :key="editSlots ? 'move' : 'crop'" :name="editSlots ? 'i-lucide-move' : 'i-lucide-crop'" class="size-3.5 shrink-0" />
+          <span
+            class="truncate"
+            :title="
+              editSlots
+                ? 'Drag a box to move it, drag a corner to resize it; edges snap to the guides'
+                : 'Drag a photo to move its crop, scroll over it to zoom. Click a photo, then another anywhere in the book, to swap them'
+            "
+          >
+            <template v-if="editSlots">
+              Drag a box to move it, drag a corner to resize it; edges snap to the guides
+            </template>
+            <template v-else>
+              Drag a photo to move its crop, scroll over it to zoom. Click a photo, then another
+              anywhere in the book, to swap them
+            </template>
+          </span>
+        </span>
+      </footer>
+    </div>
+
+    <!--
+      Kept mounted while folded away, so closing the panel does not throw away
+      the conversation or a proposal still waiting for an answer.
+    -->
+    <aside
+      v-show="chatOpen"
+      class="w-96 shrink-0 border-l border-default bg-default"
+      aria-label="Chat about this book"
+    >
+      <BookChat
+        :project-id="projectId"
+        :layout
+        @book-changed="refreshLayout"
+        @open-keys="openSettings('keys')"
+      />
+    </aside>
+  </div>
+
+  <USlideover
+    v-model:open="exportOpen"
+    title="Export"
+    description="Print-ready files for Pixajoy, checked by pre-flight before any is written."
+    :ui="{ content: 'max-w-md' }"
+  >
+    <template #body>
+      <div v-if="activeProject" class="space-y-6">
+        <section class="space-y-1">
+          <p class="text-sm text-toned tabular-nums">{{ projectDetailLabel(activeProject) }}</p>
+          <p v-if="restoredSelection" class="flex items-center gap-1.5 text-xs text-muted">
+            <UIcon name="i-lucide-hand" class="size-3 shrink-0" />
+            <span>{{ restoredSelection }}</span>
+          </p>
+        </section>
+
+        <section class="space-y-2" aria-labelledby="export-folder">
+          <h3 id="export-folder" class="text-sm font-medium text-highlighted">Output folder</h3>
+          <div class="flex items-center gap-2 rounded-md border border-default px-3 py-2">
+            <UIcon name="i-lucide-folder" class="size-4 shrink-0 text-muted" />
+            <p v-if="outputDir" class="min-w-0 flex-1 truncate text-sm" :title="outputDir">
+              Exporting to {{ outputDir }}
             </p>
-          </div>
-          <div class="flex items-center gap-2">
+            <p v-else class="min-w-0 flex-1 text-sm text-muted">
+              Choose where the print files should be written.
+            </p>
             <UButton
-              icon="i-lucide-folder-output"
               color="neutral"
               variant="outline"
-              size="sm"
+              size="xs"
               :disabled="busy"
               @click="pickOutputDir"
             >
               {{ outputDir ? "Change output folder" : "Choose output folder" }}
             </UButton>
-            <UButton
-              icon="i-lucide-download"
-              color="primary"
-              size="sm"
-              :loading="busy"
-              :disabled="busy || !outputDir"
-              @click="runExport"
-            >
-              Export
-            </UButton>
           </div>
-        </div>
+        </section>
 
-        <p v-if="outputDir" class="truncate text-xs text-muted">Exporting to {{ outputDir }}</p>
-        <p v-else class="text-xs text-muted">Choose where the print files should be written.</p>
+        <UButton
+          icon="i-lucide-download"
+          color="primary"
+          block
+          :loading="busy"
+          :disabled="busy || !outputDir"
+          @click="runExport"
+        >
+          Export
+        </UButton>
 
-        <div v-if="progress.running" class="max-w-sm space-y-2">
-          <UProgress
-            color="primary"
-            size="sm"
-            :model-value="progress.completed"
-            :max="progress.total"
-          />
+        <div v-if="progress.running" class="space-y-2">
+          <UProgress color="primary" size="sm" :model-value="progress.completed" :max="progress.total" />
           <p class="text-sm text-muted tabular-nums">
             <span class="text-default">{{ progress.completed }}</span> of
             <span class="text-default">{{ progress.total }}</span> photos exported
             ({{ exportPercent }}%)
           </p>
         </div>
-      </div>
 
-      <!--
-        The book itself, spread by spread, as it will print, with the
-        spread-level controls: regenerate, reject, change layout, lock, shuffle,
-        and swapping two photos. Every control sends one `edit_book` and shows
-        what came back -- `useBook.editBook`.
-      -->
-      <BookPreview v-if="layout" :layout :busy @edit="editBook" />
-
-      <!--
-        Pre-flight. Blocks and Warns are rendered as two separate lists from
-        two separate arrays, never one filtered list: they are not the same
-        kind of thing, and the difference between them is whether any file was
-        written at all.
-      -->
-      <div
-        v-if="exportResult && counts"
-        class="space-y-4 rounded-lg bg-default p-4 ring ring-default"
-      >
-        <UAlert
-          v-if="outcome === 'blocked'"
-          icon="i-lucide-octagon-x"
-          color="error"
-          variant="subtle"
-          title="Nothing was exported"
-          description="Pre-flight found problems that would print badly. No files were written; fix these and export again."
-        />
         <!--
-          `blocked: false` with nothing written is an export where every single
-          item failed. It is not a success and must not be dressed as one.
+          Pre-flight. Blocks and Warns are rendered as two separate lists from
+          two separate arrays, never one filtered list: they are not the same
+          kind of thing, and the difference between them is whether any file was
+          written at all.
         -->
-        <UAlert
-          v-else-if="outcome === 'failed'"
-          icon="i-lucide-triangle-alert"
-          color="error"
-          variant="subtle"
-          title="No files could be written"
-          description="Pre-flight passed, but every photo failed to export. The reasons are listed below."
-        />
-        <UAlert
-          v-else
-          :icon="outcome === 'partial' ? 'i-lucide-triangle-alert' : 'i-lucide-check'"
-          :color="outcome === 'partial' ? 'warning' : 'success'"
-          variant="subtle"
-          :title="`${counts.writtenCount} ${counts.writtenCount === 1 ? 'file' : 'files'} written to ${exportResult.outputDir}`"
-          :description="
-            exportResult.manifestError
-              ? `Format: ${exportResult.format}. The files are there, but manifest.json could not be written: ${exportResult.manifestError}`
-              : `Format: ${exportResult.format}. A manifest of what went where is in the same folder.`
-          "
-          :ui="{ description: 'break-words' }"
-          :actions="[
-            {
-              label: 'Reveal in Finder',
-              icon: 'i-lucide-folder-open',
-              color: 'neutral',
-              variant: 'outline',
-              onClick: () => revealPath && reveal(revealPath),
-            },
-          ]"
-        />
+        <div v-if="exportResult && counts" class="space-y-4 border-t border-default pt-6">
+          <UAlert
+            v-if="outcome === 'blocked'"
+            icon="i-lucide-octagon-x"
+            color="error"
+            variant="subtle"
+            title="Nothing was exported"
+            description="Pre-flight found problems that would print badly. No files were written; fix these and export again."
+          />
+          <!--
+            `blocked: false` with nothing written is an export where every single
+            item failed. It is not a success and must not be dressed as one.
+          -->
+          <UAlert
+            v-else-if="outcome === 'failed'"
+            icon="i-lucide-triangle-alert"
+            color="error"
+            variant="subtle"
+            title="No files could be written"
+            description="Pre-flight passed, but every photo failed to export. The reasons are listed below."
+          />
+          <UAlert
+            v-else
+            :icon="outcome === 'partial' ? 'i-lucide-triangle-alert' : 'i-lucide-check'"
+            :color="outcome === 'partial' ? 'warning' : 'success'"
+            variant="subtle"
+            :title="`${counts.writtenCount} ${counts.writtenCount === 1 ? 'file' : 'files'} written to ${exportResult.outputDir}`"
+            :description="
+              exportResult.manifestError
+                ? `Format: ${exportResult.format}. The files are there, but manifest.json could not be written: ${exportResult.manifestError}`
+                : `Format: ${exportResult.format}. A manifest of what went where is in the same folder.`
+            "
+            :ui="{ title: 'break-words', description: 'break-words' }"
+            orientation="vertical"
+            :actions="[
+              {
+                label: 'Reveal in Finder',
+                icon: 'i-lucide-folder-open',
+                color: 'neutral',
+                variant: 'outline',
+                onClick: () => revealPath && reveal(revealPath),
+              },
+            ]"
+          />
 
-        <div v-if="counts.blockingCount > 0" class="space-y-2">
-          <h4 class="flex items-center gap-2 text-sm font-medium text-highlighted">
-            <UIcon name="i-lucide-octagon-x" class="size-4 text-error" />
-            Blocking ({{ counts.blockingCount }})
-          </h4>
-          <ul class="space-y-1 text-sm text-muted">
-            <li v-for="(f, i) in exportResult.blocking" :key="`block-${i}`" class="break-words">
-              <span v-if="f.page > 0" class="tabular-nums text-default">Page {{ f.page }}:</span>
-              {{ f.message }}
-            </li>
-          </ul>
-        </div>
+          <div v-if="counts.blockingCount > 0" class="space-y-2">
+            <h4 class="flex items-center gap-2 text-sm font-medium text-highlighted">
+              <UIcon name="i-lucide-octagon-x" class="size-4 text-error" />
+              Blocking ({{ counts.blockingCount }})
+            </h4>
+            <ul class="space-y-1 text-sm text-muted">
+              <li v-for="(f, i) in exportResult.blocking" :key="`block-${i}`" class="break-words">
+                <span v-if="f.page > 0" class="tabular-nums text-default">Page {{ f.page }}:</span>
+                {{ f.message }}
+              </li>
+            </ul>
+          </div>
 
-        <div v-if="counts.warningCount > 0" class="space-y-2">
-          <h4 class="flex items-center gap-2 text-sm font-medium text-highlighted">
-            <UIcon name="i-lucide-triangle-alert" class="size-4 text-warning" />
-            Warnings ({{ counts.warningCount }})
-          </h4>
-          <ul class="space-y-1 text-sm text-muted">
-            <li v-for="(f, i) in exportResult.warnings" :key="`warn-${i}`" class="break-words">
-              <span v-if="f.page > 0" class="tabular-nums text-default">Page {{ f.page }}:</span>
-              {{ f.message }}
-            </li>
-          </ul>
-        </div>
+          <div v-if="counts.warningCount > 0" class="space-y-2">
+            <h4 class="flex items-center gap-2 text-sm font-medium text-highlighted">
+              <UIcon name="i-lucide-triangle-alert" class="size-4 text-warning" />
+              Warnings ({{ counts.warningCount }})
+            </h4>
+            <ul class="space-y-1 text-sm text-muted">
+              <li v-for="(f, i) in exportResult.warnings" :key="`warn-${i}`" class="break-words">
+                <span v-if="f.page > 0" class="tabular-nums text-default">Page {{ f.page }}:</span>
+                {{ f.message }}
+              </li>
+            </ul>
+          </div>
 
-        <div v-if="counts.failedCount > 0" class="space-y-2">
-          <h4 class="text-sm font-medium text-highlighted">
-            Failed to write ({{ counts.failedCount }})
-          </h4>
-          <ul class="space-y-1 text-sm text-muted">
-            <li
-              v-for="failure in exportResult.failures"
-              :key="failure.filename"
-              class="break-words"
-            >
-              <span class="font-mono text-default">{{ failure.filename }}</span>
-              {{ failure.message }}
-            </li>
-          </ul>
+          <div v-if="counts.failedCount > 0" class="space-y-2">
+            <h4 class="text-sm font-medium text-highlighted">
+              Failed to write ({{ counts.failedCount }})
+            </h4>
+            <ul class="space-y-1 text-sm text-muted">
+              <li
+                v-for="failure in exportResult.failures"
+                :key="failure.filename"
+                class="break-words"
+              >
+                <span class="font-mono text-default">{{ failure.filename }}</span>
+                {{ failure.message }}
+              </li>
+            </ul>
+          </div>
         </div>
       </div>
-    </div>
-  </main>
-
-  <!--
-    Kept mounted while folded away, so closing the panel does not throw away
-    the conversation or a proposal still waiting for an answer.
-  -->
-  <aside
-    v-show="chatOpen"
-    class="w-96 shrink-0 border-l border-default bg-default"
-    aria-label="Chat about this book"
-  >
-    <BookChat
-      :project-id="projectId"
-      :layout
-      @book-changed="refreshLayout"
-      @open-keys="keysOpen = true"
-    />
-  </aside>
-  </div>
+    </template>
+  </USlideover>
 </template>

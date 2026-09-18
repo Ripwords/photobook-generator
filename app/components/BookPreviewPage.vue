@@ -321,7 +321,7 @@ const gutter = computed(() => rectStyle(gutterRect(layout.geometry, side)));
     ref="pageEl"
     class="relative overflow-hidden"
     :style="{ aspectRatio: `${layout.geometry.pageWIn} / ${layout.geometry.pageHIn}` }"
-    :class="page ? 'bg-white' : 'bg-charcoal-200 dark:bg-charcoal-800'"
+    :class="page ? 'bg-white' : 'bg-neutral-200 dark:bg-neutral-800'"
   >
     <template v-if="page">
       <!--

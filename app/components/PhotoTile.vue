@@ -18,7 +18,7 @@ const {
   photo: AnalyzedPhoto | PartialAnalyzedPhoto;
   /** How many near-duplicate frames this photo was picked from. 1 means no burst. */
   burstSize?: number;
-  /** The single top-ranked photo in its event group. Marked with the hero accent. */
+  /** The single top-ranked photo in its event group. Outlined, and badged with a star. */
   isHero?: boolean;
   /**
    * The user's own decision about this photo. Display only -- this component
@@ -72,7 +72,7 @@ const sharpnessPct = computed(() => (isRanked(photo) ? photo.sharpnessPct : null
   <figure
     class="group relative aspect-square overflow-hidden rounded-lg bg-elevated"
     :class="[
-      isHero ? 'ring-2 ring-sunlight-800 dark:ring-sunlight-400' : 'ring ring-default',
+      isHero ? 'ring-2 ring-inverted ring-offset-2 ring-offset-(--ui-bg)' : 'ring ring-default',
       dimmed ? 'opacity-45 grayscale' : '',
     ]"
   >
@@ -116,7 +116,7 @@ const sharpnessPct = computed(() => (isRanked(photo) ? photo.sharpnessPct : null
     >
       <UButton
         :icon="override === 'include' ? 'i-lucide-check-circle-2' : 'i-lucide-circle-plus'"
-        size="xs"
+        size="sm"
         :color="override === 'include' ? 'primary' : 'neutral'"
         :class="override === 'include' ? '' : 'bg-black/60 text-white'"
         :aria-pressed="override === 'include'"
@@ -126,7 +126,7 @@ const sharpnessPct = computed(() => (isRanked(photo) ? photo.sharpnessPct : null
       />
       <UButton
         :icon="override === 'exclude' ? 'i-lucide-x-circle' : 'i-lucide-circle-minus'"
-        size="xs"
+        size="sm"
         :color="override === 'exclude' ? 'error' : 'neutral'"
         :class="override === 'exclude' ? '' : 'bg-black/60 text-white'"
         :aria-pressed="override === 'exclude'"
@@ -139,7 +139,7 @@ const sharpnessPct = computed(() => (isRanked(photo) ? photo.sharpnessPct : null
     <UBadge
       v-if="isHero"
       size="sm"
-      class="absolute top-2 right-2 gap-1 bg-sunlight-300 text-charcoal-900 ring-0"
+      class="absolute top-2 right-2 gap-1 bg-white text-black ring-0"
       title="Highest-ranked photo in this event"
     >
       <UIcon name="i-lucide-star" class="size-3" />
