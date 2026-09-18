@@ -241,7 +241,7 @@ async function analyze(channel: Channel<AnalysisEvent>): Promise<AnalysisSummary
     total: photos.length + 2,
     failed: 2,
     cached: 0,
-    photos: viewPhotos,
+    photos,
   };
   channel.onmessage({ kind: "done", summary });
   return summary;
