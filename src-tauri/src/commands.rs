@@ -484,6 +484,31 @@ pub(crate) fn count_keepers(photos: &[serde_json::Value]) -> (usize, usize) {
     (crate::book::cull::cull(&parsed, &Overrides::new()).len(), refused)
 }
 
+/// Hashes `paths` across the machine's cores, returning one result per path
+/// in input order. Serial hashing was a third of a cold analysis and all of
+/// a cached one. The cache lookups stay on the caller's thread, since `Db`
+/// is one connection.
+fn hash_files(paths: &[String]) -> Vec<std::io::Result<String>> {
+    let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    let per_thread = paths.len().div_ceil(threads).max(1);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = paths
+            .chunks(per_thread)
+            .map(|part| {
+                scope.spawn(move || {
+                    part.iter()
+                        .map(|path| hash_file(Path::new(path)))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().expect("a hashing thread panicked"))
+            .collect()
+    })
+}
+
 /// Result of consulting the cache for a batch of candidate paths.
 pub(crate) struct CacheLookup {
     /// Already-analysed `features` JSON, pulled straight from `Db`.
@@ -506,8 +531,8 @@ pub(crate) fn lookup_cache(db: &Db, paths: &[String]) -> Result<CacheLookup, Str
     let mut misses = Vec::new();
     let mut hash_failures = 0usize;
 
-    for path in paths {
-        match hash_file(Path::new(path)) {
+    for (path, hash) in paths.iter().zip(hash_files(paths)) {
+        match hash {
             Ok(hash) => match db.get_features(&hash).map_err(|e| e.to_string())? {
                 Some(json) => match serde_json::from_str::<serde_json::Value>(&json) {
                     // The cache is keyed by content hash, but the stored
@@ -2542,6 +2567,33 @@ mod tests {
         assert_eq!(result.hits.len(), 1);
         assert_eq!(result.misses.len(), 1);
         assert_eq!(result.hash_failures, 1);
+    }
+
+    /// Hashing runs on several threads, and the photos stream to the webview
+    /// in the order `lookup_cache` returns them. The largest files come
+    /// first here, so whichever thread gets them finishes last: returning
+    /// results as threads finish would reorder both lists.
+    #[test]
+    fn hits_and_misses_keep_the_input_order() {
+        let db = Db::open_in_memory().unwrap();
+        let paths: Vec<String> = (0..16u8)
+            .map(|i| {
+                let bytes = vec![i; (16 - usize::from(i)) * 256 * 1024];
+                write_temp_file(&format!("ordered-{i:02}.jpg"), &bytes)
+            })
+            .collect();
+        for path in paths.iter().step_by(2) {
+            let hash = hash_file(Path::new(path)).unwrap();
+            db.put_features(&hash, path, r#"{"status":"ok"}"#).unwrap();
+        }
+
+        let result = lookup_cache(&db, &paths).unwrap();
+
+        let hits: Vec<&str> = result.hits.iter().map(|hit| hit["path"].as_str().unwrap()).collect();
+        let expected_hits: Vec<&str> = paths.iter().step_by(2).map(String::as_str).collect();
+        let expected_misses: Vec<String> = paths.iter().skip(1).step_by(2).cloned().collect();
+        assert_eq!(hits, expected_hits);
+        assert_eq!(result.misses, expected_misses);
     }
 
     // --- `gather_chunked`: the incremental hash -> cache -> sidecar ->

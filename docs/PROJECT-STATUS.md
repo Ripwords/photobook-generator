@@ -56,9 +56,12 @@ harness (`bun run ui:mock`) covers the flow end to end in light and dark.
    |---|---|---|---|
    | Baseline | 544 ms | 161 ms | 174 ms |
    | `sha2` `asm` feature (ARMv8 SHA instructions) | 419 ms | 44 ms | 44 ms |
+   | Hash each chunk's files on every core (`hash_files`) | 381 ms | 10 ms | 9 ms |
 
    Hashing was a third of a cold run and all of a warm one; the sidecar's share (~365 ms
-   cold) is Vision and decoding.
+   cold) is Vision and decoding. Overlapping a chunk's hashing with the previous chunk's
+   sidecar call (planned) was dropped: hashing is now ~9 ms of a cold run, the most it
+   could save.
 
 Not done: the "Discard draft…" item in the sidebar row's menu (discard is on the draft's own
 toolbar only), and the performance pass (parallel hashing, passing Rust's hash to Swift,
