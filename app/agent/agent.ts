@@ -23,6 +23,13 @@ import { AGENT_TOOLS, createAgentTools, type Invoke, type ToolName } from "./too
 
 export type AgentModel = Parameters<typeof wrapLanguageModel>[0]["model"];
 
+/**
+ * DeepSeek's name for V4.1 Flash, as an explicit string because the
+ * provider's typed union still lists retired models (design §9.2). The old
+ * `deepseek-v4-flash` is still accepted, but only as an alias.
+ */
+export const MODEL_ID = "deepseek-flash";
+
 /** The loop stops after this many model calls, whatever the model wants. */
 export const MAX_STEPS = 20;
 

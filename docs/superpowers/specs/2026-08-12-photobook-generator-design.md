@@ -26,7 +26,7 @@ These are settled and should not be relitigated during implementation.
 | Input formats | HEIC, JPEG, PNG, camera RAW (CR2/NEF/ARW/DNG) |
 | Text on pages | EXIF date/location stamps, plus user-typed text boxes. **No AI-written captions.** |
 | Privacy | **Images never leave the machine.** All pixel analysis is on-device. Only a minimum-disclosure derived payload may be sent to a hosted LLM. |
-| Hosted LLM | DeepSeek (`deepseek-v4-flash`), text-only, reasoning over derived JSON |
+| Hosted LLM | DeepSeek (`deepseek-flash`, V4.1 Flash), text-only, reasoning over derived JSON |
 | Layout approach | Curated template library, scored against photo features |
 | Product SKUs | 20 pages or 40 pages; the app recommends which based on keeper count |
 
@@ -429,8 +429,10 @@ data, and face geometry is biometric data under GDPR Art. 9.
 
 ### 9.2 DeepSeek specifics
 
-- Model ID `deepseek-v4-flash` passed as an explicit string — the `@ai-sdk/deepseek`
-  typed union still lists the retired `deepseek-chat`/`deepseek-reasoner`
+- Model ID `deepseek-flash` passed as an explicit string — the `@ai-sdk/deepseek`
+  typed union still lists the retired `deepseek-chat`/`deepseek-reasoner`. DeepSeek serves
+  V4.1 Flash under `deepseek-flash`; `deepseek-v4-flash` is still accepted but only as an
+  alias of a retired model (checked against api-docs.deepseek.com, 2026-09-18)
 - Thinking disabled for routine calls; reasoning tokens bill as output and thinking is on
   by default
 - `reasoning_content` must round-trip on every tool-calling turn or the API returns 400

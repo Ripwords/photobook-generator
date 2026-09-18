@@ -40,7 +40,8 @@ repair, and the router in `prepareStep`.
 
 - `createBookAgent(projectId, { model, invoke, jev })` takes the model instead of building it,
   so tests script it. `useBookAgent` builds it: `createDeepSeek` over `modelFetch("deepseek")`,
-  model `deepseek-v4-flash` as an explicit string (design §9.2). The SDK's `apiKey` is a
+  model `MODEL_ID` = `deepseek-flash` as an explicit string (design §9.2), exported from
+  `agent.ts` so a test pins it in the request body. The SDK's `apiKey` is a
   placeholder that never leaves the webview.
 - `toolApproval` asks the user about every write and nothing else. Before asking, it runs Jev's
   proposal check. Below `CHECK_WARN_BELOW` (0.5) the approval request carries a reason

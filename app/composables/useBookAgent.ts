@@ -3,12 +3,9 @@ import { useChat } from "@ai-sdk/vue";
 import { invoke } from "@tauri-apps/api/core";
 import { info } from "@tauri-apps/plugin-log";
 import { DirectChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
-import { createBookAgent, savedEdits } from "~/agent/agent";
+import { createBookAgent, MODEL_ID, savedEdits } from "~/agent/agent";
 import { modelFetch } from "~/agent/fetch";
 import { createJev } from "~/agent/jev";
-
-/** An explicit string: the provider's typed union still lists retired models (design §9.2). */
-const MODEL_ID = "deepseek-v4-flash";
 
 /**
  * The chat with the book agent for one saved project. Messages live only in

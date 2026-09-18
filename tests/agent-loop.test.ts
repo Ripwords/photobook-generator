@@ -11,6 +11,7 @@ import { convertArrayToReadableStream, MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
 import {
   CHECK_WARN_BELOW,
+  MODEL_ID,
   createBookAgent,
   lastUserText,
   pruneHistory,
@@ -397,7 +398,7 @@ function deepseek(...responses: ReturnType<typeof deepseekStream>[]) {
     const { status, headers, body } = responses[Math.min(turn++, responses.length - 1)]!;
     return new Response(body, { status, headers });
   });
-  const model = createDeepSeek({ apiKey: "test", fetch })("deepseek-v4-flash");
+  const model = createDeepSeek({ apiKey: "test", fetch })(MODEL_ID);
   return { model, fetch, bodies };
 }
 
@@ -446,6 +447,16 @@ describe("over the DeepSeek provider", () => {
     const content = await result.content;
     expect(content.filter((p) => p.type === "tool-approval-request")).toHaveLength(1);
     expect(commands(invoke)).not.toContain("agent_edit");
+  });
+
+  it("asks for deepseek-flash, the name DeepSeek serves V4.1 Flash under", async () => {
+    const { model, bodies } = deepseek(reply);
+    await (
+      await createBookAgent(1, { model, invoke: mockInvoke(), jev: quietJev() }).stream({
+        messages: [user("hi")],
+      })
+    ).text;
+    expect(bodies[0]).toMatchObject({ model: "deepseek-flash" });
   });
 
   it("sends DeepSeek thinking disabled", async () => {
