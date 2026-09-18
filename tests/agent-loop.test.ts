@@ -117,10 +117,10 @@ describe("approval", () => {
     expect(model.doGenerateCalls).toHaveLength(1);
   });
 
-  async function answered(approved: boolean) {
+  async function answered(approved: boolean, jev = quietJev()) {
     const invoke = mockInvoke();
     const model = scripted(toolCall("swap_photos", SWAP), text("done"));
-    const agent = createBookAgent(1, { model, invoke, jev: quietJev() });
+    const agent = createBookAgent(1, { model, invoke, jev });
     const first = await agent.generate({ messages: [user("swap pages 1 and 2")] });
     const request = first.content.find((p) => p.type === "tool-approval-request");
     if (!request) throw new Error("no approval request");
@@ -134,11 +134,11 @@ describe("approval", () => {
         },
       ],
     });
-    return invoke;
+    return { invoke, model };
   }
 
   it("runs the edit once approved", async () => {
-    const invoke = await answered(true);
+    const { invoke } = await answered(true);
     expect(invoke).toHaveBeenCalledWith("agent_edit", {
       projectId: 1,
       edit: { kind: "swapPhotos", ...SWAP },
@@ -146,8 +146,46 @@ describe("approval", () => {
   });
 
   it("never runs a denied edit", async () => {
-    const invoke = await answered(false);
+    const { invoke } = await answered(false);
     expect(commands(invoke)).not.toContain("agent_edit");
+  });
+
+  // Resuming, the SDK asks toolApproval again about every approved call, and
+  // restarts at step 0 with no new words from the user.
+  it("asks Jev once per proposal and routes once per user message, across an approval", async () => {
+    const routeIntent = vi.fn(async () => INTENTS.swap.tools);
+    const checkProposal = vi.fn(async () => 0.9);
+    const { invoke, model } = await answered(true, quietJev({ routeIntent, checkProposal }));
+    expect(commands(invoke)).toContain("agent_edit");
+    expect(checkProposal).toHaveBeenCalledOnce();
+    expect(routeIntent).toHaveBeenCalledOnce();
+    expect(toolNames(model.doGenerateCalls[1])).toEqual(Object.keys(AGENT_TOOLS).toSorted());
+  });
+
+  it("still checks a new proposal after an earlier one was answered", async () => {
+    const checkProposal = vi.fn(async () => 0.9);
+    const model = scripted(
+      toolCall("swap_photos", SWAP, "call-1"),
+      text("done"),
+      toolCall("swap_photos", SWAP, "call-2"),
+    );
+    const agent = createBookAgent(1, { model, invoke: mockInvoke(), jev: quietJev({ checkProposal }) });
+    const first = await agent.generate({ messages: [user("swap pages 1 and 2")] });
+    const request = first.content.find((p) => p.type === "tool-approval-request");
+    if (!request) throw new Error("no approval request");
+    const history: ModelMessage[] = [
+      user("swap pages 1 and 2"),
+      ...first.response.messages,
+      { role: "tool", content: [{ type: "tool-approval-response", approvalId: request.approvalId, approved: true }] },
+    ];
+    const second = await agent.generate({ messages: history });
+    await agent.generate({
+      messages: [...history, ...second.response.messages, user("now swap them back")],
+    });
+    expect(checkProposal.mock.calls.map(([words]) => words)).toEqual([
+      "swap pages 1 and 2",
+      "now swap them back",
+    ]);
   });
 
   it("runs a read without asking", async () => {

@@ -97,6 +97,15 @@ function extractJson(text: string): unknown {
 
 const isToolName = (name: string): name is ToolName => Object.hasOwn(AGENT_TOOLS, name);
 
+/** Whether the user was already asked to approve this call. */
+const wasShown = (messages: readonly ModelMessage[], toolCallId: string) =>
+  messages.some(
+    (m) =>
+      m.role === "assistant" &&
+      typeof m.content !== "string" &&
+      m.content.some((p) => p.type === "tool-approval-request" && p.toolCallId === toolCallId),
+  );
+
 type Content = Awaited<ReturnType<NonNullable<LanguageModelMiddleware["wrapGenerate"]>>>["content"];
 
 const hasAnswer = (content: Content) =>
@@ -159,6 +168,9 @@ export function createBookAgent(projectId: number, { model, invoke, jev }: BookA
     async toolApproval({ toolCall, messages }): Promise<ToolApprovalStatus> {
       const { toolName, input } = toolCall;
       if (!isToolName(toolName) || !AGENT_TOOLS[toolName].writes) return "not-applicable";
+      // On resume the SDK asks again about calls the user already answered, and
+      // denies only on "denied", so Jev's answer could change nothing.
+      if (wasShown(messages, toolCall.toolCallId)) return "user-approval";
       const fit = await jev.checkProposal(lastUserText(messages), { toolName, input });
       if (fit === null || fit >= CHECK_WARN_BELOW) return "user-approval";
       return {
@@ -169,7 +181,8 @@ export function createBookAgent(projectId: number, { model, invoke, jev }: BookA
 
     async prepareStep({ stepNumber, messages }) {
       const pruned = pruneHistory(messages);
-      if (stepNumber > 0) return { messages: pruned };
+      // A turn resumed after an approval starts at step 0 too, with no new words to route.
+      if (stepNumber > 0 || messages.at(-1)?.role !== "user") return { messages: pruned };
       const routed = await jev.routeIntent(lastUserText(messages));
       return routed ? { messages: pruned, activeTools: [...routed] } : { messages: pruned };
     },
