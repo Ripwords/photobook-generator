@@ -1,3 +1,4 @@
+use crate::agent::keys::{self, KeyStatus, KeyStore, KeychainStore, Provider};
 use crate::agent::view::{AgentView, SourcePhoto};
 use crate::book::cull::{Overrides, Photo};
 use crate::book::manifest::{manifest, Manifest};
@@ -1838,6 +1839,31 @@ pub async fn agent_view(app: AppHandle, project_id: i64) -> Result<AgentView, St
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Stores a provider's API key in the keychain. Blank keys are refused and
+/// the key is trimmed first.
+#[tauri::command]
+pub async fn set_api_key(provider: Provider, key: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || keys::set_key(&KeychainStore, provider, &key))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn clear_api_key(provider: Provider) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || KeychainStore.clear(provider))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Whether each provider has a usable key. The only key read the webview
+/// can trigger, and it answers with bools.
+#[tauri::command]
+pub async fn api_key_status() -> Result<KeyStatus, String> {
+    tauri::async_runtime::spawn_blocking(|| keys::status(&KeychainStore, keys::env_fallback))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Applies one spread-level edit to a saved book, persists it, and returns

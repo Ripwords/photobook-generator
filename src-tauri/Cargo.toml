@@ -34,6 +34,11 @@ tauri-plugin-log = "2"
 # requires a direct dependency edge, not just a transitive one.
 libc = "0.2"
 
+# API keys (`agent::keys`). v4's default `v1` feature selects the Apple
+# keychain store on macOS; with no feature the crate refuses to compile, so it
+# cannot silently fall back to a mock store the way v3 did.
+keyring = "4"
+
 [dev-dependencies]
 tempfile = "3"
 
