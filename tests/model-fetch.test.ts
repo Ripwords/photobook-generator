@@ -397,7 +397,7 @@ function sink() {
 }
 
 describe("the browser harness", () => {
-  it("answers Jev with its canned JSON", async () => {
+  it("answers Jev as overloaded", async () => {
     const { events, onEvent } = sink();
     await harness.modelRequest(
       { id: "j", provider: "jev", path: "/v1/systemone", body: "{}", onEvent },
@@ -405,9 +405,9 @@ describe("the browser harness", () => {
     );
     const bytes = events.flatMap((e) => (e.kind === "chunk" ? e.bytes : []));
 
-    expect(events[0]).toMatchObject({ kind: "head", status: 200 });
+    expect(events[0]).toMatchObject({ kind: "head", status: 529 });
     expect(JSON.parse(new TextDecoder().decode(new Uint8Array(bytes)))).toEqual(
-      harness.JEV_ANSWER,
+      harness.JEV_OVERLOADED,
     );
     expect(events.at(-1)).toEqual({ kind: "end" });
   });

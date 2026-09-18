@@ -38,3 +38,18 @@ worse than DeepSeek alone.
 - Every intent's tools exist in `AGENT_TOOLS` (a table-consistency test).
 - The request body contains only the message and the `AgentView` fields. Reuse the leak
   check.
+
+## As built
+
+- `routeIntent(message)` takes no `AgentView`. Classifying intent needs only the user's words,
+  so the book stays out of that request.
+- `rankPhotos` keeps a photo only when Jev gives it more than an even share of the probability
+  (`p > 1 / n`), best first. Without a cut, a query that matches nothing would still return
+  `limit` photos. The rule is chosen, not measured, like `ROUTE_CONFIDENCE`.
+- A photo is described to Jev by its tags and face count only, keyed by `AgentPhoto.id`. An
+  id Jev was not offered is dropped.
+- `createJev({ fetch, log })` takes the log as a callback. Phase 7 decides where it is written.
+  A `JevDecision` holds the role, the intent or tool, the probability and the outcome, never
+  the message.
+- The browser harness answers every Jev request with a 529, so the panel runs on the
+  no-answer paths there.

@@ -92,20 +92,20 @@ export const DEEPSEEK_TEXT_REPLY =
   "I can make chapter 2 calmer — it would use quieter layouts on spreads 3 and 4.";
 
 /**
- * A stand-in until the Jev client exists: the harness has to answer
- * `/v1/systemone` with something, but this shape is not TypeSafe's. Replace
- * it with a real response when phase 6 defines `JevAnswer`.
+ * Jev is always overloaded in the harness, so the chat panel runs on each
+ * role's no-answer path: every tool offered, `tagRanker` for search, no
+ * check. Those paths are the ones that must always work.
  */
-export const JEV_ANSWER = { answer: "chapter", probability: 0.92 };
+export const JEV_OVERLOADED = { error: "Service temporarily unavailable" };
 
 export const SCRIPTS: Script[] = [
   {
     provider: "jev",
     when: () => true,
     response: {
-      status: 200,
+      status: 529,
       headers: [["content-type", "application/json"]],
-      body: JSON.stringify(JEV_ANSWER),
+      body: JSON.stringify(JEV_OVERLOADED),
     },
   },
   {
