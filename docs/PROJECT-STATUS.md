@@ -48,6 +48,18 @@ harness (`bun run ui:mock`) covers the flow end to end in light and dark.
    (`onCloseRequested` + `destroy`, which needed `core:window:allow-destroy`). Drafts are
    memory-only by the user's choice.
 
+4. **Speed, measured on a real folder** (27 camera JPEGs, 83 MB, M-series with 4P+6E cores,
+   release build, median of runs from `cargo run --release --example analyze_bench`).
+   Each row is one commit; a change is kept only if it wins here.
+
+   | Change | Cold | Warm (all cached) | Hash + lookup |
+   |---|---|---|---|
+   | Baseline | 544 ms | 161 ms | 174 ms |
+   | `sha2` `asm` feature (ARMv8 SHA instructions) | 419 ms | 44 ms | 44 ms |
+
+   Hashing was a third of a cold run and all of a warm one; the sidecar's share (~365 ms
+   cold) is Vision and decoding.
+
 Not done: the "Discard draft…" item in the sidebar row's menu (discard is on the draft's own
 toolbar only), and the performance pass (parallel hashing, passing Rust's hash to Swift,
 parallel export), which waits on a benchmark folder from the user.
