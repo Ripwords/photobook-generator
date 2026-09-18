@@ -550,6 +550,10 @@ pub(crate) struct GatherResult {
     pub ok: Vec<serde_json::Value>,
     pub cached: usize,
     pub failed: usize,
+    /// Time spent hashing and looking up the cache, and in `analyze`, for the
+    /// stage-timing log line `analyze_folders` writes.
+    pub hashing: Duration,
+    pub analysing: Duration,
 }
 
 /// The chunked incremental gather that fixes the "0 / 283 frozen for ~14
@@ -589,13 +593,17 @@ pub(crate) fn gather_chunked(
     let mut cached = 0usize;
     let mut analysed = 0usize;
     let mut failed = 0usize;
+    let mut hashing = Duration::ZERO;
+    let mut analysing = Duration::ZERO;
 
     for chunk in crate::sidecar::chunk_paths_ramped(paths) {
+        let clock = Instant::now();
         let CacheLookup {
             hits,
             misses,
             hash_failures,
         } = lookup_cache(db, &chunk)?;
+        hashing += clock.elapsed();
 
         // Cache hits (and hash failures, discovered in the same pass) are
         // known the instant `lookup_cache` returns for THIS chunk -- no
@@ -616,7 +624,9 @@ pub(crate) fn gather_chunked(
             continue;
         }
 
+        let clock = Instant::now();
         let records = analyze(&misses);
+        analysing += clock.elapsed();
 
         // Cache-write and collect the full-feature records `finalize_photos`
         // needs, in one pass over `records`; `batch_progress` (the same pure
@@ -651,7 +661,13 @@ pub(crate) fn gather_chunked(
         ok.extend(fresh);
     }
 
-    Ok(GatherResult { ok, cached, failed })
+    Ok(GatherResult {
+        ok,
+        cached,
+        failed,
+        hashing,
+        analysing,
+    })
 }
 
 #[tauri::command]
@@ -717,10 +733,13 @@ pub async fn analyze_folders(
     // onto tokio's separate blocking-thread pool, leaving the async worker
     // pool free for the drain task throughout the run, not just during the
     // sidecar calls.
+    let gather_started = Instant::now();
     let GatherResult {
         ok: gathered,
         cached,
         failed,
+        hashing,
+        analysing,
     } = {
         let app_for_pool = app.clone();
         let on_event_for_pool = on_event.clone();
@@ -756,7 +775,19 @@ pub async fn analyze_folders(
         .map_err(|e| e.to_string())??
     };
 
+    let gather_elapsed = gather_started.elapsed();
+    let finalize_started = Instant::now();
     let ok = finalize_photos(gathered);
+    log::info!(
+        "analysis run {run_id}: {} photos ({cached} cached, {failed} failed) in {:.2?}; \
+         gather {:.2?} = hash+lookup {:.2?} + sidecar {:.2?} + other; finalize {:.2?}",
+        paths.len(),
+        started.elapsed(),
+        gather_elapsed,
+        hashing,
+        analysing,
+        finalize_started.elapsed(),
+    );
 
     // The window handle and the notification call both need a live
     // AppHandle and cannot be unit-tested; `should_notify` (the decision of

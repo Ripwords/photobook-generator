@@ -231,3 +231,19 @@ a real `analyze` batch uses — see `Benchmarker.swift`'s doc comment. That make
 numbers clean and comparable across formats, but means a benchmark run's total wall time
 under-represents real multi-core throughput; look at the aggregate ratios and per-format
 comparisons, not the raw total, when judging real-world speed.
+
+### Timing what the user waits for
+
+`scripts/benchmark.sh` times the sidecar's stages one photo at a time. To time the app's own
+analysis path (Rust hashing and cache lookup, the batched sidecar calls, finalize) over a
+folder, cold and then with every photo cached:
+
+```bash
+bun run sidecar
+cd src-tauri && cargo run --release --example analyze_bench -- ~/Pictures/SomeFolder 3
+```
+
+It points `HOME` at a throwaway directory, so the app's real cache is never touched, and
+discards a first run that spawns the sidecar. Each run logs its split, for example
+`gather 419ms = hash+lookup 44ms + sidecar 370ms`, and the app writes the same line to its
+log for every analysis.
