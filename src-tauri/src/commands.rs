@@ -126,25 +126,42 @@ pub fn hash_file(path: &Path) -> std::io::Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// The photo set one `analyze_folders` run produced, and which run it was.
+/// Every analysed photo set a draft may still ask about, by the run that
+/// produced it.
 ///
-/// `run_id` is the identity check that used to be missing: the override
-/// toggle and the length chooser answer from this cache, and without the id
-/// a second analysis would silently answer questions about the set that was
-/// on screen from the set that replaced it -- keeper marks and the keeper
-/// count become those of a different folder while the generated book stays
-/// right, which is harder to notice, not easier. Every reader hands the id
-/// its own summary carried, and a mismatch is refused, never answered.
+/// The run id is the identity check: the override toggle and the length
+/// chooser answer from here, and without it one draft's questions would be
+/// answered from another draft's photos -- keeper marks and the keeper count
+/// become those of a different folder while the generated book stays right,
+/// which is harder to notice, not easier. Several runs are kept because
+/// several drafts can be analysing at once; a draft's run is dropped when it
+/// is generated or discarded (`forget_run`).
 #[derive(Default)]
-pub struct AnalysedSet {
-    /// `0` before any analysis has finished; never a real run's id.
-    pub run_id: u64,
-    pub photos: Vec<Photo>,
+pub struct AnalysedRuns {
+    runs: std::collections::HashMap<u64, std::sync::Arc<[Photo]>>,
+}
+
+impl AnalysedRuns {
+    pub fn insert(&mut self, run_id: u64, photos: Vec<Photo>) {
+        self.runs.insert(run_id, photos.into());
+    }
+
+    pub fn get(&self, run_id: u64) -> Result<std::sync::Arc<[Photo]>, String> {
+        self.runs.get(&run_id).cloned().ok_or_else(|| {
+            "These photos are no longer loaded -- analyse the folders again.".into()
+        })
+    }
+
+    pub fn forget(&mut self, run_id: u64) {
+        self.runs.remove(&run_id);
+    }
 }
 
 #[derive(Default)]
 pub struct AppState {
-    pub pool: Mutex<SidecarPool>,
+    /// tokio's rather than std's because it hands over in arrival order; see
+    /// `with_sidecar`.
+    pub pool: tokio::sync::Mutex<SidecarPool>,
     /// The photo set the contact sheet is currently showing, parsed once at
     /// the end of `analyze_folders`, together with the run that produced it.
     ///
@@ -156,10 +173,22 @@ pub struct AppState {
     /// click, per command, which is not a slow feature, it is an unusable
     /// one. With the set cached here the toggle sends only the override map
     /// and gets back only the surviving paths.
-    pub analysed: Mutex<AnalysedSet>,
+    pub analysed: Mutex<AnalysedRuns>,
     /// Minted once per `analyze_folders` call, before any work starts, so two
-    /// overlapping runs get distinct ids and the later one wins the cache.
+    /// overlapping runs get distinct ids.
     runs: std::sync::atomic::AtomicU64,
+}
+
+/// Runs `f` with the sidecar, holding it for exactly that long.
+///
+/// Callers take it per batch, never for a whole run, so two analyses (or an
+/// analysis and an export) take turns on the one sidecar instead of the
+/// second waiting for the first to finish entirely.
+pub(crate) fn with_sidecar<T>(state: &AppState, f: impl FnOnce(&mut SidecarPool) -> T) -> T {
+    // Blocking, not `.await`: every caller is already on a `spawn_blocking`
+    // thread, because the sidecar request inside blocks too.
+    let mut pool = state.pool.blocking_lock();
+    f(&mut pool)
 }
 
 impl AppState {
@@ -178,7 +207,7 @@ impl AppState {
 #[derive(Serialize, Clone)]
 pub struct AnalysisSummary {
     /// Which analysis produced this set. Handed back with every command
-    /// that answers from the cached photos -- see `AnalysedSet`.
+    /// that answers from the cached photos -- see `AnalysedRuns`.
     pub run_id: u64,
     pub total: usize,
     pub failed: usize,
@@ -700,11 +729,17 @@ pub async fn analyze_folders(
         tauri::async_runtime::spawn_blocking(move || -> Result<GatherResult, String> {
             let db = Db::open(&db_path_for_pool).map_err(|e| e.to_string())?;
             let state = app_for_pool.state::<AppState>();
-            let mut pool = state.pool.lock().map_err(|e| e.to_string())?;
             gather_chunked(
                 &db,
                 &paths_for_pool,
-                |misses| pool.analyze_all(&app_for_pool, misses, &thumbnail_dir, |_| {}),
+                // Per chunk, never for the whole run: a chunk is at most one
+                // sidecar batch, so another draft's analysis gets its turn
+                // between them.
+                |misses| {
+                    with_sidecar(&state, |pool| {
+                        pool.analyze_all(&app_for_pool, misses, &thumbnail_dir, |_| {})
+                    })
+                },
                 |photos, analysed_now, cached_now, failed_now| {
                     if let Err(err) = on_event_for_pool.send(AnalysisEvent::Batch {
                         photos,
@@ -761,12 +796,7 @@ pub async fn analyze_folders(
     // the point a book is actually generated.
     match photos_from_records(&ok) {
         Ok(parsed) => match app.state::<AppState>().analysed.lock() {
-            // A run that finished after a newer one started must not put the
-            // older set back; the newer run's summary is what the screen has.
-            Ok(mut cache) if cache.run_id < run_id => {
-                *cache = AnalysedSet { run_id, photos: parsed }
-            }
-            Ok(_) => {}
+            Ok(mut runs) => runs.insert(run_id, parsed),
             Err(err) => log::warn!("photo cache is poisoned, overrides will be slow: {err}"),
         },
         Err(err) => log::warn!("cannot cache the analysed photo set: {err}"),
@@ -1498,31 +1528,24 @@ pub(crate) fn kept_paths(photos: &[Photo], overrides: &Overrides) -> Vec<String>
 }
 
 /// The analysed photo set cached by `analyze_folders` for run `run_id`, or
-/// an error naming the remedy -- including when the cache holds a DIFFERENT
-/// run, which is the collision that used to be answered silently.
-fn cached_photos(app: &AppHandle, run_id: u64) -> Result<Vec<Photo>, String> {
+/// an error naming the remedy.
+fn cached_photos(app: &AppHandle, run_id: u64) -> Result<std::sync::Arc<[Photo]>, String> {
     let state = app.state::<AppState>();
-    let cache = state
+    let runs = state
         .analysed
         .lock()
         .map_err(|e| format!("the analysed photo set is unreadable: {e}"))?;
-    select_run(&cache, run_id).map(<[Photo]>::to_vec)
+    runs.get(run_id)
 }
 
-/// The identity check itself, kept pure so it can be tested without an
-/// `AppHandle`: the cached set answers only for the run that produced it.
-pub(crate) fn select_run(cache: &AnalysedSet, run_id: u64) -> Result<&[Photo], String> {
-    if cache.run_id == 0 || cache.photos.is_empty() {
-        return Err("No analysed photos are loaded -- analyse a folder first.".into());
+/// Drops a draft's analysed set once nothing will ask about it again: the
+/// draft was generated into a book, or discarded.
+#[tauri::command]
+pub fn forget_run(state: tauri::State<'_, AppState>, run_id: u64) {
+    match state.analysed.lock() {
+        Ok(mut runs) => runs.forget(run_id),
+        Err(err) => log::warn!("photo cache is poisoned, cannot forget run {run_id}: {err}"),
     }
-    if cache.run_id != run_id {
-        return Err(
-            "The photos on screen come from a different analysis than the one loaded here. \
-             Analyse the folder again."
-                .into(),
-        );
-    }
-    Ok(&cache.photos)
 }
 
 #[tauri::command]
@@ -1661,26 +1684,22 @@ pub async fn export_book(
                     log::warn!("failed to send export Started event: {err}");
                 }
                 let state = app.state::<AppState>();
-                let mut pool = match state.pool.lock() {
-                    Ok(pool) => pool,
-                    Err(err) => {
-                        log::warn!("sidecar pool is poisoned: {err}");
-                        return items
-                            .iter()
-                            .map(|i| {
-                                crate::sidecar::export_failure_record(&i.filename, "sidecar unavailable")
-                            })
-                            .collect();
-                    }
-                };
-                pool.export_all(&app, &output_dir, items, |resolved| {
-                    completed += resolved.len();
-                    if let Err(err) =
-                        on_event.send(ExportEvent::Progress { completed, total })
-                    {
-                        log::warn!("failed to send export Progress event: {err}");
-                    }
-                })
+                // One sidecar batch at a time, so an analysis running in
+                // another draft keeps moving while this book exports.
+                let mut out = Vec::with_capacity(items.len());
+                for batch in items.chunks(crate::sidecar::EXPORT_BATCH_SIZE) {
+                    out.extend(with_sidecar(&state, |pool| {
+                        pool.export_all(&app, &output_dir, batch, |resolved| {
+                            completed += resolved.len();
+                            if let Err(err) =
+                                on_event.send(ExportEvent::Progress { completed, total })
+                            {
+                                log::warn!("failed to send export Progress event: {err}");
+                            }
+                        })
+                    }));
+                }
+                out
             },
             |manifest| write_manifest_file(&output, manifest),
         )?;
@@ -2215,14 +2234,9 @@ mod tests {
         assert!(collect_photo_paths(&[folder("a"), folder("missing")]).is_err());
     }
 
-    /// The cached set answers ONLY the run that produced it. Before the id
-    /// existed, analysing a second folder made the override toggle judge the
-    /// first folder's screen against the second folder's photos, with no
-    /// error anywhere -- the keeper marks simply became another folder's.
-    #[test]
-    fn select_run_refuses_a_run_other_than_the_one_cached() {
-        let photo = Photo {
-            path: "/a.jpg".into(),
+    fn run_photo(path: &str) -> Photo {
+        Photo {
+            path: path.into(),
             hash: "h".into(),
             width: 4000,
             height: 3000,
@@ -2238,14 +2252,81 @@ mod tests {
             capture_quality: None,
             scene_tags: Vec::new(),
             captured_at: None,
-        };
-        let cache = AnalysedSet { run_id: 4, photos: vec![photo] };
+        }
+    }
 
-        assert_eq!(select_run(&cache, 4).map(<[Photo]>::len), Ok(1));
-        let stale = select_run(&cache, 3).unwrap_err();
-        assert!(stale.contains("different analysis"), "{stale}");
-        let empty = select_run(&AnalysedSet::default(), 0).unwrap_err();
-        assert!(empty.contains("analyse a folder first"), "{empty}");
+    /// Each run answers for its own photos only. Before the id existed,
+    /// analysing a second folder made the override toggle judge the first
+    /// folder's screen against the second folder's photos, with no error
+    /// anywhere -- the keeper marks simply became another folder's.
+    #[test]
+    fn analysed_runs_answer_each_run_with_its_own_photos() {
+        let mut runs = AnalysedRuns::default();
+        runs.insert(4, vec![run_photo("/a.jpg")]);
+
+        assert_eq!(runs.get(4).map(|p| p[0].path.clone()), Ok("/a.jpg".into()));
+        let unknown = runs.get(3).unwrap_err();
+        assert!(unknown.contains("analyse"), "{unknown}");
+    }
+
+    /// Two drafts analysing at once is the point of keeping several runs: the
+    /// first draft's toggles must still work after the second one finishes.
+    #[test]
+    fn an_older_run_still_answers_after_a_newer_one_is_cached() {
+        let mut runs = AnalysedRuns::default();
+        runs.insert(1, vec![run_photo("/first.jpg")]);
+        runs.insert(2, vec![run_photo("/second.jpg")]);
+
+        assert_eq!(runs.get(1).map(|p| p[0].path.clone()), Ok("/first.jpg".into()));
+        assert_eq!(runs.get(2).map(|p| p[0].path.clone()), Ok("/second.jpg".into()));
+    }
+
+    #[test]
+    fn a_forgotten_run_no_longer_answers() {
+        let mut runs = AnalysedRuns::default();
+        runs.insert(1, vec![run_photo("/a.jpg")]);
+        runs.insert(2, vec![run_photo("/b.jpg")]);
+        runs.forget(1);
+
+        assert!(runs.get(1).is_err());
+        assert!(runs.get(2).is_ok());
+    }
+
+    /// Two analyses share the one sidecar batch by batch. The lock has to hand
+    /// over in arrival order, or the job that just released it takes it back
+    /// straight away and the other draft's spinner sits still until the
+    /// first one is completely done.
+    #[test]
+    fn the_sidecar_lock_alternates_between_two_waiting_jobs() {
+        let state = std::sync::Arc::new(AppState::default());
+        let log = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = [1u8, 2]
+            .into_iter()
+            .map(|job| {
+                let (state, log, barrier) = (state.clone(), log.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for _ in 0..20 {
+                        with_sidecar(&state, |_pool| {
+                            log.lock().unwrap().push(job);
+                            std::thread::sleep(Duration::from_millis(2));
+                        });
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        let log = log.lock().unwrap();
+        let longest_run = log
+            .chunk_by(|a, b| a == b)
+            .map(<[u8]>::len)
+            .max()
+            .unwrap_or(0);
+        assert!(longest_run <= 2, "one job held the sidecar for {longest_run} batches in a row: {log:?}");
     }
 
     #[test]
