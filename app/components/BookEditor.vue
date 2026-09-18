@@ -42,8 +42,13 @@ const {
   pickOutputDir,
   exportBook,
   editBook,
+  refreshLayout,
   reveal,
 } = useBook();
+
+/** The chat panel beside the book. Open by default; the header button folds it away. */
+const chatOpen = ref(true);
+const keysOpen = ref(false);
 
 const counts = computed(() => (exportResult.value ? summarizeExport(exportResult.value) : null));
 const outcome = computed(() => (exportResult.value ? exportOutcome(exportResult.value) : null));
@@ -182,7 +187,13 @@ onMounted(() => {
       text="Every change you make here is written to disk as you make it."
     >
       <span class="flex items-center gap-1.5 text-xs text-muted">
+        <!--
+          Keyed by name: Nuxt Icon's CSS mode, reused across a name change,
+          writes the new name's rule with the old icon's image, and the check
+          came out as a spinner.
+        -->
         <UIcon
+          :key="saving ? 'saving' : 'saved'"
           :name="saving ? 'i-lucide-loader-circle' : 'i-lucide-check'"
           class="size-3.5 shrink-0"
           :class="saving && 'animate-spin'"
@@ -208,13 +219,38 @@ onMounted(() => {
     >
       Edit photos
     </UButton>
+
+    <UTooltip text="API keys">
+      <UButton
+        icon="i-lucide-key-round"
+        color="neutral"
+        variant="ghost"
+        size="sm"
+        aria-label="API keys"
+        @click="keysOpen = true"
+      />
+    </UTooltip>
+    <UButton
+      icon="i-lucide-message-square"
+      color="neutral"
+      :variant="chatOpen ? 'soft' : 'ghost'"
+      size="sm"
+      :aria-pressed="chatOpen"
+      @click="chatOpen = !chatOpen"
+    >
+      Chat
+    </UButton>
   </AppHeader>
+
+  <ApiKeys v-model:open="keysOpen" />
+
+  <div class="flex min-h-0 flex-1">
 
   <!--
     The desk the book lies on: a toned surface, so the white pages read as
     paper and the controls around them recede.
   -->
-  <main class="flex-1 overflow-y-auto bg-charcoal-100 p-6 dark:bg-charcoal-950">
+  <main class="min-w-0 flex-1 overflow-y-auto bg-charcoal-100 p-6 dark:bg-charcoal-950">
     <div class="mx-auto max-w-[1400px] space-y-8">
       <USkeleton v-if="!activeProject && !error" class="h-32 w-full" />
 
@@ -387,4 +423,22 @@ onMounted(() => {
       </div>
     </div>
   </main>
+
+  <!--
+    Kept mounted while folded away, so closing the panel does not throw away
+    the conversation or a proposal still waiting for an answer.
+  -->
+  <aside
+    v-show="chatOpen"
+    class="w-96 shrink-0 border-l border-default bg-default"
+    aria-label="Chat about this book"
+  >
+    <BookChat
+      :project-id="projectId"
+      :layout
+      @book-changed="refreshLayout"
+      @open-keys="keysOpen = true"
+    />
+  </aside>
+  </div>
 </template>

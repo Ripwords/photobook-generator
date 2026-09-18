@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { info } from "@tauri-apps/plugin-log";
 import { DirectChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
 import { createBookAgent, MODEL_ID, savedEdits } from "~/agent/agent";
+import { chatErrorText } from "~/agent/chat";
 import { modelFetch } from "~/agent/fetch";
 import { createJev } from "~/agent/jev";
 
@@ -30,7 +31,8 @@ export function useBookAgent(projectId: number, onBookChanged: () => Promise<voi
 
   const refreshed = new Set<string>();
   const chat = useChat({
-    transport: new DirectChatTransport({ agent }),
+    // `onError` becomes `error.message`: a missing key reads as `NO_DEEPSEEK_KEY`.
+    transport: new DirectChatTransport({ agent, onError: chatErrorText }),
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     onFinish: ({ messages }) => {
       const fresh = savedEdits(messages).filter((id) => !refreshed.has(id));

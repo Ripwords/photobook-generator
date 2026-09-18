@@ -26,6 +26,7 @@ export default defineNuxtConfig({
             "@tauri-apps/plugin-dialog": fileURLToPath(
               new URL("./dev/tauri-mock/dialog.ts", import.meta.url),
             ),
+            "@tauri-apps/plugin-log": fileURLToPath(new URL("./dev/tauri-mock/log.ts", import.meta.url)),
           },
         }
       : undefined,

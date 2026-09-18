@@ -4,8 +4,8 @@
  * driven with no key and no network.
  *
  * `SCRIPTS` is the whole behaviour. The first entry whose provider matches
- * and whose `when` accepts the request body answers it; an unmatched request
- * is refused loudly, like an unmocked command.
+ * and whose `respond` answers the request body is played back; an unmatched
+ * request is refused loudly, like an unmocked command.
  */
 import type { ModelEvent, ModelProvider, ModelRequestError } from "../../app/agent/fetch";
 
@@ -23,10 +23,16 @@ interface CannedResponse {
   body: string;
 }
 
+/** The part of a request body the scripts read. Anything else in it is ignored. */
+interface RequestBody {
+  messages?: { role: string; content?: string | null }[];
+  questions?: Record<string, unknown>;
+}
+
 interface Script {
   provider: ModelProvider;
-  when: (body: unknown) => boolean;
-  response: CannedResponse;
+  /** The response, or `null` to let the next script answer. */
+  respond: (body: RequestBody) => CannedResponse | null;
 }
 
 /** Mirrors `agent::request::allowed_path`. */
@@ -92,32 +98,104 @@ export const DEEPSEEK_TEXT_REPLY =
   "I can make chapter 2 calmer — it would use quieter layouts on spreads 3 and 4.";
 
 /**
- * Jev is always overloaded in the harness, so the chat panel runs on each
- * role's no-answer path: every tool offered, `tagRanker` for search, no
- * check. Those paths are the ones that must always work.
+ * Jev answers only the proposal check in the harness, so a card can show its
+ * warning. Routing and search get this 529 and run on their no-answer paths:
+ * every tool offered, `tagRanker` for search. Those paths must always work.
  */
 export const JEV_OVERLOADED = { error: "Service temporarily unavailable" };
+
+/** Jev's answer to every proposal check: low enough to put the warning on the card. */
+export const JEV_LOW_FIT = 0.3;
+
+/** The swap the harness proposes: the two photos on page 2. */
+export const HARNESS_SWAP = { a: { page: 2, z: 1 }, b: { page: 2, z: 2 } };
+
+const json = (status: number, body: unknown): CannedResponse => ({
+  status,
+  headers: [["content-type", "application/json"]],
+  body: JSON.stringify(body),
+});
+
+const text = (reply: string) =>
+  deepseekStream(
+    [{ role: "assistant", content: "" }, ...reply.split(/(?<= )/).map((content) => ({ content }))],
+    "stop",
+    12,
+  );
+
+/** Tool call ids are unique within a conversation, as DeepSeek's are. */
+let toolCalls = 0;
+
+const toolCall = (name: string, input: unknown) =>
+  deepseekStream(
+    [
+      {
+        role: "assistant",
+        tool_calls: [
+          { index: 0, id: `mock-${name}-${++toolCalls}`, type: "function", function: { name, arguments: JSON.stringify(input) } },
+        ],
+      },
+    ],
+    "tool_calls",
+    9,
+  );
+
+/** What a tool result told the model, as the harness reads it back. */
+function toolResult(content: string): { refused: string } | "denied" | "saved" {
+  try {
+    const parsed: unknown = JSON.parse(content);
+    if (typeof parsed === "object" && parsed !== null && "refused" in parsed) {
+      return { refused: String(parsed.refused) };
+    }
+    return "saved";
+  } catch {
+    // A declined write reaches the model as the SDK's plain-text denial.
+    return "denied";
+  }
+}
+
+/**
+ * The harness's DeepSeek. It reads the last message only: a user's words pick
+ * a proposal, a tool's result picks the reply to it. Words it has no script
+ * for get `DEEPSEEK_TEXT_REPLY`.
+ */
+function deepseekReply(body: RequestBody): CannedResponse {
+  const last = body.messages?.at(-1);
+  const content = last?.content ?? "";
+  if (last?.role === "tool") {
+    const result = toolResult(content);
+    if (result === "denied") return text("Okay, I left it as it was. What would you like instead?");
+    if (result === "saved") return text("Done. The book on screen is updated.");
+    return text(`I couldn't do that: ${result.refused}.`);
+  }
+  const words = content.toLowerCase();
+  if (words.includes("swap")) return toolCall("swap_photos", HARNESS_SWAP);
+  if (words.includes("last")) return toolCall("regenerate", { opening: 2 });
+  if (words.includes("layout")) return toolCall("regenerate", { opening: 1 });
+  return text(DEEPSEEK_TEXT_REPLY);
+}
 
 export const SCRIPTS: Script[] = [
   {
     provider: "jev",
-    when: () => true,
-    response: {
-      status: 529,
-      headers: [["content-type", "application/json"]],
-      body: JSON.stringify(JEV_OVERLOADED),
-    },
+    respond: (body) =>
+      body.questions && "fits" in body.questions
+        ? json(200, { answers: { fits: { type: "noul", noul: JEV_LOW_FIT } } })
+        : null,
   },
-  {
-    provider: "deepseek",
-    when: () => true,
-    response: deepseekStream(
-      [{ role: "assistant", content: "" }, ...DEEPSEEK_TEXT_REPLY.split(/(?<= )/).map((content) => ({ content }))],
-      "stop",
-      12,
-    ),
-  },
+  { provider: "jev", respond: () => json(529, JEV_OVERLOADED) },
+  { provider: "deepseek", respond: deepseekReply },
 ];
+
+/** The scripted answer to one request body, or `null` when no script has one. */
+export function scriptedResponse(provider: ModelProvider, body: RequestBody): CannedResponse | null {
+  for (const script of SCRIPTS) {
+    if (script.provider !== provider) continue;
+    const response = script.respond(body);
+    if (response) return response;
+  }
+  return null;
+}
 
 /** Small enough that some chunks end inside a multi-byte character, as real ones can. */
 const CHUNK_BYTES = 37;
@@ -138,12 +216,11 @@ export async function modelRequest(
   { pace = 40 }: { pace?: number } = {},
 ): Promise<void> {
   if (path !== ALLOWED_PATH[provider]) throw refuse(`${path} is not a ${provider} endpoint.`);
-  const parsed: unknown = JSON.parse(body);
-  const script = SCRIPTS.find((s) => s.provider === provider && s.when(parsed));
-  if (!script) throw refuse(`the browser harness has no scripted ${provider} response for this request`);
+  const response = scriptedResponse(provider, JSON.parse(body) as RequestBody);
+  if (!response) throw refuse(`the browser harness has no scripted ${provider} response for this request`);
 
-  const { status, headers } = script.response;
-  const bytes = new TextEncoder().encode(script.response.body);
+  const { status, headers } = response;
+  const bytes = new TextEncoder().encode(response.body);
   onEvent.onmessage({ kind: "head", status, headers });
   for (let start = 0; start < bytes.length; start += CHUNK_BYTES) {
     await sleep(pace);

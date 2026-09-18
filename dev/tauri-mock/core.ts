@@ -22,6 +22,9 @@ import layoutFixture from "../../tests/fixtures/wire/book-layout.json";
 import recommendationFixture from "../../tests/fixtures/wire/book-recommendation.json";
 import listFixture from "../../tests/fixtures/wire/project-list.json";
 import exportFixture from "../../tests/fixtures/wire/export-result.json";
+import agentViewFixture from "../../tests/fixtures/wire/agent-view.json";
+import type { ModelProvider } from "../../app/agent/fetch";
+import type { AgentPhoto, AgentView } from "../../app/agent/view";
 import type { BookEdit, BookLayout, PlacementRef } from "../../app/types/preview";
 import type {
   BookRecommendation,
@@ -168,6 +171,55 @@ function applyEdit(edit: BookEdit): BookLayout {
   return structuredClone(layout);
 }
 
+/**
+ * Which keys the keychain holds. Both start unset, so the chat panel opens on
+ * its no-key prompt and the path through Settings is driven like a new user's.
+ */
+const keys: Record<ModelProvider, boolean> = { deepseek: false, jev: false };
+
+const fixturePhotos = (agentViewFixture as AgentView).photos;
+
+/** `agent_view` over the harness's book, shaped as `agent::view::agent_view` shapes it. */
+function agentView(): AgentView {
+  const placed = new Set(layout.pages.flatMap((page) => page.placements.map((p) => p.photoIndex)));
+  const openings = layout.openings.map((opening) => {
+    const numbers = opening.index === 0 ? [1] : [opening.index * 2, opening.index * 2 + 1];
+    const pages = layout.pages.filter((page) => numbers.includes(page.number));
+    return {
+      index: opening.index,
+      pages: pages.map((page) => page.number),
+      templateId: pages[0]?.templateId ?? "blank",
+      locked: opening.locked,
+      alternatives: [...opening.alternatives],
+      slots: pages.flatMap((page) =>
+        page.placements.map((p) => ({ page: page.number, z: p.z, photo: p.photoIndex })),
+      ),
+    };
+  });
+  const viewPhotos: AgentPhoto[] = layout.photos.map((_, id) => ({
+    ...(fixturePhotos[id] ?? fixturePhotos[0]!),
+    id,
+    placed: placed.has(id),
+  }));
+  return {
+    pageCount: layout.pageCount,
+    placedPhotos: placed.size,
+    droppedPhotos: layout.droppedPhotos,
+    openings,
+    photos: viewPhotos,
+  };
+}
+
+/** `agent_edit`: the new view, or the refusal `agent::edit` rejects with. */
+function agentEdit(edit: BookEdit): AgentView {
+  try {
+    applyEdit(edit);
+  } catch (error) {
+    throw { kind: "refused", reason: error instanceof Error ? error.message : String(error) };
+  }
+  return agentView();
+}
+
 /** Streams `analyze_folders`'s events at a speed a person can watch. */
 async function analyze(channel: Channel<AnalysisEvent>): Promise<AnalysisSummary> {
   channel.onmessage({ kind: "scanned", total: photos.length + 2 });
@@ -189,7 +241,7 @@ async function analyze(channel: Channel<AnalysisEvent>): Promise<AnalysisSummary
     total: photos.length + 2,
     failed: 2,
     cached: 0,
-    photos,
+    photos: viewPhotos,
   };
   channel.onmessage({ kind: "done", summary });
   return summary;
@@ -298,7 +350,30 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
     case "reveal_in_finder":
       return undefined as T;
 
-    case "model_request":
+    case "agent_view":
+      return agentView() as T;
+
+    case "agent_edit":
+      await sleep(300);
+      return agentEdit(args?.edit as BookEdit) as T;
+
+    case "api_key_status":
+      return { ...keys } as T;
+
+    case "set_api_key":
+      if (!String(args?.key ?? "").trim()) throw new Error("the key is empty");
+      keys[args?.provider as ModelProvider] = true;
+      return undefined as T;
+
+    case "clear_api_key":
+      keys[args?.provider as ModelProvider] = false;
+      return undefined as T;
+
+    case "model_request": {
+      const provider = args?.provider as ModelProvider;
+      if (!keys[provider]) {
+        throw { kind: "missingKey", provider, message: `No ${provider} API key is set.` };
+      }
       return (await modelRequest({
         id: args?.id as string,
         provider: args?.provider as ModelRequestArgs["provider"],
@@ -306,6 +381,7 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
         body: args?.body as string,
         onEvent: args?.onEvent as ModelRequestArgs["onEvent"],
       })) as T;
+    }
 
     case "cancel_model_request":
       return cancelModelRequest(args?.id as string) as T;
