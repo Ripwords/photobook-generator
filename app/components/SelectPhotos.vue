@@ -203,11 +203,11 @@ onMounted(async () => {
     <div v-if="stage === 'running'" class="space-y-6">
       <div class="max-w-sm space-y-2">
         <UProgress color="primary" size="sm" :model-value="progressValue" :max="scannedTotal" />
-        <p class="text-sm text-muted">
+        <p class="text-sm text-muted tabular-nums">
           <template v-if="scannedTotal > 0">
-            <span class="font-mono tabular-nums text-default">{{ processed }}</span> /
-            <span class="font-mono tabular-nums text-default">{{ scannedTotal }}</span>
-            processed in <span class="text-default">{{ folderLabel }}</span>
+            <span class="text-default">{{ processed }}</span> of
+            <span class="text-default">{{ scannedTotal }}</span>
+            analyzed in <span class="text-default">{{ folderLabel }}</span>
           </template>
           <template v-else>
             Scanning <span class="text-default">{{ folderLabel }}</span
@@ -278,60 +278,17 @@ onMounted(async () => {
     />
 
     <div v-else-if="stage === 'ready' && summary" class="space-y-8">
-      <div class="space-y-1">
-        <div class="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-muted">
-          <span
-            ><span class="font-mono tabular-nums text-default">{{ summary.total }}</span>
-            scanned</span
-          >
-          <span
-            ><span class="font-mono tabular-nums text-default">{{ summary.photos.length }}</span>
-            analyzed</span
-          >
-          <span
-            ><span class="font-mono tabular-nums text-default">{{ summary.cached }}</span> from
-            cache</span
-          >
-          <span
-            ><span class="font-mono tabular-nums text-default">{{ summary.failed }}</span>
-            failed</span
-          >
-          <span class="font-medium text-highlighted"
-            ><span class="font-mono tabular-nums">{{ kept.length }}</span> keepers</span
-          >
-          <USwitch
-            v-if="leftOutCount > 0 || !showLeftOut"
-            v-model="showLeftOut"
-            size="sm"
-            :label="`Show the ${leftOutCount} left out`"
-          />
-        </div>
-        <p class="text-xs text-muted">
-          Percentiles are ranked across everything you chose. Sparkle is aesthetic, focus is
-          sharpness.
-          Use + and &minus; on a photo to override what the engine chose.
-        </p>
-        <UAlert
-          v-if="overrideError"
-          color="error"
-          variant="subtle"
-          icon="i-lucide-triangle-alert"
-          title="Could not re-check the selection"
-          :description="overrideError"
-          class="mt-2"
-        />
-      </div>
-
       <!--
         Pick a length and generate, which SAVES the book. Operates on the fully
         ranked set -- `photos`, which is `summary.photos` with `kept` re-stamped
         by Rust for the user's own overrides. `overrides` rides along so
-        `generate_book` can persist the decisions with the project. Above the
-        contact sheet, so the primary action is not below a 200-tile grid.
+        `generate_book` can persist the decisions with the project. Pinned to
+        the top of the sheet, so the primary action is never below a 200-tile
+        grid, however far down the user has scrolled choosing photos.
       -->
       <div
         v-if="analysedFolders.length > 0"
-        class="rounded-lg border border-default p-4"
+        class="sticky -top-6 z-10 -mx-6 -mt-6 border-b border-default bg-default px-6 py-4"
       >
         <GenerateBook
           :photos
@@ -341,6 +298,38 @@ onMounted(async () => {
           :folders="analysedFolders"
           :replacing="replacingNow"
           @generated="emit('generated', $event)"
+        />
+      </div>
+
+      <div class="space-y-2">
+        <div class="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+          <p class="flex flex-wrap items-baseline gap-x-2 tabular-nums">
+            <span class="font-serif text-2xl text-highlighted">{{ kept.length }} keepers</span>
+            <span class="text-sm text-muted">
+              of {{ summary.photos.length }} analyzed photos, from {{ summary.total }} scanned
+              <template v-if="summary.failed > 0">({{ summary.failed }} failed)</template>
+              <template v-if="summary.cached > 0">, {{ summary.cached }} from cache</template>
+            </span>
+          </p>
+          <USwitch
+            v-if="leftOutCount > 0 || !showLeftOut"
+            v-model="showLeftOut"
+            size="sm"
+            :label="`Show the ${leftOutCount} left out`"
+          />
+        </div>
+        <p class="max-w-3xl text-xs text-muted">
+          Use + and &minus; on a photo to override what the engine chose. Percentiles are ranked
+          across everything you chose: sparkle is aesthetic, focus is sharpness.
+        </p>
+        <UAlert
+          v-if="overrideError"
+          color="error"
+          variant="subtle"
+          icon="i-lucide-triangle-alert"
+          title="Could not re-check the selection"
+          :description="overrideError"
+          class="mt-2"
         />
       </div>
 
@@ -365,10 +354,10 @@ onMounted(async () => {
         :key="group.eventCluster"
         class="space-y-3 border-t border-lavender-600 pt-6 first:border-t-0 first:pt-0 dark:border-lavender-300"
       >
-        <h2 class="text-sm font-medium text-toned">
+        <h2 class="flex items-baseline gap-2 text-sm font-semibold text-highlighted">
           Event {{ index + 1 }}
-          <span class="text-muted"
-            >&middot; {{ group.photos.length }}
+          <span class="font-normal text-muted tabular-nums"
+            >{{ group.photos.length }}
             {{ group.photos.length === 1 ? "photo" : "photos" }}</span
           >
         </h2>

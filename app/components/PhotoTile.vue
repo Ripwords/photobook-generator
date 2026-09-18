@@ -97,7 +97,7 @@ const sharpnessPct = computed(() => (isRanked(photo) ? photo.sharpnessPct : null
       :title="`Best of ${burstSize} near-duplicate frames`"
     >
       <UIcon name="i-lucide-images" class="size-3" />
-      <span class="font-mono tabular-nums">{{ burstSize }}</span>
+      <span class="tabular-nums">{{ burstSize }}</span>
     </UBadge>
 
     <!--
@@ -170,11 +170,11 @@ const sharpnessPct = computed(() => (isRanked(photo) ? photo.sharpnessPct : null
       >
         <span class="flex items-center gap-1" title="Aesthetic percentile within this folder">
           <UIcon name="i-lucide-sparkles" class="size-3" />
-          <span class="font-mono tabular-nums">{{ Math.round(aestheticPct) }}</span>
+          <span class="tabular-nums">{{ Math.round(aestheticPct) }}</span>
         </span>
         <span class="flex items-center gap-1" title="Sharpness percentile within this folder">
           <UIcon name="i-lucide-focus" class="size-3" />
-          <span class="font-mono tabular-nums">{{ Math.round(sharpnessPct) }}</span>
+          <span class="tabular-nums">{{ Math.round(sharpnessPct) }}</span>
         </span>
       </span>
       <span
@@ -189,7 +189,7 @@ const sharpnessPct = computed(() => (isRanked(photo) ? photo.sharpnessPct : null
       <span v-if="photo.faceCount > 0" class="flex items-center gap-2 text-[11px] leading-none">
         <span class="flex items-center gap-1" title="Faces detected">
           <UIcon name="i-lucide-user-round" class="size-3" />
-          <span class="font-mono tabular-nums">{{ photo.faceCount }}</span>
+          <span class="tabular-nums">{{ photo.faceCount }}</span>
         </span>
         <!--
           Smile badge intentionally removed. `smileFraction` is still

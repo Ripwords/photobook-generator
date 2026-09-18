@@ -91,26 +91,29 @@ function openFromRow() {
 
 <template>
   <li
-    class="flex cursor-pointer flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-lg border border-default px-3 py-2 transition-colors hover:bg-elevated/50"
+    class="group flex cursor-pointer flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3.5 transition-colors hover:bg-elevated/60 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
     role="button"
     tabindex="0"
     @mousedown="notePress"
     @click="openFromRow"
     @keydown.enter="openFromRow"
   >
-    <div class="min-w-0 flex-1 space-y-0.5">
+    <div class="min-w-0 flex-1 space-y-1">
       <UInput
         v-if="editing"
         v-model="draftName"
-        size="xs"
+        size="sm"
         autofocus
         :disabled="busy"
-        class="max-w-64"
+        aria-label="Photobook name"
+        class="max-w-72"
         @keyup.enter="commitEditing"
         @keyup.escape="cancelEditing"
         @blur="commitEditing"
       />
-      <p v-else class="truncate text-sm text-default">{{ project.name }}</p>
+      <p v-else class="truncate font-serif text-lg leading-snug text-highlighted">
+        {{ project.name }}
+      </p>
       <p class="text-xs text-muted"><slot name="meta" /></p>
     </div>
     <!--
@@ -119,6 +122,7 @@ function openFromRow() {
       without this Enter on the pencil or the trash opens the project instead of
       renaming or deleting.
     -->
+    <p v-if="$slots.status" class="text-xs text-muted"><slot name="status" /></p>
     <div class="flex items-center gap-1" @click.stop @keydown.enter.stop>
       <UButton
         icon="i-lucide-pencil"
@@ -129,11 +133,13 @@ function openFromRow() {
         aria-label="Rename this photobook"
         @click="startEditing"
       />
+      <!-- Neutral until pointed at: a red bin on every row shouts about the rarest action. -->
       <UButton
         icon="i-lucide-trash-2"
-        color="error"
+        color="neutral"
         variant="ghost"
         size="xs"
+        class="hover:text-error focus-visible:text-error"
         :disabled="busy"
         aria-label="Delete this photobook"
         @click="confirmOpen = true"

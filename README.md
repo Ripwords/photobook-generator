@@ -68,8 +68,8 @@ against all the others, and photos shot the same afternoon fall into one event w
 folder they came from.
 
 The contact sheet shows every photo with the ones the book would leave out dimmed. Use **+**
-and **−** on a photo to include or exclude it yourself. Above the sheet, name the book and
-pick a length: the app recommends the shortest Pixajoy length that fits the keepers and says
+and **−** on a photo to include or exclude it yourself. The bar above the sheet stays pinned
+while you scroll it: name the book and pick a length there. The app recommends the shortest Pixajoy length that fits the keepers and says
 how many each length would leave out. A length that cannot hold every photo you explicitly
 marked **+** cannot be generated at all, and says so instead of quietly dropping one.
 
@@ -89,12 +89,13 @@ The book, spread by spread, as it will print. **Everything on this screen is wri
 as you do it** — the header says so — so there is nothing to save and you can leave whenever
 you like with **‹ All photobooks**.
 
-Rename the book with the pencil beside its title. **Edit photos** in the header takes its
+Rename the book with the pencil beside its title in the header. **Edit photos** in the header takes its
 photo selection back to the contact sheet; it re-analyses the book's own folders, which is
 every photo a cache hit and no new Vision work.
 
 Every opening (page 1, each pair of facing pages, the last page) has four controls on its
-right:
+right. Page 1 is shown facing the inside front cover and the last page facing the inside
+back cover, the way the printed book opens.
 
 - **Regenerate** (dice) lays the same photos out on a layout this opening has not shown
   yet. Click again to see the next one; when every layout for that many photos has been

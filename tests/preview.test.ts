@@ -10,6 +10,7 @@ import {
   leftOutPhotos,
   nextSwapStep,
   openingFor,
+  insideCover,
   pageSide,
   pageSlots,
   photoFor,
@@ -256,6 +257,30 @@ describe("pageSide", () => {
   it("falls back to the half only for the inside cover, which is not a page", () => {
     expect(pageSide(null, "left")).toBe("left");
     expect(pageSide(null, "right")).toBe("right");
+  });
+
+  /**
+   * Page 1 is a right-hand page, so the empty half BESIDE it is the inside
+   * FRONT cover; the last page is a left-hand page facing the inside BACK
+   * cover. Read off `toSpreads`' own output rather than asserted per half, so
+   * the test fails if either the label or the spread order is wrong.
+   */
+  it("names the inside cover each lone page actually faces", () => {
+    const pages: PreviewPage[] = [1, 2, 3, 4].map((number) => ({
+      number,
+      side: number % 2 === 1 ? "right" : "left",
+      templateId: "t",
+      blank: false,
+      placements: [],
+    }));
+    const spreads = toSpreads(pages);
+    const first = spreads[0];
+    const last = spreads[spreads.length - 1];
+
+    expect(first?.left).toBeNull();
+    expect(insideCover("left")).toBe("front");
+    expect(last?.right).toBeNull();
+    expect(insideCover("right")).toBe("back");
   });
 
   /**

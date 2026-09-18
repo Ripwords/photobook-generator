@@ -40,10 +40,10 @@ const emit = defineEmits<{
       class="mx-auto mt-16 max-w-lg"
     />
 
-    <div v-else class="mx-auto max-w-3xl space-y-4">
-      <h2 class="text-sm font-medium text-highlighted">
+    <div v-else class="mx-auto max-w-3xl space-y-5 pt-4">
+      <h2 class="flex items-baseline gap-2 font-serif text-2xl text-highlighted">
         Your photobooks
-        <span class="font-mono tabular-nums text-muted">{{ projects.length }}</span>
+        <span class="font-sans text-sm text-muted tabular-nums">{{ projects.length }}</span>
       </h2>
 
       <UAlert
@@ -56,7 +56,7 @@ const emit = defineEmits<{
         :ui="{ description: 'break-words' }"
       />
 
-      <ul class="space-y-2">
+      <ul class="divide-y divide-default overflow-hidden rounded-lg bg-default ring ring-default">
         <ProjectListRow
           v-for="project in projects"
           :key="project.id"
@@ -67,16 +67,17 @@ const emit = defineEmits<{
           @delete="emit('delete', $event)"
         >
           <template #meta>
-            <span class="font-mono tabular-nums">{{ project.pageCount }}</span> pages ·
-            <span class="font-mono tabular-nums">{{ project.photoCount }}</span> photos ·
+            <span class="tabular-nums">{{ project.pageCount }} pages, {{ project.photoCount }} photos</span>
+            from
             <span :title="project.sourceFolders.join('\n')">{{
               folderListLabel(project.sourceFolders)
             }}</span>
-            ·
-            <template v-if="lastExportedOn(project)"
-              >Exported {{ lastExportedOn(project) }}</template
-            >
-            <template v-else>Not exported yet</template>
+          </template>
+          <template #status>
+            <span v-if="lastExportedOn(project)" class="tabular-nums">
+              Exported {{ lastExportedOn(project) }}
+            </span>
+            <span v-else>Not exported yet</span>
           </template>
         </ProjectListRow>
       </ul>

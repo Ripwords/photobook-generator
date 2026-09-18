@@ -379,6 +379,16 @@ export function pageSide(page: PreviewPage | null, half: PageSide): PageSide {
 }
 
 /**
+ * Which inside cover fills the empty half of a lone page's opening. Page 1 is
+ * drawn in the RIGHT half, so the left half beside it is the inside front
+ * cover; the last page is drawn in the left half, facing the inside back
+ * cover. The template used to have these swapped.
+ */
+export function insideCover(half: PageSide): "front" | "back" {
+  return half === "left" ? "front" : "back";
+}
+
+/**
  * The distinct templates an opening drew from, in left-then-right order.
  *
  * Deduplicated because a spread's two halves normally come from ONE template

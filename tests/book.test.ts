@@ -271,14 +271,14 @@ describe("project list wire shape", () => {
 
   it("reads a reopened project's counts and export history", () => {
     const detail = fixture<ProjectDetail>("project-detail.json");
-    expect(projectDetailLabel(detail)).toBe("20 pages · 24 photos · 1 export");
+    expect(projectDetailLabel(detail)).toBe("20 pages, 24 photos, exported once");
     expect(detail.seed).toBe(424242);
     expect(detail.exports[0]?.fileCount).toBe(24);
   });
 
   it("counts a never-exported project's history as none", () => {
     const detail = fixture<ProjectDetail>("project-detail.json");
-    expect(projectDetailLabel({ ...detail, exports: [] })).toBe("20 pages · 24 photos · no exports");
+    expect(projectDetailLabel({ ...detail, exports: [] })).toBe("20 pages, 24 photos, not exported yet");
   });
 
   /**

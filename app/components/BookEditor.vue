@@ -142,6 +142,41 @@ onMounted(() => {
     back="All photobooks"
     @back="emit('close')"
   >
+    <!--
+      The book's name, set in the serif the library uses for titles, and
+      renamed in place. One title, not a header title plus a second heading
+      repeating it above the book.
+    -->
+    <template #title>
+      <UInput
+        v-if="activeProject && renaming"
+        v-model="draftName"
+        autofocus
+        size="sm"
+        :disabled="busy"
+        aria-label="Photobook name"
+        class="w-72"
+        @keyup.enter="commitRenaming"
+        @keyup.escape="cancelRenaming"
+        @blur="commitRenaming"
+      />
+      <div v-else class="flex min-w-0 items-center gap-1">
+        <h1 class="truncate font-serif text-lg leading-tight text-highlighted">
+          {{ activeProject?.name ?? "Loading…" }}
+        </h1>
+        <UButton
+          v-if="activeProject"
+          icon="i-lucide-pencil"
+          color="neutral"
+          variant="ghost"
+          size="xs"
+          :disabled="busy"
+          aria-label="Rename this photobook"
+          @click="startRenaming"
+        />
+      </div>
+    </template>
+
     <UTooltip
       v-if="activeProject"
       text="Every change you make here is written to disk as you make it."
@@ -175,8 +210,12 @@ onMounted(() => {
     </UButton>
   </AppHeader>
 
-  <main class="flex-1 overflow-y-auto p-6">
-    <div class="mx-auto max-w-[1400px] space-y-6">
+  <!--
+    The desk the book lies on: a toned surface, so the white pages read as
+    paper and the controls around them recede.
+  -->
+  <main class="flex-1 overflow-y-auto bg-charcoal-100 p-6 dark:bg-charcoal-950">
+    <div class="mx-auto max-w-[1400px] space-y-8">
       <USkeleton v-if="!activeProject && !error" class="h-32 w-full" />
 
       <UAlert
@@ -189,35 +228,13 @@ onMounted(() => {
         :ui="{ description: 'break-words' }"
       />
 
-      <div v-if="activeProject" class="flex items-center gap-2">
-        <UInput
-          v-if="renaming"
-          v-model="draftName"
-          autofocus
-          :disabled="busy"
-          class="max-w-80"
-          @keyup.enter="commitRenaming"
-          @keyup.escape="cancelRenaming"
-          @blur="commitRenaming"
-        />
-        <template v-else>
-          <h2 class="truncate text-lg font-semibold text-highlighted">{{ activeProject.name }}</h2>
-          <UButton
-            icon="i-lucide-pencil"
-            color="neutral"
-            variant="ghost"
-            size="xs"
-            :disabled="busy"
-            aria-label="Rename this photobook"
-            @click="startRenaming"
-          />
-        </template>
-      </div>
-
-      <div v-if="activeProject" class="space-y-4 rounded-lg border border-default p-4">
+      <div
+        v-if="activeProject"
+        class="space-y-3 rounded-lg bg-default p-4 ring ring-default"
+      >
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="space-y-1">
-            <p class="text-sm text-muted">{{ projectDetailLabel(activeProject) }}</p>
+            <p class="text-sm text-toned tabular-nums">{{ projectDetailLabel(activeProject) }}</p>
             <p v-if="restoredSelection" class="flex items-center gap-1.5 text-xs text-muted">
               <UIcon name="i-lucide-hand" class="size-3 shrink-0" />
               <span>{{ restoredSelection }}</span>
@@ -257,10 +274,10 @@ onMounted(() => {
             :model-value="progress.completed"
             :max="progress.total"
           />
-          <p class="text-sm text-muted">
-            <span class="font-mono tabular-nums text-default">{{ progress.completed }}</span> /
-            <span class="font-mono tabular-nums text-default">{{ progress.total }}</span> photos
-            exported ({{ exportPercent }}%)
+          <p class="text-sm text-muted tabular-nums">
+            <span class="text-default">{{ progress.completed }}</span> of
+            <span class="text-default">{{ progress.total }}</span> photos exported
+            ({{ exportPercent }}%)
           </p>
         </div>
       </div>
@@ -279,7 +296,10 @@ onMounted(() => {
         kind of thing, and the difference between them is whether any file was
         written at all.
       -->
-      <div v-if="exportResult && counts" class="space-y-4">
+      <div
+        v-if="exportResult && counts"
+        class="space-y-4 rounded-lg bg-default p-4 ring ring-default"
+      >
         <UAlert
           v-if="outcome === 'blocked'"
           icon="i-lucide-octagon-x"
@@ -330,9 +350,7 @@ onMounted(() => {
           </h4>
           <ul class="space-y-1 text-sm text-muted">
             <li v-for="(f, i) in exportResult.blocking" :key="`block-${i}`" class="break-words">
-              <span v-if="f.page > 0" class="font-mono tabular-nums text-default"
-                >p{{ f.page }}</span
-              >
+              <span v-if="f.page > 0" class="tabular-nums text-default">Page {{ f.page }}:</span>
               {{ f.message }}
             </li>
           </ul>
@@ -345,9 +363,7 @@ onMounted(() => {
           </h4>
           <ul class="space-y-1 text-sm text-muted">
             <li v-for="(f, i) in exportResult.warnings" :key="`warn-${i}`" class="break-words">
-              <span v-if="f.page > 0" class="font-mono tabular-nums text-default"
-                >p{{ f.page }}</span
-              >
+              <span v-if="f.page > 0" class="tabular-nums text-default">Page {{ f.page }}:</span>
               {{ f.message }}
             </li>
           </ul>

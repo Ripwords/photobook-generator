@@ -112,24 +112,19 @@ const blankPages = computed(() => layout.pages.filter((page) => page.blank).leng
 </script>
 
 <template>
-  <section class="space-y-4 border-t border-default pt-6" @keydown.esc="selected = null">
+  <section class="space-y-5" @keydown.esc="selected = null">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h3 class="text-sm font-medium text-highlighted">The book</h3>
-        <p class="text-xs text-muted">
-          <span class="font-mono tabular-nums text-default">{{ layout.pageCount }}</span> pages ·
-          <span class="font-mono tabular-nums text-default">{{ layout.placedPhotos }}</span> photos
-          placed
-          <template v-if="blankPages > 0">
-            ·
-            <span class="font-mono tabular-nums text-default">{{ blankPages }}</span>
-            {{ blankPages === 1 ? "page prints" : "pages print" }} blank
-          </template>
-          <template v-if="layout.droppedPhotos > 0">
-            ·
-            <span class="font-mono tabular-nums text-default">{{ layout.droppedPhotos }}</span> left
-            out
-          </template>
+        <h3 class="text-sm font-semibold text-highlighted">The book</h3>
+        <p class="text-xs text-muted tabular-nums">
+          <span class="text-default">{{ layout.pageCount }}</span> pages,
+          <span class="text-default">{{ layout.placedPhotos }}</span> photos placed<template
+            v-if="blankPages > 0"
+            >, <span class="text-default">{{ blankPages }}</span>
+            {{ blankPages === 1 ? "page prints" : "pages print" }} blank</template
+          ><template v-if="layout.droppedPhotos > 0"
+            >, <span class="text-default">{{ layout.droppedPhotos }}</span> left out</template
+          >
         </p>
       </div>
       <!--
@@ -158,7 +153,7 @@ const blankPages = computed(() => layout.pages.filter((page) => page.blank).leng
       `book::score` and `book::preflight` enforce, so a photo crossing one is
       a real problem, not a preview artefact.
     -->
-    <ul class="flex flex-wrap gap-x-5 gap-y-1.5 text-xs text-muted">
+    <ul class="flex flex-wrap gap-x-5 gap-y-1.5 border-b border-default pb-4 text-xs text-muted">
       <li class="flex items-center gap-1.5">
         <span class="h-0 w-4 border-t border-dashed border-red-500/70" />
         Trim — cut here
@@ -214,8 +209,8 @@ const blankPages = computed(() => layout.pages.filter((page) => page.blank).leng
       ]"
     />
 
-    <ol class="space-y-6">
-      <li v-for="spread in spreads" :key="spread.key" class="space-y-1.5">
+    <ol class="space-y-10">
+      <li v-for="spread in spreads" :key="spread.key" class="space-y-2.5">
         <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
           <!--
             The template id next to the page label, so a template repeating
@@ -223,13 +218,14 @@ const blankPages = computed(() => layout.pages.filter((page) => page.blank).leng
             defects this preview exists to reveal, and without the id on screen
             it can only be inferred from layout shape.
           -->
-          <p
-            class="flex flex-wrap items-baseline gap-x-2 font-mono text-xs text-muted tabular-nums"
-          >
-            <span>{{ spread.label }}</span>
-            <span v-for="id in spreadTemplates(spread)" :key="id" class="text-dimmed">{{
-              id
-            }}</span>
+          <p class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted tabular-nums">
+            <span class="font-medium text-toned">{{ spread.label }}</span>
+            <span
+              v-for="id in spreadTemplates(spread)"
+              :key="id"
+              class="font-mono text-[11px] text-dimmed"
+              >{{ id }}</span
+            >
             <UBadge
               v-if="spread.opening.locked"
               icon="i-lucide-lock"
@@ -312,8 +308,8 @@ const blankPages = computed(() => layout.pages.filter((page) => page.blank).leng
           page 1 and the last page never read as half of a spread.
         -->
         <div
-          class="flex max-w-[1400px] gap-px rounded-md bg-default p-px ring ring-default"
-          :class="spread.opening.locked && 'ring-primary/60'"
+          class="flex max-w-[1400px] gap-px bg-charcoal-300 shadow-[0_1px_2px_rgb(0_0_0/0.08),0_8px_24px_-6px_rgb(0_0_0/0.18)] dark:bg-charcoal-400 dark:shadow-[0_1px_2px_rgb(0_0_0/0.4),0_12px_32px_-8px_rgb(0_0_0/0.7)]"
+          :class="spread.opening.locked && 'outline-2 outline-offset-4 outline-primary/70'"
         >
           <div class="w-1/2">
             <BookPreviewPage
@@ -347,8 +343,10 @@ const blankPages = computed(() => layout.pages.filter((page) => page.blank).leng
       </li>
     </ol>
 
-    <div v-if="leftOut.length > 0" class="space-y-2">
-      <h4 class="text-sm font-medium text-highlighted">Left out ({{ leftOut.length }})</h4>
+    <div v-if="leftOut.length > 0" class="space-y-2 border-t border-default pt-5">
+      <h4 class="text-sm font-semibold text-highlighted">
+        Left out <span class="font-normal text-muted tabular-nums">{{ leftOut.length }}</span>
+      </h4>
       <p class="text-xs text-muted">
         Culled, trimmed to fit the page count, or not placeable in any template.
       </p>

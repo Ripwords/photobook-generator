@@ -167,13 +167,18 @@ async function onGenerate(replace: boolean) {
 </script>
 
 <template>
-  <section class="space-y-6">
-    <div v-if="canGenerate" class="flex flex-wrap items-end gap-4">
+  <section class="space-y-3">
+    <!--
+      One row, every control on a shared baseline. The length's help used to
+      sit under its select and push it above the name field; what it said now
+      closes the summary line instead.
+    -->
+    <div v-if="canGenerate" class="flex flex-wrap items-end gap-x-4 gap-y-3">
       <UFormField label="Book name" class="w-64">
-        <UInput v-model="name" :disabled="busy" placeholder="Untitled photobook" />
+        <UInput v-model="name" :disabled="busy" placeholder="Untitled photobook" class="w-full" />
       </UFormField>
 
-      <UFormField label="Length" help="Both are real Pixajoy SKUs.">
+      <UFormField label="Length">
         <USelect
           v-model="chosenPages"
           :items="pageItems"
@@ -183,76 +188,69 @@ async function onGenerate(replace: boolean) {
         />
       </UFormField>
 
-      <template v-if="replacing">
+      <div class="ml-auto flex flex-wrap items-center gap-2">
+        <template v-if="replacing">
+          <UButton
+            icon="i-lucide-copy-plus"
+            color="neutral"
+            variant="outline"
+            :loading="busy"
+            :disabled="busy || !recommendation || overflowMessage !== null"
+            @click="onGenerate(false)"
+          >
+            Save as a new photobook
+          </UButton>
+          <UButton
+            icon="i-lucide-book-open"
+            color="primary"
+            :loading="busy"
+            :disabled="busy || !recommendation || overflowMessage !== null"
+            @click="onGenerate(true)"
+          >
+            Update &ldquo;{{ replacing.name }}&rdquo;
+          </UButton>
+        </template>
         <UButton
+          v-else
           icon="i-lucide-book-open"
           color="primary"
           :loading="busy"
           :disabled="busy || !recommendation || overflowMessage !== null"
-          @click="onGenerate(true)"
-        >
-          Update &ldquo;{{ replacing.name }}&rdquo;
-        </UButton>
-        <UButton
-          icon="i-lucide-copy-plus"
-          color="neutral"
-          variant="outline"
-          :loading="busy"
-          :disabled="busy || !recommendation || overflowMessage !== null"
           @click="onGenerate(false)"
         >
-          Save as a new photobook
+          Generate book
         </UButton>
-      </template>
-      <UButton
-        v-else
-        icon="i-lucide-book-open"
-        color="primary"
-        :loading="busy"
-        :disabled="busy || !recommendation || overflowMessage !== null"
-        @click="onGenerate(false)"
-      >
-        Generate book
-      </UButton>
+      </div>
     </div>
-
-    <p v-if="canGenerate && replacing" class="text-xs text-muted">
-      Updating replaces the saved book and its export history. Saving as new keeps both.
-    </p>
 
     <!--
       The recommendation and its cost, stated before the user commits: a page
       length is a purchase decision, and "26 keepers, 24 fit" is the only
       thing that makes the two SKUs distinguishable.
     -->
-    <p v-if="canGenerate && recommendation" class="text-sm text-muted">
-      <span class="font-mono tabular-nums text-default">{{ recommendation.keeperCount }}</span>
+    <p v-if="canGenerate && recommendation" class="text-sm text-muted tabular-nums">
+      <span class="text-default">{{ recommendation.keeperCount }}</span>
       keepers<template v-if="recommendation.includedCount > 0">
-        (<span class="font-mono tabular-nums text-default">{{ recommendation.includedCount }}</span>
-        you picked)</template
-      >
-      ·
-      <template v-if="chosenOption">
-        <span class="font-mono tabular-nums text-default">{{ chosenOption.capacityPhotos }}</span>
-        fit in
-        <span class="font-mono tabular-nums text-default">{{ chosenOption.pages }}</span> pages
-        <template v-if="chosenOption.droppedPhotos > 0">
-          &middot;
+        (<span class="text-default">{{ recommendation.includedCount }}</span> you picked)</template
+      ><template v-if="chosenOption"
+        >; <span class="text-default">{{ chosenOption.capacityPhotos }}</span> fit in
+        <span class="text-default">{{ chosenOption.pages }}</span> pages<template
+          v-if="chosenOption.droppedPhotos > 0"
+          >, so
           <span class="font-medium text-highlighted"
-            ><span class="font-mono tabular-nums">{{ chosenOption.droppedPhotos }}</span> would be
-            left out</span
-          >
-        </template>
-        <template v-else> &middot; nothing left out</template>
-      </template>
-      <template v-if="isRecommended"> &middot; recommended length</template>
+            >{{ chosenOption.droppedPhotos }} would be left out</span
+          ></template
+        ><template v-else>, nothing left out</template></template
+      >.
+      <template v-if="isRecommended">This is the recommended length.</template>
       <template v-else>
-        &middot; recommended:
-        <span class="font-mono tabular-nums text-default">{{
-          recommendation.recommendedPages
-        }}</span>
-        pages
+        The recommended length is
+        <span class="text-default">{{ recommendation.recommendedPages }}</span> pages.
       </template>
+      Every length offered is a real Pixajoy book.
+    </p>
+    <p v-if="canGenerate && replacing" class="text-xs text-muted">
+      Updating replaces the saved book and its export history. Saving as new keeps both.
     </p>
 
     <!--

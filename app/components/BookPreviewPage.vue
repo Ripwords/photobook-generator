@@ -5,6 +5,7 @@ import {
   cropStyle,
   cropZoomed,
   gutterRect,
+  insideCover,
   pageGuides,
   pageSlots,
   rectStyle,
@@ -320,7 +321,7 @@ const gutter = computed(() => rectStyle(gutterRect(layout.geometry, side)));
     ref="pageEl"
     class="relative overflow-hidden"
     :style="{ aspectRatio: `${layout.geometry.pageWIn} / ${layout.geometry.pageHIn}` }"
-    :class="page ? 'bg-white' : 'bg-elevated'"
+    :class="page ? 'bg-white' : 'bg-charcoal-200 dark:bg-charcoal-800'"
   >
     <template v-if="page">
       <!--
@@ -337,7 +338,7 @@ const gutter = computed(() => rectStyle(gutterRect(layout.geometry, side)));
         v-for="box in boxes"
         :key="box.key"
         :type="selectable ? 'button' : undefined"
-        class="absolute overflow-hidden bg-neutral-100 text-left dark:bg-neutral-800"
+        class="absolute overflow-hidden bg-neutral-100 text-left"
         :class="[
           selectable && 'touch-none focus-visible:outline-2 focus-visible:outline-primary',
           selectable && (editSlots ? 'cursor-move' : 'cursor-grab'),
@@ -371,7 +372,7 @@ const gutter = computed(() => rectStyle(gutterRect(layout.geometry, side)));
           :style="box.crop"
         />
         <div v-else class="flex size-full items-center justify-center">
-          <UIcon name="i-lucide-image-off" class="size-4 text-muted" />
+          <UIcon name="i-lucide-image-off" class="size-4 text-neutral-500" />
         </div>
         <!--
           Corner handles, layout mode only. Each starts a resize with its
@@ -401,7 +402,7 @@ const gutter = computed(() => rectStyle(gutterRect(layout.geometry, side)));
         v-if="page.blank"
         class="absolute inset-0 flex items-center justify-center text-center"
       >
-        <span class="text-xs text-neutral-400">This page prints blank</span>
+        <span class="text-xs text-neutral-500">This page prints blank</span>
       </div>
 
       <!-- Guides, above the photos and inert to the pointer. -->
@@ -412,7 +413,7 @@ const gutter = computed(() => rectStyle(gutterRect(layout.geometry, side)));
       </div>
 
       <span
-        class="pointer-events-none absolute bottom-1 font-mono text-[10px] text-neutral-400 tabular-nums"
+        class="pointer-events-none absolute bottom-1 text-[10px] text-neutral-500 tabular-nums"
         :class="side === 'left' ? 'left-1.5' : 'right-1.5'"
       >
         {{ page.number }}
@@ -420,9 +421,7 @@ const gutter = computed(() => rectStyle(gutterRect(layout.geometry, side)));
     </template>
 
     <div v-else class="flex size-full items-center justify-center">
-      <span class="text-xs text-muted">
-        Inside {{ side === "left" ? "back" : "front" }} cover
-      </span>
+      <span class="text-xs text-muted">Inside {{ insideCover(side) }} cover</span>
     </div>
   </div>
 </template>

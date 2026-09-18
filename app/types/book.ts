@@ -435,11 +435,10 @@ export function selectionLabel(project: ProjectDetail): string | null {
 }
 
 export function projectDetailLabel(project: ProjectDetail): string {
+  const count = project.exports.length;
   const exports =
-    project.exports.length === 0
-      ? "no exports"
-      : `${project.exports.length} export${project.exports.length === 1 ? "" : "s"}`;
-  return `${project.pageCount} pages · ${project.photoCount} photos · ${exports}`;
+    count === 0 ? "not exported yet" : count === 1 ? "exported once" : `exported ${count} times`;
+  return `${project.pageCount} pages, ${project.photoCount} photos, ${exports}`;
 }
 
 /**

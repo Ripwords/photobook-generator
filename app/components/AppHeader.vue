@@ -21,7 +21,7 @@ const emit = defineEmits<{
 
 <template>
   <header
-    class="sticky top-0 flex shrink-0 items-center justify-between gap-4 border-b border-default bg-default px-6 py-4"
+    class="sticky top-0 z-20 flex min-h-16 shrink-0 items-center justify-between gap-4 border-b border-default bg-default px-6 py-3"
   >
     <div class="flex min-w-0 items-center gap-2.5">
       <UButton
@@ -36,7 +36,10 @@ const emit = defineEmits<{
       </UButton>
       <UIcon v-else name="i-lucide-images" class="size-5 shrink-0 text-primary" />
       <div class="min-w-0">
-        <h1 class="truncate text-sm font-semibold text-highlighted">{{ title }}</h1>
+        <!-- A screen whose title is editable (the book editor's rename) replaces it here. -->
+        <slot name="title">
+          <h1 class="truncate text-sm font-semibold text-highlighted">{{ title }}</h1>
+        </slot>
         <p v-if="subtitle" class="truncate text-xs text-muted" :title="subtitleTitle ?? undefined">
           {{ subtitle }}
         </p>
