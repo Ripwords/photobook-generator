@@ -47,6 +47,7 @@ pub fn run() {
             commands::open_project,
             commands::book_layout,
             commands::agent_view,
+            commands::agent_edit,
             commands::set_api_key,
             commands::clear_api_key,
             commands::api_key_status,

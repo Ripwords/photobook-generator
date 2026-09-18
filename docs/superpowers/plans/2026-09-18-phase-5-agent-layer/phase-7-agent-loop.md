@@ -31,7 +31,7 @@ repair, and the router in `prepareStep`.
 ## Verification
 
 - With a scripted model (`MockLanguageModel` from `ai/test`):
-  - a write tool call stops for approval and does not call `edit_book` until approved;
+  - a write tool call stops for approval and does not call `agent_edit` until approved;
   - a denial leaves the book unchanged;
   - after 20 steps the loop stops.
 - A pruned history still carries reasoning on every assistant tool turn.

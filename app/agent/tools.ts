@@ -2,12 +2,11 @@
  * The agent's tools: one table, each entry a thin mapping onto a Tauri
  * command.
  *
- * Every result a model reads is built from `agent_view`, the Rust projection
- * that carries no path, hash, GPS, timestamp or face box. A write tool runs
- * `edit_book` and then re-reads `agent_view`; `edit_book`'s own reply is a
- * `BookLayout` with file names in it and is never returned. A refused edit
- * comes back as `{ refused, view }` so the model reads the reason and the
- * unchanged book.
+ * Every result a model reads is an `AgentView`, the Rust projection that
+ * carries no path, hash, GPS, timestamp or face box. A write tool runs
+ * `agent_edit`, which answers with the new view. A refused edit comes back as
+ * `{ refused, view }` so the model reads the reason and the unchanged book;
+ * any other failure reaches the model as `COMMAND_FAILED` and nothing else.
  */
 import { tool, type Tool } from "ai";
 import { z } from "zod";
@@ -284,10 +283,14 @@ export interface AgentToolDeps {
   rankPhotos?: PhotoRanker;
 }
 
-/** A refusal from `edit_book` arrives as the string Rust wrote, or wrapped in an `Error`. */
-function reasonOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
+/**
+ * What the model reads when a command fails for any reason but a rule's
+ * refusal. Fixed, because the real cause can name a file.
+ */
+export const COMMAND_FAILED = "The book could not be read or saved. Tell the user and stop.";
+
+/** The one rejection of `agent_edit` whose text may reach the model. */
+const refusedEdit = z.object({ kind: z.literal("refused"), reason: z.string() });
 
 /**
  * The AI SDK tool set for one project. Approval is not wired here: phase 7
@@ -295,7 +298,13 @@ function reasonOf(error: unknown): string {
  */
 export function createAgentTools(projectId: number, deps: AgentToolDeps): AgentToolSet {
   const { invoke, rankPhotos = tagRanker } = deps;
-  const readView = async () => (await invoke("agent_view", { projectId })) as AgentView;
+  const readView = async () => {
+    try {
+      return (await invoke("agent_view", { projectId })) as AgentView;
+    } catch {
+      throw new Error(COMMAND_FAILED);
+    }
+  };
 
   const build = (spec: ReadSpec<z.ZodType, unknown> | WriteSpec<z.ZodType>) =>
     tool({
@@ -304,11 +313,14 @@ export function createAgentTools(projectId: number, deps: AgentToolDeps): AgentT
       execute: async (input: unknown) => {
         if (!spec.writes) return spec.read(input, { view: await readView(), rankPhotos });
         try {
-          await invoke("edit_book", { projectId, edit: spec.toEdit(input) });
+          return (await invoke("agent_edit", { projectId, edit: spec.toEdit(input) })) as AgentView;
         } catch (error) {
-          return { refused: reasonOf(error), view: await readView() } satisfies Refusal;
+          const refused = refusedEdit.safeParse(error);
+          // The cause can carry a path, and a tool error reaches the model, so it is dropped.
+          // oxlint-disable-next-line preserve-caught-error
+          if (!refused.success) throw new Error(COMMAND_FAILED);
+          return { refused: refused.data.reason, view: await readView() } satisfies Refusal;
         }
-        return await readView();
       },
     });
 

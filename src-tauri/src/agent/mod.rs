@@ -2,6 +2,7 @@
 //! built here, so the privacy boundary of design §9.1 is one module rather
 //! than a convention spread across the tools.
 
+pub mod edit;
 pub mod keys;
 pub mod request;
 pub mod view;

@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
   AGENT_TOOLS,
+  COMMAND_FAILED,
   READ_TOOLS,
   WRITE_TOOLS,
   createAgentTools,
@@ -28,22 +29,36 @@ const EDITS = fixture<BookEdit[]>("book-edits.json");
 const PROJECT_ID = 42;
 
 /**
- * A mocked Tauri `invoke`. `agent_view` answers with `view()`; `edit_book`
- * either refuses with `refusal` or answers with a poisoned `BookLayout`
- * stand-in, because the real reply carries file names and must never reach
- * the model.
+ * A mocked Tauri `invoke`. `agent_view` answers with `view()`, or rejects
+ * with `viewError`; `agent_edit` answers with `view()`, or rejects with
+ * `editError` the way the Rust `AgentError` does.
  */
-function mockInvoke(options: { view?: () => AgentView; refusal?: string } = {}) {
+function mockInvoke(
+  options: { view?: () => AgentView; editError?: unknown; viewError?: unknown } = {},
+) {
   const view = options.view ?? (() => structuredClone(VIEW));
-  return vi.fn<Invoke>(async (cmd, args) => {
-    if (cmd === "agent_view") return view();
-    if (cmd === "edit_book") {
-      if (options.refusal !== undefined) throw options.refusal;
-      return { pages: [{ placements: [{ filename: POISON.hash, photo: POISON }] }], args };
+  return vi.fn<Invoke>(async (cmd) => {
+    if (cmd === "agent_view") {
+      if (options.viewError !== undefined) throw options.viewError;
+      return view();
+    }
+    if (cmd === "agent_edit") {
+      if (options.editError !== undefined) throw options.editError;
+      return view();
     }
     throw new Error(`unexpected command ${cmd}`);
   });
 }
+
+/** Everything a failed command might carry: a path, a hash, a whole record. */
+const POISONED_FAILURES: unknown[] = [
+  { kind: "failed" },
+  `unable to open database file: ${POISON.path}`,
+  new Error(`no cached features for ${POISON.hash}`),
+  { kind: "failed", detail: POISON },
+  { kind: "refused" },
+  { kind: "failed", reason: POISON.path },
+];
 
 const OPTIONS = { toolCallId: "call-1", messages: [], context: {} };
 
@@ -127,11 +142,11 @@ describe("toEdit", () => {
     });
   }
 
-  it("sends edit_book exactly the edit, under the project id", async () => {
+  it("sends agent_edit exactly the edit, under the project id", async () => {
     const invoke = mockInvoke();
     const tools = createAgentTools(PROJECT_ID, { invoke });
     await run(tools, "swap_photos", WRITE_INPUTS.swap_photos.input);
-    expect(invoke).toHaveBeenCalledWith("edit_book", {
+    expect(invoke).toHaveBeenCalledWith("agent_edit", {
       projectId: PROJECT_ID,
       edit: EDITS.find((e) => e.kind === "swapPhotos"),
     });
@@ -139,40 +154,49 @@ describe("toEdit", () => {
 });
 
 describe("write tool results", () => {
-  it("return the fresh view read after the edit, never an acknowledgement", async () => {
-    let reads = 0;
+  it("return the view agent_edit answered with, never an acknowledgement", async () => {
     const after: AgentView = { ...structuredClone(VIEW), droppedPhotos: 7 };
-    const invoke = mockInvoke({ view: () => (reads++ === 0 ? after : VIEW) });
+    const invoke = mockInvoke({ view: () => after });
     const tools = createAgentTools(PROJECT_ID, { invoke });
 
     const result = await run(tools, "set_locked", { opening: 1, locked: true });
 
     expect(result).toStrictEqual(after);
-    const order = invoke.mock.calls.map(([cmd]) => cmd);
-    expect(order).toEqual(["edit_book", "agent_view"]);
+    expect(invoke.mock.calls.map(([cmd]) => cmd)).toEqual(["agent_edit"]);
   });
 
   it("return a refused edit's reason with the unchanged view", async () => {
     const reason = "this spread is locked; unlock it to change it";
-    const invoke = mockInvoke({ refusal: reason });
+    const invoke = mockInvoke({ editError: { kind: "refused", reason } });
     const tools = createAgentTools(PROJECT_ID, { invoke });
 
     const result = await run(tools, "regenerate", { opening: 0 });
 
     expect(result).toStrictEqual({ refused: reason, view: VIEW });
-    expect(invoke.mock.calls.map(([cmd]) => cmd)).toEqual(["edit_book", "agent_view"]);
+    expect(invoke.mock.calls.map(([cmd]) => cmd)).toEqual(["agent_edit", "agent_view"]);
+  });
+});
+
+describe("failures", () => {
+  it("the poisoned failures do carry withheld values, so the checks below are live", () => {
+    expect(leaksIn(POISONED_FAILURES.map(String))).not.toEqual([]);
+    expect(leaksIn(POISONED_FAILURES)).not.toEqual([]);
   });
 
-  it("read a refusal's reason from an Error as well as a string", async () => {
-    const invoke = vi.fn<Invoke>(async (cmd) => {
-      if (cmd === "edit_book") throw new Error('no template is called "x"');
-      return structuredClone(VIEW);
+  for (const [i, failure] of POISONED_FAILURES.entries()) {
+    it(`a write that fails (#${i}) reaches the model as fixed text, not its cause`, async () => {
+      const tools = createAgentTools(PROJECT_ID, { invoke: mockInvoke({ editError: failure }) });
+      await expect(run(tools, "shuffle", {})).rejects.toThrow(new Error(COMMAND_FAILED));
     });
-    const tools = createAgentTools(PROJECT_ID, { invoke });
 
-    const result = await run(tools, "set_layout", { opening: 1, templateId: "x" });
+    it(`a read that fails (#${i}) reaches the model as fixed text, not its cause`, async () => {
+      const tools = createAgentTools(PROJECT_ID, { invoke: mockInvoke({ viewError: failure }) });
+      await expect(run(tools, "get_book", {})).rejects.toThrow(new Error(COMMAND_FAILED));
+    });
+  }
 
-    expect(result).toStrictEqual({ refused: 'no template is called "x"', view: VIEW });
+  it("the fixed text itself carries nothing withheld", () => {
+    expect(leaksIn(COMMAND_FAILED)).toEqual([]);
   });
 });
 
@@ -278,7 +302,7 @@ describe("the privacy chokepoint", () => {
   });
 
   for (const name of Object.keys(AGENT_TOOLS) as ToolName[]) {
-    it(`${name}'s result carries no withheld value, though edit_book's reply does`, async () => {
+    it(`${name}'s result carries no withheld value`, async () => {
       const invoke = mockInvoke();
       const tools = createAgentTools(PROJECT_ID, { invoke });
 

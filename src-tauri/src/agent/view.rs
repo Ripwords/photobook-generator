@@ -176,7 +176,7 @@ pub fn agent_view(book: &Book, lib: &Library, photos: &[SourcePhoto]) -> AgentVi
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::book::cull::Overrides;
     use crate::book::pace::{assemble, Page, Placement, BLANK_TEMPLATE_ID};
@@ -256,7 +256,7 @@ mod tests {
 
     /// Page 1 alone, one two-page spread, the last page alone. Photo indices
     /// are out of order so a view that numbers slots positionally differs.
-    fn small_book() -> Book {
+    pub(crate) fn small_book() -> Book {
         let mut book = Book {
             pages: vec![
                 page(
@@ -287,14 +287,14 @@ mod tests {
         book
     }
 
-    fn frozen_library() -> Library {
+    pub(crate) fn frozen_library() -> Library {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/templates");
         Library::load(&dir).expect("the frozen fixture library must decompose")
     }
 
     /// Four photos, never square, never the same shape twice. Photo 2 is the
     /// one the book left out and has nobody in it; photo 3 is undated.
-    fn small_photos() -> Vec<SourcePhoto> {
+    pub(crate) fn small_photos() -> Vec<SourcePhoto> {
         let mut empty = record(
             "/p/c.jpg",
             "hc",

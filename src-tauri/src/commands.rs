@@ -1,6 +1,7 @@
 use crate::agent;
 use crate::agent::keys::{self, KeyStatus, KeyStore, KeychainStore, Provider};
 use crate::agent::request::{ModelEvent, ModelRequestError, ModelRequests, Outbound};
+use crate::agent::edit::AgentError;
 use crate::agent::view::{AgentView, SourcePhoto};
 use crate::book::cull::{Overrides, Photo};
 use crate::book::manifest::{manifest, Manifest};
@@ -1813,34 +1814,78 @@ pub async fn book_layout(app: AppHandle, project_id: i64) -> Result<BookLayout, 
     .map_err(|e| e.to_string())?
 }
 
-/// The saved book as the agent may see it -- see `agent::view`.
+/// A saved book and the photos its placements index, as the agent commands
+/// read them.
 ///
 /// Reads the cached records directly rather than going through
 /// `resolve_photos`, because the view ranks from the raw `aestheticScore` and
 /// `sharpness` that `Photo` does not keep.
+fn load_for_agent(
+    app: &AppHandle,
+    db: &Db,
+    project_id: i64,
+) -> Result<(crate::project::Project, Library, Vec<SourcePhoto>), String> {
+    let project = db
+        .load_project(project_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("project {project_id} no longer exists"))?;
+    let photos = cached_records(db, &project.photo_hashes)?
+        .iter()
+        .map(|record| {
+            SourcePhoto::from_record(record).ok_or_else(|| {
+                format!("A cached photo record is missing fields the agent needs -- {RESOLVE_REMEDY}.")
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok((project, load_library(app)?, photos))
+}
+
+/// The saved book as the agent may see it -- see `agent::view`. Fails with
+/// `AgentError::Failed`, never with text, because the result reaches the model.
 #[tauri::command]
-pub async fn agent_view(app: AppHandle, project_id: i64) -> Result<AgentView, String> {
+pub async fn agent_view(app: AppHandle, project_id: i64) -> Result<AgentView, AgentError> {
     tauri::async_runtime::spawn_blocking(move || {
         let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
-        let project = db
-            .load_project(project_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("project {project_id} no longer exists"))?;
-        let photos = cached_records(&db, &project.photo_hashes)?
-            .iter()
-            .map(|record| {
-                SourcePhoto::from_record(record).ok_or_else(|| {
-                    format!(
-                        "A cached photo record is missing fields the agent needs -- {RESOLVE_REMEDY}."
-                    )
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let lib = load_library(&app)?;
-        Ok(crate::agent::view::agent_view(&project.book, &lib, &photos))
+        let (project, lib, photos) = load_for_agent(&app, &db, project_id)?;
+        Ok::<_, String>(crate::agent::view::agent_view(&project.book, &lib, &photos))
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(AgentError::failed)?
+    .map_err(AgentError::failed)
+}
+
+/// `edit_book` for the agent: the same edit, saved the same way, answered
+/// with the new `AgentView` rather than a `BookLayout` (which names files),
+/// and failing with `AgentError` so only a rule's refusal carries text.
+#[tauri::command]
+pub async fn agent_edit(
+    app: AppHandle,
+    project_id: i64,
+    edit: crate::book::edit::BookEdit,
+) -> Result<AgentView, AgentError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = database_path(&app)
+            .and_then(|path| Db::open(&path).map_err(|e| e.to_string()))
+            .map_err(AgentError::failed)?;
+        let (mut project, lib, photos) =
+            load_for_agent(&app, &db, project_id).map_err(AgentError::failed)?;
+        let view = crate::agent::edit::edit_and_view(
+            &mut project.book,
+            &edit,
+            &lib,
+            &photos,
+            &load_weights(&app),
+        )?;
+        let changed = db
+            .update_project_book(project_id, &project.book)
+            .map_err(AgentError::failed)?;
+        if changed == 0 {
+            return Err(AgentError::failed(format!("project {project_id} no longer exists")));
+        }
+        Ok(view)
+    })
+    .await
+    .map_err(AgentError::failed)?
 }
 
 /// Stores a provider's API key in the keychain. Blank keys are refused and

@@ -49,8 +49,9 @@ Excluded:
 - **Images never leave the machine.** Only `AgentView` JSON and the user's own typed
   messages leave. The leak test in phase 1 is the enforcement, not a convention.
 - **Keys never enter the webview.** Rust reads the keychain and attaches the header.
-- **Determinism of the engine is untouched.** The agent only calls `edit_book`, which is
-  already deterministic. Nothing model-driven runs inside `assemble`, `score` or `cull`.
+- **Determinism of the engine is untouched.** The agent only calls `agent_edit`, which runs
+  the same `book::edit::apply` as `edit_book` and is already deterministic. Nothing
+  model-driven runs inside `assemble`, `score` or `cull`.
 - Bun, Conventional Commits, no `any`, oxlint warnings fail, `bun run check:build` before
   any commit touching `.vue`, `bun run sidecar` before `cargo`.
 - Mutation-check every load-bearing test and paste the evidence in the commit message.
@@ -62,6 +63,7 @@ Excluded:
 | `buildAgentPayload()` in TypeScript | `agent::view` in Rust, one command `agent_view` | The editor holds no per-photo features. Rust holds them (`resolve_photos`). Tool results also go to the model, so the chokepoint has to cover them too. It is easiest to enforce where the data lives. |
 | `@tauri-apps/plugin-http` scoped to `api.deepseek.com` | A custom `model_request` command with a host allowlist | The plugin's `fetch` is called from JS, so the key would pass through the webview. |
 | `needsApproval` on each tool | `toolApproval` on the agent | `needsApproval` is deprecated in `ai` 7. |
+| Tools call `edit_book` (plan text before step 5 landed) | Tools call `agent_edit`, which answers with the `AgentView` and fails with `AgentError` | `edit_book` answers with a `BookLayout` (file names) and fails with free text, which can include the app data path. `AgentError` is `refused { reason }` (built from `EditError`, which holds only indices and template ids) or `failed` with no text, so the type rules the leak out. |
 | `deepseek-v4-flash` | `deepseek-flash` | DeepSeek's primary id now. The old name still works, as an alias of the same model. |
 
 ## Alternatives considered
