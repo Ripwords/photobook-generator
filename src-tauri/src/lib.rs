@@ -32,6 +32,7 @@ pub fn builder() -> tauri::Builder<tauri::Wry> {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(commands::AppState::default())
+        .manage(agent::request::ModelRequests::new())
 }
 
 pub fn run() {
@@ -49,6 +50,8 @@ pub fn run() {
             commands::set_api_key,
             commands::clear_api_key,
             commands::api_key_status,
+            commands::model_request,
+            commands::cancel_model_request,
             commands::edit_book,
             commands::delete_project,
             commands::rename_project,

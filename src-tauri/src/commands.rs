@@ -1,4 +1,6 @@
+use crate::agent;
 use crate::agent::keys::{self, KeyStatus, KeyStore, KeychainStore, Provider};
+use crate::agent::request::{ModelEvent, ModelRequestError, ModelRequests, Outbound};
 use crate::agent::view::{AgentView, SourcePhoto};
 use crate::book::cull::{Overrides, Photo};
 use crate::book::manifest::{manifest, Manifest};
@@ -1864,6 +1866,30 @@ pub async fn api_key_status() -> Result<KeyStatus, String> {
     tauri::async_runtime::spawn_blocking(|| keys::status(&KeychainStore, keys::env_fallback))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// Sends one model request and streams its response over `on_event`. The
+/// webview names only the provider, the path and the body; see
+/// `agent::request::run` for what is checked before anything connects.
+#[tauri::command]
+pub async fn model_request(
+    requests: tauri::State<'_, ModelRequests>,
+    id: String,
+    provider: Provider,
+    path: String,
+    body: String,
+    on_event: Channel<ModelEvent>,
+) -> Result<(), ModelRequestError> {
+    let request = Outbound { id, provider, path, body };
+    agent::request::run(&requests, request, agent::request::base_url, keys::api_key, &on_event)
+        .await
+}
+
+/// Stops the request with this id, which then ends with `Cancelled`. Safe to
+/// send before `model_request` has started.
+#[tauri::command]
+pub fn cancel_model_request(requests: tauri::State<'_, ModelRequests>, id: String) {
+    requests.cancel(&id);
 }
 
 /// Applies one spread-level edit to a saved book, persists it, and returns

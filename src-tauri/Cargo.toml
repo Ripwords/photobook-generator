@@ -39,6 +39,13 @@ libc = "0.2"
 # cannot silently fall back to a mock store the way v3 did.
 keyring = "4"
 
+# Outbound model requests (`agent::request`). rustls with the platform
+# verifier, so no OpenSSL and trust comes from the macOS keychain roots.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2"] }
+# `select!` races a request against its cancellation, which arrives over a
+# `sync::watch`. Unifies with tauri's own tokio.
+tokio = { version = "1", features = ["macros", "rt", "sync"] }
+
 [dev-dependencies]
 tempfile = "3"
 
@@ -49,7 +56,7 @@ tempfile = "3"
 # tokio dependency already resolves to (required: `tauri::async_runtime::set`
 # takes tauri's re-exported `tokio::runtime::Handle` type, which must be the
 # exact same version for the types to match).
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time"] }
 
 # Property tests on the geometry predicates. The design doc (section 12)
 # calls for these by name: the interesting failures are the ones no

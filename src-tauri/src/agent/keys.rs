@@ -143,13 +143,22 @@ fn lookup(
     Ok(env(provider).and_then(|v| non_blank(&v).map(str::to_string)))
 }
 
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum KeyError {
+    #[error("No {} API key is set. Add it in Settings.", .0.label())]
+    Missing(Provider),
+    #[error("{0}")]
+    Store(String),
+}
+
 pub(crate) fn resolve_key(
     store: &impl KeyStore,
     provider: Provider,
     env: impl Fn(Provider) -> Option<String>,
-) -> Result<String, String> {
-    lookup(store, provider, env)?
-        .ok_or_else(|| format!("No {} API key is set. Add it in Settings.", provider.label()))
+) -> Result<String, KeyError> {
+    lookup(store, provider, env)
+        .map_err(KeyError::Store)?
+        .ok_or(KeyError::Missing(provider))
 }
 
 #[cfg(debug_assertions)]
@@ -164,9 +173,7 @@ pub(crate) fn env_fallback(_provider: Provider) -> Option<String> {
 
 /// The key for `provider`: keychain first, then (debug builds only) the
 /// environment.
-// The caller is `model_request`, which lands in Phase 5 step 3.
-#[allow(dead_code)]
-pub(crate) fn api_key(provider: Provider) -> Result<String, String> {
+pub(crate) fn api_key(provider: Provider) -> Result<String, KeyError> {
     resolve_key(&KeychainStore, provider, env_fallback)
 }
 
@@ -294,9 +301,10 @@ mod tests {
     fn missing_key_error_names_the_provider() {
         let store = MemoryStore::default();
         let err = resolve_key(&store, Provider::DeepSeek, no_env).unwrap_err();
-        assert!(err.contains("DeepSeek"), "{err}");
+        assert_eq!(err, KeyError::Missing(Provider::DeepSeek));
+        assert!(err.to_string().contains("DeepSeek"), "{err}");
         let err = resolve_key(&store, Provider::Jev, no_env).unwrap_err();
-        assert!(err.contains("Jev"), "{err}");
+        assert!(err.to_string().contains("Jev"), "{err}");
     }
 
     #[cfg(debug_assertions)]
