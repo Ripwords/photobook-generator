@@ -112,6 +112,13 @@ enum Exporter {
     /// The claim set is per-request, not per-directory: re-exporting a book
     /// over a previous run's output must still overwrite, since "regenerate"
     /// is expected to replace what is there.
+    ///
+    /// **Items run in parallel, claims do not.** Paths are claimed in input
+    /// order before any item is decoded, so "first wins" still means first in
+    /// the request, not first to finish. A claim is taken whether or not the
+    /// item's source then turns out to be readable. At most
+    /// `concurrencyLimit` items are in flight, because each holds a
+    /// full-resolution decode plus its sRGB copy in memory.
     static func export(_ request: ExportRequest) -> [ExportRecord] {
         do {
             try FileManager.default.createDirectory(
@@ -126,17 +133,45 @@ enum Exporter {
         }
 
         var claimed = Set<String>()
-        var records: [ExportRecord] = []
-        records.reserveCapacity(request.items.count)
-        for item in request.items {
-            do {
-                records.append(try exportOne(item, outputDir: request.outputDir, claimed: &claimed))
-            } catch {
-                records.append(.failed(filename: item.filename, message: describe(error)))
-            }
+        let claims: [Result<(path: String, format: OutputFormat), ExportError>] = request.items.map { item in
+            let format = sourceFormat(of: item.sourcePath)
+            let path = outputPath(for: item.filename, format: format, in: request.outputDir)
+            return claimed.insert(path).inserted
+                ? .success((path, format))
+                : .failure(.duplicateOutputPath(path))
         }
-        return records
+
+        var records = [ExportRecord?](repeating: nil, count: request.items.count)
+        let lock = NSLock()
+        let slots = DispatchSemaphore(value: concurrencyLimit)
+        // Same pattern, and the same false-positive capture warning, as
+        // `Analyzer.analyze`: every write is under `lock`, and
+        // `concurrentPerform` returns only after every iteration has.
+        DispatchQueue.concurrentPerform(iterations: request.items.count) { index in
+            let item = request.items[index]
+            let record: ExportRecord
+            switch claims[index] {
+            case .failure(let error):
+                record = .failed(filename: item.filename, message: error.description)
+            case .success(let claim):
+                slots.wait()
+                defer { slots.signal() }
+                do {
+                    record = try exportOne(item, to: claim.path, format: claim.format)
+                } catch {
+                    record = .failed(filename: item.filename, message: describe(error))
+                }
+            }
+            lock.lock()
+            records[index] = record
+            lock.unlock()
+        }
+        return records.compactMap { $0 }
     }
+
+    /// Items exported at once. Measured on 27 camera JPEGs; see
+    /// `docs/PROJECT-STATUS.md` before changing it.
+    static let concurrencyLimit = 4
 
     private static func describe(_ error: Error) -> String {
         switch error {
@@ -147,26 +182,21 @@ enum Exporter {
         }
     }
 
+    /// `path` is already claimed by `export`, so a collision never truncates
+    /// the file the first item wrote. The claim is on the resolved path, so
+    /// the same stem from a JPEG and a PNG source is not a collision -- they
+    /// become `p01.jpg` and `p01.png` and both survive.
     private static func exportOne(
-        _ item: ExportItem, outputDir: String, claimed: inout Set<String>
+        _ item: ExportItem, to path: String, format: OutputFormat
     ) throws -> ExportRecord {
         // The autoreleasepool encloses the DECODE, not just the encode. Full
         // decompression happens inside `loadOriented`, and without a pool
         // around it the temporary surfaces accumulate for the whole batch.
-        let (image, format) = try autoreleasepool { () throws -> (CGImage, OutputFormat) in
+        let image = try autoreleasepool { () throws -> CGImage in
             let decoded = try ImageLoader.loadOriented(path: item.sourcePath)
             let rect = try cropRect(for: item, in: decoded)
             guard let cropped = decoded.cropping(to: rect) else { throw ExportError.cropFailed }
-            return (cropped, sourceFormat(of: item.sourcePath))
-        }
-
-        // Claimed BEFORE encoding, so a collision never truncates the file the
-        // first item already wrote. Note the claim is on the resolved path, so
-        // the same stem from a JPEG and a PNG source is not a collision --
-        // they become `p01.jpg` and `p01.png` and both survive.
-        let path = outputPath(for: item.filename, format: format, in: outputDir)
-        guard claimed.insert(path).inserted else {
-            throw ExportError.duplicateOutputPath(path)
+            return cropped
         }
 
         let srgb = try convertToSRGB(image, format: format)

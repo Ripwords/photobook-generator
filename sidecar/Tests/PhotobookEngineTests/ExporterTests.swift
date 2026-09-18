@@ -414,6 +414,42 @@ private func exporterContainerType(_ path: String) -> String? {
     #expect(written == ["p01.jpg", "p02.jpg"], "directory contained \(written)")
 }
 
+/// Items export in parallel, so "first wins" must mean first in the request,
+/// not first to finish. The first item here is a large photo that takes far
+/// longer to decode than the tiny second one; a claim taken on completion
+/// hands the path to the second.
+@Test func exporterCollisionIsWonByRequestOrderNotByWhoFinishesFirst() throws {
+    let dir = exporterTempDir("collision-race")
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+    let slow = (dir as NSString).appendingPathComponent("slow-red.jpg")
+    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    let context = try #require(CGContext(
+        data: nil, width: 6000, height: 4000, bitsPerComponent: 8, bytesPerRow: 0,
+        space: CGColorSpace(name: CGColorSpace.sRGB)!,
+        bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue
+    ))
+    context.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+    context.fill(CGRect(x: 0, y: 0, width: 6000, height: 4000))
+    let destination = try #require(CGImageDestinationCreateWithURL(
+        URL(fileURLWithPath: slow) as CFURL, UTType.jpeg.identifier as CFString, 1, nil
+    ))
+    CGImageDestinationAddImage(destination, try #require(context.makeImage()), nil)
+    #expect(CGImageDestinationFinalize(destination))
+
+    let out = (dir as NSString).appendingPathComponent("out")
+    let records = Exporter.export(ExportRequest(outputDir: out, items: [
+        exporterItem(slow, "p01", 0.0, 0.0, 1.0, 1.0),
+        exporterItem(exporterFixture("export-quadrants.jpg"), "p01", 0.5, 0.0, 0.5, 0.5),  // green
+    ]))
+    guard case .ok(let path, _, _, _) = records[0] else {
+        Issue.record("the first item in the request must win, got \(records[0])"); return
+    }
+    guard case .failed = records[1] else {
+        Issue.record("the later item must lose, got \(records[1])"); return
+    }
+    exporterExpectColor(path, x: 300, y: 200, exporterRed, "the winner's content")
+}
+
 /// The claim is on the RESOLVED path, so the same stem from a lossy and a
 /// lossless source is not a collision: they become `p01.jpg` and `p01.png`
 /// and both survive. A stem-level check would wrongly fail one of them.

@@ -63,9 +63,32 @@ harness (`bun run ui:mock`) covers the flow end to end in light and dark.
    sidecar call (planned) was dropped: hashing is now ~9 ms of a cold run, the most it
    could save.
 
+   Export, same folder, 4 sidecar calls of 8 items as `export_book` sends them, median of 5
+   (the harness pipes `export` requests straight into the built sidecar):
+
+   | Change | Export time | Peak memory |
+   |---|---|---|
+   | Baseline, one item after another | 1625 ms | 990 MB |
+   | `Exporter.export` runs 4 items at once (`concurrencyLimit`) | 555 ms | 1189 MB |
+
+   A limit of 8 (the whole batch at once) measured 453 ms at 1372 MB. It was not taken:
+   every extra item in flight holds a full-resolution decode and its sRGB copy, about
+   45 MB each for these 24 MP files and several times that for a large RAW. Paths are
+   claimed in request order before anything is decoded, so a filename collision is still
+   won by the first item in the request, not the first to finish
+   (`exporterCollisionIsWonByRequestOrderNotByWhoFinishesFirst`; claiming on completion
+   fails it). One consequence: an item whose source is unreadable still holds its path.
+
+   Measured and not done:
+   - **Passing Rust's hash to Swift.** Swift's own hash averages 2 ms of the 54 ms a photo
+     costs in the sidecar (`scripts/benchmark.sh`), and it runs across cores. Removing it
+     saves a few ms per cold run, less than the run-to-run noise, for a protocol change.
+   - **The batch barrier.** Analysing the folder as one chunk, with no barrier between the
+     4, 8 and 15-photo ramp chunks, took 346 ms against 381 ms. The ramp is what puts the
+     first tiles on screen after 4 photos, and 35 ms does not pay for losing that.
+
 Not done: the "Discard draft…" item in the sidebar row's menu (discard is on the draft's own
-toolbar only), and the performance pass (parallel hashing, passing Rust's hash to Swift,
-parallel export), which waits on a benchmark folder from the user.
+toolbar only).
 
 ## What changed on 2026-09-16
 
