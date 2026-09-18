@@ -63,7 +63,7 @@ const chunk = (delta: DeepSeekDelta, finish: string | null, usage?: object) => (
  * one `chat.completion.chunk` per delta, a final chunk with the finish
  * reason and usage, then `[DONE]`.
  */
-function deepseekStream(
+export function deepseekStream(
   deltas: DeepSeekDelta[],
   finishReason: "stop" | "tool_calls",
   completionTokens: number,

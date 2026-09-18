@@ -5,6 +5,7 @@
   "permissions": [
     "core:default",
     "dialog:default",
+    "log:default",
     "notification:default",
     {
       "identifier": "shell:allow-execute",

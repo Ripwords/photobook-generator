@@ -271,6 +271,20 @@ export function useBook(
   }
 
   /**
+   * Reloads the book on screen after something other than `editBook` changed
+   * it: the agent's writes go through `agent_edit`, whose reply is the agent's
+   * view of the book rather than a `BookLayout`.
+   */
+  async function refreshLayout() {
+    const projectId = exportProjectId.value;
+    if (projectId === null) return;
+    await guard(async () => {
+      await loadLayout(projectId);
+      await loadProjects();
+    });
+  }
+
+  /**
    * Clears everything derived from one analysed set OR one opened project.
    * Called when the photos change: a generated book, an opened project, a
    * chosen output folder and an export report all belong to whichever
@@ -310,6 +324,7 @@ export function useBook(
     pickOutputDir,
     exportBook,
     editBook,
+    refreshLayout,
     loadProjects,
     reset,
     reveal,
