@@ -224,8 +224,19 @@ function agentEdit(edit: BookEdit): AgentView {
   return agentView();
 }
 
+declare global {
+  interface Window {
+    /** Milliseconds between streamed batches. Raise it to leave a draft mid-run. */
+    pbgAnalysisBatchMs?: number;
+  }
+}
+
+let nextRunId = 1;
+
 /** Streams `analyze_folders`'s events at a speed a person can watch. */
 async function analyze(channel: Channel<AnalysisEvent>): Promise<AnalysisSummary> {
+  const runId = nextRunId++;
+  const batchMs = globalThis.window?.pbgAnalysisBatchMs ?? 220;
   channel.onmessage({ kind: "scanned", total: photos.length + 2 });
   await sleep(250);
 
@@ -234,14 +245,14 @@ async function analyze(channel: Channel<AnalysisEvent>): Promise<AnalysisSummary
     const batch = photos.slice(start, start + 6);
     analysed += batch.length;
     channel.onmessage({ kind: "batch", photos: batch, analysed, cached: 0, failed: 0 });
-    await sleep(220);
+    await sleep(batchMs);
   }
 
   // Paths are left exactly as `photos.ts` wrote them. `apply_photo_overrides`
   // answers with kept PATHS, and the contact sheet matches on them, so
   // rewriting one and not the other silently drops every photo from the book.
   const summary: AnalysisSummary = {
-    runId: 1,
+    runId,
     total: photos.length + 2,
     failed: 2,
     cached: 0,
@@ -301,6 +312,9 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
 
     case "analyze_folders":
       return (await analyze(args?.onEvent as Channel<AnalysisEvent>)) as T;
+
+    case "forget_run":
+      return undefined as T;
 
     case "apply_photo_overrides":
       return keptPaths((args?.overrides as PhotoOverrides) ?? {}) as T;

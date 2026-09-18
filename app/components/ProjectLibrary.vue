@@ -28,8 +28,8 @@ const countLabel = computed(() =>
 
 const steps = [
   {
-    title: "Choose photo folders",
-    text: "Every photo in them and their subfolders is analysed on this Mac.",
+    title: "Name it and choose folders",
+    text: "Every photo in them and their subfolders is analysed on this Mac, in the background.",
   },
   {
     title: "Review the contact sheet",
@@ -114,8 +114,8 @@ const steps = [
             the others so you can see what's worth printing.
           </p>
           <div class="flex items-center gap-3 pt-2">
-            <UButton icon="i-lucide-folder-open" color="primary" @click="emit('new')">
-              Choose photo folders
+            <UButton icon="i-lucide-plus" color="primary" @click="emit('new')">
+              New photobook
             </UButton>
             <span class="flex items-center gap-1 text-xs text-muted">
               or press

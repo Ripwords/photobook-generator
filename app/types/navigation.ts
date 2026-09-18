@@ -1,4 +1,4 @@
-import type { AnalysisSummary, PhotoOverrides } from "~/types/features";
+import type { AnalysisSummary } from "~/types/features";
 
 /** The saved book a re-edited selection is on its way back to replace. */
 export interface ReplacedProject {
@@ -12,13 +12,8 @@ export interface ReplacedProject {
  */
 export type Screen =
   | { kind: "library" }
-  | {
-      kind: "select";
-      folders: string[];
-      /** Decisions to restore after analysis, when re-editing a saved book. */
-      overrides: PhotoOverrides;
-      replacing: ReplacedProject | null;
-    }
+  /** A draft's contact sheet. The draft itself lives in `useAnalysisJobs`. */
+  | { kind: "select"; jobId: number }
   | { kind: "editor"; projectId: number };
 
 /** What the select screen is showing, once navigation has already put us there. */
@@ -37,9 +32,4 @@ export function selectStage(
   if (summary.total === 0) return "no-images";
   if (summary.photos.length === 0) return "no-analyzed";
   return "ready";
-}
-
-/** A `:key` for the select screen, so re-entering it with different folders remounts. */
-export function selectKey(folders: string[]): string {
-  return folders.join("\n");
 }

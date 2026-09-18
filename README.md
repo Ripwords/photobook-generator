@@ -48,13 +48,14 @@ exists so that error is easy to diagnose.
 ## Using the app
 
 The window is a sidebar and one screen beside it. The sidebar is always there (⌘B hides
-and shows it): **New photobook** at the top, **Library** under it, then every book you have
-made, each with its cover, and **Settings** at the bottom. Click a book there to open it from
-wherever you are. Hover any icon button for its name and, where it has one, its shortcut.
+and shows it): **New photobook** at the top, **Library** under it, then **Drafts** (books
+still being analysed or chosen, shown only when there are any), then every book you have
+made, each with its cover, and **Settings** at the bottom. Click a book or a draft there to
+open it from wherever you are. Hover any icon button for its name and, where it has one, its shortcut.
 
 | Shortcut | Does | Where |
 |---|---|---|
-| ⌘N | New photobook (choose photo folders) | Anywhere |
+| ⌘N | New photobook (name it, then choose photo folders) | Anywhere |
 | ⌘B | Show or hide the sidebar | Anywhere |
 | ⌘, | Settings | Anywhere |
 | ⌘J | Show or hide the chat | Book editor |
@@ -78,12 +79,17 @@ first, then removes the book's layout, your include/exclude decisions and its ex
 history; files you already exported to disk are not touched, and neither is the photo
 analysis cache, so reopening those folders later will not re-scan your photos.
 
-With no books yet, the library is a short explanation of the three steps and a **Choose
-photo folders** button, which does the same as **New photobook**.
+With no books yet, the library is a short explanation of the three steps and a **New
+photobook** button, which does the same as the one in the sidebar.
+
+**New photobook** asks for the book's name first, then its photo folders (**Choose
+folders…**, and **Add folders…** for more; **×** removes one). **Start** is enabled once
+there is a folder. A blank name becomes the first folder's name, which the field shows as its
+placeholder.
 
 ### 2. Choosing the photos
 
-Pick one or more folders. Every supported image in them and in their subfolders is analysed
+Starting a book opens it as a **draft**. Every supported image in them and in their subfolders is analysed
 on this Mac (nothing leaves the machine). Several folders are one set: every photo is ranked
 against all the others, and photos shot the same afternoon fall into one event whichever
 folder they came from.
@@ -98,12 +104,23 @@ again from other folders. The app recommends the shortest Pixajoy length that fi
 how many each length would leave out. A length that cannot hold every photo you explicitly
 marked **+** cannot be generated at all, and says so instead of quietly dropping one.
 
-**Generate book** saves the book and opens it in the editor. Leaving this screen before you
-generate throws away your include and exclude choices, so it asks first; the analysis itself
-is cached, so coming back to the same folders is quick.
+**Generate book** saves the book, opens it in the editor, and removes the draft.
 
-Arriving here from **Edit photos** on a saved book is the same screen with that book's
-decisions restored, and the generate control becomes two: **Update "<name>"** replaces the
+You can leave a draft at any point, including while it is still being analysed. It stays in
+the sidebar's **Drafts** group: a spinner and a photo count while it analyses, **Ready** when
+it is done, **Failed** if it could not be analysed. Its name and your include and exclude
+choices are kept, so you can start another book, or open one, while it works; several drafts
+analyse at once, taking turns. When one finishes while you are elsewhere, a notice says it is
+ready, with **Open** to go to it. The trash button at the top right of the draft,
+**Discard draft**, throws it away after asking.
+
+Drafts are kept only while the app is open. Quitting with any drafts asks first, since they
+and your choices in them are lost; the analysis itself is cached, so choosing the same
+folders again is quick.
+
+Arriving here from **Edit photos** on a saved book is the same screen, as a draft named after
+that book, with its decisions restored once the analysis is done (**Edit photos** again
+reopens the same draft), and the generate control becomes two: **Update "<name>"** replaces the
 saved book (its export history goes with it), **Save as a new photobook** keeps both.
 Choosing different folders makes it a new book again, since a book built from a different
 source is not an update of the old one.

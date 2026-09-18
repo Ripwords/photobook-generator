@@ -3,29 +3,42 @@ import { shortcutKbds } from "~/types/shortcuts";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { ProjectListItem } from "~/types/book";
 import type { Screen } from "~/types/navigation";
+import { jobProgress, type AnalysisJob } from "~/composables/useAnalysisJobs";
 
-const { projects, screen } = defineProps<{
+const { projects, screen, drafts } = defineProps<{
   projects: ProjectListItem[];
   screen: Screen;
+  /** Books still being chosen, some of them still analysing. */
+  drafts: AnalysisJob[];
 }>();
 
 const emit = defineEmits<{
   new: [];
   library: [];
   open: [id: number];
+  openDraft: [jobId: number];
 }>();
 
 const { toggleSidebar, openSettings } = useShell();
 
-/** The book on screen, whether open in the editor or back on the contact sheet. */
-const activeId = computed(() => {
-  if (screen.kind === "editor") return screen.projectId;
-  if (screen.kind === "select") return screen.replacing?.id ?? null;
-  return null;
-});
+/** The book open in the editor. */
+const activeId = computed(() => (screen.kind === "editor" ? screen.projectId : null));
+/** The draft whose contact sheet is on screen. */
+const activeDraftId = computed(() => (screen.kind === "select" ? screen.jobId : null));
 
-/** A selection that is not yet a book has no row of its own, so it gets one while it lasts. */
-const drafting = computed(() => screen.kind === "select" && screen.replacing === null);
+/** A draft's state in a few words, beside its name. */
+function draftStatus(draft: AnalysisJob): string {
+  if (draft.running) {
+    const { processed, total } = jobProgress(draft);
+    return total > 0 ? `${processed}/${total}` : "Scanning";
+  }
+  return draft.error ? "Failed" : "Ready";
+}
+
+function draftLabel(draft: AnalysisJob): string {
+  if (draft.running) return `${draft.name}, analysing, ${draftStatus(draft)} photos`;
+  return draft.error ? `${draft.name}, analysis failed` : `${draft.name}, ready to choose photos`;
+}
 
 function cover(project: ProjectListItem): string | null {
   const first = project.coverThumbnails[0];
@@ -57,7 +70,7 @@ const itemClass = (active: boolean) => [
     </div>
 
     <div class="space-y-0.5 px-2 pb-3">
-      <UTooltip text="Choose photo folders for a new book" :kbds="shortcutKbds('newBook')">
+      <UTooltip text="Name a new book and choose its photos" :kbds="shortcutKbds('newBook')">
         <UButton
           icon="i-lucide-plus"
           color="neutral"
@@ -81,41 +94,66 @@ const itemClass = (active: boolean) => [
       </button>
     </div>
 
-    <div class="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-      <p class="px-2 pb-1 text-xs font-medium text-muted">Photobooks</p>
-      <ul class="space-y-0.5">
-        <li v-if="drafting">
-          <div :class="itemClass(true)" aria-current="page">
-            <span class="flex size-6 shrink-0 items-center justify-center rounded-sm bg-accented">
-              <UIcon name="i-lucide-images" class="size-3.5" />
-            </span>
-            <span class="truncate italic">Untitled selection</span>
-          </div>
-        </li>
-        <li v-for="project in projects" :key="project.id">
-          <button
-            type="button"
-            :class="itemClass(activeId === project.id)"
-            :aria-current="activeId === project.id ? 'page' : undefined"
-            :title="project.name"
-            @click="emit('open', project.id)"
-          >
-            <img
-              v-if="cover(project)"
-              :src="cover(project) ?? undefined"
-              alt=""
-              class="size-6 shrink-0 rounded-sm object-cover ring ring-default"
-            />
-            <span v-else class="flex size-6 shrink-0 items-center justify-center rounded-sm bg-accented">
-              <UIcon name="i-lucide-book-image" class="size-3.5" />
-            </span>
-            <span class="truncate">{{ project.name }}</span>
-          </button>
-        </li>
-      </ul>
-      <p v-if="projects.length === 0 && !drafting" class="px-2 py-1 text-xs text-muted">
-        Books you make appear here.
-      </p>
+    <div class="min-h-0 flex-1 space-y-4 overflow-y-auto px-2 pb-2">
+      <section v-if="drafts.length > 0" aria-labelledby="sidebar-drafts">
+        <p id="sidebar-drafts" class="px-2 pb-1 text-xs font-medium text-muted">Drafts</p>
+        <ul class="space-y-0.5">
+          <li v-for="draft in drafts" :key="draft.id">
+            <button
+              type="button"
+              :class="itemClass(activeDraftId === draft.id)"
+              :aria-current="activeDraftId === draft.id ? 'page' : undefined"
+              :aria-busy="draft.running"
+              :aria-label="draftLabel(draft)"
+              :title="draft.folders.join('\n')"
+              @click="emit('openDraft', draft.id)"
+            >
+              <span class="flex size-6 shrink-0 items-center justify-center rounded-sm bg-accented">
+                <UIcon
+                  v-if="draft.running"
+                  name="i-lucide-loader-circle"
+                  class="size-3.5 motion-safe:animate-spin"
+                />
+                <UIcon v-else-if="draft.error" name="i-lucide-triangle-alert" class="size-3.5" />
+                <UIcon v-else name="i-lucide-images" class="size-3.5" />
+              </span>
+              <span class="flex-1 truncate">{{ draft.name || "Untitled photobook" }}</span>
+              <span class="shrink-0 text-xs font-normal text-muted tabular-nums">
+                {{ draftStatus(draft) }}
+              </span>
+            </button>
+          </li>
+        </ul>
+      </section>
+
+      <section aria-labelledby="sidebar-books">
+        <p id="sidebar-books" class="px-2 pb-1 text-xs font-medium text-muted">Photobooks</p>
+        <ul class="space-y-0.5">
+          <li v-for="project in projects" :key="project.id">
+            <button
+              type="button"
+              :class="itemClass(activeId === project.id)"
+              :aria-current="activeId === project.id ? 'page' : undefined"
+              :title="project.name"
+              @click="emit('open', project.id)"
+            >
+              <img
+                v-if="cover(project)"
+                :src="cover(project) ?? undefined"
+                alt=""
+                class="size-6 shrink-0 rounded-sm object-cover ring ring-default"
+              />
+              <span v-else class="flex size-6 shrink-0 items-center justify-center rounded-sm bg-accented">
+                <UIcon name="i-lucide-book-image" class="size-3.5" />
+              </span>
+              <span class="truncate">{{ project.name }}</span>
+            </button>
+          </li>
+        </ul>
+        <p v-if="projects.length === 0" class="px-2 py-1 text-xs text-muted">
+          Books you make appear here.
+        </p>
+      </section>
     </div>
 
     <div class="border-t border-default p-2">

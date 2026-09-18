@@ -37,8 +37,16 @@ export const OVERRIDE_SETTLE_MS = 120;
  * 1000-photo folder. The run id is what makes that cache safe to answer
  * from -- Rust refuses to judge a set other than the one this screen shows.
  */
-export function usePhotoOverrides(source: Ref<AnalyzedPhoto[]>, runId: Ref<number>) {
-  const overrides = ref<PhotoOverrides>({});
+export function usePhotoOverrides(
+  source: Ref<AnalyzedPhoto[]>,
+  runId: Ref<number>,
+  /**
+   * The decisions, owned by the analysis job rather than by this composable,
+   * so they outlive the screen using it. The job clears them when it starts
+   * a new run -- see `useAnalysisJobs`.
+   */
+  overrides: Ref<PhotoOverrides>,
+) {
   /** The analysed records carrying Rust's latest verdict in `kept`. */
   const photos = ref<AnalyzedPhoto[]>([]) as Ref<AnalyzedPhoto[]>;
   const error = ref<string | null>(null);
@@ -69,11 +77,6 @@ export function usePhotoOverrides(source: Ref<AnalyzedPhoto[]>, runId: Ref<numbe
   watch(
     source,
     (next) => {
-      // A different analysed folder means different photos and no decisions
-      // about them: a hash-keyed map carried across would silently apply a
-      // decision made about one folder's photo to an identical file in
-      // another. `immediate` because the first set arrives through this path.
-      overrides.value = {};
       photos.value = next;
       error.value = null;
       photoSetId.value += 1;
@@ -81,6 +84,10 @@ export function usePhotoOverrides(source: Ref<AnalyzedPhoto[]>, runId: Ref<numbe
       latest += 1;
       clearTimeout(timer);
       busy.value = false;
+      // Decisions already made about this set -- the screen was left and came
+      // back, or a saved book's were restored -- have to be stamped onto it by
+      // Rust again. `immediate` because the first set arrives through here.
+      if (Object.keys(overrides.value).length > 0) void refresh();
     },
     { immediate: true },
   );
@@ -133,21 +140,6 @@ export function usePhotoOverrides(source: Ref<AnalyzedPhoto[]>, runId: Ref<numbe
     });
   }
 
-  /**
-   * Adopts a whole set of decisions at once -- reopening a saved project and
-   * then re-analysing its folder, where the decisions come back from the
-   * database rather than from a click.
-   *
-   * Goes through the same Rust round trip as a single toggle: a restored map
-   * must be judged by the same authority as a fresh one, or a reopened
-   * project's contact sheet would disagree with a freshly analysed one.
-   */
-  async function restore(restored: PhotoOverrides) {
-    overrides.value = { ...restored };
-    clearTimeout(timer);
-    await refresh();
-  }
-
   const includedCount = computed(
     () => Object.values(overrides.value).filter((state) => state === "include").length,
   );
@@ -164,6 +156,5 @@ export function usePhotoOverrides(source: Ref<AnalyzedPhoto[]>, runId: Ref<numbe
     includedCount,
     excludedCount,
     setOverride,
-    restore,
   };
 }

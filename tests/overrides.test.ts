@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { nextTick, ref } from "vue";
-import type { AnalyzedPhoto } from "../app/types/features";
+import type { AnalyzedPhoto, PhotoOverrides } from "../app/types/features";
 
 /**
  * **There is exactly one culling authority, and this file is what proves the
@@ -62,7 +62,7 @@ describe("usePhotoOverrides", () => {
 
   it("starts with the analysed set and no decisions", () => {
     const source = ref([photo("a", true), photo("b", false)]);
-    const { overrides, photos } = usePhotoOverrides(source, runId);
+    const { overrides, photos } = usePhotoOverrides(source, runId, ref<PhotoOverrides>({}));
 
     expect(overrides.value).toEqual({});
     expect(photos.value.map((p) => p.hash)).toEqual(["a", "b"]);
@@ -82,7 +82,7 @@ describe("usePhotoOverrides", () => {
   it("sends the decision to Rust and takes the verdict back from it", async () => {
     const source = ref([photo("a", true), photo("b", false)]);
     invoke.mockResolvedValue(paths("b"));
-    const { overrides, photos, setOverride } = usePhotoOverrides(source, runId);
+    const { overrides, photos, setOverride } = usePhotoOverrides(source, runId, ref<PhotoOverrides>({}));
 
     await setOverride("b", "exclude");
 
@@ -107,7 +107,7 @@ describe("usePhotoOverrides", () => {
   it("uploads only the decisions, never the analysed records", async () => {
     const source = ref([photo("a", true), photo("b", false)]);
     invoke.mockResolvedValue(paths("a"));
-    const { setOverride } = usePhotoOverrides(source, runId);
+    const { setOverride } = usePhotoOverrides(source, runId, ref<PhotoOverrides>({}));
 
     await setOverride("b", "include");
 
@@ -118,7 +118,7 @@ describe("usePhotoOverrides", () => {
   it("returning a photo to auto sends a map with the decision removed", async () => {
     const source = ref([photo("a", true)]);
     invoke.mockResolvedValue(paths("a"));
-    const { overrides, setOverride } = usePhotoOverrides(source, runId);
+    const { overrides, setOverride } = usePhotoOverrides(source, runId, ref<PhotoOverrides>({}));
 
     await setOverride("a", "include");
     await setOverride("a", "auto");
@@ -135,7 +135,7 @@ describe("usePhotoOverrides", () => {
   it("reports a failed re-check rather than swallowing it", async () => {
     const source = ref([photo("a", true)]);
     invoke.mockRejectedValue(new Error("sidecar unavailable"));
-    const { overrides, error, busy, setOverride } = usePhotoOverrides(source, runId);
+    const { overrides, error, busy, setOverride } = usePhotoOverrides(source, runId, ref<PhotoOverrides>({}));
 
     await setOverride("a", "exclude");
 
@@ -161,7 +161,7 @@ describe("usePhotoOverrides", () => {
     invoke.mockImplementation(
       () => new Promise<string[]>((resolve) => resolvers.push(resolve)),
     );
-    const { photos, setOverride } = usePhotoOverrides(source, runId);
+    const { photos, setOverride } = usePhotoOverrides(source, runId, ref<PhotoOverrides>({}));
 
     vi.useFakeTimers();
     const first = setOverride("a", "exclude");
@@ -191,7 +191,7 @@ describe("usePhotoOverrides", () => {
   it("coalesces a burst of clicks into a single command", async () => {
     const source = ref([photo("a", true), photo("b", true), photo("c", true)]);
     invoke.mockResolvedValue(paths("a"));
-    const { setOverride } = usePhotoOverrides(source, runId);
+    const { setOverride } = usePhotoOverrides(source, runId, ref<PhotoOverrides>({}));
 
     vi.useFakeTimers();
     void setOverride("a", "exclude");
@@ -209,23 +209,35 @@ describe("usePhotoOverrides", () => {
   });
 
   /**
-   * Decisions are keyed by content hash, so carrying them across to a
-   * different analysed folder would apply one folder's decision to an
-   * identical file in another -- silently, and with no way for the user to
-   * see it had happened.
+   * The decisions belong to the job, not to this composable, and the job
+   * clears them on a new run (see `tests/jobs.test.ts`). What this side owes
+   * is that decisions it is handed are judged by Rust, never assumed: `"a"`
+   * is included here and Rust answers that only `"b"` survives.
    */
-  it("forgets every decision when a different folder is analysed", async () => {
-    const source = ref([photo("a", true)]);
-    invoke.mockResolvedValue(paths("a"));
-    const { overrides, photos, setOverride } = usePhotoOverrides(source, runId);
-    await setOverride("a", "exclude");
-    expect(overrides.value).toEqual({ a: "exclude" });
+  it("has Rust judge decisions it was handed along with a set", async () => {
+    const source = ref([photo("a", true), photo("b", true)]);
+    invoke.mockResolvedValue(paths("b"));
+    const { photos } = usePhotoOverrides(source, runId, ref<PhotoOverrides>({ a: "exclude" }));
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
 
+    expect(invoke).toHaveBeenCalledWith("apply_photo_overrides", {
+      runId: RUN_ID,
+      overrides: { a: "exclude" },
+    });
+    await vi.waitFor(() =>
+      expect(photos.value.map((p) => [p.hash, p.kept])).toEqual([
+        ["a", false],
+        ["b", true],
+      ]),
+    );
+  });
+
+  it("asks Rust nothing about a set with no decisions", async () => {
+    const source = ref([photo("a", true)]);
+    usePhotoOverrides(source, runId, ref<PhotoOverrides>({}));
     source.value = [photo("z", true)];
     await nextTick();
-
-    expect(overrides.value).toEqual({});
-    expect(photos.value.map((p) => p.hash)).toEqual(["z"]);
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   /**
@@ -241,7 +253,7 @@ describe("usePhotoOverrides", () => {
   it("bumps the photo-set identity once per analysis and never on a toggle", async () => {
     const source = ref([photo("a", true), photo("b", true)]);
     invoke.mockResolvedValue(paths("a"));
-    const { photoSetId, setOverride } = usePhotoOverrides(source, runId);
+    const { photoSetId, setOverride } = usePhotoOverrides(source, runId, ref<PhotoOverrides>({}));
     const afterFirstSet = photoSetId.value;
 
     await setOverride("a", "exclude");
@@ -256,34 +268,10 @@ describe("usePhotoOverrides", () => {
     expect(photoSetId.value).toBe(afterFirstSet + 1, "a new analysis is");
   });
 
-  /**
-   * Reopening a saved project restores decisions from the database, and they
-   * must be judged by the SAME authority as freshly clicked ones -- otherwise
-   * a reopened project's contact sheet disagrees with a newly analysed one
-   * about the very selection it just restored.
-   */
-  it("restores a saved selection through the same Rust round trip", async () => {
-    const source = ref([photo("a", true), photo("b", false)]);
-    invoke.mockResolvedValue(paths("b"));
-    const { overrides, photos, restore } = usePhotoOverrides(source, runId);
-
-    await restore({ a: "exclude", b: "include" });
-
-    expect(invoke).toHaveBeenCalledWith("apply_photo_overrides", {
-      runId: RUN_ID,
-      overrides: { a: "exclude", b: "include" },
-    });
-    expect(overrides.value).toEqual({ a: "exclude", b: "include" });
-    expect(photos.value.map((p) => [p.hash, p.kept])).toEqual([
-      ["a", false],
-      ["b", true],
-    ]);
-  });
-
   it("counts the decisions for display without recomputing the verdict", async () => {
     const source = ref([photo("a", true), photo("b", true), photo("c", true)]);
     invoke.mockResolvedValue(paths("a"));
-    const { includedCount, excludedCount, setOverride } = usePhotoOverrides(source, runId);
+    const { includedCount, excludedCount, setOverride } = usePhotoOverrides(source, runId, ref<PhotoOverrides>({}));
 
     await setOverride("a", "include");
     await setOverride("b", "include");

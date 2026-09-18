@@ -11,35 +11,39 @@ import {
   type PhotoOverride,
   type PhotoOverrides,
 } from "~/types/features";
-import { selectStage, type ReplacedProject } from "~/types/navigation";
-import type { LeaveGuard } from "~/composables/useShell";
+import { selectStage } from "~/types/navigation";
+import { jobProgress, jobRunId, pickFolders, type AnalysisJob } from "~/composables/useAnalysisJobs";
 
-const { folders, restoreOverrides = {}, replacing = null } = defineProps<{
-  /** The folders to analyse, first picked first. Read once, on mount. */
-  folders: string[];
-  /** Decisions to restore once analysis finishes, when re-editing a saved book. */
-  restoreOverrides?: PhotoOverrides;
-  /** The saved book this selection came from, and can be generated back over. */
-  replacing?: ReplacedProject | null;
+/**
+ * A draft's contact sheet. It reads and writes the draft's job and owns
+ * nothing that leaving would lose: the analysis keeps streaming into the job
+ * while this screen is gone, and the decisions stay on it.
+ */
+const { job } = defineProps<{
+  job: AnalysisJob;
 }>();
 
 const emit = defineEmits<{
   generated: [projectId: number];
+  discarded: [];
 }>();
 
-const {
-  analyze,
-  summary,
-  runId,
-  running,
-  error,
-  folders: analysedFolders,
-  scannedTotal,
-  processed,
-  partialPhotos,
-  pickFolderAndAnalyze,
-  retry,
-} = useAnalysis();
+const { changeFolders, retry: retryJob, rename, remove } = useAnalysisJobs();
+
+const summary = computed(() => job.stream.summary);
+const runId = computed(() => jobRunId(job));
+const scannedTotal = computed(() => job.stream.scannedTotal);
+const processed = computed(() => jobProgress(job).processed);
+const partialPhotos = computed(() => job.stream.partialPhotos);
+
+async function chooseOtherFolders() {
+  const folders = await pickFolders();
+  if (folders.length > 0) changeFolders(job.id, folders);
+}
+
+function retry() {
+  retryJob(job.id);
+}
 
 // The analysed set, and the user's own decisions over it.
 //
@@ -48,41 +52,23 @@ const {
 // verdict and never computes one -- see `usePhotoOverrides` for why that
 // round trip exists rather than a two-line filter here.
 const analysed = computed<AnalyzedPhoto[]>(() => summary.value?.photos ?? []);
+// Written straight onto the job, which is store state rather than this
+// screen's: that is what lets the decisions outlive it.
+const decisions = computed({
+  get: () => job.overrides,
+  set: (next: PhotoOverrides) => {
+    job.overrides = next;
+  },
+});
 const {
   overrides,
   photos,
   photoSetId,
   error: overrideError,
   setOverride,
-  restore,
-} = usePhotoOverrides(analysed, runId);
+} = usePhotoOverrides(analysed, runId, decisions);
 
-const stage = computed(() => selectStage(running.value, error.value, summary.value));
-
-/** The decisions this screen started with, as a comparable key. */
-function decisionKey(decisions: PhotoOverrides): string {
-  return JSON.stringify(Object.entries(decisions).toSorted());
-}
-
-/**
- * The saved book a generate here would replace, dropped the moment the user
- * picks different folders: a book built from a different source is not an
- * update of the old one.
- */
-const replacingNow = ref<ReplacedProject | null>(replacing);
-/**
- * The decisions already persisted with that book. Leaving with exactly these
- * loses nothing, so the discard confirmation below measures against this
- * rather than against an empty map.
- */
-const savedDecisions = ref(decisionKey(restoreOverrides));
-watch(analysedFolders, (next) => {
-  if (next.join("\n") === folders.join("\n")) return;
-  // Different folders means a different photo set, which resets the override
-  // map. Neither the book being replaced nor its saved decisions apply.
-  replacingNow.value = null;
-  savedDecisions.value = decisionKey({});
-});
+const stage = computed(() => selectStage(job.running, job.error, summary.value));
 
 const kept = computed(() => keepers(photos.value));
 
@@ -123,8 +109,8 @@ function onSetOverride(photo: AnalyzedPhoto, decision: PhotoOverride) {
   void setOverride(photo.hash, decision);
 }
 
-const folderLabel = computed(() => folderListLabel(analysedFolders.value));
-const folderTitle = computed(() => analysedFolders.value.join("\n"));
+const folderLabel = computed(() => folderListLabel(job.folders));
+const folderTitle = computed(() => job.folders.join("\n"));
 
 /** The contact sheet's smallest tile width, in CSS pixels. The slider in its toolbar sets it. */
 const tileSize = ref(160);
@@ -146,64 +132,23 @@ const remainingSkeletonCount = computed(() =>
   Math.min(Math.max(scannedTotal.value - processed.value, 0), 48),
 );
 
-/**
- * Decisions made here that no photobook holds yet. They live only in webview
- * state until `generate_book` persists them, so leaving throws exactly these
- * away -- which is the only thing on this screen worth a confirmation, since
- * the analysis itself is cached.
- *
- * Measured against what the screen was opened with, not against nothing: a
- * book reopened through "Edit photos" arrives carrying its own saved
- * decisions, and warning that those are about to be lost would be a lie.
- */
-const hasUnsavedDecisions = computed(
-  () => decisionKey(overrides.value) !== savedDecisions.value,
-);
-const confirmLeave = ref(false);
+const confirmDiscard = ref(false);
 
-/**
- * Leaving is no longer only this screen's own back button: the sidebar can
- * open the library or another book from anywhere. So the shell asks this
- * guard first, and it holds the navigation until the user says to discard.
- */
-const { leaveGuard } = useShell();
-let proceedAfterDiscard: (() => void) | null = null;
-const guard: LeaveGuard = (proceed) => {
-  if (!hasUnsavedDecisions.value) {
-    proceed();
-    return;
-  }
-  proceedAfterDiscard = proceed;
-  confirmLeave.value = true;
-};
-leaveGuard.value = guard;
-onBeforeUnmount(() => {
-  // Only our own: the next screen may already have put up its guard.
-  if (leaveGuard.value === guard) leaveGuard.value = null;
-});
-
-function discardAndLeave() {
-  confirmLeave.value = false;
-  const proceed = proceedAfterDiscard;
-  proceedAfterDiscard = null;
-  proceed?.();
+function discard() {
+  confirmDiscard.value = false;
+  emit("discarded");
+  remove(job.id);
 }
 
-onMounted(async () => {
-  /*
-   * Order matters: `analyze` replaces the photo set, and that resets the
-   * override map by design (a hash-keyed decision must not survive into a
-   * different folder). `restore` therefore runs after it has resolved, never
-   * before.
-   */
-  await analyze(folders);
-  if (Object.keys(restoreOverrides).length > 0) await restore(restoreOverrides);
-});
+function onGenerated(projectId: number) {
+  emit("generated", projectId);
+  remove(job.id);
+}
 </script>
 
 <template>
   <AppHeader
-    :title="replacingNow ? `Editing photos for “${replacingNow.name}”` : 'New photobook'"
+    :title="job.replacing ? `Editing photos for “${job.replacing.name}”` : job.name"
     :subtitle="folderLabel"
     :subtitle-title="folderTitle"
   >
@@ -213,12 +158,22 @@ onMounted(async () => {
         color="neutral"
         variant="outline"
         size="sm"
-        :loading="running"
-        :disabled="running"
-        @click="pickFolderAndAnalyze"
+        :loading="job.running"
+        :disabled="job.running"
+        @click="chooseOtherFolders"
       >
         Choose different folders
       </UButton>
+    </UTooltip>
+    <UTooltip text="Throw this draft away">
+      <UButton
+        icon="i-lucide-trash-2"
+        color="neutral"
+        variant="ghost"
+        size="sm"
+        aria-label="Discard draft"
+        @click="confirmDiscard = true"
+      />
     </UTooltip>
   </AppHeader>
 
@@ -254,7 +209,7 @@ onMounted(async () => {
         v-else-if="stage === 'error'"
         icon="i-lucide-triangle-alert"
         title="Analysis failed"
-        :description="error ?? undefined"
+        :description="job.error ?? undefined"
         :ui="{ description: 'break-words' }"
         :actions="[
           { label: 'Try again', icon: 'i-lucide-rotate-ccw', color: 'primary', onClick: retry },
@@ -263,7 +218,7 @@ onMounted(async () => {
             icon: 'i-lucide-folder-open',
             color: 'neutral',
             variant: 'outline',
-            onClick: pickFolderAndAnalyze,
+            onClick: chooseOtherFolders,
           },
         ]"
         class="mx-auto mt-16 max-w-lg"
@@ -279,7 +234,7 @@ onMounted(async () => {
             label: 'Choose different folders',
             icon: 'i-lucide-folder-open',
             color: 'primary',
-            onClick: pickFolderAndAnalyze,
+            onClick: chooseOtherFolders,
           },
         ]"
         class="mx-auto mt-16 max-w-lg"
@@ -295,7 +250,7 @@ onMounted(async () => {
             label: 'Choose different folders',
             icon: 'i-lucide-folder-open',
             color: 'primary',
-            onClick: pickFolderAndAnalyze,
+            onClick: chooseOtherFolders,
           },
         ]"
         class="mx-auto mt-16 max-w-lg"
@@ -364,7 +319,7 @@ onMounted(async () => {
                 label: 'Choose different folders',
                 icon: 'i-lucide-folder-open',
                 color: 'primary',
-                onClick: pickFolderAndAnalyze,
+                onClick: chooseOtherFolders,
               },
             ]"
             class="mx-auto max-w-lg"
@@ -406,7 +361,7 @@ onMounted(async () => {
       far down the user has scrolled choosing photos.
     -->
     <aside
-      v-if="stage === 'ready' && summary && analysedFolders.length > 0"
+      v-if="stage === 'ready' && summary"
       aria-label="Book settings"
       class="w-80 shrink-0 space-y-8 overflow-y-auto border-l border-default bg-default p-5"
     >
@@ -415,9 +370,11 @@ onMounted(async () => {
         :overrides
         :photo-set-id="photoSetId"
         :run-id="runId"
-        :folders="analysedFolders"
-        :replacing="replacingNow"
-        @generated="emit('generated', $event)"
+        :folders="job.folders"
+        :replacing="job.replacing"
+        :name="job.name"
+        @update:name="rename(job.id, $event)"
+        @generated="onGenerated"
       />
 
       <section class="space-y-2 border-t border-default pt-6" aria-labelledby="select-stats">
@@ -466,27 +423,25 @@ onMounted(async () => {
   </div>
 
   <UModal
-    v-model:open="confirmLeave"
-    title="Discard this selection?"
+    v-model:open="confirmDiscard"
+    :title="`Discard “${job.name}”?`"
     :ui="{ footer: 'justify-end' }"
   >
     <template #body>
       <div class="space-y-3 text-sm">
         <p class="text-default">
-          The photos you included and excluded here have not been saved to a photobook yet, and
-          leaving throws those choices away.
+          This draft is not a photobook yet. Discarding it throws away its name and the photos
+          you included and excluded.
         </p>
         <p class="text-muted">
-          The photo analysis itself is cached, so coming back to these folders is quick and costs
-          no new Vision work.
+          The photo analysis itself is cached, so starting again from these folders is quick and
+          costs no new Vision work.
         </p>
       </div>
     </template>
     <template #footer>
-      <UButton color="neutral" variant="outline" @click="confirmLeave = false">
-        Keep editing
-      </UButton>
-      <UButton color="error" @click="discardAndLeave">Discard</UButton>
+      <UButton color="neutral" variant="outline" @click="confirmDiscard = false">Cancel</UButton>
+      <UButton color="error" @click="discard">Discard draft</UButton>
     </template>
   </UModal>
 </template>

@@ -341,7 +341,7 @@ describe("applyAnalysisEvent", () => {
     expect(state.summary).toBe(summary);
   });
 
-  // Since useAnalysis.ts now applies `done` from BOTH the `invoke` return
+  // Since useAnalysisJobs.ts applies `done` from BOTH the `invoke` return
   // value (authoritative) and the `Done` channel event (optimisation, may
   // arrive before or after, or not at all on a swallowed send failure), a
   // `done` event routinely gets applied twice for the same run. Applying it
@@ -422,8 +422,8 @@ describe("applyAnalysisEvent", () => {
   // `expect(before).toEqual(initialStreamState)` compare the object to
   // itself, passing even if `applyAnalysisEvent` mutated its argument in
   // place. Snapshot with `structuredClone` first so this actually pins the
-  // guarantee: `useAnalysis.ts` assigns the shared module-level
-  // `initialStreamState` straight into its ref on every `analyze()` call, so
+  // guarantee: `useAnalysisJobs.ts` assigns the shared module-level
+  // `initialStreamState` straight into its ref on every run, so
   // an in-place mutation here would leak state between analysis runs.
   it("does not mutate the state object passed in (each call returns a new state)", () => {
     const before = structuredClone(initialStreamState);

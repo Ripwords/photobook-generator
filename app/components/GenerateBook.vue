@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import {
-  defaultProjectName,
   canGenerateAt,
   includeOverflowLabel,
   optionFor,
@@ -58,7 +57,8 @@ const {
   reset,
 } = useBook(photosRef, foldersRef, overridesRef, runIdRef);
 
-const name = ref(replacing?.name ?? defaultProjectName(folders[0] ?? ""));
+/** The draft's name, owned by its job so the sidebar shows the same one. */
+const name = defineModel<string>("name", { required: true });
 /**
  * `null` only before the first recommendation arrives -- the watcher below
  * seeds it with the recommended length, so the control is never rendered
@@ -118,7 +118,6 @@ watch(
     // them across would leave an "Export" button wired to a book that is no
     // longer on screen.
     reset();
-    name.value = replacing?.name ?? defaultProjectName(folders[0] ?? "");
     chosenPages.value = null;
     if (canGenerate.value) void refreshRecommendation();
   },

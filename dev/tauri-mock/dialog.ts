@@ -23,3 +23,8 @@ export async function open(options?: PickerOptions): Promise<string | string[] |
     ? ["/mock/Pictures/Holiday 2026", "/mock/Pictures/Phone camera roll"]
     : "/mock/Desktop/photobook-export";
 }
+
+/** The native yes/no sheet, as the browser's own confirm. */
+export async function ask(message: string, options?: { title?: string }): Promise<boolean> {
+  return globalThis.window.confirm(options?.title ? `${options.title}\n\n${message}` : message);
+}

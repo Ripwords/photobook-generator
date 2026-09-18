@@ -1,6 +1,6 @@
 # PhotobookGen — Project Status
 
-**Last updated:** 2026-09-16
+**Last updated:** 2026-09-19
 **Branch:** `master`
 
 This document exists so a new agent can pick the project up without re-deriving what
@@ -23,6 +23,34 @@ are long but they are where the reasoning lives.
 deliberately-parked decision that this file is the only surviving record of.**
 
 ---
+
+## What changed on 2026-09-18/19
+
+Drafts: a book is named first, and its analysis outlives the screen it started on. 845
+TypeScript tests, `bun run lint` and `check:build` clean; a Playwright run against the mock
+harness (`bun run ui:mock`) covers the flow end to end in light and dark.
+
+1. **Several analyses at once, in Rust** (`350d6be`). The analysed-photo cache is a map by
+   `run_id`, not one slot, so a second analysis no longer makes the first draft's toggles
+   fail with "comes from a different analysis". `forget_run` drops a set. The sidecar is
+   locked per batch (`with_sidecar`, tokio's FIFO mutex), so two runs alternate batches; on
+   std's mutex the fairness test saw one run hold it for all 20 batches.
+2. **Jobs live in a store, not in the select screen.** `app/composables/useAnalysisJobs.ts`
+   replaces `useAnalysis.ts`. A job owns its folders, name, streamed state and the user's
+   include/exclude decisions; `usePhotoOverrides` takes the job's `overrides` ref and, on
+   remount, has Rust re-stamp them. A per-job attempt counter drops a superseded run's late
+   events, and a run whose job was removed mid-flight is forgotten when it lands (Rust cannot
+   be stopped mid-gather). The leave guard and "Discard this selection?" modal are gone:
+   leaving loses nothing. `Screen` is `{ kind: "select"; jobId }`.
+3. **UI.** `NewBookDialog.vue` asks the name before the folders. The sidebar has a Drafts
+   group (spinner and `processed/total`, Ready, Failed; `aria-busy`), a toast with **Open**
+   when a draft finishes off-screen, and a quit confirmation while drafts exist
+   (`onCloseRequested` + `destroy`, which needed `core:window:allow-destroy`). Drafts are
+   memory-only by the user's choice.
+
+Not done: the "Discard draft…" item in the sidebar row's menu (discard is on the draft's own
+toolbar only), and the performance pass (parallel hashing, passing Rust's hash to Swift,
+parallel export), which waits on a benchmark folder from the user.
 
 ## What changed on 2026-09-16
 
@@ -325,10 +353,11 @@ exactly this reason.
 
 *An empty cache is reported, never papered over.* Its lifetime is tied to the
 webview's own copy rather than managed: both live in this process, and a
-reload loses `useAnalysis`'s summary at the same moment it would invalidate
+reload loses `useAnalysisJobs`' summaries at the same moment it would invalidate
 the cache.
 
-*It used to be a single UNKEYED slot, and that was a real forward hazard.*
+*It used to be a single slot, keyed since 2026-09-16 and a map by run since 2026-09-18,
+so several drafts can each be overridden.* Before that it was UNKEYED, a real forward hazard.
 **Fixed 2026-09-16:** the cached set carries the `run_id` of the analysis that
 produced it, every reader hands back the id its own summary carried, and a
 mismatch is refused (`commands::select_run`). See **"Multiple source folders
