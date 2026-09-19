@@ -216,6 +216,9 @@ pub struct PreviewCover {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewCoverSide {
+    /// Panel-normalised: the finished board. Everything outside it is wrap,
+    /// which folds under and never shows.
+    pub board: Rect,
     /// Panel-normalised: what shows on the finished board, less the safe
     /// margin.
     pub visible: Rect,
@@ -339,6 +342,7 @@ pub fn book_layout(
 
 fn preview_cover(book: &Book, photos: &[PreviewPhoto]) -> PreviewCover {
     let side = |side: CoverSide| PreviewCoverSide {
+        board: book.spec.cover_board_rect(side),
         visible: book.spec.cover_visible_rect(side),
         photo: book.cover.side(side).map(|c| PreviewCoverPhoto {
             photo_index: c.photo_index,
@@ -933,6 +937,8 @@ mod tests {
             assert_eq!(layout.cover.aspect, spec.cover_aspect());
             assert_eq!(layout.cover.front.visible, spec.cover_visible_rect(CoverSide::Front));
             assert_eq!(layout.cover.back.visible, spec.cover_visible_rect(CoverSide::Back));
+            assert_eq!(layout.cover.front.board, spec.cover_board_rect(CoverSide::Front));
+            assert_eq!(layout.cover.back.board, spec.cover_board_rect(CoverSide::Back));
         }
     }
 
