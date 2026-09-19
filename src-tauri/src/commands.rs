@@ -1644,6 +1644,35 @@ pub fn forget_run(state: tauri::State<'_, AppState>, run_id: u64) {
     }
 }
 
+/// Runs `work` against the app's database off the async runtime.
+async fn with_db<T: Send + 'static>(
+    app: AppHandle,
+    work: impl FnOnce(&Db) -> rusqlite::Result<T> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        work(&db).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The drafts saved when the app last quit. See `useAnalysisJobs.restoreDrafts`.
+#[tauri::command]
+pub async fn list_drafts(app: AppHandle) -> Result<Vec<String>, String> {
+    with_db(app, |db| db.list_drafts()).await
+}
+
+#[tauri::command]
+pub async fn save_draft(app: AppHandle, id: i64, json: String) -> Result<(), String> {
+    with_db(app, move |db| db.save_draft(id, &json)).await
+}
+
+#[tauri::command]
+pub async fn delete_draft(app: AppHandle, id: i64) -> Result<(), String> {
+    with_db(app, move |db| db.delete_draft(id)).await
+}
+
 #[tauri::command]
 pub async fn apply_photo_overrides(
     app: AppHandle,

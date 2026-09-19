@@ -23,6 +23,10 @@ interface PendingRun {
 }
 
 const runs: PendingRun[] = [];
+/** The `drafts` table, as the Rust commands would keep it. */
+const savedDrafts = new Map<number, string>();
+/** When set, `list_drafts` waits for the test to release it. */
+let holdList: Promise<void> | null = null;
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke, Channel: FakeChannel }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
@@ -69,6 +73,8 @@ function forgotten(): number[] {
 describe("analysis jobs", () => {
   beforeEach(() => {
     runs.length = 0;
+    savedDrafts.clear();
+    holdList = null;
     invoke.mockReset();
     invoke.mockImplementation((command: string, args: Record<string, unknown>) => {
       if (command === "analyze_folders") {
@@ -82,6 +88,14 @@ describe("analysis jobs", () => {
         });
       }
       if (command === "apply_photo_overrides") return Promise.resolve(["/p/a.jpg"]);
+      if (command === "list_drafts") {
+        const rows = [...savedDrafts.values()];
+        return (holdList ?? Promise.resolve()).then(() => rows);
+      }
+      if (command === "save_draft") {
+        savedDrafts.set(args.id as number, args.json as string);
+      }
+      if (command === "delete_draft") savedDrafts.delete(args.id as number);
       return Promise.resolve();
     });
   });
@@ -276,5 +290,98 @@ describe("analysis jobs", () => {
     const id = store.startJob({ name: "Kyoto", folders: ["/k"] });
     store.rename(id, "Kyoto 2026");
     expect(store.find(id)!.name).toBe("Kyoto 2026");
+  });
+
+  describe("saved across restarts", () => {
+    function savedNames(): string[] {
+      return [...savedDrafts.values()].map((json) => (JSON.parse(json) as { name: string }).name);
+    }
+
+    it("saves a draft when it starts and when it is renamed, and deletes it when removed", async () => {
+      const store = createAnalysisJobs();
+      await store.restoreDrafts();
+      const id = store.startJob({ name: "Kyoto", folders: ["/k"] });
+      await settle();
+      expect(savedNames()).toEqual(["Kyoto"]);
+
+      store.rename(id, "Kyoto 2026");
+      await settle();
+      expect(savedNames()).toEqual(["Kyoto 2026"]);
+
+      store.remove(id);
+      await settle();
+      expect(savedDrafts.size).toBe(0);
+    });
+
+    it("brings a draft back after a restart, analyses it again and restores the decisions", async () => {
+      const before = createAnalysisJobs();
+      await before.restoreDrafts();
+      const id = before.startJob({ name: "Kyoto", folders: ["/k", "/k2"] });
+      runs[0]!.finish(summary(1, "a", "b"));
+      await settle();
+      before.find(id)!.overrides = { b: "exclude" };
+      await settle();
+
+      const after = createAnalysisJobs();
+      await after.restoreDrafts();
+      expect(after.jobs.value.map((job) => [job.name, job.folders])).toEqual([["Kyoto", ["/k", "/k2"]]]);
+      expect(runs.at(-1)!.folders).toEqual(["/k", "/k2"]);
+
+      runs.at(-1)!.finish(summary(2, "a", "b"));
+      await settle();
+      expect(after.jobs.value[0]!.overrides).toEqual({ b: "exclude" });
+    });
+
+    it("keeps a saved book's decisions for a draft quit before its analysis finished", async () => {
+      const before = createAnalysisJobs();
+      await before.restoreDrafts();
+      before.startJob({
+        name: "Kyoto",
+        folders: ["/k"],
+        replacing: { id: 4, name: "Kyoto" },
+        restoreOverrides: { a: "include" },
+      });
+      await settle();
+
+      const after = createAnalysisJobs();
+      await after.restoreDrafts();
+      runs.at(-1)!.finish(summary(2, "a"));
+      await settle();
+
+      const job = after.jobs.value[0]!;
+      expect(job.replacing).toEqual({ id: 4, name: "Kyoto" });
+      expect(job.overrides).toEqual({ a: "include" });
+    });
+
+    it("does not reuse the id of a draft started while the saved ones were loading", async () => {
+      const before = createAnalysisJobs();
+      await before.restoreDrafts();
+      before.startJob({ name: "Saved", folders: ["/s"] });
+      await settle();
+
+      const held = Promise.withResolvers<void>();
+      holdList = held.promise;
+      const after = createAnalysisJobs();
+      const restoring = after.restoreDrafts();
+      after.startJob({ name: "New", folders: ["/n"] });
+      held.resolve();
+      await restoring;
+      await settle();
+
+      const ids = after.jobs.value.map((job) => job.id);
+      expect(new Set(ids).size).toBe(2);
+      expect(savedNames().toSorted()).toEqual(["New", "Saved"]);
+    });
+
+    it("skips a saved draft it cannot read", async () => {
+      savedDrafts.set(1, "not json");
+      savedDrafts.set(2, JSON.stringify({ id: 2, name: "No folders" }));
+      savedDrafts.set(3, JSON.stringify({ id: 3, name: "Fine", folders: ["/f"], replacing: null, overrides: {} }));
+
+      const store = createAnalysisJobs();
+      await store.restoreDrafts();
+
+      expect(store.jobs.value.map((job) => job.name)).toEqual(["Fine"]);
+    });
   });
 });

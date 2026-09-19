@@ -119,6 +119,11 @@ impl Db {
                  modified_ns INTEGER NOT NULL,
                  hash        TEXT NOT NULL
              );
+             CREATE TABLE IF NOT EXISTS drafts (
+                 id         INTEGER PRIMARY KEY,
+                 json       TEXT NOT NULL,
+                 updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
              CREATE TABLE IF NOT EXISTS project_folders (
                  project_id INTEGER NOT NULL REFERENCES projects(id),
                  position   INTEGER NOT NULL,
@@ -176,6 +181,28 @@ impl Db {
             }
         }
         tx.commit()
+    }
+
+    /// Drafts not yet generated into a book, as the webview saved them. The
+    /// JSON is the webview's own record; nothing here reads inside it.
+    pub fn list_drafts(&self) -> rusqlite::Result<Vec<String>> {
+        let mut rows = self.conn.prepare("SELECT json FROM drafts ORDER BY id")?;
+        let drafts = rows.query_map([], |row| row.get(0))?.collect();
+        drafts
+    }
+
+    pub fn save_draft(&self, id: i64, json: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO drafts (id, json) VALUES (?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_at = unixepoch()",
+            rusqlite::params![id, json],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_draft(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn.execute("DELETE FROM drafts WHERE id = ?1", [id])?;
+        Ok(())
     }
 
     /// Persists a new project. `book` is serialised whole into `book_json`
@@ -458,6 +485,31 @@ impl Db {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn saved_drafts_come_back_in_id_order() {
+        let db = Db::open_in_memory().unwrap();
+        db.save_draft(2, r#"{"name":"Bali"}"#).unwrap();
+        db.save_draft(1, r#"{"name":"Kyoto"}"#).unwrap();
+        assert_eq!(db.list_drafts().unwrap(), vec![r#"{"name":"Kyoto"}"#, r#"{"name":"Bali"}"#]);
+    }
+
+    #[test]
+    fn saving_a_draft_again_replaces_it() {
+        let db = Db::open_in_memory().unwrap();
+        db.save_draft(1, r#"{"name":"Kyoto"}"#).unwrap();
+        db.save_draft(1, r#"{"name":"Kyoto 2026"}"#).unwrap();
+        assert_eq!(db.list_drafts().unwrap(), vec![r#"{"name":"Kyoto 2026"}"#]);
+    }
+
+    #[test]
+    fn a_deleted_draft_is_gone_and_the_others_stay() {
+        let db = Db::open_in_memory().unwrap();
+        db.save_draft(1, r#"{"name":"Kyoto"}"#).unwrap();
+        db.save_draft(2, r#"{"name":"Bali"}"#).unwrap();
+        db.delete_draft(1).unwrap();
+        assert_eq!(db.list_drafts().unwrap(), vec![r#"{"name":"Bali"}"#]);
+    }
+
     use super::*;
     use crate::book::cull::Override;
     use crate::book::pace::{Book, Page, Placement};

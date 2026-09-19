@@ -40,6 +40,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::analyze_folders,
             commands::forget_run,
+            commands::list_drafts,
+            commands::save_draft,
+            commands::delete_draft,
             commands::apply_photo_overrides,
             commands::recommend_book,
             commands::generate_book,

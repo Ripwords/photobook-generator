@@ -114,9 +114,9 @@ analyse at once, taking turns. When one finishes while you are elsewhere, a noti
 ready, with **Open** to go to it. The trash button at the top right of the draft,
 **Discard draft**, throws it away after asking.
 
-Drafts are kept only while the app is open. Quitting with any drafts asks first, since they
-and your choices in them are lost; the analysis itself is cached, so choosing the same
-folders again is quick.
+Drafts are saved as you go, with their names, folders and your choices, and come back when
+the app is reopened. A draft that was still analysing when you quit starts again; the
+analysis is cached, so photos it already reached are quick.
 
 Arriving here from **Edit photos** on a saved book is the same screen, as a draft named after
 that book, with its decisions restored once the analysis is done (**Edit photos** again

@@ -44,9 +44,20 @@ harness (`bun run ui:mock`) covers the flow end to end in light and dark.
    leaving loses nothing. `Screen` is `{ kind: "select"; jobId }`.
 3. **UI.** `NewBookDialog.vue` asks the name before the folders. The sidebar has a Drafts
    group (spinner and `processed/total`, Ready, Failed; `aria-busy`), a toast with **Open**
-   when a draft finishes off-screen, and a quit confirmation while drafts exist
-   (`onCloseRequested` + `destroy`, which needed `core:window:allow-destroy`). Drafts are
-   memory-only by the user's choice.
+   when a draft finishes off-screen.
+
+   **Drafts are saved (2026-09-19).** They were memory-only, with a quit confirmation; a
+   user lost a draft to a restart and asked for them to persist. `drafts (id, json,
+   updated_at)` holds each draft as JSON that Rust never reads (`list_drafts`,
+   `save_draft`, `delete_draft`). `useAnalysisJobs` watches every draft's
+   `savedDraft(job)` JSON and writes only the ones that changed, one write at a time;
+   `restoreDrafts()` on mount re-adds them and re-analyses. A draft quit mid-run saves the
+   decisions it was restored with, not an empty set, because its live overrides are not
+   filled until `done`. The quit confirmation is gone; `onCloseRequested` awaits
+   `flushDrafts()` and the window then closes itself (Tauri's handler calls `destroy`, so
+   `core:window:allow-destroy` stays). Mutation-checked in `tests/jobs.test.ts`: always
+   saving live overrides, dropping restored decisions, keeping a colliding id, never
+   deleting.
 
 4. **Speed, measured on a real folder** (27 camera JPEGs, 83 MB, M-series with 4P+6E cores,
    release build, median of runs from `cargo run --release --example analyze_bench`).

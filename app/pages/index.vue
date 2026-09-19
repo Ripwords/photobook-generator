@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { ask } from "@tauri-apps/plugin-dialog";
 import type { PhotoOverrides } from "~/types/features";
 import type { Screen } from "~/types/navigation";
 import { shortcutCombo } from "~/types/shortcuts";
 import type { AnalysisJob } from "~/composables/useAnalysisJobs";
 
 const { projects, busy, error, reload, deleteProject, renameProject } = useProjects();
-const { jobs, find, startJob, jobForProject, onSettled } = useAnalysisJobs();
+const { jobs, find, startJob, jobForProject, onSettled, restoreDrafts, flushDrafts } =
+  useAnalysisJobs();
 
 /** The single source of navigational truth -- see `Screen`. */
 const screen = ref<Screen>({ kind: "library" });
@@ -102,33 +102,20 @@ function announce(job: AnalysisJob) {
   });
 }
 
-/**
- * Drafts live only in memory, so quitting with one loses it. The window asks
- * first, and only then.
- */
-async function confirmQuit(event: { preventDefault: () => void }) {
-  if (jobs.value.length === 0) return;
-  event.preventDefault();
-  const count = jobs.value.length;
-  const quit = await ask(
-    `${count === 1 ? "A draft has" : `${count} drafts have`} not been generated into a photobook. Quitting discards ${count === 1 ? "it" : "them"}.`,
-    { title: "Quit PhotobookGen?", kind: "warning", okLabel: "Quit", cancelLabel: "Keep working" },
-  );
-  if (quit) await getCurrentWindow().destroy();
-}
-
 let stopAnnouncing: (() => void) | undefined;
-let stopConfirmingQuit: (() => void) | undefined;
+let stopFlushingDrafts: (() => void) | undefined;
 
 onMounted(async () => {
   void reload();
   stopAnnouncing = onSettled(announce);
-  stopConfirmingQuit = await getCurrentWindow().onCloseRequested(confirmQuit);
+  void restoreDrafts();
+  // Drafts are saved as they change; this waits for the last save to land.
+  stopFlushingDrafts = await getCurrentWindow().onCloseRequested(flushDrafts);
 });
 
 onBeforeUnmount(() => {
   stopAnnouncing?.();
-  stopConfirmingQuit?.();
+  stopFlushingDrafts?.();
 });
 </script>
 

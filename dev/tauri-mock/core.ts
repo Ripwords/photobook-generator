@@ -286,6 +286,20 @@ function coverFrom(start: number): string[] {
 
 type Args = Record<string, unknown> | undefined;
 
+const DRAFTS_KEY = "pbg-mock-drafts";
+
+function savedDrafts(): Record<number, string> {
+  try {
+    return JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? "{}") as Record<number, string>;
+  } catch {
+    return {};
+  }
+}
+
+function writeDrafts(drafts: Record<number, string>) {
+  localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+}
+
 export async function invoke<T>(command: string, args?: Args): Promise<T> {
   switch (command) {
     case "list_projects":
@@ -320,6 +334,21 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
 
     case "forget_run":
       return undefined as T;
+
+    // Kept in localStorage, so reloading the page is the mock's restart.
+    case "list_drafts":
+      return Object.values(savedDrafts()) as T;
+
+    case "save_draft":
+      writeDrafts({ ...savedDrafts(), [args?.id as number]: args?.json as string });
+      return undefined as T;
+
+    case "delete_draft": {
+      const drafts = savedDrafts();
+      delete drafts[args?.id as number];
+      writeDrafts(drafts);
+      return undefined as T;
+    }
 
     case "apply_photo_overrides":
       return keptPaths((args?.overrides as PhotoOverrides) ?? {}) as T;

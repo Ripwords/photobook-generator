@@ -2,7 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 // Imported explicitly rather than left to Nuxt's auto-imports so this file
 // runs under plain vitest -- see `tests/jobs.test.ts`.
-import { reactive, ref } from "vue";
+import { reactive, ref, watch } from "vue";
 import { defaultProjectName } from "~/types/book";
 import {
   applyAnalysisEvent,
@@ -45,6 +45,64 @@ export interface NewJob {
   folders: string[];
   replacing?: ReplacedProject | null;
   restoreOverrides?: PhotoOverrides;
+}
+
+/**
+ * What is saved of a draft so it survives a restart. Not its photos: those
+ * come back from the analysis cache when the draft is analysed again.
+ */
+export interface SavedDraft {
+  id: number;
+  name: string;
+  folders: string[];
+  replacing: ReplacedProject | null;
+  /** The decisions to apply once the draft is analysed again. */
+  overrides: PhotoOverrides;
+}
+
+/**
+ * A job as it is saved. Until its analysis is done, its decisions are still
+ * the ones waiting to be applied -- those of the book it re-edits, if any.
+ */
+export function savedDraft(job: AnalysisJob): SavedDraft {
+  const analysed = !job.running && job.stream.summary !== null;
+  return {
+    id: job.id,
+    name: job.name,
+    folders: [...job.folders],
+    replacing: job.replacing ? { ...job.replacing } : null,
+    overrides: { ...(analysed ? job.overrides : job.restoreOverrides) },
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Reads a saved draft back, or `null` for one this version cannot use. */
+export function parseSavedDraft(json: string): SavedDraft | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (!isRecord(value)) return null;
+  const { id, name, folders, replacing, overrides } = value;
+  if (typeof id !== "number" || typeof name !== "string") return null;
+  if (!Array.isArray(folders) || folders.length === 0) return null;
+  if (!folders.every((folder) => typeof folder === "string")) return null;
+  const replaced =
+    isRecord(replacing) && typeof replacing.id === "number" && typeof replacing.name === "string"
+      ? { id: replacing.id, name: replacing.name }
+      : null;
+  const decisions: PhotoOverrides = {};
+  if (isRecord(overrides)) {
+    for (const [hash, state] of Object.entries(overrides)) {
+      if (state === "include" || state === "exclude") decisions[hash] = state;
+    }
+  }
+  return { id, name, folders, replacing: replaced, overrides: decisions };
 }
 
 /** The run a job's photos came from -- see `AnalysisSummary.runId`. `0` until it is done. */
@@ -134,8 +192,12 @@ export function createAnalysisJobs() {
 
   /** Adds a job and starts analysing it. Returns its id. */
   function startJob(options: NewJob): number {
+    return addJob(options, nextId++);
+  }
+
+  function addJob(options: NewJob, id: number): number {
     const job = reactive<AnalysisJob>({
-      id: nextId++,
+      id,
       name: options.name.trim() || defaultProjectName(options.folders[0] ?? ""),
       folders: [...options.folders],
       replacing: options.replacing ?? null,
@@ -198,7 +260,85 @@ export function createAnalysisJobs() {
     return () => settledListeners.delete(listener);
   }
 
-  return { jobs, find, startJob, retry, changeFolders, rename, remove, jobForProject, onSettled };
+  /** Each saved draft's JSON, as last written, by id. */
+  const saved = new Map<number, string>();
+  /** Writes go one after another, so a later save cannot land before an earlier one. */
+  let writes: Promise<unknown> = Promise.resolve();
+
+  function write(command: string, args: Record<string, unknown>) {
+    writes = writes
+      .then(() => invoke(command, args))
+      .catch((error: unknown) => console.warn(`${command} failed`, error));
+  }
+
+  /** Saves what changed since the last save, and deletes what is gone. */
+  function syncSaved() {
+    const current = new Map(jobs.value.map((job) => [job.id, JSON.stringify(savedDraft(job))]));
+    for (const [id, json] of current) {
+      if (saved.get(id) !== json) write("save_draft", { id, json });
+    }
+    for (const id of saved.keys()) {
+      if (!current.has(id)) write("delete_draft", { id });
+    }
+    saved.clear();
+    for (const [id, json] of current) saved.set(id, json);
+  }
+
+  /**
+   * Brings back the drafts saved when the app last quit, analyses each again,
+   * and from then on saves every change. Their photos come from the analysis
+   * cache, so a draft whose folders were analysed comes back in moments.
+   */
+  async function restoreDrafts() {
+    let rows: string[] = [];
+    try {
+      rows = await invoke<string[]>("list_drafts");
+    } catch (error) {
+      console.warn("could not load saved drafts", error);
+    }
+    for (const json of rows) {
+      const draft = parseSavedDraft(json);
+      if (!draft) continue;
+      saved.set(draft.id, json);
+      // Ids are this session's, so a draft started while these loaded
+      // cannot collide with one of them. The old row is deleted and the
+      // draft saved again under its new id.
+      nextId = Math.max(nextId, draft.id + 1);
+      const reused = jobs.value.some((job) => job.id === draft.id);
+      addJob(
+        {
+          name: draft.name,
+          folders: draft.folders,
+          replacing: draft.replacing,
+          restoreOverrides: draft.overrides,
+        },
+        reused ? nextId++ : draft.id,
+      );
+    }
+    watch(() => jobs.value.map((job) => JSON.stringify(savedDraft(job))), syncSaved, {
+      immediate: true,
+    });
+  }
+
+  /** Waits for every save so far to be written. */
+  async function flushDrafts() {
+    syncSaved();
+    await writes;
+  }
+
+  return {
+    jobs,
+    find,
+    startJob,
+    retry,
+    changeFolders,
+    rename,
+    remove,
+    jobForProject,
+    onSettled,
+    restoreDrafts,
+    flushDrafts,
+  };
 }
 
 export type AnalysisJobs = ReturnType<typeof createAnalysisJobs>;
