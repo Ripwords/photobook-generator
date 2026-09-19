@@ -103,7 +103,14 @@ size. The panel on the
 right is the book itself: name it and pick a length there, and below that are the selection
 counts and a key to the marks on the tiles. **Choose different folders** at the top starts
 again from other folders. The app recommends the shortest Pixajoy length that fits the keepers and says
-how many each length would leave out. A length that cannot hold every photo you explicitly
+how many each length would leave out.
+
+The book aims for variety over density. It places about four photos per spread, so a
+40-page book places around 85 rather than the 130 its layouts could squeeze in, and it mixes
+sparse spreads with the occasional six-up. Photos taken within two minutes of each other
+count as one moment: the book takes the best photo of every moment before a second from any,
+and never more than two from one moment unless you marked the others **+**. The photos this
+leaves out are still one click away in the editor, under **Choose any photo…**. A length that cannot hold every photo you explicitly
 marked **+** cannot be generated at all, and says so instead of quietly dropping one.
 
 **Generate book** saves the book, opens it in the editor, and removes the draft.

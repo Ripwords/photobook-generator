@@ -1689,6 +1689,9 @@ mod tests {
     /// `pace_records_how_many_photos_were_dropped` covers the over-capacity
     /// case, where dropping is correct.
     ///
+    /// "Room for" means the density target (`Capacity::target_photos`, 45 on
+    /// the real 20-page book), not the maximum.
+    ///
     /// # This sweep's range is 10..=51 keepers
     ///
     /// The six counts cull to 10, 17, 21, 25, 34 and 51 keepers (158 per seed,
@@ -1699,10 +1702,13 @@ mod tests {
     #[test]
     fn pace_places_every_keeper_across_the_real_library_sweep() {
         let lib = real_library();
+        let target = Capacity::from_library(20, &lib).target_photos;
         for n in [12usize, 20, 25, 30, 40, 60] {
             for seed in [1u64, 7, 1234] {
                 let photos = fixture_photos(n);
-                let keepers = cull(&photos, &Overrides::new()).len();
+                // The book aims for `target_photos`, so at 60 photos (51
+                // keepers) it places 45 by design, not by loss.
+                let keepers = cull(&photos, &Overrides::new()).len().min(target);
                 let book =
                     assemble(&photos, 20, &lib, &Weights::default(), seed, &Overrides::new())
                         .expect("the real library must place every included photo");

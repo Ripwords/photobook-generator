@@ -37,7 +37,8 @@ fn real_weights() -> Weights {
 /// One keeper: no utility flag, its own near-dup cluster, no faces and no
 /// saliency so no template can hard-reject it. Aspects alternate so the
 /// scorer has something to prefer; aesthetics are distinct so the capacity
-/// trim is total.
+/// trim is total. Ten minutes apart, so every photo is its own moment and
+/// the per-moment cap never takes one out of the sweep.
 fn photo(i: usize, event: u32) -> Photo {
     let portrait = i % 5 == 3;
     Photo {
@@ -56,7 +57,7 @@ fn photo(i: usize, event: u32) -> Photo {
         palette: Vec::new(),
         capture_quality: None,
         scene_tags: Vec::new(),
-        captured_at: Some(1_700_000_000 + (event as i64) * 86_400 + (i as i64) * 60),
+        captured_at: Some(1_700_000_000 + (event as i64) * 86_400 + (i as i64) * 600),
     }
 }
 
@@ -172,7 +173,7 @@ fn pack_sweep_places_every_keeper_the_book_can_hold_and_blanks_only_when_photos_
                 total_lost += lost;
                 total_blank += o.blank_pages;
                 total_hollow += o.hollow_pages;
-                if lost > 0 && n <= cap.max_photos {
+                if lost > 0 && n <= cap.target_photos {
                     lost_under_capacity
                         .push(format!("{}/{n}/seed{seed}: lost {lost}", shape.name()));
                 }
@@ -207,8 +208,8 @@ fn pack_sweep_places_every_keeper_the_book_can_hold_and_blanks_only_when_photos_
     );
     assert!(
         lost_under_capacity.is_empty(),
-        "photos lost below the book's own stated capacity ({}):\n{}",
-        cap.max_photos,
+        "photos lost below the book's density target ({}):\n{}",
+        cap.target_photos,
         lost_under_capacity.join("\n")
     );
     assert!(

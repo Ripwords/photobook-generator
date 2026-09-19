@@ -24,6 +24,64 @@ deliberately-parked decision that this file is the only surviving record of.**
 
 ---
 
+## What changed on 2026-09-19: selection variety
+
+Books were full of near-identical frames. On Iceland (2783 photos, 40 pages), all 19
+spreads were six-ups, and pages 10-11 held six frames shot within 42 seconds. pHash never
+saw them as duplicates: distances inside that burst run 13 to 34, and the cluster
+threshold is 4. There were three causes in `pack`. It trimmed to capacity by aesthetic
+score alone. It trimmed to `max_photos`, so `feasible_band` forced every slot to its
+largest template. And it ordered each chapter by file name, so a burst stayed together.
+
+- **Moments** (`pack::moments`). A moment is every photo within `MOMENT_GAP_SECONDS = 120`
+  of the moment's *first* photo. The window is anchored, not chained: a chained 120 s gap
+  merged 515 Iceland photos, 34 minutes of steady shooting, into one moment. Anchored, the
+  library has 230 moments, the largest holding 72. A photo with no capture time is a moment
+  of its own. No re-analysis is needed, because `captured_at` was already parsed.
+- **Selection** (`pack::select`). The book takes every moment's best photo before any
+  moment's second, and never more than `MAX_PER_MOMENT = 2` `Auto` photos from one moment,
+  even when it has room for more. `Include` photos are always kept and don't count against
+  their moment's cap.
+- **Density** (`Capacity::target_photos`). Each spread is budgeted at
+  `TARGET_PER_SPREAD = 4` photos, and single pages at their maximum. That is 45 photos for
+  20 pages and 85 for 40, against maxima of 63 and 132. `IncludeOverflow` and
+  `recommend_pages` still use `max_photos`. `DENSITY_RHYTHM = [-1, 2, -2, 1, 0]` replaces the
+  ±1 swing, so six-ups still happen, about one spread in four, and `feasible_band` still
+  overrides it.
+- **Order**. Each chapter is sorted by `(captured_at, path)`.
+- **`recommend`** reports `target_photos` as `capacityPhotos`. It counts `droppedPhotos` from
+  `select`, so a burst's surplus frames count as left out even in a book with room for
+  them. `GenerateBook.vue` shows "keepers minus dropped" as the number that goes in.
+
+Measured on the real library, re-assembling each saved book with the same seed and
+overrides. The "moments" columns use the 120 s anchored definition.
+
+| Book | Engine | Placed | Moments used | Most from one moment | Photos per spread |
+|---|---|---|---|---|---|
+| Iceland, 40 pages | old | 123 | 42 | 10 | 6 ×19 |
+| Iceland, 40 pages | new | 85 | 85 | 1 | 2 ×3, 3 ×4, 4 ×4, 5 ×3, 6 ×5 |
+| Vietnam, 20 pages | old | 56 | 40 | 5 | 4, 5 ×2, 6 ×6 |
+| Vietnam, 20 pages | new | 45 | 40 | 2 | 2 ×2, 3, 4, 5 ×2, 6 ×3 |
+
+Each rule was mutation-checked, and each mutation turns exactly one test red:
+
+- a chained window fails `pack_moments_end_one_second_past_the_window_from_their_first_photo`;
+- trimming to `max_photos`, and the old swing, both fail `pack_aims_below_the_maximum_and_mixes_sparse_and_dense_spreads`;
+- removing the cap fails `pack_caps_the_photos_one_moment_can_place_even_with_room_to_spare`;
+- ranking by quality alone fails `pack_selects_one_photo_from_every_moment_before_a_second_from_any`;
+- ordering by path fails `pack_orders_a_chapter_by_capture_time_not_file_name`;
+- `recommend` going back to keepers minus target fails `recommend_counts_the_frames_one_moment_cannot_place_as_dropped`;
+- `recommend` reporting `max_photos` fails `recommend_reports_how_many_keepers_each_page_length_would_drop`.
+
+That last test runs against the shipped library on purpose. The frozen fixture has no
+spread above four photos, so there the target equals the maximum.
+
+`tests/pack_sweep.rs` spaces its photos 10 minutes apart, so every photo is its own moment
+and the cap never hides a packing loss. Its "no loss" bound is now `target_photos`. The
+constants are chosen, not tuned: `MOMENT_GAP_SECONDS`, `MAX_PER_MOMENT` and
+`TARGET_PER_SPREAD` belong in "Two constants are chosen, not measured" below if they are
+ever questioned.
+
 ## What changed on 2026-09-18/19
 
 Drafts: a book is named first, and its analysis outlives the screen it started on. 845
@@ -270,7 +328,7 @@ file per placement.
 | Stage | Where | What it does |
 |---|---|---|
 | Cull | `book::cull::cull` | Drops utility images, keeps one winner per near-duplicate cluster. **The single authority** — see below. |
-| Pack | `book::pack` | Chapter-aware grouping into buildable group sizes, **distributed over the available slots rather than front-loaded** and **sized against the kind of slot each group will land on** (a single page holds a page half's worth, a spread does not); drops the lowest aesthetic percentiles when keepers exceed capacity. |
+| Pack | `book::pack` | Chapter-aware grouping into buildable group sizes, **distributed over the available slots rather than front-loaded** and **sized against the kind of slot each group will land on** (a single page holds a page half's worth, a spread does not); selects **one photo per moment before a second from any, at most `MAX_PER_MOMENT` per moment**, down to `Capacity::target_photos` (about four per spread), then varies spread density with `DENSITY_RHYTHM`. See "Selection variety" below. |
 | Score | `book::score` | Scores each template against a group: aspect fit, saliency and face-area retention, hero match, resolution headroom, palette harmony, variety — plus `face_quality`, `spread_diversity`, `gutter_saliency` and `hero_prominence`, **all four at weight `0.0`**. Hard rejections for a face in the gutter, a face outside the safe margin, and sub-`MIN_DPI` resolution. |
 | Crop | `book::crop::choose_crop` | Deterministic saliency- and face-aware crop window, normalised 0…1 of the photo's **oriented** frame. |
 | Pace | `book::pace::assemble` | Lays groups into pages, keeps both halves of a spread on one template, falls back to a smaller page half rather than blanking a page. |
@@ -360,7 +418,7 @@ still the single authority — it now takes the decisions and honours them:
 | `Exclude` never survives, and its burst promotes the runner-up | `cull` (excluded before the cluster contest) |
 | `Include` always survives — a lost near-duplicate, an `is_utility` image, anything | `cull` |
 | An `Include` is **additive**: it does NOT displace the `Auto` winner of its own cluster | `cull` |
-| An `Include` is never trimmed to capacity; the weakest `Auto` photo goes instead | `book::pack::pack` |
+| An `Include` is never trimmed to capacity, and never counts against its moment's cap; an `Auto` photo goes instead | `book::pack::select` |
 | A crowded chapter strands an `Auto` photo, and a chapter holding an `Include` is apportioned a slot first | `pack`, `apportion_slots` |
 | `Include` photos that **alone** exceed capacity are REPORTED, never cut | `pack` -> `IncludeOverflow` |
 | A book that lost an `Include` by ANY other route is refused | `pace::assemble`'s post-condition -> `BookError::IncludedNotPlaced` |

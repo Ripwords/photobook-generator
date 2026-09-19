@@ -945,9 +945,8 @@ pub(crate) const PAGE_OPTIONS: [u32; 2] = [20, 40];
 #[serde(rename_all = "camelCase")]
 pub struct PageOption {
     pub pages: u32,
-    /// The most photos this length can hold, from `Capacity::from_library` --
-    /// the accurate figure, with the two single pages bounded by a page-half
-    /// rather than by a whole spread.
+    /// How many photos this length places, `Capacity::target_photos`: about
+    /// four per spread, below the most the templates could physically hold.
     pub capacity_photos: usize,
     /// How many keepers this length would leave out. The number the user is
     /// actually deciding on.
@@ -1295,7 +1294,8 @@ pub(crate) fn recommend(
     lib: &Library,
     overrides: &Overrides,
 ) -> BookRecommendation {
-    let keeper_count = crate::book::cull::cull(photos, overrides).len();
+    let culled = crate::book::cull::cull(photos, overrides);
+    let keeper_count = culled.len();
     let included_count = overrides.included_in(photos);
     let options = PAGE_OPTIONS
         .iter()
@@ -1303,10 +1303,12 @@ pub(crate) fn recommend(
             let capacity = Capacity::from_library(pages, lib);
             PageOption {
                 pages,
-                capacity_photos: capacity.max_photos,
-                // Saturating: a book with room to spare drops nothing, and an
-                // unsigned wrap-around here would report a colossal number.
-                dropped_photos: keeper_count.saturating_sub(capacity.max_photos),
+                capacity_photos: capacity.target_photos,
+                // What `pack` will actually place, so the figure counts both
+                // the photos past the density target and the surplus frames
+                // of a moment beyond `MAX_PER_MOMENT`.
+                dropped_photos: keeper_count
+                    - crate::book::pack::select(&culled, capacity.target_photos, overrides).len(),
                 // The figure that decides whether this length can be built at
                 // all. `dropped_photos` above is a cost the user accepts; this
                 // one is a refusal, because the engine will not choose which
@@ -4065,9 +4067,13 @@ mod tests {
         assert_eq!(rec.keeper_count, 2, "one utility dropped, one near-duplicate collapsed");
     }
 
+    /// Against the shipped library, because the frozen fixture has no spread
+    /// larger than its density target, so there the target and the maximum
+    /// are the same number and this test could not tell which one is used.
     #[test]
     fn recommend_reports_how_many_keepers_each_page_length_would_drop() {
-        let lib = fixture_library();
+        let lib = Library::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../templates"))
+            .expect("the shipped library must decompose");
         let photos = photos_from_records(&distinct_records(200)).unwrap();
 
         let rec = recommend(&photos, &lib, &Overrides::new());
@@ -4075,13 +4081,40 @@ mod tests {
         assert_eq!(rec.keeper_count, 200);
         for option in &rec.options {
             let capacity = crate::book::pack::Capacity::from_library(option.pages, &lib);
-            assert_eq!(option.capacity_photos, capacity.max_photos);
+            assert!(capacity.target_photos < capacity.max_photos, "{capacity:?}");
+            assert_eq!(option.capacity_photos, capacity.target_photos);
             assert_eq!(
                 option.dropped_photos,
-                200 - capacity.max_photos,
-                "the drop count must be keepers minus what the SKU can actually hold"
+                200 - capacity.target_photos,
+                "the drop count must be keepers minus what the book will place"
             );
         }
+    }
+
+    /// Six frames of one moment place two, even in a book with room for all
+    /// six, so the four left out are drops the user must be told about. A
+    /// count of keepers minus capacity would report none.
+    #[test]
+    fn recommend_counts_the_frames_one_moment_cannot_place_as_dropped() {
+        let lib = fixture_library();
+        let records: Vec<serde_json::Value> = (0..6)
+            .map(|i| {
+                let mut record = photo_record(i, false, i as u32, 0);
+                record["exif"] = serde_json::json!({ "captureDate": 1_700_000_000 + 5 * i });
+                record
+            })
+            .collect();
+        let photos = photos_from_records(&records).unwrap();
+
+        let rec = recommend(&photos, &lib, &Overrides::new());
+
+        assert_eq!(rec.keeper_count, 6);
+        let cap = crate::book::pack::MAX_PER_MOMENT;
+        assert!(
+            rec.options.iter().all(|o| o.dropped_photos == 6 - cap),
+            "{:?}",
+            rec.options
+        );
     }
 
     /// A book with room to spare must report zero dropped, not a negative

@@ -49,7 +49,37 @@ pub struct Capacity {
     pub singles: u32,
     pub spreads: u32,
     pub max_photos: usize,
+    /// How many photos `pack` aims to place: every spread at
+    /// `TARGET_PER_SPREAD` (or its maximum, if that is smaller), the two
+    /// single pages at their maximum. Below `max_photos` on purpose. Filling
+    /// to the maximum leaves the packer no choice but a six-up on every
+    /// spread, which is what the Iceland book measured: 20 of 20.
+    pub target_photos: usize,
 }
+
+/// The average number of photos a spread aims for. `DENSITY_RHYTHM` swings
+/// individual spreads either side of it.
+pub const TARGET_PER_SPREAD: usize = 4;
+
+/// A moment is every photo taken within this many seconds of the moment's
+/// first photo. Pose and framing changes in a burst defeat pHash (distances of
+/// 13 to 34 measured inside one 42-second burst, against a near-duplicate
+/// threshold of 4), so capture time is the signal that sees them.
+///
+/// Anchored on the first photo rather than chained photo to photo: on the
+/// Iceland library a chained 120-second gap joined 515 photos over 34 minutes
+/// of steady shooting into one "moment", where the anchored window splits the
+/// same 2783 photos into 230 moments of at most 72.
+pub const MOMENT_GAP_SECONDS: i64 = 120;
+
+/// The most photos one moment may place, unless the user included more.
+pub const MAX_PER_MOMENT: usize = 2;
+
+/// Offsets from the fair share, cycled slot by slot across the whole book.
+/// With a share of 4 this reads 3, 6, 2, 5, 4: a mix of sparse and dense
+/// spreads in which a six-up is one spread in five. Sums to zero so the
+/// rhythm does not drift the book's average away from the share.
+const DENSITY_RHYTHM: [i64; 5] = [-1, 2, -2, 1, 0];
 
 impl Capacity {
     /// A book is 2 single pages facing the inside covers plus (N-2)/2
@@ -89,11 +119,18 @@ impl Capacity {
         // and on the real library those hold 5 and 4. `2 x largest single`
         // read 64 here for a book whose true ceiling is 63, and the UI then
         // reported 0 dropped for a book that dropped photos.
+        let most = |i: usize| b.bounds_at(i, slots).1;
         Capacity {
             pages,
             singles,
             spreads,
-            max_photos: (0..slots).map(|i| b.bounds_at(i, slots).1).sum(),
+            max_photos: (0..slots).map(most).sum(),
+            target_photos: (0..slots)
+                .map(|i| match slot_kind_at(i, slots) {
+                    SlotKind::Spread => most(i).min(TARGET_PER_SPREAD),
+                    SlotKind::Single(_) => most(i),
+                })
+                .sum(),
         }
     }
 }
@@ -386,35 +423,8 @@ pub fn pack(
     // Chapters, keyed by cluster id so iteration is chronological regardless
     // of the input slice's order.
     let mut chapters: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
-    for (i, p) in photos.iter().enumerate() {
-        chapters.entry(p.event_cluster).or_default().push(i);
-    }
-
-    // Worst-first: aesthetic, then sharpness, then path for determinism.
-    // Shared by the book-wide trim and the per-chapter one below so both
-    // discard by the same standard.
-    let weakest_first = |a: &usize, b: &usize| {
-        photos[*a]
-            .aesthetic_pct
-            .cmp(&photos[*b].aesthetic_pct)
-            .then(photos[*a].sharpness_pct.cmp(&photos[*b].sharpness_pct))
-            .then(photos[*a].path.cmp(&photos[*b].path))
-    };
-
-    // Trim to capacity by dropping the weakest photos overall.
-    let total: usize = chapters.values().map(Vec::len).sum();
-    if total > capacity.max_photos {
-        // Only `Auto` photos are candidates. The check above guarantees there
-        // are enough of them to get under capacity.
-        let mut ranked: Vec<usize> = (0..photos.len()).filter(|&i| !wanted(i)).collect();
-        ranked.sort_by(weakest_first);
-        let drop_count = total - capacity.max_photos;
-        let dropped: std::collections::BTreeSet<usize> =
-            ranked.into_iter().take(drop_count).collect();
-        for bucket in chapters.values_mut() {
-            bucket.retain(|i| !dropped.contains(i));
-        }
-        chapters.retain(|_, v| !v.is_empty());
+    for i in select(photos, capacity.target_photos, overrides) {
+        chapters.entry(photos[i].event_cluster).or_default().push(i);
     }
 
     let slots = capacity.spreads as usize + capacity.singles as usize;
@@ -431,10 +441,11 @@ pub fn pack(
     let allowance = apportion_slots(&counts, slots, buildable);
 
     for ((cluster, mut members), mut slots_left) in chapters.into_iter().zip(allowance) {
-        // Chronological within the chapter is not knowable without capture
-        // times here, so path order is used -- stable, and the same order
-        // `finalize_photos` already established.
-        members.sort_by(|&a, &b| photos[a].path.cmp(&photos[b].path));
+        // Capture order, so a group reads as a stretch of the trip. Path
+        // breaks ties and orders photos with no capture time.
+        members.sort_by(|&a, &b| {
+            photos[a].captured_at.cmp(&photos[b].captured_at).then(photos[a].path.cmp(&photos[b].path))
+        });
 
         let mut i = 0;
         while i < members.len() && slots_left > 0 {
@@ -444,9 +455,9 @@ pub fn pack(
             // this library density is a strict function of slot count
             // (1 -> sparse, 2..4 -> medium, 6 -> dense) -- so a book of
             // identically sized groups has ONE density, and `repace` cannot
-            // vary an axis the packer has flattened. Alternating one photo
-            // either side of the share restores the variation `repace`
-            // operates on. It is a preference, not a licence: the feasible
+            // vary an axis the packer has flattened. `DENSITY_RHYTHM` swings
+            // each slot either side of the share, restoring the variation
+            // `repace` operates on. It is a preference, not a licence: the feasible
             // band inside `choose_group_size` overrides it whenever obeying
             // it would strand a photo or leave a later slot unfillable.
             //
@@ -455,7 +466,7 @@ pub fn pack(
             // instead of resetting at every one. Starting SPARSE puts the
             // smaller group on the opening single page, which holds only a
             // page-half's worth anyway.
-            let swing = if groups.len() % 2 == 0 { -1 } else { 1 };
+            let swing = DENSITY_RHYTHM[groups.len() % DENSITY_RHYTHM.len()];
             // `groups.len()` is the GLOBAL slot index -- it counts across
             // chapters, not within one -- which is exactly what the swing
             // above already relies on. Slot 0 and slot `slots - 1` are the
@@ -486,6 +497,74 @@ pub fn pack(
     }
 
     Ok(groups)
+}
+
+/// The moment each photo belongs to, indexed like `photos`. Photos are walked
+/// in capture order, and one taken more than `MOMENT_GAP_SECONDS` after the
+/// current moment's first photo starts a new moment. A photo with no capture
+/// time is a moment of its own.
+pub fn moments(photos: &[Photo]) -> Vec<u32> {
+    let mut timed: Vec<(i64, usize)> =
+        photos.iter().enumerate().filter_map(|(i, p)| p.captured_at.map(|t| (t, i))).collect();
+    timed.sort_unstable();
+    let mut out = vec![0u32; photos.len()];
+    let mut next = 0u32;
+    let mut start: Option<i64> = None;
+    for (t, i) in timed {
+        if start.is_some_and(|s| t - s > MOMENT_GAP_SECONDS) {
+            next += 1;
+            start = None;
+        }
+        start.get_or_insert(t);
+        out[i] = next;
+    }
+    for (i, p) in photos.iter().enumerate() {
+        if p.captured_at.is_none() {
+            next += 1;
+            out[i] = next;
+        }
+    }
+    out
+}
+
+/// The photos `pack` places, as sorted indices into `photos`: every
+/// `Include`, then up to `target` in all, taken so that every moment's best
+/// photo comes before any moment's second. Each moment places at most
+/// `MAX_PER_MOMENT` photos the user did not include, however much room is
+/// left, so a burst of one pose cannot fill a spread.
+///
+/// "Best" is aesthetic, then sharpness, then path for determinism.
+pub fn select(photos: &[Photo], target: usize, overrides: &Overrides) -> Vec<usize> {
+    let wanted = |i: usize| overrides.get(&photos[i].hash) == Override::Include;
+    let moment = moments(photos);
+
+    let mut auto: Vec<usize> = (0..photos.len()).filter(|&i| !wanted(i)).collect();
+    auto.sort_by(|&a, &b| {
+        photos[b]
+            .aesthetic_pct
+            .cmp(&photos[a].aesthetic_pct)
+            .then(photos[b].sharpness_pct.cmp(&photos[a].sharpness_pct))
+            .then(photos[b].path.cmp(&photos[a].path))
+    });
+
+    // (place within its moment, place overall, photo): sorting on this puts
+    // every moment's first pick ahead of every moment's second.
+    let mut taken: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    let mut ranked: Vec<(usize, usize, usize)> = Vec::new();
+    for (order, i) in auto.into_iter().enumerate() {
+        let place = taken.entry(moment[i]).or_default();
+        if *place < MAX_PER_MOMENT {
+            ranked.push((*place, order, i));
+        }
+        *place += 1;
+    }
+    ranked.sort_unstable();
+
+    let mut kept: Vec<usize> = (0..photos.len()).filter(|&i| wanted(i)).collect();
+    let room = target.saturating_sub(kept.len());
+    kept.extend(ranked.into_iter().take(room).map(|(_, _, i)| i));
+    kept.sort_unstable();
+    kept
 }
 
 /// The fewest photos any spread in this library can be built from, floored at
@@ -1074,6 +1153,14 @@ mod tests {
         Capacity::from_buildable(pages, &buildable_for(sizes))
     }
 
+    /// `capacity_for` with the target raised to the maximum, for tests about
+    /// how the packer shares out slots when every slot must be filled to the
+    /// top. The density target would otherwise trim their fixtures first.
+    fn full_density(pages: u32, sizes: &[usize]) -> Capacity {
+        let c = capacity_for(pages, sizes);
+        Capacity { target_photos: c.max_photos, ..c }
+    }
+
     /// A `Lookahead` over `n` following slots that all draw from `sizes`.
     /// `later(&[], 0)` is "nothing follows", where the band collapses onto
     /// `remaining` and any remainder is stranded.
@@ -1247,21 +1334,22 @@ mod tests {
     /// which refuses to discard an `Include`. Everything after the trim --
     /// merging, apportionment, cutting -- sees only per-chapter counts, so an
     /// override that changes nothing about WHICH photos survive the trim
-    /// cannot change the groups. Pinned by packing the same 60 photos with an
-    /// empty map and with every one of them marked `Include`.
+    /// cannot change the groups. Pinned by packing the same 40 photos with an
+    /// empty map and with every one of them marked `Include`. 40 is under the
+    /// density target of 48, so the trim keeps every photo either way.
     #[test]
     fn pack_cuts_the_same_groups_whether_or_not_the_survivors_are_marked_include() {
-        let photos: Vec<Photo> = (0..60)
+        let photos: Vec<Photo> = (0..40)
             .map(|i| photo(&format!("/p{i:02}.jpg"), (i % 4) as u32, (i * 7 % 100) as u8))
             .collect();
         let c = capacity_for(20, &full());
         let all: Overrides = photos.iter().map(|p| (p.hash.clone(), Override::Include)).collect();
 
         let plain = pack(&photos, &c, &buildable_for(&full()), &Overrides::new()).expect("no includes");
-        let marked = pack(&photos, &c, &buildable_for(&full()), &all).expect("60 fit in 66");
+        let marked = pack(&photos, &c, &buildable_for(&full()), &all).expect("40 fit in 66");
 
         assert_eq!(by_path(&photos, &plain), by_path(&photos, &marked));
-        assert_eq!(placed_paths(&photos, &plain).len(), 60);
+        assert_eq!(placed_paths(&photos, &plain).len(), 40);
     }
 
     /// A zero in `buildable` is malformed input (the validator forbids an
@@ -1331,7 +1419,7 @@ mod tests {
                 photos.push(photo(&format!("/c{c}p{i:03}.jpg"), c as u32, 50));
             }
         }
-        let c = capacity_for(20, buildable);
+        let c = full_density(20, buildable);
         let groups = pack(&photos, &c, &buildable_for(buildable), &Overrides::new()).expect("the fixture must fit the included photos");
         (photos, groups)
     }
@@ -1558,12 +1646,12 @@ mod tests {
         let s = group_sizes(&groups);
         assert_eq!(groups.len(), slots, "{} slots but only {} groups: {s:?}", slots, groups.len());
         assert_eq!(s.iter().sum::<usize>(), 30, "every photo must be placed: {s:?}");
-        // 30 photos over 11 slots is 2.7 each. The deliberate density swing
-        // is one photo either side of that, so 4 is the ceiling -- and no
-        // slot may run at the library's maximum, which is what the greedy
-        // packer did with all five of its groups.
+        // 30 photos over 11 slots is 2.7 each. `DENSITY_RHYTHM` reaches two
+        // photos above that, so 5 is the ceiling -- and no slot may run at
+        // the library's maximum, which is what the greedy packer did with all
+        // five of its groups.
         assert!(
-            s.iter().all(|&n| n <= 4),
+            s.iter().all(|&n| n <= 5),
             "a slot took more than its share of 30/11 plus the swing: {s:?}"
         );
     }
@@ -1580,7 +1668,7 @@ mod tests {
             (0..60).map(|i| photo(&format!("/a{i:02}.jpg"), 1, 50)).collect();
         photos.extend((0..3).map(|i| photo(&format!("/b{i}.jpg"), 2, 50)));
         photos.extend((0..3).map(|i| photo(&format!("/c{i}.jpg"), 3, 50)));
-        let c = capacity_for(20, &full());
+        let c = full_density(20, &full());
         assert_eq!(photos.len(), c.max_photos, "fixture: exactly at capacity, so nothing is trimmed");
 
         let groups = pack(&photos, &c, &buildable_for(&full()), &Overrides::new()).expect("the fixture must fit the included photos");
@@ -1830,5 +1918,127 @@ mod tests {
             groups.iter().flat_map(|g| g.photos.iter().copied()).collect();
         assert!(kept.contains(&99), "highest aesthetic must be kept");
         assert!(!kept.contains(&0), "lowest aesthetic must be dropped");
+    }
+
+    // --- variety: moments, not just bursts -----------------------------------
+
+    fn timed(path: &str, aesthetic: u8, at: Option<i64>) -> Photo {
+        Photo { captured_at: at, ..photo(path, 0, aesthetic) }
+    }
+
+    fn kept_paths(photos: &[Photo], kept: &[usize]) -> Vec<String> {
+        let mut out: Vec<String> = kept.iter().map(|&i| photos[i].path.clone()).collect();
+        out.sort();
+        out
+    }
+
+    /// A moment ends exactly `MOMENT_GAP_SECONDS` after its FIRST photo: 120 s
+    /// after it is still the same moment, 121 s is the next, even though that
+    /// photo is only 1 s after the one before it. A chained gap would keep
+    /// all four together. The input is out of time order, so a grouping that
+    /// walked the slice as given would split the burst.
+    #[test]
+    fn pack_moments_end_one_second_past_the_window_from_their_first_photo() {
+        let photos = vec![
+            timed("/c.jpg", 50, Some(1_120)),
+            timed("/a.jpg", 50, Some(1_000)),
+            timed("/d.jpg", 50, Some(1_121)),
+            timed("/b.jpg", 50, Some(1_042)),
+            timed("/e.jpg", 50, None),
+            timed("/f.jpg", 50, None),
+            timed("/g.jpg", 50, Some(1_241)),
+        ];
+        let m = moments(&photos);
+        let (c, a, d, b, e, f, g) = (m[0], m[1], m[2], m[3], m[4], m[5], m[6]);
+        assert_eq!((a, b), (c, c), "1000, 1042 and 1120 are one moment: {m:?}");
+        assert_ne!(d, c, "1121 is 121 s after 1000, so it starts a new moment: {m:?}");
+        assert_eq!(g, d, "1241 is 120 s after 1121, the new moment's first photo: {m:?}");
+        assert!(e != f && ![a, d].contains(&e) && ![a, d].contains(&f),
+            "a photo with no capture time is a moment of its own: {m:?}");
+    }
+
+    /// Three moments of six frames each. Moment A's frames all out-score
+    /// moment C's best, so an aesthetic-only trim keeps A and B and loses C.
+    /// Coverage first keeps one of each, and each is its moment's best.
+    #[test]
+    fn pack_selects_one_photo_from_every_moment_before_a_second_from_any() {
+        let mut photos = Vec::new();
+        for (m, base) in [("a", 90u8), ("b", 80), ("c", 10)] {
+            let start = match m { "a" => 0, "b" => 3_600, _ => 7_200 };
+            for i in 0..6u8 {
+                photos.push(timed(&format!("/{m}{i}.jpg"), base + i, Some(start + i64::from(i))));
+            }
+        }
+        let kept = select(&photos, 3, &Overrides::new());
+        assert_eq!(kept_paths(&photos, &kept), ["/a5.jpg", "/b5.jpg", "/c5.jpg"]);
+
+        let four = select(&photos, 4, &Overrides::new());
+        assert_eq!(
+            kept_paths(&photos, &four),
+            ["/a4.jpg", "/a5.jpg", "/b5.jpg", "/c5.jpg"],
+            "the fourth pick is the best second frame, from the best moment"
+        );
+    }
+
+    /// Six frames of one moment in a book with room for all of them: only
+    /// `MAX_PER_MOMENT` are placed, the best ones. An explicit `Include` on
+    /// the worst frame is placed as well and does not cost a frame its place.
+    #[test]
+    fn pack_caps_the_photos_one_moment_can_place_even_with_room_to_spare() {
+        let photos: Vec<Photo> =
+            (0..6u8).map(|i| timed(&format!("/m{i}.jpg"), 50 + i, Some(i64::from(i) * 5))).collect();
+        let kept = select(&photos, 100, &Overrides::new());
+        assert_eq!(kept_paths(&photos, &kept), ["/m4.jpg", "/m5.jpg"]);
+
+        let kept = select(&photos, 100, &include(&["/m0.jpg"]));
+        assert_eq!(kept_paths(&photos, &kept), ["/m0.jpg", "/m4.jpg", "/m5.jpg"]);
+
+        let c = capacity_for(20, &full());
+        let groups = pack(&photos, &c, &buildable_for(&full()), &Overrides::new()).unwrap();
+        assert_eq!(placed_paths(&photos, &groups), ["/m4.jpg", "/m5.jpg"], "pack applies the cap");
+    }
+
+    /// 90 distinct photos into a 20-page book. The book is filled to the
+    /// density target, not to the last slot, and the spreads mix sparse and
+    /// dense instead of all being six-ups.
+    #[test]
+    fn pack_aims_below_the_maximum_and_mixes_sparse_and_dense_spreads() {
+        let photos: Vec<Photo> =
+            (0..90).map(|i| photo(&format!("/p{i:02}.jpg"), 0, (i % 100) as u8)).collect();
+        let c = capacity_for(20, &full());
+        // The fixture's single pages hold 6, the real library's 5 and 4, so
+        // this reads 66 and 48 where the real 20-page book reads 63 and 45.
+        assert_eq!((c.max_photos, c.target_photos), (66, 48));
+        let groups = pack(&photos, &c, &buildable_for(&full()), &Overrides::new()).unwrap();
+        let s = group_sizes(&groups);
+        assert_eq!(s.iter().sum::<usize>(), 48, "{s:?}");
+        let spreads: Vec<usize> = groups
+            .iter()
+            .filter(|g| matches!(g.slot, SlotKind::Spread))
+            .map(|g| g.photos.len())
+            .collect();
+        assert_eq!(spreads.len(), 9, "{s:?}");
+        assert!(spreads.contains(&6), "a six-up still appears: {spreads:?}");
+        assert!(spreads.iter().any(|&n| n <= 3), "so does a sparse spread: {spreads:?}");
+        assert!(
+            spreads.iter().filter(|&&n| n == 6).count() * 2 < spreads.len(),
+            "six-ups are fewer than half the spreads: {spreads:?}"
+        );
+    }
+
+    /// Within a group, photos run in capture order even when their file
+    /// names sort the other way.
+    #[test]
+    fn pack_orders_a_chapter_by_capture_time_not_file_name() {
+        let photos: Vec<Photo> = (0..4)
+            .map(|i| timed(&format!("/{}.jpg", ["d", "c", "b", "a"][i]), 50, Some(i as i64 * 3_600)))
+            .collect();
+        let c = capacity_for(20, &full());
+        let groups = pack(&photos, &c, &buildable_for(&full()), &Overrides::new()).unwrap();
+        let order: Vec<&str> = groups
+            .iter()
+            .flat_map(|g| g.photos.iter().map(|&i| photos[i].path.as_str()))
+            .collect();
+        assert_eq!(order, ["/d.jpg", "/c.jpg", "/b.jpg", "/a.jpg"]);
     }
 }

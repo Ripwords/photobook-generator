@@ -190,14 +190,16 @@ async function onGenerate(replace: boolean) {
     <!--
       The recommendation and its cost, stated before the user commits: a page
       length is a purchase decision, and "26 keepers, 24 fit" is the only
-      thing that makes the two SKUs distinguishable.
+      thing that makes the two SKUs distinguishable. The count placed is keepers
+      minus drops rather than `capacityPhotos`: a burst loses its surplus frames
+      even in a book with room for them.
     -->
     <p v-if="canGenerate && recommendation" class="text-sm text-muted tabular-nums">
       <span class="text-default">{{ recommendation.keeperCount }}</span>
       keepers<template v-if="recommendation.includedCount > 0">
         (<span class="text-default">{{ recommendation.includedCount }}</span> you picked)</template
       ><template v-if="chosenOption"
-        >; <span class="text-default">{{ chosenOption.capacityPhotos }}</span> fit in
+        >; <span class="text-default">{{ recommendation.keeperCount - chosenOption.droppedPhotos }}</span> go in
         <span class="text-default">{{ chosenOption.pages }}</span> pages<template
           v-if="chosenOption.droppedPhotos > 0"
           >, so
