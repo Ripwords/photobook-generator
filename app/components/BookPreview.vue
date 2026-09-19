@@ -81,6 +81,19 @@ watch(
   },
 );
 
+/**
+ * The slot the "choose from all photos" dialog is filling. Its own ref, not
+ * `selected`: the new layout that follows the edit clears the selection while
+ * the dialog is still closing.
+ */
+const replaceTarget = ref<PlacementRef | null>(null);
+const replaceOpen = ref(false);
+
+function chooseFromAll() {
+  replaceTarget.value = selected.value;
+  replaceOpen.value = true;
+}
+
 function onCrop(placement: PlacementRef, crop: PreviewRect) {
   selected.value = null;
   emit("edit", setCropEdit(placement, crop));
@@ -371,18 +384,37 @@ const leftOut = computed(() =>
       <UIcon name="i-lucide-arrow-left-right" class="size-4 shrink-0" />
       <span>
         <span class="font-medium">Swapping the photo on page {{ selected.page }}.</span>
-        Click the photo to exchange it with. Click it again, or press Escape, to cancel.
+        Click another photo to exchange them.
       </span>
+      <UButton
+        icon="i-lucide-images"
+        color="neutral"
+        variant="solid"
+        size="xs"
+        class="shrink-0 rounded-full bg-default text-default hover:bg-elevated"
+        :disabled="busy"
+        @click="chooseFromAll"
+      >
+        Choose any photo…
+      </UButton>
       <UButton
         icon="i-lucide-x"
         color="neutral"
         variant="solid"
         size="xs"
-        class="rounded-full bg-default text-default hover:bg-elevated"
+        class="shrink-0 rounded-full bg-default text-default hover:bg-elevated"
         @click="selected = null"
       >
         Cancel
       </UButton>
     </div>
+
+    <ReplacePhotoDialog
+      v-if="replaceTarget"
+      v-model:open="replaceOpen"
+      :layout
+      :target="replaceTarget"
+      @edit="emit('edit', $event)"
+    />
   </section>
 </template>

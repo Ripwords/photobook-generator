@@ -56,6 +56,10 @@ pub struct PreviewPhoto {
     /// or `None` when writing it failed. A missing thumbnail is an empty slot
     /// in the preview, never a missing placement -- the layout is still real.
     pub thumbnail_path: Option<String>,
+    /// The analysis's own quality percentile, what "Best first" sorts by.
+    pub aesthetic_pct: u8,
+    /// Capture time in Unix seconds, or `None` when the photo carries none.
+    pub captured_at: Option<i64>,
 }
 
 /// One photo in one slot: where it lands on the page, and which part of it
@@ -188,6 +192,8 @@ pub fn preview_photo(photo: &Photo, thumbnail_path: Option<String>) -> PreviewPh
         width: photo.width,
         height: photo.height,
         thumbnail_path,
+        aesthetic_pct: photo.aesthetic_pct,
+        captured_at: photo.captured_at,
     }
 }
 
@@ -353,13 +359,20 @@ mod tests {
         }
     }
 
+    /// Scores and capture times deliberately in neither order, and one photo
+    /// with no capture time, so the picker's sorts have something to do.
     fn photos() -> Vec<Photo> {
+        let scored = |mut p: Photo, aesthetic_pct: u8, captured_at: Option<i64>| {
+            p.aesthetic_pct = aesthetic_pct;
+            p.captured_at = captured_at;
+            p
+        };
         vec![
-            photo("/a.jpg", "hash-a", 4032, 3024),
-            photo("/b.jpg", "hash-b", 3024, 4032),
-            photo("/c.jpg", "hash-c", 6000, 4000),
-            photo("/d.jpg", "hash-d", 5472, 3648),
-            photo("/e.jpg", "hash-e", 4000, 6000),
+            scored(photo("/a.jpg", "hash-a", 4032, 3024), 62, Some(1_700_000_300)),
+            scored(photo("/b.jpg", "hash-b", 3024, 4032), 18, Some(1_700_000_100)),
+            scored(photo("/c.jpg", "hash-c", 6000, 4000), 91, None),
+            scored(photo("/d.jpg", "hash-d", 5472, 3648), 40, Some(1_700_000_400)),
+            scored(photo("/e.jpg", "hash-e", 4000, 6000), 77, Some(1_700_000_200)),
         ]
     }
 
@@ -569,6 +582,17 @@ mod tests {
         assert_eq!(photos[1].height, 4032);
         assert_eq!(photos[1].thumbnail_path.as_deref(), Some("/thumbs/hash-b.jpg"));
         assert_eq!(photos[2].thumbnail_path, None, "a failed thumbnail write is not a lost photo");
+    }
+
+    /// The picker sorts by these, so they come off the analysed photo rather
+    /// than being guessed in the webview.
+    #[test]
+    fn preview_photo_carries_the_aesthetic_score_and_the_capture_time() {
+        let photos = preview_photos();
+
+        assert_eq!(photos.iter().map(|p| p.aesthetic_pct).collect::<Vec<_>>(), vec![62, 18, 91, 40, 77]);
+        assert_eq!(photos[1].captured_at, Some(1_700_000_100));
+        assert_eq!(photos[2].captured_at, None);
     }
 
     // --- the guides -------------------------------------------------------

@@ -124,6 +124,20 @@ pub enum BookEdit {
         placement: PlacementRef,
         rect: Rect,
     },
+    /// Put photo `photo` (an index into the analysed set, placed or not) in
+    /// this slot. A photo already in the book trades places with this one.
+    ReplacePhoto {
+        placement: PlacementRef,
+        photo: usize,
+    },
+}
+
+/// What one photo would look like in one slot: the crop it would get, and
+/// the hard constraint that refuses it there, if any.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SlotCandidate {
+    pub crop: Rect,
+    pub refused: Option<Rejection>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -149,6 +163,8 @@ pub enum EditError {
     /// constraint.
     TemplateRejects(String),
     NoSuchPlacement(PlacementRef),
+    /// An index past the end of the analysed photos.
+    NoSuchPhoto(usize),
     SamePlacement,
     SwapRejected {
         placement: PlacementRef,
@@ -208,6 +224,7 @@ impl std::fmt::Display for EditError {
                  gutter or the margin, or printing below 200 DPI"
             ),
             Self::NoSuchPlacement(p) => write!(f, "there is no photo at {p}"),
+            Self::NoSuchPhoto(i) => write!(f, "this book has no photo {i}"),
             Self::SamePlacement => write!(f, "choose two different photos to swap"),
             Self::SwapRejected { placement, reason } => write!(
                 f,
@@ -416,6 +433,9 @@ pub fn apply(
             set_crop(book, lib, photos, *placement, *x, *y, *w)
         }
         BookEdit::SetSlot { placement, rect } => set_slot(book, lib, photos, *placement, *rect),
+        BookEdit::ReplacePhoto { placement, photo } => {
+            replace(book, lib, photos, *placement, *photo)
+        }
     }
 }
 
@@ -748,6 +768,72 @@ fn swap(
     book.pages[pb].placements[ib].photo_index = photo_a;
     book.pages[pb].placements[ib].crop = crop_b;
     Ok(())
+}
+
+/// Puts `photo` in the slot at `at`. A photo already placed elsewhere is
+/// swapped in, so the book never holds one photo twice; a left-out photo is
+/// re-cropped for the slot and checked against the hard constraints, and the
+/// photo it displaces leaves the book.
+fn replace(
+    book: &mut Book,
+    lib: &Library,
+    photos: &[Photo],
+    at: PlacementRef,
+    photo: usize,
+) -> Result<(), EditError> {
+    if photo >= photos.len() {
+        return Err(EditError::NoSuchPhoto(photo));
+    }
+    let placed = book.pages.iter().find_map(|p| {
+        p.placements.iter().find(|pl| pl.photo_index == photo).map(|pl| PlacementRef {
+            page: p.number,
+            z: pl.z,
+        })
+    });
+    if let Some(other) = placed {
+        return swap(book, lib, photos, at, other);
+    }
+    let (pi, si) = locate(book, at)?;
+    let o = opening_of(book, pi);
+    if book.controls.get(&o).is_some_and(|c| c.locked) {
+        return Err(EditError::Locked(o));
+    }
+    let (slot, side) = placement_slot(book, lib, pi, si);
+    let crop = choose_crop(&photos[photo], slot_aspect(&slot));
+    if let Some(reason) = rejects(&photos[photo], &crop, &slot, side) {
+        return Err(EditError::SwapRejected {
+            placement: at,
+            reason,
+        });
+    }
+    let placement = &mut book.pages[pi].placements[si];
+    placement.photo_index = photo;
+    placement.crop = crop;
+    Ok(())
+}
+
+/// How every analysed photo would sit in the slot at `at`, in `photos`
+/// order, so the picker can show each one cropped as it would print and say
+/// up front which ones `replace` would refuse.
+pub fn slot_candidates(
+    book: &Book,
+    lib: &Library,
+    photos: &[Photo],
+    at: PlacementRef,
+) -> Result<Vec<SlotCandidate>, EditError> {
+    let (pi, si) = locate(book, at)?;
+    let (slot, side) = placement_slot(book, lib, pi, si);
+    let aspect = slot_aspect(&slot);
+    Ok(photos
+        .iter()
+        .map(|photo| {
+            let crop = choose_crop(photo, aspect);
+            SlotCandidate {
+                refused: rejects(photo, &crop, &slot, side),
+                crop,
+            }
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -1461,6 +1547,232 @@ mod tests {
         assert_eq!(b, before);
     }
 
+    // --- replace ----------------------------------------------------------------
+
+    /// A photo the book was never given, appended after assembly so it is
+    /// guaranteed unplaced. Portrait, where `at` holds a landscape photo, so
+    /// a crop copied over from the old photo would be visibly wrong.
+    fn with_left_out(ps: &mut Vec<Photo>) -> usize {
+        let mut extra = photo(ps.len());
+        extra.width = 3000;
+        extra.height = 4000;
+        extra.hash = "left-out".into();
+        ps.push(extra);
+        ps.len() - 1
+    }
+
+    fn placement(b: &Book, r: PlacementRef) -> crate::book::pace::Placement {
+        let (pi, si) = locate(b, r).unwrap();
+        b.pages[pi].placements[si].clone()
+    }
+
+    /// A landscape placement, so replacing it with a portrait photo must
+    /// change the crop.
+    fn landscape_placement(b: &Book, ps: &[Photo]) -> PlacementRef {
+        b.pages
+            .iter()
+            .flat_map(|p| {
+                p.placements.iter().map(move |pl| (p.number, pl.z, pl.photo_index))
+            })
+            .find(|&(_, _, i)| ps[i].width > ps[i].height)
+            .map(|(page, z, _)| PlacementRef { page, z })
+            .expect("fixture: some placed photo is landscape")
+    }
+
+    #[test]
+    fn edit_replace_puts_a_left_out_photo_in_the_slot_cropped_for_that_slot() {
+        let mut ps = photos(25);
+        let mut b = book(&ps);
+        let lib = frozen_library();
+        let extra = with_left_out(&mut ps);
+        let at = landscape_placement(&b, &ps);
+        let old = placement(&b, at);
+        let (pi, si) = locate(&b, at).unwrap();
+        let (slot, _) = placement_slot(&b, &lib, pi, si);
+        let expected = choose_crop(&ps[extra], slot_aspect(&slot));
+
+        apply(
+            &mut b,
+            &BookEdit::ReplacePhoto {
+                placement: at,
+                photo: extra,
+            },
+            &lib,
+            &ps,
+            &Weights::default(),
+        )
+        .unwrap();
+
+        let now = placement(&b, at);
+        assert_eq!(now.photo_index, extra);
+        assert_eq!(now.crop, expected);
+        assert_ne!(now.crop, old.crop, "a portrait replaced a landscape, so the crop must change");
+        assert!(
+            !b.pages.iter().flat_map(|p| &p.placements).any(|pl| pl.photo_index == old.photo_index),
+            "the replaced photo leaves the book"
+        );
+    }
+
+    /// Choosing a photo that is already in the book is a swap, so the book
+    /// never holds the same photo twice.
+    #[test]
+    fn edit_replace_with_a_placed_photo_swaps_the_two() {
+        let ps = photos(25);
+        let b = book(&ps);
+        let lib = frozen_library();
+        let w = Weights::default();
+        let a = PlacementRef { page: 2, z: 1 };
+        let other = PlacementRef { page: 4, z: 1 };
+        let other_photo = placement(&b, other).photo_index;
+
+        let mut replaced = b.clone();
+        apply(
+            &mut replaced,
+            &BookEdit::ReplacePhoto {
+                placement: a,
+                photo: other_photo,
+            },
+            &lib,
+            &ps,
+            &w,
+        )
+        .unwrap();
+        let mut swapped = b.clone();
+        apply(&mut swapped, &BookEdit::SwapPhotos { a, b: other }, &lib, &ps, &w).unwrap();
+
+        assert_ne!(replaced, b);
+        assert_eq!(replaced, swapped);
+    }
+
+    #[test]
+    fn edit_replace_refuses_a_locked_opening_an_unknown_photo_and_the_photo_already_there() {
+        let mut ps = photos(25);
+        let mut b = book(&ps);
+        let lib = frozen_library();
+        let w = Weights::default();
+        let extra = with_left_out(&mut ps);
+        let at = PlacementRef { page: 2, z: 1 };
+        let before = b.clone();
+
+        assert_eq!(
+            apply(
+                &mut b,
+                &BookEdit::ReplacePhoto {
+                    placement: at,
+                    photo: ps.len()
+                },
+                &lib,
+                &ps,
+                &w
+            ),
+            Err(EditError::NoSuchPhoto(ps.len()))
+        );
+        assert_eq!(
+            apply(
+                &mut b,
+                &BookEdit::ReplacePhoto {
+                    placement: at,
+                    photo: placement(&before, at).photo_index
+                },
+                &lib,
+                &ps,
+                &w
+            ),
+            Err(EditError::SamePlacement)
+        );
+        b.controls.entry(opening_of(&b, 1)).or_default().locked = true;
+        assert_eq!(
+            apply(
+                &mut b,
+                &BookEdit::ReplacePhoto {
+                    placement: at,
+                    photo: extra
+                },
+                &lib,
+                &ps,
+                &w
+            ),
+            Err(EditError::Locked(1))
+        );
+        b.controls.clear();
+        assert_eq!(b, before);
+    }
+
+    #[test]
+    fn edit_replace_refuses_a_left_out_photo_that_would_break_a_hard_constraint() {
+        let mut ps = photos(25);
+        let mut b = book(&ps);
+        let lib = frozen_library();
+        let extra = with_left_out(&mut ps);
+        ps[extra].width = 300;
+        ps[extra].height = 400;
+        let at = PlacementRef { page: 2, z: 1 };
+        let before = b.clone();
+
+        assert_eq!(
+            apply(
+                &mut b,
+                &BookEdit::ReplacePhoto {
+                    placement: at,
+                    photo: extra
+                },
+                &lib,
+                &ps,
+                &Weights::default()
+            ),
+            Err(EditError::SwapRejected {
+                placement: at,
+                reason: Rejection::TooLowResolution
+            })
+        );
+        assert_eq!(b, before);
+    }
+
+    /// One answer per photo, in the order `photo_index` counts: the crop the
+    /// slot would give it and whether a hard constraint refuses it. Landscape
+    /// and portrait alternate, so an answer at the wrong index has the wrong
+    /// crop.
+    #[test]
+    fn edit_slot_candidates_answer_for_every_photo_in_photo_order() {
+        let mut ps = photos(25);
+        let b = book(&ps);
+        let lib = frozen_library();
+        ps[7].width = 300;
+        ps[7].height = 200;
+        let at = PlacementRef { page: 2, z: 1 };
+        let (pi, si) = locate(&b, at).unwrap();
+        let (slot, _) = placement_slot(&b, &lib, pi, si);
+
+        let candidates = slot_candidates(&b, &lib, &ps, at).unwrap();
+
+        assert_eq!(candidates.len(), ps.len());
+        for (i, c) in candidates.iter().enumerate() {
+            assert_eq!(c.crop, choose_crop(&ps[i], slot_aspect(&slot)), "photo {i}");
+        }
+        assert_eq!(candidates[7].refused, Some(Rejection::TooLowResolution));
+        assert_eq!(candidates[8].refused, None);
+        assert_ne!(candidates[7].crop, candidates[8].crop, "fixture: neighbours differ in shape");
+        assert_eq!(
+            slot_candidates(&b, &lib, &ps, PlacementRef { page: 2, z: 9 }),
+            Err(EditError::NoSuchPlacement(PlacementRef { page: 2, z: 9 }))
+        );
+    }
+
+    /// What `slotCandidates` in `app/types/preview.ts` reads.
+    #[test]
+    fn edit_slot_candidate_serialises_camel_case_reasons() {
+        let refused = SlotCandidate {
+            crop: Rect::new(0.0, 0.125, 1.0, 0.75),
+            refused: Some(Rejection::FaceInSafeMargin),
+        };
+        assert_eq!(
+            serde_json::to_value(&refused).unwrap(),
+            serde_json::json!({"crop": {"x": 0.0, "y": 0.125, "w": 1.0, "h": 0.75}, "refused": "faceInSafeMargin"})
+        );
+        let fine = SlotCandidate { refused: None, ..refused };
+        assert_eq!(serde_json::to_value(&fine).unwrap()["refused"], serde_json::Value::Null);
+    }
+
     // --- crop -----------------------------------------------------------------
 
     /// The window moves where the user put it, keeps the slot's shape whatever
@@ -1849,6 +2161,10 @@ mod tests {
                 BookEdit::SetSlot {
                     placement: PlacementRef { page: 3, z: 2 },
                     rect: Rect::new(0.1, 0.2, 0.3, 0.4),
+                },
+                BookEdit::ReplacePhoto {
+                    placement: PlacementRef { page: 3, z: 1 },
+                    photo: 12,
                 },
             ]
         );

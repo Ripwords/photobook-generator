@@ -15,6 +15,8 @@ import {
   pageSlots,
   photoFor,
   rectStyle,
+  refusalText,
+  replaceCandidates,
   safeRect,
   pageGuides,
   setCropEdit,
@@ -30,6 +32,8 @@ import {
   type BookLayout,
   type PreviewGeometry,
   type PreviewPage,
+  type Rejection,
+  type SlotCandidate,
 } from "../app/types/preview";
 
 /**
@@ -596,6 +600,7 @@ describe("the edit wire", () => {
       { kind: "swapPhotos", a: { page: 2, z: 1 }, b: { page: 5, z: 2 } },
       { kind: "setCrop", placement: { page: 3, z: 2 }, x: 0.125, y: 0, w: 0.75 },
       { kind: "setSlot", placement: { page: 3, z: 2 }, rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 } },
+      { kind: "replacePhoto", placement: { page: 3, z: 1 }, photo: 12 },
     ];
     expect(fixture).toEqual(typed);
   });
@@ -716,5 +721,59 @@ describe("slot editing", () => {
 
   it("sends the whole rect for a slot edit", () => {
     expect(setSlotEdit({ page: 2, z: 1 }, rect)).toEqual({ kind: "setSlot", placement: { page: 2, z: 1 }, rect });
+  });
+});
+
+function indices(rows: { index: number }[]): number[] {
+  return rows.map((row) => row.index);
+}
+
+describe("choosing a photo for a slot", () => {
+  // The fixture places photos 3 (page 1), 1 and 0 (page 2); 2 and 4 are left
+  // out. Scores 62, 18, 91, 40, 77; photo 2 has no capture time.
+  const target = { page: 2, z: 1 };
+  const candidates: SlotCandidate[] = layout.photos.map((_, i) => ({
+    crop: { x: i / 10, y: 0, w: 0.5, h: 1 },
+    refused: i === 4 ? "faceInGutter" : null,
+  }));
+
+  it("offers the left-out photos, the placed ones, or all", () => {
+    expect(indices(replaceCandidates(layout, candidates, target, "leftOut", "best")).toSorted()).toEqual([2, 4]);
+    expect(indices(replaceCandidates(layout, candidates, target, "inBook", "best")).toSorted()).toEqual([0, 1, 3]);
+    expect(indices(replaceCandidates(layout, candidates, target, "all", "best"))).toHaveLength(5);
+  });
+
+  it("sorts best first, or by time taken with undated photos last", () => {
+    expect(indices(replaceCandidates(layout, candidates, target, "all", "best"))).toEqual([2, 4, 0, 3, 1]);
+    expect(indices(replaceCandidates(layout, candidates, target, "all", "taken"))).toEqual([1, 4, 0, 3, 2]);
+  });
+
+  it("pairs each photo with its own crop and refusal, and says where a placed one is", () => {
+    const rows = replaceCandidates(layout, candidates, target, "all", "best");
+    const row = (index: number) => rows.find((r) => r.index === index);
+    expect(row(4)?.crop.x).toBeCloseTo(0.4, 12);
+    expect(row(4)?.refused).toBe("faceInGutter");
+    expect(row(2)?.refused).toBeNull();
+    expect(row(2)?.placedAt).toBeNull();
+    expect(row(3)?.placedAt).toEqual({ page: 1, z: 1 });
+    expect(row(0)?.placedAt).toEqual({ page: 2, z: 2 });
+    expect(row(1)?.current).toBe(true);
+    expect(rows.filter((r) => r.current)).toHaveLength(1);
+  });
+
+  it("marks a photo on a locked page, which cannot be swapped", () => {
+    const locked: BookLayout = {
+      ...layout,
+      openings: layout.openings.map((o) => (o.index === 0 ? { ...o, locked: true } : o)),
+    };
+    const rows = replaceCandidates(locked, candidates, target, "all", "best");
+    expect(rows.filter((r) => r.locked).map((r) => r.index)).toEqual([3]);
+  });
+
+  it("puts every refusal into words", () => {
+    const reasons: Rejection[] = ["faceClipped", "faceInGutter", "faceInSafeMargin", "tooLowResolution"];
+    const texts = reasons.map(refusalText);
+    expect(new Set(texts).size).toBe(reasons.length);
+    for (const text of texts) expect(text.length).toBeGreaterThan(10);
   });
 });

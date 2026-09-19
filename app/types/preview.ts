@@ -48,6 +48,10 @@ export interface PreviewPhoto {
    * `null` renders as an empty box, never as a missing placement.
    */
   thumbnailPath: string | null;
+  /** The analysis's quality percentile, 0-100. */
+  aestheticPct: number;
+  /** Capture time in Unix seconds, or `null` when the photo carries none. */
+  capturedAt: number | null;
 }
 
 /** Mirrors `preview::PreviewPlacement`. */
@@ -145,7 +149,17 @@ export type BookEdit =
   | { kind: "shuffle" }
   | { kind: "swapPhotos"; a: PlacementRef; b: PlacementRef }
   | { kind: "setCrop"; placement: PlacementRef; x: number; y: number; w: number }
-  | { kind: "setSlot"; placement: PlacementRef; rect: PreviewRect };
+  | { kind: "setSlot"; placement: PlacementRef; rect: PreviewRect }
+  | { kind: "replacePhoto"; placement: PlacementRef; photo: number };
+
+/** Mirrors `score::Rejection`: the hard constraints an edit can break. */
+export type Rejection = "faceClipped" | "faceInGutter" | "faceInSafeMargin" | "tooLowResolution";
+
+/** Mirrors `edit::SlotCandidate`: how one photo would sit in one slot. */
+export interface SlotCandidate {
+  crop: PreviewRect;
+  refused: Rejection | null;
+}
 
 /**
  * One printed opening: two facing pages with the fold between them, or ONE
@@ -664,4 +678,88 @@ export function slotResized(
     bottom = clamp(snapValue(clamp(bottom + delta.dy, 0, 1), guides.ys, threshold), top + minSize, 1);
   }
   return { x: left, y: top, w: right - left, h: bottom - top };
+}
+
+/** Undated photos sort after every dated one. */
+function takenAt(row: CandidateRow): number {
+  return row.photo.capturedAt ?? Number.POSITIVE_INFINITY;
+}
+
+export type CandidateFilter = "leftOut" | "inBook" | "all";
+export type CandidateSort = "best" | "taken";
+
+/** One tile of the "choose a photo for this slot" picker. */
+export interface CandidateRow {
+  /** Index into `BookLayout.photos`, what `replacePhoto` sends. */
+  index: number;
+  photo: PreviewPhoto;
+  /** The window this slot would print of the photo. */
+  crop: PreviewRect;
+  refused: Rejection | null;
+  /** Where the photo already is, or `null` when it was left out. */
+  placedAt: PlacementRef | null;
+  /** The photo the slot holds now. */
+  current: boolean;
+  /** Placed on a locked opening, so a swap with it would be refused. */
+  locked: boolean;
+}
+
+/**
+ * The picker's tiles for the slot at `target`: every photo `candidates`
+ * answers for (one per `layout.photos` entry, in that order), filtered and
+ * sorted. Ties keep photo order, so the grid never reshuffles between two
+ * equal scores.
+ */
+export function replaceCandidates(
+  layout: BookLayout,
+  candidates: readonly SlotCandidate[],
+  target: PlacementRef,
+  filter: CandidateFilter,
+  sort: CandidateSort,
+): CandidateRow[] {
+  const placed = new Map<number, { at: PlacementRef; locked: boolean }>();
+  toSpreads(layout.pages).forEach((opening, index) => {
+    const locked = openingFor(layout, index).locked;
+    for (const page of [opening.left, opening.right]) {
+      if (!page) continue;
+      for (const placement of page.placements) {
+        placed.set(placement.photoIndex, { at: { page: page.number, z: placement.z }, locked });
+      }
+    }
+  });
+
+  const rows: CandidateRow[] = [];
+  layout.photos.forEach((photo, index) => {
+    const candidate = candidates[index];
+    if (!candidate) return;
+    const where = placed.get(index);
+    if (filter === "leftOut" && where) return;
+    if (filter === "inBook" && !where) return;
+    rows.push({
+      index,
+      photo,
+      crop: candidate.crop,
+      refused: candidate.refused,
+      placedAt: where?.at ?? null,
+      current: where !== undefined && samePlacement(where.at, target),
+      locked: where?.locked ?? false,
+    });
+  });
+
+  return rows.toSorted((a, b) =>
+    sort === "best"
+      ? b.photo.aestheticPct - a.photo.aestheticPct || a.index - b.index
+      : takenAt(a) - takenAt(b) || a.index - b.index,
+  );
+}
+
+const REFUSALS: Record<Rejection, string> = {
+  faceClipped: "A face would be cut off",
+  faceInGutter: "A face would fall in the fold",
+  faceInSafeMargin: "A face would sit in the trim margin",
+  tooLowResolution: "Too low resolution to print this size",
+};
+
+export function refusalText(reason: Rejection): string {
+  return REFUSALS[reason];
 }

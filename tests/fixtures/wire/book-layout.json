@@ -115,6 +115,8 @@
   ],
   "photos": [
     {
+      "aestheticPct": 62,
+      "capturedAt": 1700000300,
       "hash": "hash-a",
       "height": 3024,
       "path": "/a.jpg",
@@ -122,6 +124,8 @@
       "width": 4032
     },
     {
+      "aestheticPct": 18,
+      "capturedAt": 1700000100,
       "hash": "hash-b",
       "height": 4032,
       "path": "/b.jpg",
@@ -129,6 +133,8 @@
       "width": 3024
     },
     {
+      "aestheticPct": 91,
+      "capturedAt": null,
       "hash": "hash-c",
       "height": 4000,
       "path": "/c.jpg",
@@ -136,6 +142,8 @@
       "width": 6000
     },
     {
+      "aestheticPct": 40,
+      "capturedAt": 1700000400,
       "hash": "hash-d",
       "height": 3648,
       "path": "/d.jpg",
@@ -143,6 +151,8 @@
       "width": 5472
     },
     {
+      "aestheticPct": 77,
+      "capturedAt": 1700000200,
       "hash": "hash-e",
       "height": 6000,
       "path": "/e.jpg",

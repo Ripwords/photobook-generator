@@ -1163,6 +1163,7 @@ pages come from one template and cannot change separately.
 | `setLocked` | Locked openings refuse every other edit and are skipped by shuffle. | never |
 | `shuffle` | `regenerate` over every unlocked opening; openings with no alternative are left alone. | never |
 | `swapPhotos` | Exchanges two placements anywhere in the book, re-crops both, and re-runs `score::rejects` on both **before** writing either. | same slot; missing slot; either opening locked; a face clipped / in the gutter / in the margin, or below `MIN_DPI` at the new slot |
+| `replacePhoto` | Puts any analysed photo (`photo` indexes `BookLayout.photos`) into a placement, cropped with `choose_crop` for that slot and checked with `score::rejects`. A photo already placed elsewhere delegates to `swapPhotos`, so the two trade places under its rules. The UI is `ReplacePhotoDialog.vue`, opened from the swap bar; it asks the read command `slot_candidates(projectId, placement)` for every photo's crop and refusal in that slot (`edit::slot_candidates`, pure) and only filters and sorts (`replaceCandidates`). Not an agent tool yet. | the photo already there (`SamePlacement`); unknown photo (`NoSuchPhoto`); missing slot; opening locked; a face clipped / in the gutter / in the margin, or below `MIN_DPI` |
 
 `Book` gained `controls: BTreeMap<usize, OpeningControls>` (`locked`, `rejected`, `rerolls`),
 omitted from the JSON when empty, so the golden and every saved project are unchanged.

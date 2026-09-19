@@ -121,9 +121,9 @@ describe("the tool table", () => {
     expect(new Set([...READ_TOOLS, ...WRITE_TOOLS]).size).toBe(Object.keys(AGENT_TOOLS).length);
   });
 
-  it("drives every BookEdit variant except setSlot", () => {
+  it("drives every BookEdit variant except setSlot and replacePhoto", () => {
     const driven = Object.values(WRITE_INPUTS).map((w) => w.kind);
-    const wire = EDITS.map((e) => e.kind).filter((k) => k !== "setSlot");
+    const wire = EDITS.map((e) => e.kind).filter((k) => k !== "setSlot" && k !== "replacePhoto");
     expect(driven.toSorted()).toEqual(wire.toSorted());
   });
 

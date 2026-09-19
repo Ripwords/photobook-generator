@@ -154,7 +154,14 @@ back cover, the way the printed book opens.
   other change until unlocked.
 
 To **swap two photos**, click one, then click another anywhere in the book; click the
-first again or press Escape to cancel. To **adjust a crop**, drag the photo inside its
+first again or press Escape to cancel. To **use a photo the book left out**, click the photo
+to replace, then **Choose any photo…** in the bar at the bottom. The dialog opens on the
+photos no page uses, each shown cropped the way that slot would print it; **In the book** and
+**All** show the rest, sorted **Best first** or by **Time taken**. Pick one and press
+**Replace**, or double-click it. Picking a photo that is already on another page reads **Swap
+with page N** and exchanges the two. A photo that would cut a face, put one in the fold or
+the trim margin, or print too small is dimmed with the reason and cannot be picked, and so
+are photos on a locked spread. To **adjust a crop**, drag the photo inside its
 slot to move the window, or scroll over it to zoom; the window keeps the slot's shape and
 is saved when you let go. Regenerating that opening or swapping the photo away recomputes
 its crop, because the slot it was chosen for is gone.

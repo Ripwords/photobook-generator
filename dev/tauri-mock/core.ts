@@ -25,7 +25,13 @@ import exportFixture from "../../tests/fixtures/wire/export-result.json";
 import agentViewFixture from "../../tests/fixtures/wire/agent-view.json";
 import type { ModelProvider } from "../../app/agent/fetch";
 import type { AgentPhoto, AgentView } from "../../app/agent/view";
-import type { BookEdit, BookLayout, PlacementRef } from "../../app/types/preview";
+import type {
+  BookEdit,
+  BookLayout,
+  PlacementRef,
+  PreviewRect,
+  SlotCandidate,
+} from "../../app/types/preview";
 import type {
   BookRecommendation,
   ExportEvent,
@@ -108,6 +114,31 @@ function placement(ref: PlacementRef) {
   return page?.placements.find((pl) => pl.z === ref.z) ?? null;
 }
 
+/**
+ * The one photo the harness refuses for every slot, so the dialog's dimmed
+ * state can be looked at. A left-out photo in the fixture.
+ */
+const REFUSED_PHOTO = 4;
+
+/** A centred crop of the slot's printed shape, as `choose_crop` makes with no faces. */
+function centredCrop(ref: PlacementRef, photo: number): PreviewRect {
+  const slot = placement(ref)?.slotRect;
+  const shot = layout.photos[photo];
+  if (!slot || !shot) throw new Error("there is no photo at that slot");
+  const want = (slot.w * layout.geometry.pageWIn) / (slot.h * layout.geometry.pageHIn);
+  const have = shot.width / shot.height;
+  const w = want < have ? want / have : 1;
+  const h = want < have ? 1 : have / want;
+  return { x: (1 - w) / 2, y: (1 - h) / 2, w, h };
+}
+
+function slotCandidates(ref: PlacementRef): SlotCandidate[] {
+  return layout.photos.map((_, index) => ({
+    crop: centredCrop(ref, index),
+    refused: index === REFUSED_PHOTO ? "faceInGutter" : null,
+  }));
+}
+
 function applyEdit(edit: BookEdit): BookLayout {
   switch (edit.kind) {
     case "setLocked": {
@@ -171,6 +202,23 @@ function applyEdit(edit: BookEdit): BookLayout {
       const b = placement(edit.b);
       if (!a || !b) throw new Error("there is no photo at that slot");
       [a.photoIndex, b.photoIndex] = [b.photoIndex, a.photoIndex];
+      break;
+    }
+    case "replacePhoto": {
+      const target = placement(edit.placement);
+      if (!target) throw new Error("there is no photo at that slot");
+      if (edit.photo === REFUSED_PHOTO) {
+        throw new Error("that photo won't fit there: a face would fall in the fold");
+      }
+      const other = layout.pages
+        .flatMap((page) => page.placements.map((pl) => ({ page: page.number, pl })))
+        .find(({ pl }) => pl.photoIndex === edit.photo);
+      if (other) {
+        other.pl.photoIndex = target.photoIndex;
+        other.pl.crop = centredCrop({ page: other.page, z: other.pl.z }, other.pl.photoIndex);
+      }
+      target.photoIndex = edit.photo;
+      target.crop = centredCrop(edit.placement, edit.photo);
       break;
     }
   }
@@ -315,6 +363,10 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
 
     case "edit_book":
       return applyEdit(args?.edit as BookEdit) as T;
+
+    case "slot_candidates":
+      await sleep(250);
+      return slotCandidates(args?.placement as PlacementRef) as T;
 
     case "rename_project": {
       const project = projects.find((p) => p.id === (args?.id as number));

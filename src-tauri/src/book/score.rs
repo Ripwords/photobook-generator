@@ -16,7 +16,8 @@ use crate::templates::{Role, Slot, SpreadTemplate, Weights};
 /// `resolution_headroom` below treats as a WARNING band, not a second floor.
 pub const MIN_DPI: f64 = 200.0;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Rejection {
     FaceClipped,
     FaceInGutter,

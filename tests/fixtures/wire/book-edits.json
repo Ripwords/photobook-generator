@@ -53,5 +53,13 @@
       "w": 0.3,
       "h": 0.4
     }
+  },
+  {
+    "kind": "replacePhoto",
+    "placement": {
+      "page": 3,
+      "z": 1
+    },
+    "photo": 12
   }
 ]

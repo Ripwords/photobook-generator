@@ -2147,6 +2147,31 @@ pub async fn edit_book(
     .map_err(|e| e.to_string())?
 }
 
+/// How every analysed photo of a saved book would sit in one slot: the crop
+/// it would get there and the hard constraint that refuses it, if any, in the
+/// order `BookLayout.photos` lists them. Read-only; the picker behind "Choose
+/// from all photos" draws from it and then sends `ReplacePhoto` to `edit_book`.
+#[tauri::command]
+pub async fn slot_candidates(
+    app: AppHandle,
+    project_id: i64,
+    placement: crate::book::edit::PlacementRef,
+) -> Result<Vec<crate::book::edit::SlotCandidate>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        let project = db
+            .load_project(project_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("project {project_id} no longer exists"))?;
+        let lib = load_library(&app)?;
+        let parsed = resolve_photos(&db, &project.photo_hashes)?;
+        crate::book::edit::slot_candidates(&project.book, &lib, &parsed, placement)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// How long a deleted book stays restorable before it is removed for good.
 const TRASH_SECONDS: i64 = 30 * 24 * 60 * 60;
 
