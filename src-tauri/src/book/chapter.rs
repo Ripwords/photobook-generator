@@ -95,6 +95,25 @@ pub fn chapters(photos: &[Photo], places: bool) -> Vec<u32> {
     split_chapters(&times, &locations, places.then_some(PLACE_SPLIT_KM))
 }
 
+/// The place chapters of an analysed set, for the draft screen's contact
+/// sheet, and how many photos had a location to split by.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaceChapters {
+    pub located: usize,
+    pub chapters: std::collections::HashMap<String, u32>,
+}
+
+impl PlaceChapters {
+    pub fn of(photos: &[Photo]) -> Self {
+        let ids = chapters(photos, true);
+        Self {
+            located: photos.iter().filter(|p| p.location.is_some()).count(),
+            chapters: photos.iter().map(|p| p.path.clone()).zip(ids).collect(),
+        }
+    }
+}
+
 /// Walks photos in capture order and starts a new chapter on a time gap over
 /// `EVENT_GAP_SECONDS`, or, when `split_km` is set, where a photo is more
 /// than `split_km` from its chapter's running centroid and the next located

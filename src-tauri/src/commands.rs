@@ -1817,6 +1817,17 @@ pub async fn recommend_book(
     .map_err(|e| e.to_string())?
 }
 
+/// The chapters "Split chapters by place" would give run `run_id`, so the
+/// draft screen can regroup before the book is generated.
+#[tauri::command]
+pub async fn place_chapters(app: AppHandle, run_id: u64) -> Result<crate::book::chapter::PlaceChapters, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(crate::book::chapter::PlaceChapters::of(&cached_photos(&app, run_id)?))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// The geometry a new book starts at.
 ///
 /// A command rather than a constant retyped in TypeScript, for the reason
@@ -4686,6 +4697,36 @@ mod tests {
         let spreads = towns_per_spread(&on.book, &towns);
         assert!(spreads.iter().all(|t| t.len() == 1), "a spread mixes Kyoto and Osaka: {spreads:?}");
         assert!(on.book.options.places, "the book must remember it was laid out by place");
+    }
+
+    /// The contact sheet regroups by these, so each photo must get its own
+    /// town's chapter by path, whatever order the analysis returned them in.
+    #[test]
+    fn place_chapters_gives_each_path_its_towns_chapter() {
+        const KYOTO: (f64, f64) = (35.0116, 135.7681);
+        const OSAKA: (f64, f64) = (34.6937, 135.5023);
+        let stops = [(3, Some(OSAKA)), (0, Some(KYOTO)), (2, None), (1, Some(KYOTO)), (4, Some(OSAKA))];
+        let records: Vec<serde_json::Value> = stops
+            .iter()
+            .enumerate()
+            .map(|(i, (minute, place))| {
+                let mut record = photo_record(i, false, i as u32, 0);
+                record["exif"] = match place {
+                    Some((lat, lon)) => serde_json::json!({ "captureDate": 1_700_000_000 + 600 * minute, "latitude": lat, "longitude": lon }),
+                    None => serde_json::json!({ "captureDate": 1_700_000_000 + 600 * minute }),
+                };
+                record
+            })
+            .collect();
+        let sheet = crate::book::chapter::PlaceChapters::of(&photos_from_records(&records).unwrap());
+        let chapter = |i: usize| sheet.chapters[&format!("/photos/p{i:03}.jpg")];
+
+        assert_eq!(sheet.located, 4);
+        assert_eq!(sheet.chapters.len(), 5);
+        assert_eq!(chapter(1), chapter(3), "both Kyoto photos");
+        assert_eq!(chapter(0), chapter(4), "both Osaka photos");
+        assert_ne!(chapter(1), chapter(0), "Kyoto and Osaka");
+        assert_eq!(chapter(2), chapter(1), "the unlocated photo was taken in Kyoto's hour");
     }
 
     /// The geometry the draft screen was showing must be the geometry the

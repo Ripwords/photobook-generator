@@ -26,7 +26,7 @@
 
 use crate::book::cull::Photo;
 use crate::book::edit::{alternatives, opening_count};
-use crate::book::pace::Book;
+use crate::book::pace::{Book, BookOptions};
 use crate::templates::Library;
 use crate::export::output_filename;
 use crate::geometry::{Rect, Side};
@@ -186,6 +186,9 @@ pub struct BookLayout {
     /// which of its fields are authoritative and which are consequences,
     /// which is the same drift this module's header refuses for guides.
     pub spec: PrintSpec,
+    /// The book's own options, so "Edit photos" reopens its draft with the
+    /// same switches, as it does with `spec`.
+    pub options: BookOptions,
     pub geometry: PreviewGeometry,
     pub photos: Vec<PreviewPhoto>,
     pub pages: Vec<PreviewPage>,
@@ -285,6 +288,7 @@ pub fn book_layout(
         placed_photos: pages.iter().map(|p| p.placements.len()).sum(),
         dropped_photos: book.dropped,
         spec: book.spec,
+        options: book.options,
         geometry: preview_geometry(&book.spec),
         photos,
         pages,
@@ -393,7 +397,7 @@ mod tests {
                     placements: Vec::new(),
                 },
             ],
-            options: Default::default(),
+            options: BookOptions { places: true },
         }
     }
 
