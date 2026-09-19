@@ -12,37 +12,102 @@ pub fn feature_distance(a: &[f32], b: &[f32]) -> Option<f32> {
         .then(|| a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum::<f32>().sqrt())
 }
 
-/// Single-link agglomerative clustering over Hamming distance, via union-find.
-/// Returns a cluster id for each input index. O(n^2), which is fine at n <= 300.
-pub fn near_duplicate_clusters(phashes: &[u64], max_distance: u32) -> Vec<usize> {
+/// A pHash match: at most this many of the 64 bits differ.
+pub const PHASH_MAX_HAMMING: u32 = 4;
+
+/// Feature-print distance at or below which two photos are the same shot
+/// taken twice. Calibrated on Bali 2025 (283 photos) and a 300-photo slice of
+/// Iceland 2025: every sampled pair up to 0.35 was the same subject, spot and
+/// framing; from 0.35 to 0.45 about half were a different pose, framing or
+/// orientation. See PROJECT-STATUS.md, "similarity calibration".
+pub const SIMILAR_DISTANCE: f32 = 0.35;
+
+/// A pHash match is refused when both photos have prints further apart than
+/// this. pHash collapses flat grey skies and mist into near-identical hashes:
+/// on Iceland it joined a statue, a waterfall and a sea view shot 28 h apart.
+/// Every sampled pHash pair past 0.6 was two different pictures.
+pub const PHASH_VETO_DISTANCE: f32 = 0.5;
+
+/// No similarity cluster spans more than this, first dated photo to last.
+/// Real look-alike pairs were never more than 110 s apart; a time-lapse is
+/// all look-alikes and would otherwise collapse into one photo.
+pub const SIMILAR_SPAN_SECONDS: i64 = 120;
+
+/// Groups photos that are the same shot taken more than once.
+///
+/// Two photos are *linked* when their feature prints are within
+/// `max_distance`, or when their pHashes match and their prints (if both
+/// exist) are within `PHASH_VETO_DISTANCE`. A photo with no print links by
+/// pHash alone.
+///
+/// Clusters grow by complete linkage, not single linkage: two clusters merge
+/// only when every photo in one is linked to every photo in the other, and
+/// the merged cluster spans at most `max_span_seconds` of dated photos.
+/// Single linkage chains A~B~C into one cluster even when A and C are
+/// different pictures, and on real bursts that walked a whole scene into
+/// one keeper. Undated photos do not constrain the span.
+///
+/// Returns a cluster id per input index, dense and in first-seen order.
+pub fn similar_clusters(
+    phashes: &[u64],
+    prints: &[Option<Vec<f32>>],
+    times: &[Option<i64>],
+    max_distance: f32,
+    max_span_seconds: i64,
+) -> Vec<usize> {
     let n = phashes.len();
-    let mut parent: Vec<usize> = (0..n).collect();
+    let distance = |i: usize, j: usize| match (&prints[i], &prints[j]) {
+        (Some(a), Some(b)) => feature_distance(a, b),
+        _ => None,
+    };
 
-    fn find(parent: &mut Vec<usize>, mut i: usize) -> usize {
-        while parent[i] != i {
-            parent[i] = parent[parent[i]];
-            i = parent[i];
-        }
-        i
-    }
-
+    let mut links: Vec<(bool, f32, usize, usize)> = Vec::new();
     for i in 0..n {
-        for j in (i + 1)..n {
-            if hamming(phashes[i], phashes[j]) <= max_distance {
-                let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
-                if ri != rj {
-                    parent[ri] = rj;
+        for j in i + 1..n {
+            // Complete linkage then keeps every cluster within the span.
+            if let (Some(a), Some(b)) = (times[i], times[j]) {
+                if (a - b).abs() > max_span_seconds {
+                    continue;
                 }
+            }
+            let phash_match = hamming(phashes[i], phashes[j]) <= PHASH_MAX_HAMMING;
+            match distance(i, j) {
+                Some(d) if d <= max_distance || (phash_match && d <= PHASH_VETO_DISTANCE) => {
+                    links.push((false, d, i, j))
+                }
+                None if phash_match => links.push((true, 0.0, i, j)),
+                _ => {}
             }
         }
     }
+    links.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then((a.2, a.3).cmp(&(b.2, b.3))));
+    let linked: std::collections::HashSet<(usize, usize)> =
+        links.iter().map(|&(_, _, i, j)| (i, j)).collect();
+    let is_linked = |a: usize, b: usize| linked.contains(&(a.min(b), a.max(b)));
 
-    let mut labels = std::collections::HashMap::new();
-    (0..n)
-        .map(|i| {
-            let root = find(&mut parent, i);
-            let next = labels.len();
-            *labels.entry(root).or_insert(next)
+    let mut cluster_of: Vec<usize> = (0..n).collect();
+    let mut members: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
+    for &(_, _, i, j) in &links {
+        let (a, b) = (cluster_of[i], cluster_of[j]);
+        if a == b {
+            continue;
+        }
+        if !members[a].iter().all(|&x| members[b].iter().all(|&y| is_linked(x, y))) {
+            continue;
+        }
+        let moved = std::mem::take(&mut members[b]);
+        for &k in &moved {
+            cluster_of[k] = a;
+        }
+        members[a].extend(moved);
+    }
+
+    let mut dense = std::collections::HashMap::new();
+    cluster_of
+        .iter()
+        .map(|&c| {
+            let next = dense.len();
+            *dense.entry(c).or_insert(next)
         })
         .collect()
 }
@@ -117,24 +182,81 @@ mod tests {
         assert_eq!(hamming(0b0000, 0b1111), 4);
     }
 
+    fn print(x: f32) -> Option<Vec<f32>> {
+        Some(vec![x, 0.0])
+    }
+
+    /// Distinct hashes (64 bits apart pairwise are not possible, but these
+    /// are all > PHASH_MAX_HAMMING apart), so only prints can link them.
+    const UNRELATED: [u64; 4] = [0, 0xFFFF, 0xFFFF_0000, 0xFFFF_0000_0000];
+
+    fn clusters(prints: &[Option<Vec<f32>>], times: &[Option<i64>]) -> Vec<usize> {
+        similar_clusters(&UNRELATED[..prints.len()], prints, times, 0.3, 120)
+    }
+
     #[test]
-    fn identical_hashes_land_in_one_cluster() {
-        let ids = near_duplicate_clusters(&[42, 42, 42], 4);
+    fn similar_prints_join_and_distant_ones_do_not() {
+        let ids = clusters(&[print(0.0), print(0.2), print(0.9)], &[Some(0), Some(1), Some(2)]);
         assert_eq!(ids[0], ids[1]);
-        assert_eq!(ids[1], ids[2]);
+        assert_ne!(ids[1], ids[2]);
+    }
+
+    /// A~B and B~C are both within 0.3, A~C is 0.5. Single linkage would put
+    /// all three in one cluster; complete linkage must not.
+    #[test]
+    fn similar_clusters_do_not_chain_through_a_middle_photo() {
+        let ids = clusters(&[print(0.0), print(0.25), print(0.5)], &[Some(0), Some(1), Some(2)]);
+        assert_eq!(ids[0], ids[1], "the first link merges");
+        assert_ne!(ids[0], ids[2], "A and C are different pictures");
+    }
+
+    /// Every pair is within the threshold, but the three together span 200 s.
+    #[test]
+    fn similar_clusters_refuse_to_span_more_than_the_cap() {
+        let ids = clusters(&[print(0.0), print(0.0), print(0.0)], &[Some(0), Some(100), Some(200)]);
+        assert_eq!(ids[0], ids[1]);
+        assert_ne!(ids[0], ids[2]);
+        let apart = clusters(&[print(0.0), print(0.0)], &[Some(0), Some(121)]);
+        assert_ne!(apart[0], apart[1], "one pair past the cap stays apart");
     }
 
     #[test]
-    fn distant_hashes_land_in_separate_clusters() {
-        let ids = near_duplicate_clusters(&[0x0000_0000_0000_0000, 0xFFFF_FFFF_FFFF_FFFF], 4);
-        assert_ne!(ids[0], ids[1]);
-    }
-
-    #[test]
-    fn clustering_is_transitive_within_threshold() {
-        // a-b differ by 1 bit, b-c by 1 bit, a-c by 2. All one burst.
-        let ids = near_duplicate_clusters(&[0b000, 0b001, 0b011], 1);
+    fn undated_photos_join_on_their_prints_alone() {
+        let ids = clusters(&[print(0.0), print(0.1), print(0.0)], &[None, None, Some(5_000)]);
+        assert_eq!(ids[0], ids[1]);
         assert_eq!(ids[0], ids[2]);
+    }
+
+    #[test]
+    fn photos_without_prints_join_only_by_phash() {
+        let ids = similar_clusters(
+            &[7, 7, 7, 0xFFFF_FFFF],
+            &[None, None, print(0.0), None],
+            &[Some(0), Some(1), Some(2), Some(3)],
+            0.3,
+            120,
+        );
+        assert_eq!(ids[0], ids[1], "two print-less photos with one pHash");
+        assert_eq!(ids[0], ids[2], "a print-less photo and a printed one with one pHash");
+        assert_ne!(ids[0], ids[3], "a print-less photo with a different pHash");
+    }
+
+    /// Identical hashes, prints 0.4 apart (past the 0.3 threshold but within
+    /// the veto) join; prints 0.6 apart are two different pictures that pHash
+    /// happens to confuse, and stay apart.
+    #[test]
+    fn a_phash_match_is_vetoed_by_prints_that_disagree() {
+        let times = [Some(0), Some(1)];
+        let near = similar_clusters(&[7, 7], &[print(0.0), print(0.4)], &times, 0.3, 120);
+        assert_eq!(near[0], near[1]);
+        let far = similar_clusters(&[7, 7], &[print(0.0), print(0.6)], &times, 0.3, 120);
+        assert_ne!(far[0], far[1]);
+    }
+
+    #[test]
+    fn similar_cluster_ids_are_dense_in_first_seen_order() {
+        let ids = clusters(&[print(0.9), print(0.9), print(0.0), print(0.1)], &[Some(0); 4]);
+        assert_eq!(ids, vec![0, 0, 1, 1]);
     }
 
     #[test]
@@ -177,7 +299,7 @@ mod tests {
 
     #[test]
     fn empty_input_returns_empty() {
-        assert!(near_duplicate_clusters(&[], 4).is_empty());
+        assert!(similar_clusters(&[], &[], &[], 0.3, 120).is_empty());
         assert!(event_clusters(&[], 86_400).is_empty());
     }
 

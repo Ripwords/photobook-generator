@@ -342,12 +342,23 @@ pub(crate) fn finalize_photos(mut ok: Vec<serde_json::Value>) -> Vec<serde_json:
         .iter()
         .map(|f| f["phash"].as_u64().unwrap_or(0))
         .collect();
-    let dup_ids = cluster::near_duplicate_clusters(&phashes, 4);
-
     let times: Vec<Option<i64>> = ok
         .iter()
         .map(|f| f["exif"]["captureDate"].as_f64().map(|t| t as i64))
         .collect();
+    // An undecodable print is left to `from_features`, which refuses the
+    // whole record; here it only means the photo links by pHash alone.
+    let prints: Vec<Option<Vec<f32>>> = ok
+        .iter()
+        .map(|f| f["featurePrint"].as_str().and_then(crate::book::cull::decode_feature_print))
+        .collect();
+    let dup_ids = cluster::similar_clusters(
+        &phashes,
+        &prints,
+        &times,
+        cluster::SIMILAR_DISTANCE,
+        cluster::SIMILAR_SPAN_SECONDS,
+    );
     let event_ids = cluster::event_clusters(&times, cluster::EVENT_GAP_SECONDS);
 
     let aesthetic = ranking::percentiles(
@@ -3116,6 +3127,27 @@ mod tests {
             "exif": { "captureDate": capture },
             "faces": vec![serde_json::json!({}); face_count],
         })
+    }
+
+    fn with_print(mut value: serde_json::Value, print: &[f32]) -> serde_json::Value {
+        use base64::Engine as _;
+        let bytes: Vec<u8> = print.iter().flat_map(|x| x.to_le_bytes()).collect();
+        value["featurePrint"] = base64::engine::general_purpose::STANDARD.encode(bytes).into();
+        value
+    }
+
+    /// The pHashes disagree on a and b, so only the prints can join them; a
+    /// and c share a pHash, but their prints say they are different pictures.
+    #[test]
+    fn near_dup_clusters_follow_the_feature_prints() {
+        let finalized = finalize_photos(vec![
+            with_print(feat("/p/a.jpg", 0, 0.5, 10.0, Some(0.0), 0), &[0.0, 0.0]),
+            with_print(feat("/p/b.jpg", 0xFFFF_FFFF, 0.5, 10.0, Some(1.0), 0), &[0.1, 0.0]),
+            with_print(feat("/p/c.jpg", 0, 0.5, 10.0, Some(2.0), 0), &[1.0, 0.0]),
+        ]);
+        let dup = |i: usize| finalized[i]["nearDupCluster"].as_u64();
+        assert_eq!(dup(0), dup(1), "one shot taken twice, different pHashes");
+        assert_ne!(dup(0), dup(2), "same pHash, different pictures");
     }
 
     #[test]
