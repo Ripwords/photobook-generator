@@ -68,6 +68,7 @@ pub fn run() {
             commands::cancel_model_request,
             commands::edit_book,
             commands::slot_candidates,
+            commands::cover_candidates,
             commands::delete_project,
             commands::restore_project,
             commands::rename_project,

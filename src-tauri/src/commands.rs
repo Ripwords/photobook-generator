@@ -2381,6 +2381,27 @@ pub async fn slot_candidates(
     .map_err(|e| e.to_string())?
 }
 
+/// `slot_candidates` for one side of the cover. The picker then sends
+/// `SetCoverPhoto` to `edit_book`.
+#[tauri::command]
+pub async fn cover_candidates(
+    app: AppHandle,
+    project_id: i64,
+    side: crate::geometry::CoverSide,
+) -> Result<Vec<crate::book::edit::SlotCandidate>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        let project = db
+            .load_project(project_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("project {project_id} no longer exists"))?;
+        let parsed = resolve_photos(&db, &project.photo_hashes)?;
+        Ok(crate::book::edit::cover_candidates(&project.book, &parsed, side))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Photos in any open contact sheet. A poisoned lock still holds a usable
 /// map, and ignoring it would unpin every photo on screen.
 fn live_hashes(state: &AppState) -> Vec<String> {

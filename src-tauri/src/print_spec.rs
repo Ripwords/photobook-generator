@@ -396,6 +396,17 @@ impl PrintSpec {
         self.cover_panel_w_in() / self.cover_panel_h_in()
     }
 
+    /// The finished board on a cover panel, panel-normalised: the trim,
+    /// against the spine edge. The rest of the panel is the wrap.
+    pub fn cover_board_rect(&self, side: CoverSide) -> Rect {
+        let (pw, ph) = (self.cover_panel_w_in(), self.cover_panel_h_in());
+        let x = match side {
+            CoverSide::Front => 0.0,
+            CoverSide::Back => self.cover_wrap_in,
+        };
+        Rect::new(x / pw, self.cover_wrap_in / ph, self.trim_w_in() / pw, self.trim_h_in() / ph)
+    }
+
     /// The part of a cover panel that shows on the finished board, less the
     /// safe margin, panel-normalised.
     ///
@@ -776,6 +787,29 @@ mod tests {
         assert!((back.w - front.w).abs() < 1e-12);
     }
 
+    /// The board is the trim on the panel: flush with the spine edge, the
+    /// wrap outside it on the other three. Everything outside it folds under.
+    #[test]
+    fn the_cover_board_rect_is_the_trim_with_the_wrap_outside_it() {
+        let o = odd_spec();
+        let (pw, ph) = (o.cover_panel_w_in(), o.cover_panel_h_in());
+        let (tw, th, wrap) = (7.75, 9.5, o.cover_wrap_in());
+
+        let front = o.cover_board_rect(CoverSide::Front);
+        assert!(front.x.abs() < 1e-12, "front x {}", front.x);
+        assert!((front.right() - tw / pw).abs() < 1e-12, "front right {}", front.right());
+        assert!((front.y - wrap / ph).abs() < 1e-12, "front y {}", front.y);
+        assert!((front.bottom() - (wrap + th) / ph).abs() < 1e-12, "front bottom {}", front.bottom());
+
+        let back = o.cover_board_rect(CoverSide::Back);
+        assert!((back.x - wrap / pw).abs() < 1e-12, "back x {}", back.x);
+        assert!((back.right() - 1.0).abs() < 1e-12, "back right {}", back.right());
+        assert_eq!((back.y, back.h), (front.y, front.h));
+
+        for side in [CoverSide::Front, CoverSide::Back] {
+            assert!(o.cover_board_rect(side).contains(&o.cover_visible_rect(side)), "{side:?}");
+        }
+    }
 }
 
 /// Today's default, abbreviated. Named for brevity at ~150 test call sites

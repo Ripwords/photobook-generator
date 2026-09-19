@@ -154,6 +154,8 @@ export interface PreviewCover {
 
 /** Mirrors `preview::PreviewCoverSide`. */
 export interface PreviewCoverSide {
+  /** Panel-normalised: the finished board. The rest of the panel is wrap, which folds under. */
+  board: PreviewRect;
   /** Panel-normalised: what shows on the finished board, less the safe margin. */
   visible: PreviewRect;
   photo: PreviewCoverPhoto | null;
@@ -603,6 +605,11 @@ export function setCropEdit(placement: PlacementRef, crop: PreviewRect): BookEdi
   return { kind: "setCrop", placement, x: crop.x, y: crop.y, w: crop.w };
 }
 
+/** `setCropEdit` for a cover photo. */
+export function setCoverCropEdit(side: CoverSide, crop: PreviewRect): BookEdit {
+  return { kind: "setCoverCrop", side, x: crop.x, y: crop.y, w: crop.w };
+}
+
 function clamp(value: number, lo: number, hi: number): number {
   return Math.min(Math.max(value, lo), Math.max(lo, hi));
 }
@@ -730,6 +737,13 @@ function takenAt(row: CandidateRow): number {
   return row.photo.capturedAt ?? Number.POSITIVE_INFINITY;
 }
 
+/**
+ * What the photo picker fills: a slot on a page, which trades places with a
+ * photo already in the book, or one side of the cover, which takes a copy and
+ * leaves the pages alone.
+ */
+export type PickTarget = { kind: "slot"; placement: PlacementRef } | { kind: "cover"; side: CoverSide };
+
 export type CandidateFilter = "leftOut" | "inBook" | "all";
 export type CandidateSort = "best" | "taken";
 
@@ -743,9 +757,9 @@ export interface CandidateRow {
   refused: Rejection | null;
   /** Where the photo already is, or `null` when it was left out. */
   placedAt: PlacementRef | null;
-  /** The photo the slot holds now. */
+  /** The photo the target holds now. */
   current: boolean;
-  /** Placed on a locked opening, so a swap with it would be refused. */
+  /** Placed on a locked opening, so a swap with it would be refused. Never set for the cover. */
   locked: boolean;
 }
 
@@ -758,10 +772,11 @@ export interface CandidateRow {
 export function replaceCandidates(
   layout: BookLayout,
   candidates: readonly SlotCandidate[],
-  target: PlacementRef,
+  target: PickTarget,
   filter: CandidateFilter,
   sort: CandidateSort,
 ): CandidateRow[] {
+  const coverPhoto = target.kind === "cover" ? layout.cover[target.side].photo?.photoIndex : undefined;
   const placed = new Map<number, { at: PlacementRef; locked: boolean }>();
   toSpreads(layout.pages).forEach((opening, index) => {
     const locked = openingFor(layout, index).locked;
@@ -786,8 +801,11 @@ export function replaceCandidates(
       crop: candidate.crop,
       refused: candidate.refused,
       placedAt: where?.at ?? null,
-      current: where !== undefined && samePlacement(where.at, target),
-      locked: where?.locked ?? false,
+      current:
+        target.kind === "cover"
+          ? index === coverPhoto
+          : where !== undefined && samePlacement(where.at, target.placement),
+      locked: target.kind === "slot" && (where?.locked ?? false),
     });
   });
 
@@ -798,6 +816,22 @@ export function replaceCandidates(
   );
 }
 
+/** The target's printed shape, so every tile is framed the way the book frames it. */
+export function pickAspect(layout: BookLayout, target: PickTarget): number {
+  if (target.kind === "cover") return layout.cover.aspect;
+  const page = layout.pages.find((p) => p.number === target.placement.page);
+  const rect = page?.placements.find((p) => p.z === target.placement.z)?.slotRect;
+  if (!rect) return 1;
+  return (rect.w * layout.geometry.pageWIn) / (rect.h * layout.geometry.pageHIn);
+}
+
+/** The edit that puts photo `photo` on the target. */
+export function pickEdit(target: PickTarget, photo: number): BookEdit {
+  return target.kind === "cover"
+    ? { kind: "setCoverPhoto", side: target.side, photo }
+    : { kind: "replacePhoto", placement: target.placement, photo };
+}
+
 const REFUSALS: Record<Rejection, string> = {
   faceClipped: "A face would be cut off",
   faceInGutter: "A face would fall in the fold",
@@ -805,6 +839,9 @@ const REFUSALS: Record<Rejection, string> = {
   tooLowResolution: "Too low resolution to print this size",
 };
 
-export function refusalText(reason: Rejection): string {
+export function refusalText(reason: Rejection, on: PickTarget["kind"]): string {
+  if (on === "cover" && (reason === "faceInSafeMargin" || reason === "faceInGutter")) {
+    return "A face would fold under the board or sit too near its edge";
+  }
   return REFUSALS[reason];
 }

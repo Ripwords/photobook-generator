@@ -909,6 +909,22 @@ pub fn slot_candidates(
         .collect())
 }
 
+/// `slot_candidates` for one side of the cover: the crop `SetCoverPhoto`
+/// would give each photo there, and the refusal it would meet.
+pub fn cover_candidates(book: &Book, photos: &[Photo], side: CoverSide) -> Vec<SlotCandidate> {
+    let aspect = book.spec.cover_aspect();
+    photos
+        .iter()
+        .map(|photo| {
+            let crop = choose_crop(photo, aspect);
+            SlotCandidate {
+                refused: cover::rejects(&book.spec, photo, &crop, side),
+                crop,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2446,6 +2462,39 @@ mod tests {
             Err(EditError::CoverRejected { side: CoverSide::Front, reason: Rejection::TooLowResolution })
         );
         assert_eq!(b, before, "a refused edit changes nothing");
+    }
+
+    /// Photo 2 is portrait, so its cover crop spans the full width and a face
+    /// at x 0.03 sits on the front's board but in the back's wrap. The same
+    /// photo is therefore refused on one side only, which a side dropped on
+    /// the way through would hide.
+    #[test]
+    fn cover_candidates_crop_every_photo_to_the_panel_and_say_which_side_refuses() {
+        let mut ps = photos(6);
+        ps[2].faces = vec![Face { box_: Rect::new(0.03, 0.48, 0.03, 0.04), capture_quality: None }];
+        ps[3].faces = vec![Face { box_: Rect::new(0.45, 0.01, 0.08, 0.05), capture_quality: None }];
+        ps[4].width = 1000;
+        ps[4].height = 750;
+        let b = book(&ps);
+
+        let front = cover_candidates(&b, &ps, CoverSide::Front);
+        let back = cover_candidates(&b, &ps, CoverSide::Back);
+
+        assert_eq!(front.len(), ps.len());
+        for (i, c) in front.iter().chain(&back).enumerate() {
+            let p = i % ps.len();
+            assert_eq!(c.crop, cover_crop(&ps, p), "photo {p} gets its automatic cover crop");
+        }
+        let refused = |cs: &[SlotCandidate]| cs.iter().map(|c| c.refused).collect::<Vec<_>>();
+        use Rejection::*;
+        assert_eq!(
+            refused(&front),
+            [None, None, None, Some(FaceInSafeMargin), Some(TooLowResolution), None]
+        );
+        assert_eq!(
+            refused(&back),
+            [None, None, Some(FaceInSafeMargin), Some(FaceInSafeMargin), Some(TooLowResolution), None]
+        );
     }
 
     /// Landscape 4:3 onto Pixajoy's 1.175 panel: `h = w * 4/3 / 1.175`.
