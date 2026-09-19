@@ -1,49 +1,106 @@
-# PhotobookGen
+<p align="center">
+  <img src="app-icon.png" alt="PhotobookGen" width="160" height="160" />
+</p>
 
-A macOS photobook layout app built with Tauri 2 (Rust) + Nuxt 4, backed by a Swift
-sidecar (`sidecar/`, SwiftPM package `PhotobookEngine`) that performs photo analysis.
-Target platform is macOS 15.0+, arm64 only.
+<h1 align="center">PhotobookGen</h1>
 
-## Prerequisites
+<p align="center">
+  Turn a folder of photos into a print-ready photobook, analysed entirely on your Mac.<br />
+  <a href="https://v2.tauri.app/">Tauri 2</a> · <a href="https://nuxt.com/">Nuxt 4</a> · <a href="https://ui.nuxt.com/">Nuxt UI</a> · <a href="https://developer.apple.com/documentation/vision">Swift / Apple Vision</a>
+</p>
 
-- [Bun](https://bun.sh) (package manager)
-- Rust (stable toolchain, arm64 macOS target)
-- Xcode / Swift toolchain (for the sidecar package)
+<p align="center">
+  <a href="https://github.com/Ripwords/photobook-generator/releases/download/v0.1.0/PhotobookGen_0.1.0_aarch64.dmg"><img src="https://img.shields.io/badge/Apple%20Silicon-3F454D?style=for-the-badge&logo=apple&logoColor=white" alt="Download for Mac (Apple Silicon)" /></a>
+  <br /><br />
+  <a href="https://github.com/Ripwords/photobook-generator/releases/latest"><img src="https://img.shields.io/github/v/release/Ripwords/photobook-generator?style=flat-square&label=latest&labelColor=24292F&color=3F454D" alt="Latest release" /></a>
+</p>
 
-## Getting started
+Point PhotobookGen at one or more folders of photos. It analyses every photo on this Mac
+with Apple Vision, drops the utility shots and look-alikes, picks a varied set, and lays it
+out spread by spread on a curated template library sized for Pixajoy's 11 × 8.5" landscape
+book. You adjust the book as it will print, then export one cropped file per photo placement
+plus a `manifest.json`, ready to upload to Pixajoy. The app never talks to Pixajoy itself.
+
+A macOS-only desktop app: Tauri 2 (Rust) and Nuxt 4, backed by a Swift sidecar
+(`sidecar/`, SwiftPM package `PhotobookEngine`) that performs the photo analysis and the
+export crops.
+
+## Features
+
+- **On-device analysis.** Apple Vision aesthetics, faces with pose and capture quality,
+  saliency, horizon, scene tags and text, plus sharpness, palette, perceptual hash and
+  feature prints. RAW, HEIC and JPEG. Nothing is uploaded.
+- **Several folders, one book.** Photos from every folder are ranked together and grouped
+  into events by the time they were taken, whichever folder they came from.
+- **Look-alike culling.** Shots of the same picture taken within two minutes collapse to
+  one: the sharpest, unless it is almost entirely black or blown out and a properly exposed
+  frame exists.
+- **Variety over density.** About four photos per spread, the best photo of every moment
+  before a second from any, sparse spreads mixed with the occasional six-up.
+- **Your call on every photo.** Include or exclude any photo on the contact sheet; the app
+  recommends the shortest Pixajoy length that fits and says what each length would leave out.
+- **Spread controls.** Regenerate, reject, choose a layout by name, lock, and shuffle the
+  whole book around the locked openings.
+- **Hand editing.** Swap photos, replace one with any other, drag and scroll to crop, and
+  move or resize the boxes with snapping to the trim, safe and gutter guides. Every edit that
+  would cut a face, put one in the fold or print below 200 DPI is refused with the reason.
+- **Pre-flight export.** Anything that would print badly blocks the export and is listed.
+- **Library.** Covers or a list, search, sort, favourites, rename, a 30-day trash with undo,
+  and drafts that keep analysing in the background.
+- **Bounded cache.** Analysis results and previews stay under a limit you choose, without
+  ever evicting a photo a saved book needs.
+- **Book chat (optional).** A chat beside the book proposes layout edits, and every write
+  waits for your approval. It needs your own DeepSeek API key.
+
+## Status
+
+The app is usable end to end, but it has not yet been proven against a printed book.
+[`docs/PROJECT-STATUS.md`](docs/PROJECT-STATUS.md) holds the full record, including what is
+verified and what is only assumed.
+
+| Phase | Scope | State |
+|---|---|---|
+| 1 | On-device analysis pipeline | Complete |
+| 2 | Cull, pack, score, crop, pre-flight, export, save | Complete and verified against fixtures. Nobody has yet uploaded an exported page to Pixajoy, so whether Pixajoy accepts every exported format (PNG in particular) is unconfirmed. |
+| 3 | Spread preview and spread-level controls | Built |
+| 4 | Canvas editor | Partly built. Hand cropping and moving or resizing boxes work. Adding or removing boxes and text zones do not exist. |
+| 5 | Chat agent driving the layout tools | Chat panel built (DeepSeek, with an optional Jev key). |
+
+Not built: the cover (its wrap band and spine are a different geometry), GPS location
+clustering, same-person face clustering, and zero-shot mood tagging. Four scoring terms ship
+at weight zero until they are tuned on real photographs.
+
+## Privacy
+
+**Images never leave your Mac.** All pixel analysis runs on-device in the Swift sidecar;
+there is no hosted vision model. Only derived JSON is ever sent anywhere, and only to the
+chat provider you configure a key for: DeepSeek reads a description of the book (its
+layouts, page numbers and photo tags) plus your messages, and the optional Jev key lets
+Jev check proposed edits and find photos by description from the same derived data.
+Without a key, nothing is sent. API keys live in the macOS keychain. The analysis cache
+holds results and small previews, never your originals, and your originals are never
+modified.
+
+## Requirements
+
+- macOS 15 or later
+- Apple Silicon (arm64). There is no Intel or universal build.
+
+## Installing
+
+Download the dmg from the [latest release](https://github.com/Ripwords/photobook-generator/releases/latest),
+open it, and drag **PhotobookGen** to **Applications**.
+
+The app is not notarized (there is no Apple Developer ID behind it), so Gatekeeper blocks
+the first launch, sometimes reporting the app as "damaged". It is not. Either right-click
+the app in Finder and choose **Open**, then **Open** again in the dialog, or clear the
+quarantine flag:
 
 ```bash
-bun install
-bun run dev
+xattr -dr com.apple.quarantine /Applications/PhotobookGen.app
 ```
 
-`bun run dev` and `bun run build` both build the Swift sidecar automatically via Tauri's
-`beforeDevCommand` / `beforeBuildCommand` hooks (see `src-tauri/tauri.conf.json`), so no
-manual step is normally required.
-
-### Important: building/testing the Rust crate directly
-
-`src-tauri/tauri.conf.json` declares the sidecar binary under `bundle.externalBin`. This
-makes `tauri-build`'s build script validate, **at compile time**, that
-`src-tauri/binaries/photobook-engine-<target-triple>` exists on disk — before any Rust
-code is compiled.
-
-If you invoke `cargo build` or `cargo test` **directly** inside `src-tauri/` (bypassing
-the `bun run dev` / `bun run build` hooks above), you must build the sidecar first:
-
-```bash
-bun run sidecar
-cargo test --manifest-path src-tauri/Cargo.toml
-```
-
-Skipping this produces an error like:
-
-```
-resource path `binaries/photobook-engine-aarch64-apple-darwin` doesn't exist
-```
-
-which points at the missing binary, not at the missing `bun run sidecar` step — this note
-exists so that error is easy to diagnose.
+After that it opens normally.
 
 ## Using the app
 
@@ -212,37 +269,91 @@ runs first; anything that would print badly blocks the export and is listed in t
 one cropped file per photo placement plus a `manifest.json` saying what went where, ready to
 upload to Pixajoy.
 
-## Scripts
+## Development
 
-- `bun run dev` — start the Tauri app in development mode (builds sidecar first)
-- `bun run build` — build the production app bundle (builds sidecar first)
-- `bun run sidecar` — build the Swift sidecar binary and copy it into
-  `src-tauri/binaries/`
-- `bun run ui:mock` — open the webview in an ordinary browser on port 3123 with the Tauri
-  bridge replaced by `dev/tauri-mock/`, so a UI change can be rasterised and looked at, or
-  driven by a browser automation tool, without a Tauri process. Every command the UI can
-  reach is answered, from the wire fixtures where one exists and from `dev/tauri-mock/photos.ts`
-  for a whole analysed folder, so all three screens and the flows between them can be driven
-  end to end. Set `window.pbgCancelPicker = true` to make the next folder pick resolve to
-  nothing. Nothing in the production build sees this alias.
-- `bun run test` — run frontend tests (Vitest)
-- `bun run test:rust` — run Rust tests (`cargo test`)
-- `bun run test:swift` — run Swift tests (`swift test`)
-- `scripts/benchmark.sh <folder>` — measure sidecar per-photo performance against real
-  photos (see below)
+Requires an Apple Silicon Mac on macOS 15+, [Bun](https://bun.sh) (the package manager,
+not npm), a stable Rust toolchain for `aarch64-apple-darwin`, and Xcode or the Swift
+toolchain for the sidecar package.
 
-## Benchmarking photo analysis performance
+```bash
+bun install
+bun run sidecar     # build the Swift sidecar first; every cargo command needs it
+bun run dev         # the desktop app
+```
 
-`scripts/benchmark.sh` drives the sidecar's `benchmark` NDJSON request (alongside `ping`
-and `analyze` — see `sidecar/Sources/PhotobookEngine/Protocol.swift`) over every supported
-image in a folder and reports per-stage wall-clock timings: file hash, EXIF read, decode,
-Vision pass, classical metrics, and (optionally) thumbnail write. It prints a per-file
-table and a per-extension aggregate, so RAW, HEIC and JPEG throughput are directly
+`bun run dev` and `bun run build` also build the sidecar themselves, through Tauri's
+`beforeDevCommand` and `beforeBuildCommand` hooks in `src-tauri/tauri.conf.json`.
+
+```bash
+bun run test        # frontend tests (Vitest)
+bun run test:rust   # Rust tests (cargo test)
+bun run test:swift  # Swift sidecar tests (swift test)
+bun run lint        # oxlint; warnings are failures
+bun run check:build # nuxt generate, the only step that compiles .vue files
+bun run build       # PhotobookGen.app and the dmg, under src-tauri/target/.../bundle/
+```
+
+Run `bun run check:build` before committing any change to a `.vue` file: lint and the
+tests never parse a Vue template, so a broken component passes both. CI runs every command
+above except `build` on each push and pull request.
+
+Contributor notes, conventions and the traps that already caused real bugs are in
+[`CLAUDE.md`](CLAUDE.md) and [`docs/PROJECT-STATUS.md`](docs/PROJECT-STATUS.md).
+
+<details>
+<summary><strong>Building or testing the Rust crate directly</strong></summary>
+
+`src-tauri/tauri.conf.json` declares the sidecar binary under `bundle.externalBin`. This
+makes `tauri-build`'s build script validate, **at compile time**, that
+`src-tauri/binaries/photobook-engine-<target-triple>` exists on disk, before any Rust
+code is compiled.
+
+If you invoke `cargo build` or `cargo test` **directly** inside `src-tauri/` (bypassing
+the `bun run dev` / `bun run build` hooks), build the sidecar first:
+
+```bash
+bun run sidecar
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+Skipping this produces an error like:
+
+```
+resource path `binaries/photobook-engine-aarch64-apple-darwin` doesn't exist
+```
+
+which points at the missing binary, not at the missing `bun run sidecar` step.
+
+</details>
+
+<details>
+<summary><strong>Driving the UI in a browser (<code>bun run ui:mock</code>)</strong></summary>
+
+`bun run ui:mock` opens the webview in an ordinary browser on port 3123 with the Tauri
+bridge replaced by `dev/tauri-mock/`, so a UI change can be rasterised and looked at, or
+driven by a browser automation tool, without a Tauri process. Every command the UI can
+reach is answered, from the wire fixtures where one exists and from
+`dev/tauri-mock/photos.ts` for a whole analysed folder, so all three screens and the flows
+between them can be driven end to end. Set `window.pbgCancelPicker = true` to make the next
+folder pick resolve to nothing. Nothing in the production build sees this alias.
+
+`bun run ui:dev` runs the plain Nuxt dev server without the mock.
+
+</details>
+
+<details>
+<summary><strong>Benchmarking photo analysis performance</strong></summary>
+
+`scripts/benchmark.sh <folder>` drives the sidecar's `benchmark` NDJSON request (alongside
+`ping` and `analyze`; see `sidecar/Sources/PhotobookEngine/Protocol.swift`) over every
+supported image in a folder and reports per-stage wall-clock timings: file hash, EXIF read,
+decode, Vision pass, classical metrics, and (optionally) thumbnail write. It prints a
+per-file table and a per-extension aggregate, so RAW, HEIC and JPEG throughput are directly
 comparable instead of blended into one number.
 
-This is a permanent diagnostic, not scaffolding — re-run it after any change to
+This is a permanent diagnostic, not scaffolding. Re-run it after any change to
 `ImageLoader`, `Analyzer`, `VisionAnalyzer` or `Metrics` to catch a throughput or
-correctness regression before it ships. It's also how the RAW decode performance fix was
+correctness regression before it ships. It is also how the RAW decode performance fix was
 measured; see
 `.superpowers/sdd/2026-08-12-phase-1-analysis-pipeline/raw-performance-report.md` for the
 baseline-vs-fix numbers, the per-format embedded-preview fallback rates, and a quality
@@ -256,24 +367,24 @@ scripts/benchmark.sh sidecar/Fixtures --limit 20    # quick smoke test, no real 
 
 Flags:
 
-- `--recursive` — descend into subfolders, as the app's own folder scan does (real photo
-  exports are often nested)
-- `--limit N` — only benchmark the first N matching files
-- `--thumbnails DIR` — also time the contact-sheet thumbnail write stage, writing into
-  `DIR` (omit to skip that stage entirely, which is the default — most throughput
-  questions are about decode/Vision, not thumbnail writing)
-- `--json OUT.json` — dump the raw sidecar response alongside the printed tables
+- `--recursive` descends into subfolders, as the app's own folder scan does (real photo
+  exports are often nested).
+- `--limit N` benchmarks only the first N matching files.
+- `--thumbnails DIR` also times the contact-sheet thumbnail write stage, writing into
+  `DIR`. Omitting it skips that stage, which is the default: most throughput questions are
+  about decode and Vision, not thumbnail writing.
+- `--json OUT.json` dumps the raw sidecar response alongside the printed tables.
 
 Requires `jq`. The script builds the sidecar binary automatically (via `bun run sidecar`)
 if `src-tauri/binaries/photobook-engine-<target-triple>` doesn't exist yet.
 
-Benchmark runs are deliberately **sequential**, not the concurrent `concurrentPerform` fan-out
-a real `analyze` batch uses — see `Benchmarker.swift`'s doc comment. That makes per-stage
-numbers clean and comparable across formats, but means a benchmark run's total wall time
-under-represents real multi-core throughput; look at the aggregate ratios and per-format
-comparisons, not the raw total, when judging real-world speed.
+Benchmark runs are deliberately **sequential**, not the concurrent `concurrentPerform`
+fan-out a real `analyze` batch uses (see `Benchmarker.swift`'s doc comment). That makes
+per-stage numbers clean and comparable across formats, but a benchmark run's total wall
+time under-represents real multi-core throughput. Judge real-world speed by the aggregate
+ratios and per-format comparisons, not the raw total.
 
-### Timing what the user waits for
+#### Timing what the user waits for
 
 `scripts/benchmark.sh` times the sidecar's stages one photo at a time. To time the app's own
 analysis path (Rust hashing and cache lookup, the batched sidecar calls, finalize) over a
@@ -293,3 +404,29 @@ To time a folder the app has already analysed without running Vision on it again
 `PBG_BENCH_SEED_DB` at a copy of the app's database (`sqlite3 <database> ".backup copy.sqlite"`).
 Every run then starts from that cache. The first run is the one after a restart. The first
 run after upgrading from a version without file stamps reads every file once.
+
+</details>
+
+## Releases
+
+```bash
+bun run release 0.2.0   # explicit version (recommended)
+bun run release         # changelogen picks the next version from the commits
+bun run release --minor # force a patch, minor or major bump
+```
+
+`scripts/release.mjs` writes the version into `package.json`, `src-tauri/tauri.conf.json`,
+`src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`, points the download button at the top of
+this README at the new dmg, and updates `CHANGELOG.md` with
+[changelogen](https://github.com/unjs/changelogen). It refuses to continue if any of those
+fields or the README link is missing, rather than shipping a dead button. It then commits
+`chore(release): v<version>`, tags `v<version>`, and pushes both.
+
+The tag starts [`.github/workflows/release.yml`](.github/workflows/release.yml). It opens a
+draft release named `PhotobookGen v<version>` with changelogen notes, builds
+`PhotobookGen_<version>_aarch64.dmg` on a macOS 15 Apple Silicon runner, uploads it, and
+publishes the release. Running the workflow by hand from the Actions tab builds the dmg and
+attaches it to the run as an artifact, without creating a release.
+
+The build is not signed with a Developer ID or notarized, and the app has no auto-updater:
+users download each new version from the releases page.
