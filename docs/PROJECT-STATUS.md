@@ -24,6 +24,77 @@ deliberately-parked decision that this file is the only surviving record of.**
 
 ---
 
+## What changed on 2026-09-19: the analysis cache has a limit
+
+The app data dir grew forever: nothing deleted a `features` row, a thumbnail or a
+`file_stamps` row. On the real data it was 98 MB for 3147 photos (8.7 MB sqlite, 89 MB of
+~28 KB thumbnails), and the v3 bump left every one of those 3147 rows unusable.
+
+**The shape.** `src-tauri/src/cache.rs`. A `CacheEntry {hash, bytes, last_used_at, pinned}`
+is one photo's current-version row plus its `<hash>.jpg`, sized together. The decision is the
+pure `plan_eviction(entries, limit) -> EvictionPlan {evict, bytes_after, over_budget}`: least
+recently used first (ties by hash), never a pinned entry, and `over_budget` when the pinned
+entries alone exceed the limit. **Clear unused** is `plan_eviction(entries, 0)`. `enforce`
+does the I/O around it.
+
+**Always removed, whatever the limit:** rows whose `analyzer_version` is not current;
+`<64 hex>.jpg` files with neither a current row nor a pin (other files in the directory are
+left alone); `file_stamps` rows whose hash has no row and no pin. A pinned hash keeps its
+thumbnail and stamp even when its row is stale, so re-analysing that book reuses both.
+
+**The pin set, and why each member is there.** `cache::pins`:
+- every hash in `project_photos`, **trashed books included**. Undo and `restore_project` work
+  for 30 days, and `purge_deleted` deletes the book's `project_photos` rows when it is gone for
+  good, so the pin lifts by itself;
+- every hash in `project_photo_overrides`;
+- each draft's override keys, and every `file_stamps` hash under one of its `folders`. A
+  restored draft re-analyses its folders from the cache; without this pin, Clear unused would
+  make that a full Vision pass;
+- every `Photo.hash` in `AppState.analysed` (the contact sheets open now). `cache_context`
+  reads these before the database, because a book is saved before its run is forgotten.
+
+**LRU.** `features.last_used_at` is added by `migrate()` and backfilled from `created_at`.
+`put_features` sets it. `lookup_cache` touches every hit in one statement per call. On the
+real copy the touches cost 6-7 ms of a 189 ms warm lookup over 2864 files.
+
+**When it runs.** At startup (`.setup` in `run()`, not `builder()`), after each
+`analyze_folders`, when the limit changes, and on Clear unused. `AppState.cache_gate` is a
+`tokio::sync::RwLock<()>`. Every analysis holds it shared for its whole run. Enforcement takes
+it exclusively with `try_write` and **skips** when it is taken, because the sidecar writes a
+thumbnail before Rust writes its row, and enforcement would delete that thumbnail as an
+orphan. The analysis holding the gate enforces when it ends, so the cache converges. Clear
+unused errors instead ("Wait for the analysis to finish").
+
+**Space.** After deleting, `VACUUM` runs when the free pages exceed 4 MiB. Below that, SQLite
+reuses them. The real copy went from 8.75 MB to 1.25 MB when its 3147 v2 rows were purged.
+
+**Settings.** The limit lives in a new `settings(key, value)` table, the only backend
+settings store (colour mode is webview localStorage, API keys are in the keychain). Default
+2 GiB, about 60k photos at ~34 KB each. The UI is the Storage section in Settings > General
+(`app/types/storage.ts`, `useCacheStorage`). The wire type `CacheStatus` is pinned by
+`tests/fixtures/wire/cache-status.json`. The app has no TanStack Query, so the composable
+follows `useApiKeys`. Every command returns the status after it ran.
+
+**Real-data check** (copies in scratch, never the real dir; `cache::tests::real_cache_enforcement_report`,
+`#[ignore]`, driven by `PBG_CACHE_DB`, `PBG_CACHE_THUMBS` and `PBG_CACHE_LIMIT`). As-is, with
+a 20 MB limit: 3147 stale rows and 283 orphan thumbnails go, the 2864 pinned thumbnails stay,
+and the result is 77 MB and over budget. The three books fail to open before and after with
+the same error, because every row is v2. With the rows relabelled v3 (plus
+`clippedLow/High = 0`) and a 20 MB limit: 283 unpinned photos are evicted, 91.8 MB becomes
+81.5 MB (the pinned size), and all three books open, the trashed one too. With an 86 MB limit,
+158 of the 283 are evicted in LRU order. A second run changes nothing.
+
+**Mutation checks**, each turning a named test red: ignoring pins in `plan_eviction` (6
+tests, including `enforcing_the_cache_limit_never_breaks_a_saved_book`); reversing the LRU
+order; dropping `project_photos` or trashed books from the pins; skipping the stale-version
+purge; skipping the touch in `lookup_cache`; listing only one run's hashes; and renaming a
+wire field. In TypeScript: always warning, dropping a non-preset limit from the select,
+leaving the meter uncapped, and warning with the wrong field.
+
+**The first launch on this build deletes the real cache's v2 rows.** That is correct under v3,
+since `get_features` can never serve them. But a checkout still on analyzer v2 that shares the
+app data dir loses its cache when this build starts.
+
 ## What changed on 2026-09-19: feature prints, clipping, and analyzer v3
 
 This is groundwork for similarity-aware selection. Nothing reads the new fields yet.
@@ -1634,6 +1705,14 @@ tests did not catch them and a fresh reader would repeat them.
   precision above 2^53.
 - `event_clusters` and `percentiles` return values in **input order**, not sorted order.
   Callers zip them positionally.
+
+**Cache eviction**
+- **Evicting a pinned hash breaks a book, silently until it is opened.** `resolve_photos` is
+  all or nothing, so one missing row fails the whole book. Anything that removes `features`
+  rows must go through `cache::pins`. A new place that holds photo hashes (a new table, a new
+  in-memory run) must be added to the pin set, or the budget will eventually evict its photos.
+- Never run `cache::enforce` without the exclusive `cache_gate`. See "the analysis cache has
+  a limit".
 
 **Testing**
 - **swift-testing's top-level `@Test func`s share one module namespace.** A generic name
