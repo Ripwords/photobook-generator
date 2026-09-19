@@ -1043,6 +1043,8 @@ pub struct ProjectListItem {
     pub photo_count: i64,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Starred by the user; the sidebar lists these on their own.
+    pub favourite: bool,
     /// The most recent export, or `None` for a book that has never been
     /// exported -- the distinction the project list exists to show.
     pub last_export: Option<ExportSummary>,
@@ -1902,6 +1904,7 @@ pub async fn list_projects(app: AppHandle) -> Result<Vec<ProjectListItem>, Strin
                 photo_count: summary.photo_count,
                 created_at: summary.created_at,
                 updated_at: summary.updated_at,
+                favourite: summary.favourite,
                 last_export,
                 cover_thumbnails,
             });
@@ -2228,6 +2231,21 @@ pub async fn rename_project(app: AppHandle, id: i64, name: String) -> Result<(),
         let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
         let affected = db.rename_project(id, &name).map_err(|e| e.to_string())?;
         if affected == 0 {
+            return Err(format!("project {id} no longer exists"));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Stars or unstars a saved project. Fails for an id that no longer exists
+/// rather than doing nothing, as `rename_project` does.
+#[tauri::command]
+pub async fn set_favourite(app: AppHandle, id: i64, favourite: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        if db.set_favourite(id, favourite).map_err(|e| e.to_string())? == 0 {
             return Err(format!("project {id} no longer exists"));
         }
         Ok(())
@@ -4809,6 +4827,7 @@ mod tests {
                 photo_count: 24,
                 created_at: 1_755_100_000,
                 updated_at: 1_755_103_600,
+                favourite: true,
                 last_export: Some(ExportSummary {
                     at: 1_755_103_600,
                     output_dir: "/Users/jj/Desktop/photobook-export".into(),
@@ -4826,6 +4845,7 @@ mod tests {
                 photo_count: 54,
                 created_at: 1_755_200_000,
                 updated_at: 1_755_200_000,
+                favourite: false,
                 last_export: None,
                 cover_thumbnails: vec![],
             },

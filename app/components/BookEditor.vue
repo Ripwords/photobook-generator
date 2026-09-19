@@ -10,8 +10,10 @@ import {
 import type { PhotoOverrides } from "~/types/features";
 import { shortcutCombo, shortcutKbds } from "~/types/shortcuts";
 
-const { projectId } = defineProps<{
+const { projectId, listedName } = defineProps<{
   projectId: number;
+  /** The name the book list has, which a rename from the sidebar changes. */
+  listedName?: string;
 }>();
 
 const emit = defineEmits<{
@@ -139,6 +141,16 @@ function commitRenaming() {
   if (!trimmed || trimmed === project.name) return;
   void renameProject(project.id, trimmed).then(() => emit("renamed"));
 }
+
+watch(
+  () => listedName,
+  (name) => {
+    const project = activeProject.value;
+    if (name && project && project.name !== name && !renaming.value) {
+      activeProject.value = { ...project, name };
+    }
+  },
+);
 
 function requestEditPhotos() {
   const project = activeProject.value;

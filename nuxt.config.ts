@@ -25,14 +25,15 @@ export default defineNuxtConfig({
   /*
    * Every icon ships in the bundle. The app's CSP (`connect-src`) blocks the
    * Iconify API, so an icon that is not bundled renders as nothing. `scan`
-   * finds the ones named in app/; `icons` lists the ones Nuxt UI's own
-   * components use, which the scan cannot see.
+   * finds the ones named in app/, `.ts` included: the default reads only
+   * `.vue`, and menus built in `types/` name theirs there. `icons` lists the
+   * ones Nuxt UI's own components use, which the scan cannot see.
    */
   icon: {
     provider: "none",
     fallbackToApi: false,
     clientBundle: {
-      scan: true,
+      scan: { globInclude: ["app/**/*.{vue,ts}"] },
       icons: [
         "lucide:check",
         "lucide:chevron-down",

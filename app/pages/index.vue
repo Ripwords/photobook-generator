@@ -5,8 +5,17 @@ import type { Screen } from "~/types/navigation";
 import { shortcutCombo } from "~/types/shortcuts";
 import type { AnalysisJob } from "~/composables/useAnalysisJobs";
 
-const { projects, busy, error, reload, deleteProject, restoreProject, renameProject } =
-  useProjects();
+const {
+  projects,
+  busy,
+  error,
+  reload,
+  deleteProject,
+  restoreProject,
+  renameProject,
+  setFavourite,
+  reveal,
+} = useProjects();
 const { jobs, find, startJob, jobForProject, onSettled, restoreDrafts, flushDrafts } =
   useAnalysisJobs();
 
@@ -41,10 +50,14 @@ function openBook(id: number) {
   screen.value = { kind: "editor", projectId: id };
 }
 
-// Deleting asks first (`ProjectItem`), and can still be undone from here.
+// Deleting asks first (`DeleteBookDialog`), and can still be undone from here.
 async function deleteBook(id: number) {
   const name = projects.value.find((project) => project.id === id)?.name ?? "Photobook";
   if (!(await deleteProject(id))) return;
+  // The sidebar can delete the book on screen; the editor must not outlive it.
+  if (screen.value.kind === "editor" && screen.value.projectId === id) {
+    screen.value = { kind: "library" };
+  }
   toast.add({
     title: `Deleted “${name}”`,
     icon: "i-lucide-trash-2",
@@ -59,6 +72,20 @@ async function deleteBook(id: number) {
     ],
   });
 }
+
+// The library shows `error` in place; anywhere else a failed sidebar action
+// would otherwise say nothing.
+watch(error, (message) => {
+  if (!message || screen.value.kind === "library") return;
+  toast.add({ title: "That did not work", description: message, icon: "i-lucide-circle-x", color: "neutral" });
+});
+
+/** The open book's name as the list has it, so a sidebar rename shows in the editor too. */
+const listedName = computed(() => {
+  const current = screen.value;
+  if (current.kind !== "editor") return undefined;
+  return projects.value.find((project) => project.id === current.projectId)?.name;
+});
 
 function toLibrary() {
   screen.value = { kind: "library" };
@@ -149,7 +176,12 @@ onBeforeUnmount(() => {
       @new="newBook"
       @library="toLibrary"
       @open="openBook"
+      :busy
       @open-draft="openJob"
+      @favourite="setFavourite"
+      @rename="renameProject"
+      @delete="deleteBook"
+      @reveal="reveal"
     />
     <div class="flex min-w-0 flex-1 flex-col">
       <!--
@@ -165,6 +197,8 @@ onBeforeUnmount(() => {
         @open="openBook"
         @rename="renameProject"
         @delete="deleteBook"
+        @favourite="setFavourite"
+        @reveal="reveal"
       />
       <SelectPhotos
         v-else-if="selectedJob"
@@ -177,6 +211,7 @@ onBeforeUnmount(() => {
         v-else-if="screen.kind === 'editor'"
         :key="screen.projectId"
         :project-id="screen.projectId"
+        :listed-name
         @edit-photos="onEditPhotos"
         @renamed="reload"
       />

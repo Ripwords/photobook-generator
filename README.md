@@ -49,9 +49,10 @@ exists so that error is easy to diagnose.
 
 The window is a sidebar and one screen beside it. The sidebar is always there (⌘B hides
 and shows it): **New photobook** at the top, **Library** under it, then **Drafts** (books
-still being analysed or chosen, shown only when there are any), then every book you have
-made, each with its cover, and **Settings** at the bottom. Click a book or a draft there to
-open it from wherever you are. Hover any icon button for its name and, where it has one, its shortcut.
+still being analysed or chosen, shown only when there are any), then **Favourites** (books you
+starred, shown only when there are any), then every other book you have made, each with its
+cover, and **Settings** at the bottom. Click a book or a draft there to open it from wherever
+you are. Right-click a book there for the same menu the library gives it (see below). Hover any icon button for its name and, where it has one, its shortcut.
 
 | Shortcut | Does | Where |
 |---|---|---|
@@ -73,8 +74,14 @@ The two buttons at the top right switch between covers and a list, which also sh
 book's source folders and last export. Search matches a book's name or any of its folder
 names; the sort menu orders by last edited, date created, or name.
 
-Click a book to open it. Right-click it, or hover and click **…**, for **Open**, **Rename**
-and **Delete…**. Rename edits the name in place: Return saves, Escape cancels. Deleting asks
+Click a book to open it. Right-click it, or hover and click **…**, for **Open**, **Add to
+favourites** (or **Remove from favourites**), **Rename…**, **Show photos in Finder** (a
+submenu naming each folder when the book draws on several), **Show export in Finder** (only
+once the book has been exported) and **Delete…**. A starred book shows a star beside its name
+and sits in the sidebar's **Favourites** group; starring does not change its last-edited
+date. In the library, Rename edits the name in place: Return saves, Escape cancels. From the
+sidebar it opens a small dialog instead, and renaming the book you have open updates its
+title in the editor too. Deleting the book you have open returns you to the library. Deleting asks
 first, then removes the book, with a notice offering **Undo**. A deleted book is kept for 30
 days before its layout, your include/exclude decisions and its export history are gone for
 good, though only that notice can bring it back. Files you already exported to disk are not

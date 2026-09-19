@@ -62,6 +62,7 @@ pub fn run() {
             commands::delete_project,
             commands::restore_project,
             commands::rename_project,
+            commands::set_favourite,
             commands::reveal_in_finder,
         ])
         .run(tauri::generate_context!())

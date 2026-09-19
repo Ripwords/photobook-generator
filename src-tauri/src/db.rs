@@ -138,6 +138,14 @@ impl Db {
         if !has_deleted_at {
             self.conn.execute("ALTER TABLE projects ADD COLUMN deleted_at INTEGER", [])?;
         }
+        let has_favourite: bool = self
+            .conn
+            .prepare("SELECT 1 FROM pragma_table_info('projects') WHERE name = 'favourite'")?
+            .exists([])?;
+        if !has_favourite {
+            self.conn
+                .execute("ALTER TABLE projects ADD COLUMN favourite INTEGER NOT NULL DEFAULT 0", [])?;
+        }
         Ok(())
     }
 
@@ -402,7 +410,7 @@ impl Db {
     /// Summaries for every saved project, newest-updated first.
     pub fn list_projects(&self) -> rusqlite::Result<Vec<ProjectSummary>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, source_folder, page_count, photo_count, created_at, updated_at
+            "SELECT id, name, source_folder, page_count, photo_count, created_at, updated_at, favourite
              FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC",
         )?;
         let rows = stmt
@@ -416,6 +424,7 @@ impl Db {
                     photo_count: row.get(4)?,
                     created_at: row.get(5)?,
                     updated_at: row.get(6)?,
+                    favourite: row.get(7)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -468,6 +477,16 @@ impl Db {
         self.conn.execute(
             "UPDATE projects SET name = ?1, updated_at = unixepoch() WHERE id = ?2",
             rusqlite::params![name, id],
+        )
+    }
+
+    /// Stars or unstars a project. Returns the rows affected, 0 for an id
+    /// that is gone or in the trash. `updated_at` is left alone, unlike
+    /// `rename_project`: starring files a book, it does not edit it.
+    pub fn set_favourite(&self, id: i64, favourite: bool) -> rusqlite::Result<usize> {
+        self.conn.execute(
+            "UPDATE projects SET favourite = ?1 WHERE id = ?2 AND deleted_at IS NULL",
+            rusqlite::params![favourite, id],
         )
     }
 
@@ -617,6 +636,37 @@ mod tests {
         assert_eq!(db.list_projects().unwrap().len(), 1, "an existing book is not deleted");
         db.delete_project(1).unwrap();
         assert!(db.list_projects().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_adds_favourite_to_a_database_that_predates_it() {
+        let dir = std::env::temp_dir().join(format!("pbg-favourite-migrate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("old.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE projects (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+                     source_folder TEXT NOT NULL, page_count INTEGER NOT NULL,
+                     photo_count INTEGER NOT NULL, book_json TEXT NOT NULL,
+                     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                     updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                     deleted_at INTEGER);
+                 INSERT INTO projects (name, source_folder, page_count, photo_count, book_json)
+                     VALUES ('Old', '/tmp/old', 2, 4, '{}');",
+            )
+            .unwrap();
+        }
+
+        let db = Db::open(&path).unwrap();
+        db.migrate().unwrap();
+
+        assert!(!db.list_projects().unwrap()[0].favourite, "an existing book starts unfavourited");
+        db.set_favourite(1, true).unwrap();
+        assert!(db.list_projects().unwrap()[0].favourite);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1077,6 +1127,36 @@ mod tests {
 
         let ids: Vec<i64> = db.list_projects().unwrap().iter().map(|s| s.id).collect();
         assert_eq!(ids, vec![newer, older]);
+    }
+
+    /// Favouriting files a book, it does not edit it: the list's "newest
+    /// first" order must not move a book just because it was starred.
+    #[test]
+    fn set_favourite_persists_without_touching_updated_at() {
+        let db = Db::open_in_memory().unwrap();
+        let kyoto = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
+        let bali = db.save_project("Bali", "/tmp/bali", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
+        db.conn.execute("UPDATE projects SET updated_at = 100", []).unwrap();
+
+        assert_eq!(db.set_favourite(kyoto, true).unwrap(), 1);
+
+        let listed = db.list_projects().unwrap();
+        let find = |id: i64| listed.iter().find(|s| s.id == id).unwrap();
+        assert!(find(kyoto).favourite);
+        assert!(!find(bali).favourite, "only the named book is starred");
+        assert_eq!(find(kyoto).updated_at, 100);
+
+        db.set_favourite(kyoto, false).unwrap();
+        assert!(!db.list_projects().unwrap().iter().any(|s| s.favourite));
+    }
+
+    #[test]
+    fn set_favourite_of_an_unknown_or_deleted_id_affects_no_rows() {
+        let db = Db::open_in_memory().unwrap();
+        let id = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
+        db.delete_project(id).unwrap();
+        assert_eq!(db.set_favourite(id, true).unwrap(), 0);
+        assert_eq!(db.set_favourite(9999, true).unwrap(), 0);
     }
 
     #[test]

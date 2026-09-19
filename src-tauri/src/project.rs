@@ -113,6 +113,7 @@ pub struct ProjectSummary {
     pub photo_count: i64,
     pub created_at: i64,
     pub updated_at: i64,
+    pub favourite: bool,
 }
 
 /// Page count and photo count, denormalised from a `Book` into the

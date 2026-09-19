@@ -376,6 +376,13 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
       return undefined as T;
     }
 
+    case "set_favourite": {
+      const project = projects.find((p) => p.id === (args?.id as number));
+      if (!project) throw new Error(`project ${args?.id as number} no longer exists`);
+      project.favourite = args?.favourite as boolean;
+      return undefined as T;
+    }
+
     case "delete_project": {
       const index = projects.findIndex((p) => p.id === (args?.id as number));
       if (index === -1) throw new Error("that photobook is no longer saved");

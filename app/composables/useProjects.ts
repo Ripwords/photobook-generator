@@ -86,5 +86,29 @@ export function useProjects() {
     });
   }
 
-  return { projects, busy, error, refresh, reload, deleteProject, restoreProject, renameProject };
+  /** Stars or unstars a saved project and refreshes the list. True if it took. */
+  async function setFavourite(id: number, favourite: boolean): Promise<boolean> {
+    return guard(async () => {
+      await invoke<void>("set_favourite", { id, favourite });
+      await refresh();
+    });
+  }
+
+  /** Selects `path` in Finder. Changes nothing, so a failure only sets `error`. */
+  async function reveal(path: string) {
+    await guard(() => invoke<void>("reveal_in_finder", { path }));
+  }
+
+  return {
+    projects,
+    busy,
+    error,
+    refresh,
+    reload,
+    deleteProject,
+    restoreProject,
+    renameProject,
+    setFavourite,
+    reveal,
+  };
 }

@@ -10,6 +10,7 @@
     "photoCount": 24,
     "createdAt": 1755100000,
     "updatedAt": 1755103600,
+    "favourite": true,
     "lastExport": {
       "at": 1755103600,
       "outputDir": "/Users/jj/Desktop/photobook-export",
@@ -32,6 +33,7 @@
     "photoCount": 54,
     "createdAt": 1755200000,
     "updatedAt": 1755200000,
+    "favourite": false,
     "lastExport": null,
     "coverThumbnails": []
   }

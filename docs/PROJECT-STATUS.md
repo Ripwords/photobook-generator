@@ -24,6 +24,43 @@ deliberately-parked decision that this file is the only surviving record of.**
 
 ---
 
+## What changed on 2026-09-19: a book's right-click menu, and favourites
+
+Sidebar books had no actions at all. They now take a right-click menu, and so do library
+cards (the card's **…** button opens the same menu). Both are built by one pure function,
+`bookActions(project, handlers, busy)` in `app/types/library.ts`, so the two surfaces cannot
+drift apart. The menu has three groups: Open, Add/Remove from favourites and Rename… in the
+first; Show photos in Finder (a submenu of folder names when a book has several) and Show
+export in Finder (only when `lastExport` exists) in the second; Delete…, marked `error`, alone
+in the last. While `busy` is set, every item that changes a book is disabled. The two reveal
+items stay enabled.
+
+- **Favourites are a column.** `projects.favourite INTEGER NOT NULL DEFAULT 0` is added by
+  `migrate()` when it is missing. `Db::set_favourite` deliberately leaves `updated_at` alone,
+  because starring is not an edit and must not reorder "Last edited". It also refuses deleted
+  rows, so the `set_favourite` command errors with "project N no longer exists" rather than
+  succeeding silently. `ProjectListItem.favourite` is on the wire and in
+  `tests/fixtures/wire/project-list.json`.
+- **The sidebar splits.** `sidebarSections` returns favourites and others, each keeping the
+  list's order. An empty Favourites group is hidden.
+- **Sidebar rename and delete are dialogs** (`RenameBookDialog.vue`, `DeleteBookDialog.vue`),
+  because the sidebar row is too narrow to edit in place. Renaming the book open in the editor
+  updates the editor's title through the new `listedName` prop. Deleting it returns to the
+  library. A failed action outside the library now surfaces as a toast, because the library's
+  inline error is not on screen there.
+- **The delete dialog's copy was wrong, and is fixed.** It said deleting was permanent. It
+  has not been since trash and Undo landed (`0477f4e`).
+- **Icons named only in `.ts` files were never bundled.** Nuxt Icon's client-bundle scan reads
+  `.vue` files by default, so `i-lucide-star-off` and `i-lucide-folder-output`, which appear
+  only in `library.ts`, failed to load at runtime. `nuxt.config.ts` now scans
+  `app/**/*.{vue,ts}`. Any future icon named in a `.ts` file relies on this.
+
+Mutation checks, each of which turned a test red. In Rust: bumping `updated_at` in
+`set_favourite`; dropping its `deleted_at IS NULL` guard; skipping the migration; updating
+every row. In TypeScript: always offering "Add to favourites"; revealing only the first folder;
+not splitting the sidebar; always showing the export item; not refreshing the list after
+starring; ignoring `busy`.
+
 ## What changed on 2026-09-19: selection variety
 
 Books were full of near-identical frames. On Iceland (2783 photos, 40 pages), all 19

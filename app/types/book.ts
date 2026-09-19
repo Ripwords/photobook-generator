@@ -129,6 +129,8 @@ export interface ProjectListItem {
   photoCount: number;
   createdAt: number;
   updatedAt: number;
+  /** Starred by the user; the sidebar lists these on their own. */
+  favourite: boolean;
   lastExport: ExportSummary | null;
   /** Up to four thumbnail paths for the card cover, first placed photo first. */
   coverThumbnails: string[];

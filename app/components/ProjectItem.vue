@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { ContextMenuItem, DropdownMenuItem } from "@nuxt/ui";
 import { folderListLabel, lastExportedOn, type ProjectListItem } from "~/types/book";
+import { bookActions } from "~/types/library";
 
 /**
  * One saved photobook in the library, as a cover card or as a list row.
@@ -26,6 +26,8 @@ const emit = defineEmits<{
   open: [id: number];
   rename: [id: number, name: string];
   delete: [id: number];
+  favourite: [id: number, favourite: boolean];
+  reveal: [path: string];
 }>();
 
 /**
@@ -76,11 +78,6 @@ function commitEditing() {
 
 const confirmOpen = ref(false);
 
-function confirmDelete() {
-  confirmOpen.value = false;
-  emit("delete", project.id);
-}
-
 /**
  * A click on the book opens it, but not while the name field is live and not
  * while another action is in flight.
@@ -103,26 +100,19 @@ function openFromCard() {
   emit("open", project.id);
 }
 
-const actions = computed<(DropdownMenuItem & ContextMenuItem)[][]>(() => [
-  [
+const actions = computed(() =>
+  bookActions(
+    project,
     {
-      label: "Open",
-      icon: "i-lucide-book-open",
-      disabled: busy,
-      onSelect: () => emit("open", project.id),
+      open: (id) => emit("open", id),
+      favourite: (id, favourite) => emit("favourite", id, favourite),
+      rename: startEditing,
+      reveal: (path) => emit("reveal", path),
+      delete: () => (confirmOpen.value = true),
     },
-    { label: "Rename", icon: "i-lucide-pencil", disabled: busy, onSelect: startEditing },
-  ],
-  [
-    {
-      label: "Delete…",
-      icon: "i-lucide-trash-2",
-      color: "error",
-      disabled: busy,
-      onSelect: () => (confirmOpen.value = true),
-    },
-  ],
-]);
+    busy,
+  ),
+);
 
 /**
  * A menu hands focus back to whatever opened it as it closes. After "Rename"
@@ -192,7 +182,16 @@ const keepFocus = { onCloseAutoFocus: (event: Event) => event.preventDefault() }
               @keyup.escape="cancelEditing"
               @blur="commitEditing"
             />
-            <p v-else class="truncate text-sm font-medium text-highlighted">{{ project.name }}</p>
+            <p v-else class="flex items-center gap-1.5 text-sm font-medium text-highlighted">
+              <span class="truncate">{{ project.name }}</span>
+              <UIcon
+                v-if="project.favourite"
+                name="i-lucide-star"
+                class="size-3.5 shrink-0 text-muted"
+                role="img"
+                aria-label="Favourite"
+              />
+            </p>
             <p class="truncate text-xs text-muted tabular-nums">
               {{ project.pageCount }} pages, {{ project.photoCount }} photos
             </p>
@@ -233,28 +232,6 @@ const keepFocus = { onCloseAutoFocus: (event: Event) => event.preventDefault() }
       </article>
     </UContextMenu>
 
-    <UModal
-      v-model:open="confirmOpen"
-      :title="`Delete “${project.name}”?`"
-      :ui="{ footer: 'justify-end' }"
-    >
-      <template #body>
-        <div class="space-y-3 text-sm">
-          <p class="text-default">
-            This permanently deletes <span class="font-medium">{{ project.name }}</span
-            >'s page layout, your include/exclude decisions, and its export history from
-            PhotobookGen. This cannot be undone.
-          </p>
-          <p class="text-muted">
-            Files you already exported to disk are not touched, and the photo analysis cache is
-            kept -- reopening this folder later will not re-scan your photos.
-          </p>
-        </div>
-      </template>
-      <template #footer>
-        <UButton color="neutral" variant="outline" @click="confirmOpen = false">Cancel</UButton>
-        <UButton color="error" @click="confirmDelete">Delete photobook</UButton>
-      </template>
-    </UModal>
+    <DeleteBookDialog v-model:open="confirmOpen" :name="project.name" @confirm="emit('delete', project.id)" />
   </li>
 </template>

@@ -15,6 +15,8 @@ const emit = defineEmits<{
   open: [id: number];
   rename: [id: number, name: string];
   delete: [id: number];
+  favourite: [id: number, favourite: boolean];
+  reveal: [path: string];
 }>();
 
 const query = ref("");
@@ -171,6 +173,8 @@ const steps = [
           @open="emit('open', $event)"
           @rename="(id, name) => emit('rename', id, name)"
           @delete="emit('delete', $event)"
+          @favourite="(id, favourite) => emit('favourite', id, favourite)"
+          @reveal="emit('reveal', $event)"
         />
       </ul>
     </div>
