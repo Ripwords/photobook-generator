@@ -5,7 +5,8 @@ import type { Screen } from "~/types/navigation";
 import { shortcutCombo } from "~/types/shortcuts";
 import type { AnalysisJob } from "~/composables/useAnalysisJobs";
 
-const { projects, busy, error, reload, deleteProject, renameProject } = useProjects();
+const { projects, busy, error, reload, deleteProject, restoreProject, renameProject } =
+  useProjects();
 const { jobs, find, startJob, jobForProject, onSettled, restoreDrafts, flushDrafts } =
   useAnalysisJobs();
 
@@ -38,6 +39,25 @@ function onStart(book: { name: string; folders: string[] }) {
 
 function openBook(id: number) {
   screen.value = { kind: "editor", projectId: id };
+}
+
+// Deleting asks first (`ProjectItem`), and can still be undone from here.
+async function deleteBook(id: number) {
+  const name = projects.value.find((project) => project.id === id)?.name ?? "Photobook";
+  if (!(await deleteProject(id))) return;
+  toast.add({
+    title: `Deleted “${name}”`,
+    icon: "i-lucide-trash-2",
+    color: "neutral",
+    actions: [
+      {
+        label: "Undo",
+        color: "neutral",
+        variant: "outline",
+        onClick: () => void restoreProject(id),
+      },
+    ],
+  });
 }
 
 function toLibrary() {
@@ -144,7 +164,7 @@ onBeforeUnmount(() => {
         @new="newBook"
         @open="openBook"
         @rename="renameProject"
-        @delete="deleteProject"
+        @delete="deleteBook"
       />
       <SelectPhotos
         v-else-if="selectedJob"

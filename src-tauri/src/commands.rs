@@ -2147,24 +2147,44 @@ pub async fn edit_book(
     .map_err(|e| e.to_string())?
 }
 
-/// Removes a saved project: its row, its export history, its photo list and
-/// the user's include/exclude decisions -- see `Db::delete_project`.
+/// How long a deleted book stays restorable before it is removed for good.
+const TRASH_SECONDS: i64 = 30 * 24 * 60 * 60;
+
+/// Moves a saved project to the trash (see `Db::delete_project`), so the
+/// notice after a delete can offer Undo, and clears anything trashed more
+/// than `TRASH_SECONDS` ago.
 ///
-/// Deliberately does NOT touch anything outside those four tables. The
-/// `features` analysis cache is keyed by content hash and shared across every
-/// project, not owned by this one -- it is the expensive thing (a full Apple
-/// Vision pass over every photo), and `Db::delete_project` never reaches into
-/// it. Any files this project exported live in a folder the user chose, and
-/// may already be uploaded to a printer -- removing a book from the app must
-/// not reach onto their disk, and nothing here does either.
+/// Deliberately does NOT touch anything outside the project's own tables.
+/// The `features` analysis cache is keyed by content hash and shared across
+/// every project -- it is the expensive thing (a full Apple Vision pass over
+/// every photo). Any files this project exported live in a folder the user
+/// chose, and may already be uploaded to a printer -- removing a book from
+/// the app must not reach onto their disk, and nothing here does either.
 #[tauri::command]
 pub async fn delete_project(app: AppHandle, id: i64) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
-        db.delete_project(id).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    with_db(app, move |db| trash_project(db, id, now)).await
+}
+
+/// `delete_project` without the `AppHandle`: trash `id`, then purge what
+/// has been in the trash longer than `TRASH_SECONDS` as of `now`.
+pub(crate) fn trash_project(db: &Db, id: i64, now: i64) -> rusqlite::Result<()> {
+    db.delete_project(id)?;
+    db.purge_deleted(now - TRASH_SECONDS)?;
+    Ok(())
+}
+
+/// Takes a deleted project back out of the trash: the Undo on the notice
+/// after a delete.
+#[tauri::command]
+pub async fn restore_project(app: AppHandle, id: i64) -> Result<(), String> {
+    let restored = with_db(app, move |db| db.restore_project(id)).await?;
+    if restored == 0 {
+        return Err(format!("project {id} no longer exists"));
+    }
+    Ok(())
 }
 
 /// Renames a saved project. The name is set once at generate time from the
@@ -2208,6 +2228,27 @@ pub async fn reveal_in_finder(path: String) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deleting_a_book_clears_only_what_has_been_in_the_trash_over_thirty_days() {
+        let db = Db::open_in_memory().unwrap();
+        let book = crate::book::pace::Book { controls: Default::default(), seed: 0, dropped: 0, pages: vec![] };
+        let save = |name: &str| db.save_project(name, "/tmp/x", &book, &[], &Overrides::new()).unwrap();
+        let (stale, fresh, now_deleted) = (save("Stale"), save("Fresh"), save("Now"));
+        let now = 10_000_000;
+        let day = 24 * 60 * 60;
+        for (id, at) in [(stale, now - 31 * day), (fresh, now - 29 * day)] {
+            db.conn
+                .execute("UPDATE projects SET deleted_at = ?1 WHERE id = ?2", rusqlite::params![at, id])
+                .unwrap();
+        }
+
+        trash_project(&db, now_deleted, now).unwrap();
+
+        assert_eq!(db.restore_project(stale).unwrap(), 0, "over thirty days: gone");
+        assert_eq!(db.restore_project(fresh).unwrap(), 1, "under thirty days: restorable");
+        assert_eq!(db.restore_project(now_deleted).unwrap(), 1, "the book just deleted is restorable");
+    }
+
     use super::*;
 
     #[test]

@@ -59,6 +59,17 @@ harness (`bun run ui:mock`) covers the flow end to end in light and dark.
    saving live overrides, dropping restored decisions, keeping a colliding id, never
    deleting.
 
+   **A deleted book can be undone (2026-09-19).** `projects.deleted_at` (added by
+   `migrate()` with `ALTER TABLE` when missing) makes `delete_project` a move to the trash:
+   `list_projects` and `load_project` skip trashed rows, `restore_project` clears the
+   column, and each delete also purges anything trashed over 30 days ago
+   (`trash_project`, `TRASH_SECONDS`). The old hard delete is `Db::purge_project`, and its
+   tests moved with it. The library's delete notice has **Undo**; the confirmation stays.
+   The **Update** path's delete of the superseded book is a trash move too, with no Undo
+   offered. Mutation-checked: listing or loading trashed rows, purging past the cutoff,
+   a no-op delete, skipping the migration, a sign flip on the cutoff, a restore that does
+   not refresh the list, and a failed delete reported as success each fail a test.
+
 4. **Speed, measured on a real folder** (27 camera JPEGs, 83 MB, M-series with 4P+6E cores,
    release build, median of runs from `cargo run --release --example analyze_bench`).
    Each row is one commit; a change is kept only if it wins here.

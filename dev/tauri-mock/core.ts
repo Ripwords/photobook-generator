@@ -65,6 +65,8 @@ const photos: AnalyzedPhoto[] = mockPhotos();
 const projects: ProjectListItem[] = (structuredClone(listFixture) as ProjectListItem[]).map(
   (project, index) => ({ ...project, coverThumbnails: coverFrom(index * 9) }),
 );
+/** Deleted books and where they were listed, for `restore_project`. */
+const trash: { project: ProjectListItem; index: number }[] = [];
 /** Decisions each saved project was generated with, so reopening restores them. */
 const savedOverrides = new Map<number, PhotoOverrides>();
 let nextProjectId = 100;
@@ -325,7 +327,14 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
     case "delete_project": {
       const index = projects.findIndex((p) => p.id === (args?.id as number));
       if (index === -1) throw new Error("that photobook is no longer saved");
-      projects.splice(index, 1);
+      trash.push(...projects.splice(index, 1).map((project) => ({ project, index })));
+      return undefined as T;
+    }
+
+    case "restore_project": {
+      const at = trash.findIndex((t) => t.project.id === (args?.id as number));
+      if (at === -1) throw new Error(`project ${args?.id as number} no longer exists`);
+      for (const { project, index } of trash.splice(at, 1)) projects.splice(index, 0, project);
       return undefined as T;
     }
 

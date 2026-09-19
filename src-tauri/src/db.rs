@@ -130,7 +130,15 @@ impl Db {
                  path       TEXT NOT NULL,
                  PRIMARY KEY (project_id, position)
              );",
-        )
+        )?;
+        let has_deleted_at: bool = self
+            .conn
+            .prepare("SELECT 1 FROM pragma_table_info('projects') WHERE name = 'deleted_at'")?
+            .exists([])?;
+        if !has_deleted_at {
+            self.conn.execute("ALTER TABLE projects ADD COLUMN deleted_at INTEGER", [])?;
+        }
+        Ok(())
     }
 
     pub fn get_features(&self, hash: &str) -> rusqlite::Result<Option<String>> {
@@ -294,7 +302,7 @@ impl Db {
             .conn
             .query_row(
                 "SELECT name, source_folder, book_json, created_at, updated_at
-                 FROM projects WHERE id = ?1",
+                 FROM projects WHERE id = ?1 AND deleted_at IS NULL",
                 rusqlite::params![id],
                 |row| {
                     let name: String = row.get(0)?;
@@ -395,7 +403,7 @@ impl Db {
     pub fn list_projects(&self) -> rusqlite::Result<Vec<ProjectSummary>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, source_folder, page_count, photo_count, created_at, updated_at
-             FROM projects ORDER BY updated_at DESC",
+             FROM projects WHERE deleted_at IS NULL ORDER BY updated_at DESC",
         )?;
         let rows = stmt
             .query_map([], |row| {
@@ -463,14 +471,42 @@ impl Db {
         )
     }
 
-    /// Removes a project, every export row recorded against it, its photo
-    /// list, its folder list and the user's overrides for it. The deletes are explicit rather than relying on a
-    /// foreign-key cascade (neither child table declares
-    /// `ON DELETE CASCADE`) -- the child rows must go first, since
-    /// `migrate()` turns `PRAGMA foreign_keys` on for this connection and
-    /// would otherwise reject deleting a `projects` row they still
-    /// reference.
+    /// Moves a project to the trash: it is no longer listed or loadable, but
+    /// nothing is removed, so `restore_project` can undo it until
+    /// `purge_deleted` clears it.
     pub fn delete_project(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE projects SET deleted_at = unixepoch() WHERE id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![id],
+        )?;
+        Ok(())
+    }
+
+    /// Takes a project back out of the trash. Returns the rows affected, 0
+    /// once it has been purged.
+    pub fn restore_project(&self, id: i64) -> rusqlite::Result<usize> {
+        self.conn.execute("UPDATE projects SET deleted_at = NULL WHERE id = ?1", rusqlite::params![id])
+    }
+
+    /// Permanently removes every project trashed at or before `before`
+    /// (unix seconds). Returns how many.
+    pub fn purge_deleted(&self, before: i64) -> rusqlite::Result<usize> {
+        let ids: Vec<i64> = self
+            .conn
+            .prepare("SELECT id FROM projects WHERE deleted_at <= ?1")?
+            .query_map(rusqlite::params![before], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        for &id in &ids {
+            self.purge_project(id)?;
+        }
+        Ok(ids.len())
+    }
+
+    /// Removes a project for good, with every export row recorded against
+    /// it, its photo list, its folder list and the user's overrides for it.
+    /// The child rows go first: `migrate()` turns `PRAGMA foreign_keys` on,
+    /// and no child table declares `ON DELETE CASCADE`.
+    pub(crate) fn purge_project(&self, id: i64) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM project_exports WHERE project_id = ?1", rusqlite::params![id])?;
         self.conn.execute("DELETE FROM project_photos WHERE project_id = ?1", rusqlite::params![id])?;
         self.conn.execute(
@@ -485,6 +521,105 @@ impl Db {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_deleted_project_is_neither_listed_nor_loadable() {
+        let db = Db::open_in_memory().unwrap();
+        let keep = db.save_project("Keep", "/tmp/keep", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
+        let gone = db.save_project("Gone", "/tmp/gone", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
+
+        db.delete_project(gone).unwrap();
+
+        let ids: Vec<i64> = db.list_projects().unwrap().iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec![keep]);
+        assert!(db.load_project(gone).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_restored_project_comes_back_whole() {
+        let db = Db::open_in_memory().unwrap();
+        let mut overrides = Overrides::new();
+        overrides.set("hz22", Override::Include);
+        let id = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &fixture_hashes(), &overrides).unwrap();
+        let before = db.load_project(id).unwrap().unwrap();
+
+        db.delete_project(id).unwrap();
+        assert_eq!(db.restore_project(id).unwrap(), 1);
+
+        let after = db.load_project(id).unwrap().expect("restored project loads");
+        assert_eq!(after.photo_hashes, before.photo_hashes);
+        assert_eq!(after.overrides, before.overrides);
+        assert_eq!(db.list_projects().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn restoring_a_purged_project_restores_nothing() {
+        let db = Db::open_in_memory().unwrap();
+        let id = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
+        db.delete_project(id).unwrap();
+        db.purge_project(id).unwrap();
+
+        assert_eq!(db.restore_project(id).unwrap(), 0);
+    }
+
+    #[test]
+    fn purging_removes_only_projects_deleted_before_the_cutoff() {
+        let db = Db::open_in_memory().unwrap();
+        let save = |name: &str| {
+            db.save_project(name, "/tmp/x", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap()
+        };
+        let old = save("Deleted long ago");
+        let recent = save("Deleted just now");
+        let live = save("Never deleted");
+        db.delete_project(old).unwrap();
+        db.delete_project(recent).unwrap();
+        db.conn.execute("UPDATE projects SET deleted_at = 100 WHERE id = ?1", rusqlite::params![old]).unwrap();
+        db.conn.execute("UPDATE projects SET deleted_at = 300 WHERE id = ?1", rusqlite::params![recent]).unwrap();
+        db.conn.execute("UPDATE projects SET updated_at = 0, created_at = 0 WHERE id = ?1", rusqlite::params![live]).unwrap();
+
+        assert_eq!(db.purge_deleted(200).unwrap(), 1);
+
+        let left: Vec<i64> = db
+            .conn
+            .prepare("SELECT id FROM projects ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(left, vec![recent, live]);
+        assert_eq!(db.restore_project(recent).unwrap(), 1, "a recent delete can still be undone");
+    }
+
+    #[test]
+    fn migrate_adds_deleted_at_to_a_database_that_predates_it() {
+        let dir = std::env::temp_dir().join(format!("pbg-deleted-at-migrate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("old.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE projects (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+                     source_folder TEXT NOT NULL, page_count INTEGER NOT NULL,
+                     photo_count INTEGER NOT NULL, book_json TEXT NOT NULL,
+                     created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                     updated_at INTEGER NOT NULL DEFAULT (unixepoch()));
+                 INSERT INTO projects (name, source_folder, page_count, photo_count, book_json)
+                     VALUES ('Old', '/tmp/old', 2, 4, '{}');",
+            )
+            .unwrap();
+        }
+
+        let db = Db::open(&path).unwrap();
+        db.migrate().unwrap();
+
+        assert_eq!(db.list_projects().unwrap().len(), 1, "an existing book is not deleted");
+        db.delete_project(1).unwrap();
+        assert!(db.list_projects().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn saved_drafts_come_back_in_id_order() {
         let db = Db::open_in_memory().unwrap();
@@ -604,7 +739,7 @@ mod tests {
         let legacy = db.load_project(id).unwrap().unwrap();
         assert_eq!(legacy.source_folders, vec!["/Users/j/Photos/kyoto".to_string()]);
 
-        db.delete_project(id).unwrap();
+        db.purge_project(id).unwrap();
         let left: i64 = db
             .conn
             .query_row("SELECT COUNT(*) FROM project_folders WHERE project_id = ?1", rusqlite::params![id], |r| r.get(0))
@@ -860,7 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_project_removes_the_users_overrides_too() {
+    fn purge_project_removes_the_users_overrides_too() {
         let db = Db::open_in_memory().unwrap();
         let mut overrides = Overrides::new();
         overrides.set("hz22", Override::Include);
@@ -881,14 +1016,14 @@ mod tests {
         };
         assert_eq!(rows(gone), 1, "sanity: the overrides were written");
 
-        db.delete_project(gone).unwrap();
+        db.purge_project(gone).unwrap();
 
         assert_eq!(rows(gone), 0);
         assert_eq!(rows(keep), 1, "and only that project's");
     }
 
     #[test]
-    fn delete_project_removes_its_photo_list_too() {
+    fn purge_project_removes_its_photo_list_too() {
         let db = Db::open_in_memory().unwrap();
         let keep =
             db.save_project("Keep", "/tmp/keep", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
@@ -906,7 +1041,7 @@ mod tests {
         };
         assert_eq!(photo_rows(gone), 7, "sanity: the photo list was written");
 
-        db.delete_project(gone).unwrap();
+        db.purge_project(gone).unwrap();
 
         assert_eq!(photo_rows(gone), 0, "the deleted project's photo list must go with it");
         assert_eq!(photo_rows(keep), 7, "and only that project's");
@@ -970,7 +1105,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_project_removes_the_project_and_its_export_rows_only() {
+    fn purge_project_removes_the_project_and_its_export_rows_only() {
         let db = Db::open_in_memory().unwrap();
         let keep = db.save_project("Keep", "/tmp/keep", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
         let gone = db.save_project("Gone", "/tmp/gone", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
@@ -991,7 +1126,7 @@ mod tests {
         assert_eq!(count("projects"), 2, "sanity: both projects present before delete");
         assert_eq!(count("project_exports"), 2, "sanity: both export rows present before delete");
 
-        db.delete_project(gone).unwrap();
+        db.purge_project(gone).unwrap();
 
         assert_eq!(count("projects"), 1, "only the deleted project should be gone");
         assert_eq!(count("project_exports"), 1, "only the deleted project's export row should be gone");
@@ -1088,7 +1223,7 @@ mod tests {
     /// time the same folder (or an overlapping one) is opened, which is
     /// exactly the cost the user objected to.
     #[test]
-    fn delete_project_leaves_the_features_cache_untouched() {
+    fn purge_project_leaves_the_features_cache_untouched() {
         let db = Db::open_in_memory().unwrap();
         db.put_features("hz22", "/tmp/kyoto/a.jpg", r#"{"v":1}"#).unwrap();
         db.put_features("hb33", "/tmp/kyoto/b.jpg", r#"{"v":2}"#).unwrap();
@@ -1096,7 +1231,7 @@ mod tests {
             .save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &fixture_hashes(), &Overrides::new())
             .unwrap();
 
-        db.delete_project(id).unwrap();
+        db.purge_project(id).unwrap();
 
         assert_eq!(
             db.get_features("hz22").unwrap(),
@@ -1113,7 +1248,7 @@ mod tests {
     /// against its own tables, so this proves that by observing the real
     /// world, not by reading the implementation.
     #[test]
-    fn delete_project_does_not_touch_files_on_disk() {
+    fn purge_project_does_not_touch_files_on_disk() {
         let db = Db::open_in_memory().unwrap();
         let dir = std::env::temp_dir()
             .join(format!("pbg-delete-project-fs-test-{}", std::process::id()));
@@ -1135,7 +1270,7 @@ mod tests {
         )
         .unwrap();
 
-        db.delete_project(id).unwrap();
+        db.purge_project(id).unwrap();
 
         assert!(
             exported_file.exists(),

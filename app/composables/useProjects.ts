@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { ref } from "vue";
 import type { ProjectListItem } from "~/types/book";
 
 /**
@@ -25,13 +26,16 @@ export function useProjects() {
     projects.value = await invoke<ProjectListItem[]>("list_projects");
   }
 
-  async function guard(work: () => Promise<void>) {
+  /** Runs `work`, reporting a failure through `error`. True if it succeeded. */
+  async function guard(work: () => Promise<void>): Promise<boolean> {
     busy.value = true;
     error.value = null;
     try {
       await work();
+      return true;
     } catch (e) {
       error.value = String(e);
+      return false;
     } finally {
       busy.value = false;
     }
@@ -53,16 +57,23 @@ export function useProjects() {
   }
 
   /**
-   * Deletes a saved project and refreshes the list. Irreversible: the
-   * project's layout, include/exclude decisions and export history are gone
-   * from the app, though the confirmation the caller shows before this runs
-   * is what actually explains that -- this function does not gate on
-   * anything itself. Exported files on disk and the shared analysis cache are
-   * untouched; see `Db::delete_project`'s doc comment on the Rust side.
+   * Moves a saved project to the trash and refreshes the list. True if it
+   * went, which is when the caller offers Undo (`restoreProject`); the
+   * trash is emptied of books deleted over 30 days ago. Exported files on
+   * disk and the shared analysis cache are untouched; see the
+   * `delete_project` command on the Rust side.
    */
-  async function deleteProject(id: number) {
-    await guard(async () => {
+  async function deleteProject(id: number): Promise<boolean> {
+    return guard(async () => {
       await invoke<void>("delete_project", { id });
+      await refresh();
+    });
+  }
+
+  /** Takes a deleted project back out of the trash and refreshes the list. */
+  async function restoreProject(id: number) {
+    await guard(async () => {
+      await invoke<void>("restore_project", { id });
       await refresh();
     });
   }
@@ -75,5 +86,5 @@ export function useProjects() {
     });
   }
 
-  return { projects, busy, error, refresh, reload, deleteProject, renameProject };
+  return { projects, busy, error, refresh, reload, deleteProject, restoreProject, renameProject };
 }

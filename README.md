@@ -75,9 +75,11 @@ names; the sort menu orders by last edited, date created, or name.
 
 Click a book to open it. Right-click it, or hover and click **…**, for **Open**, **Rename**
 and **Delete…**. Rename edits the name in place: Return saves, Escape cancels. Deleting asks
-first, then removes the book's layout, your include/exclude decisions and its export
-history; files you already exported to disk are not touched, and neither is the photo
-analysis cache, so reopening those folders later will not re-scan your photos.
+first, then removes the book, with a notice offering **Undo**. A deleted book is kept for 30
+days before its layout, your include/exclude decisions and its export history are gone for
+good, though only that notice can bring it back. Files you already exported to disk are not
+touched, and neither is the photo analysis cache, so reopening those folders later will not
+re-scan your photos.
 
 With no books yet, the library is a short explanation of the three steps and a **New
 photobook** button, which does the same as the one in the sidebar.
