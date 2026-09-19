@@ -375,6 +375,7 @@ const gutter = computed(() => rectStyle(shown.value[side].gutter));
           v-if="box.src"
           :src="box.src"
           :alt="`Photo on page ${page.number}, slot ${box.z}`"
+          draggable="false"
           loading="lazy"
           class="absolute top-0 left-0"
           :style="box.crop"
