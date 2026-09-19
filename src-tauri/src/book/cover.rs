@@ -102,6 +102,14 @@ impl Cover {
     }
 }
 
+/// How a message names a side: "front cover" or "back cover".
+pub fn side_name(side: CoverSide) -> &'static str {
+    match side {
+        CoverSide::Front => "front cover",
+        CoverSide::Back => "back cover",
+    }
+}
+
 /// The photo's resolution over the panel's full printed width.
 pub fn effective_dpi(spec: &PrintSpec, photo: &Photo, crop: &Rect) -> f64 {
     photo.width as f64 * crop.w / spec.cover_panel_w_in()
@@ -118,6 +126,12 @@ pub fn rejects(spec: &PrintSpec, photo: &Photo, crop: &Rect, side: CoverSide) ->
     if effective_dpi(spec, photo, crop) < spec.min_dpi() {
         return Some(Rejection::TooLowResolution);
     }
+    face_rejection(spec, photo, crop, side)
+}
+
+/// The face half of `rejects`. Pre-flight grades resolution itself, with a
+/// warn band this refusal has no room for.
+pub fn face_rejection(spec: &PrintSpec, photo: &Photo, crop: &Rect, side: CoverSide) -> Option<Rejection> {
     let visible = spec.cover_visible_rect(side);
     for face in &photo.faces {
         if !crop.contains(&face.box_) {

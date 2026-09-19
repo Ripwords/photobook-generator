@@ -229,13 +229,6 @@ pub enum EditError {
     NoCoverPhoto(CoverSide),
 }
 
-fn cover_name(side: CoverSide) -> &'static str {
-    match side {
-        CoverSide::Front => "front cover",
-        CoverSide::Back => "back cover",
-    }
-}
-
 impl std::fmt::Display for EditError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -320,7 +313,7 @@ impl std::fmt::Display for EditError {
             Self::CoverRejected { side, reason } => write!(
                 f,
                 "on the {} that would {}",
-                cover_name(*side),
+                cover::side_name(*side),
                 match reason {
                     Rejection::FaceClipped => "cut a face",
                     Rejection::FaceInGutter | Rejection::FaceInSafeMargin => {
@@ -335,7 +328,7 @@ impl std::fmt::Display for EditError {
                 write!(f, "the crop window has to stay inside the photo")
             }
             Self::NoCoverPhoto(side) => {
-                write!(f, "the {} has no photo to crop", cover_name(*side))
+                write!(f, "the {} has no photo to crop", cover::side_name(*side))
             }
         }
     }
