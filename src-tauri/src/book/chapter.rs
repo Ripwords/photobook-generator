@@ -73,6 +73,15 @@ const EARTH_RADIUS_KM: f64 = 6371.0088;
 
 /// How far a photo must be from its chapter's centroid, with the next located
 /// photo just as far, to start a new chapter.
+///
+/// Calibrated with `examples/calibrate_places.rs` on a real library of 10,818
+/// dated photos (9,725 located) against 5, 10, 25 and 50 km. 10 km shreds a
+/// single city: Singapore became airport, city, airport; Tokyo became three
+/// chapters in one evening; Taipei Main and Shilin, both in Taipei, split.
+/// 50 km misses the moves the option exists for: Osaka and Kyoto (43 km)
+/// fell into one chapter, as did Kyoto and Nara. 25 km keeps each of those
+/// cities whole and separates each of those towns. At every threshold a
+/// photo taken from a moving train can stand as a one-photo chapter.
 pub const PLACE_SPLIT_KM: f64 = 25.0;
 
 /// One chapter id per photo, in input order, like `event_clusters`.
