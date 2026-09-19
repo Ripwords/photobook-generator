@@ -271,9 +271,7 @@ function onApply() {
     <!-- What applying would do to this book, from Rust's dry run. -->
     <div v-if="projectId !== null && summary" class="space-y-3 border-t border-default pt-4" :class="{ 'opacity-60': state.status === 'checking' }">
       <p class="text-sm text-default">{{ summary.text }}</p>
-      <p v-if="summary.recrops" class="text-xs text-muted">
-        Crops you adjusted by hand are recomputed for the new page shape.
-      </p>
+      <p v-if="summary.recropNote" class="text-xs text-muted">{{ summary.recropNote }}</p>
       <PreflightFindings :blocking="summary.blocking" :warnings="summary.warnings" />
     </div>
 

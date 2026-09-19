@@ -172,7 +172,7 @@ describe("the wire", () => {
     expect(checked?.kind).toBe("checked");
     expect(checkSummary(checked!)).toEqual({
       text: "At this size, 1 problem would block the export.",
-      recrops: true,
+      recropNote: "Every crop, on the pages and the cover, is recomputed for the new shape, including ones you adjusted by hand.",
       blocking: [checked!.kind === "checked" ? checked!.findings[0] : null],
       warnings: [],
     });
@@ -193,6 +193,29 @@ describe("the wire", () => {
     const error = { kind: "noSafeArea", axis: "horizontal", insetsIn: 11.197, pageIn: 11.197 } as const;
     expect(refusalText(error, "mm")).toBe(
       "Bleed, safe margin and fold add up to 284.40 mm across a 284.40 mm page, which leaves no room for photos.",
+    );
+  });
+});
+
+describe("checkSummary's recrop note", () => {
+  const checked = (recrops: boolean, recropsCover: boolean) =>
+    checkSummary({
+      kind: "checked",
+      geometry: { pageWIn: 1, pageHIn: 1, left: { trim: rect, safe: rect, gutter: rect }, right: { trim: rect, safe: rect, gutter: rect } },
+      findings: [],
+      recrops,
+      recropsCover,
+    }).recropNote;
+
+  /** A bleed edit reshapes only the cover panel, so a note that spoke of the pages would be false. */
+  it("names what moves: the pages, the cover, both or neither", () => {
+    expect(checked(false, false)).toBeNull();
+    expect(checked(true, false)).toBe("Crops you adjusted by hand are recomputed for the new page shape.");
+    expect(checked(false, true)).toBe(
+      "The cover photos are re-cropped for the new cover shape, including a crop you adjusted by hand.",
+    );
+    expect(checked(true, true)).toBe(
+      "Every crop, on the pages and the cover, is recomputed for the new shape, including ones you adjusted by hand.",
     );
   });
 });
@@ -243,6 +266,7 @@ describe("applyState", () => {
       message: "m",
     })),
     recrops: true,
+    recropsCover: false,
   });
 
   it("labels the button by its consequence", () => {
@@ -309,7 +333,7 @@ describe("usePrintSpecCheck", () => {
     proposal.value = { ok: true, spec: { ...bigger(), bleedIn: 0.1 } };
     await nextTick();
     await vi.advanceTimersByTimeAsync(SPEC_CHECK_SETTLE_MS);
-    slow.resolve({ kind: "checked", geometry: { pageWIn: 1, pageHIn: 1, left: g(), right: g() }, findings: [], recrops: false });
+    slow.resolve({ kind: "checked", geometry: { pageWIn: 1, pageHIn: 1, left: g(), right: g() }, findings: [], recrops: false, recropsCover: false });
     await vi.advanceTimersByTimeAsync(0);
 
     expect(state.value).toEqual({

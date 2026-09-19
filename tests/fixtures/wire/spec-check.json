@@ -53,7 +53,8 @@
       }
     },
     "kind": "checked",
-    "recrops": true
+    "recrops": true,
+    "recropsCover": true
   },
   {
     "error": {

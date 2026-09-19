@@ -275,7 +275,13 @@ export type SpecError =
 /** Mirrors `reprint::SpecCheck`. */
 export type SpecCheck =
   | { kind: "refused"; error: SpecError }
-  | { kind: "checked"; geometry: PreviewGeometry; findings: PreflightFinding[]; recrops: boolean };
+  | {
+      kind: "checked";
+      geometry: PreviewGeometry;
+      findings: PreflightFinding[];
+      recrops: boolean;
+      recropsCover: boolean;
+    };
 
 const FIELD_OF: Record<SpecField, PrintSizeField> = {
   pageWIn: "trimW",
@@ -320,14 +326,23 @@ export function refusalText(error: SpecError, unit: LengthUnit): string {
 
 export interface CheckSummary {
   text: string;
-  /** Applying re-cuts every crop, including ones adjusted by hand. */
-  recrops: boolean;
+  /** Which crops applying re-cuts, hand-adjusted ones included, or `null` when none move. */
+  recropNote: string | null;
   blocking: PreflightFinding[];
   warnings: PreflightFinding[];
 }
 
 function count(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
+}
+
+function recropNote(pages: boolean, cover: boolean): string | null {
+  if (pages && cover) {
+    return "Every crop, on the pages and the cover, is recomputed for the new shape, including ones you adjusted by hand.";
+  }
+  if (pages) return "Crops you adjusted by hand are recomputed for the new page shape.";
+  if (cover) return "The cover photos are re-cropped for the new cover shape, including a crop you adjusted by hand.";
+  return null;
 }
 
 /** What the dry run found, split the way the export sheet splits it. */
@@ -340,7 +355,7 @@ export function checkSummary(check: Extract<SpecCheck, { kind: "checked" }>): Ch
   ].filter((p): p is string => p !== null);
   return {
     text: parts.length === 0 ? "Nothing in the book fails at this size." : `At this size, ${parts.join(" and ")}.`,
-    recrops: check.recrops,
+    recropNote: recropNote(check.recrops, check.recropsCover),
     blocking,
     warnings,
   };
