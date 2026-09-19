@@ -24,6 +24,27 @@ deliberately-parked decision that this file is the only surviving record of.**
 
 ---
 
+## What changed on 2026-09-19: the cache never holds a record the engine cannot read
+
+**The bug.** Choosing a book length said "These photos are no longer loaded -- analyse the
+folders again", and analysing again did not help. `tauri dev` runs `bun run sidecar` once,
+at startup. Rust rebuilds on every save, but the sidecar does not. A session started before
+analyzer v3 kept the v2 sidecar. The v3 Rust then cached 2783 v2-shaped records (no
+`clippedLow`, `clippedHigh` or `featurePrint`) as v3. None parsed in `photos_from_records`,
+so `AnalysedRuns` never received the run, and `recommend_book` asked for a run that did
+not exist. The log said so: `cannot cache the analysed photo set: photo 0 (...) is missing
+fields the layout engine needs`.
+
+**The fix.** `engine_can_read` (`cull::from_cached_features`) is checked at both cache
+boundaries. `gather_chunked` turns a sidecar record that fails it into a failed photo, with
+the message "rebuild it with `bun run sidecar`", and does not cache it. `lookup_cache`
+treats a row that fails it as a miss, so rows poisoned before this fix are re-analysed and
+overwritten. On a copy of the real cache, all 2783 rows came back as misses. Each check has
+its own test, and disabling either one turns only that test red.
+
+**If you see it again:** stop `bun run dev`, then run `bun run sidecar` and start dev again.
+A Swift change never reaches a running dev session.
+
 ## What changed on 2026-09-19: the analysis cache has a limit
 
 The app data dir grew forever: nothing deleted a `features` row, a thumbnail or a
@@ -241,11 +262,17 @@ town, and 81 photos cannot settle a threshold. Twins reach 0.66 at p95, because 
 is analysed from its embedded preview. Any similarity rule has to handle twins by stem,
 not by distance.
 
-**Trap: a fourth Vision-calling Swift test deadlocks the suite.** A standalone
-feature-print test brought back the `VNControlledCapacityTasksQueue` hang in the 300-photo
-batch test, even behind `VisionGate`. The assertions now live inside
-`visionReturnsResultForPlainImageWithoutCrashing`. Add new Vision assertions to an
-existing Vision test rather than writing a new one.
+**Trap: a Swift test that blocks inside Vision deadlocks the suite.** `perform()` waits
+on work that needs a Swift-concurrency cooperative-pool thread, and swift-testing runs test
+bodies on that pool, which is one thread per core. On the 3-core GitHub `macos-15` runner,
+three tests blocked in Vision filled the pool and CI hung until the job was cancelled. Every
+test that makes a real Vision call must wrap it in `offCooperativePool`
+(`sidecar/Tests/PhotobookEngineTests/OffCooperativePool.swift`). To reproduce locally, run
+`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 swift test --package-path sidecar`, which narrows the
+pool to one thread. The earlier "a fourth Vision test deadlocks the suite" rule and
+`@Suite(.serialized)` on `HostileInputTests` were workarounds for this cause, and both are
+gone. CI runs the suite through `scripts/ci-swift-test.sh`, which samples every thread's
+stack and fails the step if the suite runs longer than 300s.
 
 ## What changed on 2026-09-19: a book's right-click menu, and favourites
 
@@ -1780,10 +1807,10 @@ tests did not catch them and a fresh reader would repeat them.
   attaches one person's quality score to another person's box.
 - Use one `VNImageRequestHandler` for everything; it reuses the decoded surface.
 - Vision **deadlocks** on `VNControlledCapacityTasksQueue` under many simultaneous
-  handlers. `Analyzer.visionSemaphore` caps in-flight Vision work at 4, guarding **only**
+  handlers. `VisionGate` caps in-flight Vision work at 4, guarding **only**
   the Vision call — metrics run unguarded. Narrowing that guard was worth about a third of
-  batch time. `@Suite(.serialized)` on `HostileInputTests` is a **separate** fix for a
-  test-parallelism variant; neither is redundant.
+  batch time. Tests have a second, separate hazard: blocking a cooperative-pool thread
+  inside Vision. See `offCooperativePool`.
 - Vision has **no expression classifier** at any macOS version. That is why the smile
   proxy is geometric.
 

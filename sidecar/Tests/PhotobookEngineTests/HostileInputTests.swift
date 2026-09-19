@@ -10,27 +10,10 @@ import Foundation
 // process trap. If any of these ever crash the test runner, that is a bug in
 // ImageLoader/ExifReader/Analyzer to fix, not a fixture to remove.
 //
-// `.serialized`: this mitigates a DIFFERENT problem than Analyzer's
-// visionSemaphore does, and both are needed. visionSemaphore bounds
-// concurrent Vision work *within a single Analyzer.analyze(paths:) call* --
-// that's the production fix, and it is sufficient for Task 15's real usage
-// (one process, one batch of paths, no other work competing for threads).
-// It is NOT sufficient for this local test suite: swift-testing runs @Test
-// functions themselves concurrently, so dozens of tests each triggering
-// Analyzer.analyze independently (some via concurrentPerform fan-out as
-// large as 300, see AnalyzerTests.analyzerHandlesA300PhotoBatchWithout...)
-// all end up with threads blocked on visionSemaphore.wait() at once, on
-// the same shared libdispatch global concurrent queue Vision's own async
-// work needs -- that's still enough blocked-thread pressure to exhaust the
-// pool and deadlock, confirmed empirically: restoring the semaphore to 4
-// but removing this trait still hung the full suite for 3+ minutes at zero
-// CPU progress before it was killed; restoring this trait alongside the
-// semaphore fix passed reliably. So: visionSemaphore fixes the real
-// production risk; `.serialized` here keeps the *test suite itself* from
-// re-creating a version of the same problem through test-level parallelism
-// that production code never exercises. Do not remove either independently
-// without re-running the full unfiltered `swift test` suite several times.
-@Suite(.serialized)
+// Every Analyzer.analyze call below runs through offCooperativePool, which
+// is what keeps these tests from deadlocking Vision alongside the rest of
+// the suite. This suite was `.serialized` until that root cause was found.
+@Suite
 struct HostileInputTests {
 
 private func hostileDir() -> URL {
@@ -45,7 +28,7 @@ private func fixture(_ name: String) -> URL {
         .appendingPathComponent("Fixtures/\(name)")
 }
 
-@Test func hostileEveryFixtureProducesARecordAndNeverCrashes() throws {
+@Test func hostileEveryFixtureProducesARecordAndNeverCrashes() async throws {
     let files = try FileManager.default
         .contentsOfDirectory(at: hostileDir(), includingPropertiesForKeys: nil)
         .map(\.path)
@@ -53,30 +36,30 @@ private func fixture(_ name: String) -> URL {
 
     #expect(files.count >= 7, "run scripts/make-hostile-fixtures.sh first")
 
-    let records = Analyzer.analyze(paths: files)
+    let records = await offCooperativePool { Analyzer.analyze(paths: files) }
     #expect(records.count == files.count)
     // Reaching this line at all is the assertion: nothing trapped.
 }
 
-@Test func hostileZeroByteFileFailsCleanly() {
+@Test func hostileZeroByteFileFailsCleanly() async {
     let path = hostileDir().appendingPathComponent("empty.jpg").path
-    let records = Analyzer.analyze(paths: [path])
+    let records = await offCooperativePool { Analyzer.analyze(paths: [path]) }
     guard case .failed = records[0] else {
         Issue.record("zero-byte file must produce a failed record"); return
     }
 }
 
-@Test func hostileTruncatedJpegFailsCleanlyOrDecodesPartially() {
+@Test func hostileTruncatedJpegFailsCleanlyOrDecodesPartially() async {
     let path = hostileDir().appendingPathComponent("truncated.jpg").path
-    let records = Analyzer.analyze(paths: [path])
+    let records = await offCooperativePool { Analyzer.analyze(paths: [path]) }
     #expect(records.count == 1)   // either outcome is acceptable; a crash is not
 }
 
-@Test func hostileBatchMixedWithGoodPhotoStillReturnsTheGoodOne() throws {
+@Test func hostileBatchMixedWithGoodPhotoStillReturnsTheGoodOne() async throws {
     let good = fixture("landscape.jpg").path
     let bad = hostileDir().appendingPathComponent("random.jpg").path
 
-    let records = Analyzer.analyze(paths: [bad, good, bad])
+    let records = await offCooperativePool { Analyzer.analyze(paths: [bad, good, bad]) }
     #expect(records.count == 3)
     guard case .ok = records[1] else {
         Issue.record("the good photo must survive a hostile batch"); return
@@ -103,21 +86,21 @@ private func fixture(_ name: String) -> URL {
 //     not preserve full POSIX permission bits across a clone, so a checked-in
 //     0o000 fixture would silently stop being hostile after a fresh clone.
 
-@Test func hostileCorruptScanDataFailsCleanlyOrDecodesPartially() {
+@Test func hostileCorruptScanDataFailsCleanlyOrDecodesPartially() async {
     let path = hostileDir().appendingPathComponent("corrupt-scan-data.jpg").path
-    let records = Analyzer.analyze(paths: [path])
+    let records = await offCooperativePool { Analyzer.analyze(paths: [path]) }
     #expect(records.count == 1)   // either outcome is acceptable; a crash is not
 }
 
-@Test func hostileDirectoryPathFailsCleanly() {
-    let records = Analyzer.analyze(paths: [hostileDir().path])
+@Test func hostileDirectoryPathFailsCleanly() async {
+    let records = await offCooperativePool { Analyzer.analyze(paths: [hostileDir().path]) }
     #expect(records.count == 1)
     guard case .failed = records[0] else {
         Issue.record("a directory path must produce a failed record, not a crash"); return
     }
 }
 
-@Test func hostileUnreadableFileFailsCleanly() throws {
+@Test func hostileUnreadableFileFailsCleanly() async throws {
     let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
         .appendingPathComponent("hostile-unreadable-\(UUID().uuidString).jpg")
     let source = try Data(contentsOf: fixture("landscape.jpg"))
@@ -132,7 +115,7 @@ private func fixture(_ name: String) -> URL {
     // which case this degrades to exercising the "good photo" path instead
     // of the permission-denied path -- still a non-crash, so still valid,
     // just not proof of the specific claim this test is named for.
-    let records = Analyzer.analyze(paths: [tmp.path])
+    let records = await offCooperativePool { Analyzer.analyze(paths: [tmp.path]) }
     #expect(records.count == 1)
 }
 

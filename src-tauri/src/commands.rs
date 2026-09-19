@@ -532,6 +532,19 @@ fn hash_files(paths: &[String]) -> Vec<std::io::Result<String>> {
     })
 }
 
+/// Whether the layout engine can read a features record, the test both cache
+/// boundaries apply. A record that fails it can never be used, so caching or
+/// serving it only poisons the run: `tauri dev` rebuilds Rust on save but
+/// never the sidecar, and a v2 sidecar's records once went into the cache
+/// under v3. None of them parsed, the run was never kept, and choosing a
+/// book length said "These photos are no longer loaded".
+fn engine_can_read(features: &serde_json::Value) -> bool {
+    crate::book::cull::from_cached_features(features).is_some()
+}
+
+const UNREADABLE_SIDECAR_RECORD: &str =
+    "the analysis engine is out of date for this build -- rebuild it with `bun run sidecar`";
+
 /// Result of consulting the cache for a batch of candidate paths.
 pub(crate) struct CacheLookup {
     /// Already-analysed `features` JSON, pulled straight from `Db`.
@@ -609,8 +622,13 @@ pub(crate) fn lookup_cache(db: &Db, paths: &[String]) -> Result<CacheLookup, Str
                     // on every hit, never trust the cached one.
                     Ok(mut features) => {
                         features["path"] = path.clone().into();
-                        hits.push(features);
-                        used.push(hash);
+                        if engine_can_read(&features) {
+                            hits.push(features);
+                            used.push(hash);
+                        } else {
+                            log::warn!("cached features for {path} are unreadable; analysing it again");
+                            misses.push(path.clone());
+                        }
                     }
                     Err(_) => misses.push(path.clone()),
                 },
@@ -721,7 +739,17 @@ pub(crate) fn gather_chunked(
         }
 
         let clock = Instant::now();
-        let records = analyze(&misses);
+        let records: Vec<serde_json::Value> = analyze(&misses)
+            .into_iter()
+            .map(|record| {
+                if record["status"] != "ok" || engine_can_read(&record["features"]) {
+                    return record;
+                }
+                let path = record["features"]["path"].as_str().unwrap_or("<no path>");
+                log::warn!("the sidecar's features for {path} are unreadable");
+                crate::sidecar::failure_record(path, UNREADABLE_SIDECAR_RECORD)
+            })
+            .collect();
         analysing += clock.elapsed();
 
         // Cache-write and collect the full-feature records `finalize_photos`
@@ -2774,12 +2802,28 @@ mod tests {
         path.to_string_lossy().into_owned()
     }
 
+    /// The smallest features record the layout engine reads
+    /// (`cull::from_cached_features`), as the sidecar caches it.
+    fn cacheable_features(path: &str, hash: &str) -> serde_json::Value {
+        serde_json::json!({
+            "path": path, "hash": hash, "width": 4000, "height": 3000,
+            "isUtility": false, "faces": [], "faceAreaFraction": 0.0,
+            "palette": [], "sceneTags": [], "clippedLow": 0.0, "clippedHigh": 0.0,
+            "aestheticScore": 0.5, "sharpness": 10.0, "phash": 1u64, "exif": {},
+        })
+    }
+
+    /// `cacheable_features` as the string `put_features` stores.
+    fn cached_row(path: &str) -> String {
+        cacheable_features(path, "cached-hash").to_string()
+    }
+
     #[test]
     fn a_cached_hash_is_a_hit_not_a_miss() {
         let db = Db::open_in_memory().unwrap();
         let path = write_temp_file("cached.jpg", b"cached bytes");
         let hash = hash_file(Path::new(&path)).unwrap();
-        db.put_features(&hash, &path, r#"{"path":"cached.jpg","status":"ok"}"#)
+        db.put_features(&hash, &path, &cached_row(&path))
             .unwrap();
 
         let result = lookup_cache(&db, &[path]).unwrap();
@@ -2805,8 +2849,8 @@ mod tests {
         let hit = write_temp_file("touch-hit.jpg", b"touch hit bytes");
         let miss = write_temp_file("touch-miss.jpg", b"touch miss bytes");
         let hit_hash = hash_file(Path::new(&hit)).unwrap();
-        db.put_features(&hit_hash, &hit, r#"{"status":"ok"}"#).unwrap();
-        db.put_features("some-other-photo", "/elsewhere.jpg", r#"{"status":"ok"}"#).unwrap();
+        db.put_features(&hit_hash, &hit, &cached_row(&hit)).unwrap();
+        db.put_features("some-other-photo", "/elsewhere.jpg", &cached_row("/elsewhere.jpg")).unwrap();
         db.conn.execute("UPDATE features SET last_used_at = 1", []).unwrap();
         let last_used = |hash: &str| -> i64 {
             db.conn
@@ -2819,6 +2863,26 @@ mod tests {
         assert_eq!(result.hits.len(), 1);
         assert!(last_used(&hit_hash) > 1_700_000_000, "a hit is marked used now");
         assert_eq!(last_used("some-other-photo"), 1, "a row nobody asked for is left alone");
+    }
+
+    /// A row in the current version that the layout engine cannot read is
+    /// re-analysed, not served. `tauri dev` rebuilds Rust on save but never
+    /// the sidecar, so an old sidecar once wrote 2783 v2-shaped records under
+    /// v3. Served, every one failed to parse, the run was never kept, and
+    /// choosing a book length said "These photos are no longer loaded".
+    #[test]
+    fn a_cached_row_the_engine_cannot_read_is_a_miss() {
+        let db = Db::open_in_memory().unwrap();
+        let path = write_temp_file("unreadable-row.jpg", b"unreadable row bytes");
+        let hash = hash_file(Path::new(&path)).unwrap();
+        let mut features = cacheable_features(&path, &hash);
+        features.as_object_mut().unwrap().remove("clippedLow");
+        db.put_features(&hash, &path, &features.to_string()).unwrap();
+
+        let result = lookup_cache(&db, std::slice::from_ref(&path)).unwrap();
+
+        assert!(result.hits.is_empty(), "served a row the engine cannot read");
+        assert_eq!(result.misses, vec![path]);
     }
 
     #[test]
@@ -2867,7 +2931,7 @@ mod tests {
         db.put_features(
             &hash,
             &path_a,
-            &serde_json::json!({"path": path_a, "status": "ok"}).to_string(),
+            &cached_row(&path_a),
         )
         .unwrap();
 
@@ -2892,7 +2956,7 @@ mod tests {
 
         let cached_path = write_temp_file("counted-cached.jpg", b"counted cached bytes");
         let hash = hash_file(Path::new(&cached_path)).unwrap();
-        db.put_features(&hash, &cached_path, r#"{"path":"x","status":"ok"}"#)
+        db.put_features(&hash, &cached_path, &cached_row(&cached_path))
             .unwrap();
 
         let miss_path = write_temp_file("counted-miss.jpg", b"counted miss bytes");
@@ -2926,7 +2990,7 @@ mod tests {
             .collect();
         for path in paths.iter().step_by(2) {
             let hash = hash_file(Path::new(path)).unwrap();
-            db.put_features(&hash, path, r#"{"status":"ok"}"#).unwrap();
+            db.put_features(&hash, path, &cached_row(path)).unwrap();
         }
 
         let result = lookup_cache(&db, &paths).unwrap();
@@ -2960,7 +3024,7 @@ mod tests {
         let path = dir.path().join("seen.arw").to_string_lossy().into_owned();
         std::fs::write(&path, b"seen before").unwrap();
         let hash = hash_file(Path::new(&path)).unwrap();
-        db.put_features(&hash, &path, r#"{"status":"ok"}"#).unwrap();
+        db.put_features(&hash, &path, &cached_row(&path)).unwrap();
         lookup_cache(&db, std::slice::from_ref(&path)).unwrap();
 
         set_readable(&path, false);
@@ -2982,7 +3046,7 @@ mod tests {
         std::fs::write(&path, b"never analysed").unwrap();
         assert_eq!(lookup_cache(&db, std::slice::from_ref(&path)).unwrap().misses.len(), 1);
         let hash = hash_file(Path::new(&path)).unwrap();
-        db.put_features(&hash, &path, r#"{"status":"ok"}"#).unwrap();
+        db.put_features(&hash, &path, &cached_row(&path)).unwrap();
 
         set_readable(&path, false);
         let result = lookup_cache(&db, std::slice::from_ref(&path));
@@ -3001,7 +3065,7 @@ mod tests {
         std::fs::write(&path, b"before edit").unwrap();
         set_modified(&path, 1_700_000_000);
         let hash = hash_file(Path::new(&path)).unwrap();
-        db.put_features(&hash, &path, r#"{"status":"ok"}"#).unwrap();
+        db.put_features(&hash, &path, &cached_row(&path)).unwrap();
         lookup_cache(&db, std::slice::from_ref(&path)).unwrap();
 
         std::fs::write(&path, b"after edits").unwrap();
@@ -3022,7 +3086,7 @@ mod tests {
         std::fs::write(&path, b"short").unwrap();
         set_modified(&path, 1_700_000_000);
         let hash = hash_file(Path::new(&path)).unwrap();
-        db.put_features(&hash, &path, r#"{"status":"ok"}"#).unwrap();
+        db.put_features(&hash, &path, &cached_row(&path)).unwrap();
         lookup_cache(&db, std::slice::from_ref(&path)).unwrap();
 
         std::fs::write(&path, b"a good deal longer").unwrap();
@@ -3042,18 +3106,41 @@ mod tests {
     // `sidecar::analyze_batches_with_progress`'s tests use for `call`.
 
     fn gather_ok_record(path: &str, hash: &str, aesthetic: f64, capture: f64) -> serde_json::Value {
-        serde_json::json!({
-            "status": "ok",
-            "features": {
-                "path": path,
-                "hash": hash,
-                "aestheticScore": aesthetic,
-                "sharpness": 10.0,
-                "phash": 1u64,
-                "exif": { "captureDate": capture },
-                "faces": [],
-            }
-        })
+        let mut features = cacheable_features(path, hash);
+        features["aestheticScore"] = aesthetic.into();
+        features["exif"] = serde_json::json!({ "captureDate": capture });
+        serde_json::json!({ "status": "ok", "features": features })
+    }
+
+    /// A sidecar record the layout engine cannot read fails the photo and is
+    /// not cached. Cached, it would be served under the current version on
+    /// every run, and never parse.
+    #[test]
+    fn gather_chunked_fails_and_does_not_cache_a_record_the_engine_cannot_read() {
+        let db = Db::open_in_memory().unwrap();
+        let path = write_temp_file("gather-unreadable.jpg", b"gather unreadable bytes");
+        let hash = hash_file(Path::new(&path)).unwrap();
+
+        let result = gather_chunked(
+            &db,
+            std::slice::from_ref(&path),
+            |misses| {
+                misses
+                    .iter()
+                    .map(|p| {
+                        let mut record = gather_ok_record(p, &hash, 0.5, 0.0);
+                        record["features"].as_object_mut().unwrap().remove("clippedHigh");
+                        record
+                    })
+                    .collect()
+            },
+            |_photos, _analysed, _cached, _failed| {},
+        )
+        .unwrap();
+
+        assert!(result.ok.is_empty(), "kept a record the engine cannot read");
+        assert_eq!(result.failed, 1);
+        assert_eq!(db.get_features(&hash).unwrap(), None, "cached a record the engine cannot read");
     }
 
     /// A chunk that resolves to zero misses (every path in it is a cache
@@ -3069,7 +3156,7 @@ mod tests {
         db.put_features(
             &hash,
             &path,
-            &serde_json::json!({"path": path, "status": "ok"}).to_string(),
+            &cached_row(&path),
         )
         .unwrap();
 
@@ -3100,7 +3187,7 @@ mod tests {
         db.put_features(
             &hash,
             &cached_path,
-            &serde_json::json!({"path": cached_path, "status": "ok"}).to_string(),
+            &cached_row(&cached_path),
         )
         .unwrap();
 

@@ -9,46 +9,38 @@ private func fixture(_ name: String) -> String {
         .appendingPathComponent("Fixtures/\(name)").path
 }
 
-// The three tests below are the only call sites in this file that invoke
-// VisionAnalyzer.analyze, and each now goes through VisionGate rather than
-// calling it directly -- see VisionGate.swift's doc comment. They didn't
-// before, and running the full unfiltered suite with them ungated (even
-// with `Analyzer`'s and `Benchmarker`'s own call sites correctly gated)
-// still reproduced the documented VNControlledCapacityTasksQueue deadlock:
-// `AnalyzerTests.analyzerHandlesA300PhotoBatchWithoutDeadlockingOnVisionConcurrency`
-// timed out at its own 120s watchdog. Gating these three closed that
-// loophole -- confirmed by re-running the full suite several times after.
-// Adding a fourth Vision-calling test here (2026-09-19, for the feature
-// print) brought the same deadlock back even though it was gated, so new
-// Vision assertions go into one of these three instead.
-@Test func visionReturnsResultForPlainImageWithoutCrashing() throws {
+// The three tests below make real Vision calls, so each runs through
+// VisionGate (see its doc comment) and off the cooperative pool (see
+// offCooperativePool's doc comment). Earlier, "adding a fourth Vision test
+// deadlocks the suite" was blamed on Vision itself; the actual cause was
+// synchronous tests blocking swift-testing's pool threads inside perform().
+@Test func visionReturnsResultForPlainImageWithoutCrashing() async throws {
     let img = try ImageLoader.loadThumbnail(path: fixture("landscape.jpg"), maxPixel: 1024)
-    let result = VisionGate.run { VisionAnalyzer.analyze(img) }
+    let result = await offCooperativePool { VisionGate.run { VisionAnalyzer.analyze(img) } }
     #expect(result.faces.isEmpty)
     #expect(result.aestheticScore >= -1.0 && result.aestheticScore <= 1.0)
 
     // Feature print revision 2: 768 Float32 elements, L2-normalised, so
     // Euclidean distance equals Apple's `computeDistance` (measured on real
-    // photos). Asserted here rather than in a test of its own: a fourth
-    // Vision-calling test in this file deadlocks the full suite (see above).
+    // photos).
     let print = try #require(result.featurePrint)
     #expect(print.count == 768)
     let norm = print.reduce(Float(0)) { $0 + $1 * $1 }.squareRoot()
     #expect(abs(norm - 1) < 0.01)
 }
 
-@Test func visionBoxesAreNormalisedAndTopLeftOrigin() throws {
+@Test func visionBoxesAreNormalisedAndTopLeftOrigin() async throws {
     let img = try ImageLoader.loadThumbnail(path: fixture("landscape.jpg"), maxPixel: 1024)
-    let result = VisionGate.run { VisionAnalyzer.analyze(img) }
+    let result = await offCooperativePool { VisionGate.run { VisionAnalyzer.analyze(img) } }
     if let box = result.saliencyBox {
         #expect(box.count == 4)
         for v in box { #expect(v >= -0.001 && v <= 1.001) }
     }
 }
 
-@Test func visionSceneTagsAreReturnedForARecognisableImage() throws {
+@Test func visionSceneTagsAreReturnedForARecognisableImage() async throws {
     let img = try ImageLoader.loadThumbnail(path: fixture("landscape.jpg"), maxPixel: 1024)
-    let result = VisionGate.run { VisionAnalyzer.analyze(img) }
+    let result = await offCooperativePool { VisionGate.run { VisionAnalyzer.analyze(img) } }
     // A flat navy field may legitimately produce no confident tags; assert the
     // contract, not the content.
     #expect(result.sceneTags.count <= 8)

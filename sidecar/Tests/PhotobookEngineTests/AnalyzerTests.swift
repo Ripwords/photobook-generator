@@ -59,7 +59,7 @@ private func fixture(_ name: String) -> String {
 // instead of hanging (see task-10-report.md for the transcript). If it
 // ever deadlocks for real, the worker Thread leaks for the rest of the
 // process's life, but the test reports a failure rather than hanging CI.
-@Test func analyzerHandlesA300PhotoBatchWithoutDeadlockingOnVisionConcurrency() {
+@Test func analyzerHandlesA300PhotoBatchWithoutDeadlockingOnVisionConcurrency() async {
     let paths = Array(repeating: fixture("landscape.jpg"), count: 300)
     let done = DispatchSemaphore(value: 0)
     var records: [PhotoRecord] = []
@@ -69,7 +69,9 @@ private func fixture(_ name: String) -> String {
     }
     worker.stackSize = 1 << 20
     worker.start()
-    let outcome = done.wait(timeout: .now() + 120)
+    // Waiting here would park a cooperative-pool thread for the whole batch;
+    // see offCooperativePool's doc comment.
+    let outcome = await offCooperativePool { done.wait(timeout: .now() + 120) }
     #expect(outcome == .success, "analyze deadlocked: did not complete within 120s")
     guard outcome == .success else { return }
 
@@ -80,8 +82,8 @@ private func fixture(_ name: String) -> String {
     })
 }
 
-@Test func analyzerAnalysesAGoodPhoto() {
-    let records = Analyzer.analyze(paths: [fixture("landscape.jpg")])
+@Test func analyzerAnalysesAGoodPhoto() async {
+    let records = await offCooperativePool { Analyzer.analyze(paths: [fixture("landscape.jpg")]) }
     #expect(records.count == 1)
     guard case .ok(let f) = records[0] else {
         Issue.record("expected ok record"); return
@@ -136,8 +138,8 @@ private func fixture(_ name: String) -> String {
     #expect(hash == "08c8f73e189ba397ff2097fe192831e8f266f98538233e9b12b5790e65720159")
 }
 
-@Test func analyzerReportsFailureForMissingFileWithoutCrashing() {
-    let records = Analyzer.analyze(paths: ["/nonexistent/nope.jpg"])
+@Test func analyzerReportsFailureForMissingFileWithoutCrashing() async {
+    let records = await offCooperativePool { Analyzer.analyze(paths: ["/nonexistent/nope.jpg"]) }
     #expect(records.count == 1)
     guard case .failed(let path, _) = records[0] else {
         Issue.record("expected failed record"); return
@@ -145,18 +147,16 @@ private func fixture(_ name: String) -> String {
     #expect(path == "/nonexistent/nope.jpg")
 }
 
-@Test func analyzerOneBadPhotoDoesNotAbortTheBatch() {
-    let records = Analyzer.analyze(paths: [
-        "/nonexistent/nope.jpg",
-        fixture("landscape.jpg"),
-    ])
+@Test func analyzerOneBadPhotoDoesNotAbortTheBatch() async {
+    let paths = ["/nonexistent/nope.jpg", fixture("landscape.jpg")]
+    let records = await offCooperativePool { Analyzer.analyze(paths: paths) }
     #expect(records.count == 2)
     // Order must be preserved so callers can correlate with their input.
     guard case .failed = records[0] else { Issue.record("expected failure first"); return }
     guard case .ok = records[1] else { Issue.record("expected success second"); return }
 }
 
-@Test func analyzerPreservesInputOrderUnderConcurrency() {
+@Test func analyzerPreservesInputOrderUnderConcurrency() async {
     // The 8 real photos each pay for a full Vision pass (aesthetics, face
     // detection, saliency, horizon, classification, text) while the missing
     // file at the end fails immediately on file open. If results were
@@ -165,7 +165,7 @@ private func fixture(_ name: String) -> String {
     // index 8 — that's what makes this test an effective mutation check
     // rather than a coincidence of identical fixtures.
     let paths = (0..<8).map { _ in fixture("landscape.jpg") } + ["/nonexistent/a.jpg"]
-    let records = Analyzer.analyze(paths: paths)
+    let records = await offCooperativePool { Analyzer.analyze(paths: paths) }
     #expect(records.count == 9)
     guard case .failed = records[8] else { Issue.record("last must be the failure"); return }
     for i in 0..<8 {
@@ -183,26 +183,15 @@ private func thumbnailScratchDirectory() -> String {
     NSTemporaryDirectory() + "analyzer-thumbnail-tests-\(UUID().uuidString)"
 }
 
-// The three cases below are deliberately combined into ONE @Test function
-// with three sequential Analyzer.analyze calls, rather than three separate
-// @Test functions. Every case here drives a real, un-mocked Vision pass
-// (Analyzer.analyzeOne always calls VisionAnalyzer.analyze regardless of
-// thumbnailDir), and swift-testing schedules @Test functions concurrently
-// by default -- three separate functions would add three more independent
-// Vision-calling tasks racing against everything else in this module
-// (including the 300-photo stress test above, which is already using its
-// full slice of Analyzer's visionSemaphore, and VisionAnalyzerTests.swift's
-// direct, un-gated calls to VisionAnalyzer.analyze which bypass that
-// semaphore entirely). That combination reproducibly starved Vision's
-// internal VNControlledCapacityTasksQueue during development of this file
-// (confirmed via `sample`, same failure mode documented on the 300-photo
-// test above) even though each individual call here is semaphore-gated.
-// Sequential calls within one task avoid adding concurrent pressure.
-@Test func analyzerThumbnailWriting() throws {
+// The three cases below share one @Test function and run sequentially. They
+// were combined while a Vision deadlock was blamed on the number of
+// concurrent Vision-calling tests; the real cause was tests blocking
+// cooperative-pool threads, now fixed by offCooperativePool.
+@Test func analyzerThumbnailWriting() async throws {
     // Case 1: thumbnailDir provided -> thumbnailPath is written and keyed by
     // content hash, not source path.
     let dir = thumbnailScratchDirectory()
-    let written = Analyzer.analyze(paths: [fixture("landscape.jpg")], thumbnailDir: dir)
+    let written = await offCooperativePool { Analyzer.analyze(paths: [fixture("landscape.jpg")], thumbnailDir: dir) }
     guard case .ok(let f1) = written[0] else {
         Issue.record("expected ok record"); return
     }
@@ -216,7 +205,7 @@ private func thumbnailScratchDirectory() -> String {
     // Case 2: no thumbnailDir -> thumbnailPath stays nil. Regression guard
     // against a mutant that writes a thumbnail unconditionally regardless of
     // whether a directory was requested.
-    let withoutDir = Analyzer.analyze(paths: [fixture("landscape.jpg")])
+    let withoutDir = await offCooperativePool { Analyzer.analyze(paths: [fixture("landscape.jpg")]) }
     guard case .ok(let f2) = withoutDir[0] else {
         Issue.record("expected ok record"); return
     }
@@ -231,7 +220,7 @@ private func thumbnailScratchDirectory() -> String {
     try Data().write(to: URL(fileURLWithPath: blockerPath))
     defer { try? FileManager.default.removeItem(atPath: blockerPath) }
 
-    let degraded = Analyzer.analyze(paths: [fixture("landscape.jpg")], thumbnailDir: blockerPath)
+    let degraded = await offCooperativePool { Analyzer.analyze(paths: [fixture("landscape.jpg")], thumbnailDir: blockerPath) }
     guard case .ok(let f3) = degraded[0] else {
         Issue.record("a thumbnail write failure must not turn the record into .failed"); return
     }
