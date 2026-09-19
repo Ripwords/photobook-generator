@@ -43,3 +43,27 @@ describe("nuxt config", () => {
     expect(importsRequiredCss).toBe(true);
   });
 });
+
+describe("tauri bundle", () => {
+  it("ships the app icon in the macOS bundle", () => {
+    // Regression test: v0.1.0 shipped with no `bundle.icon` list, so the .app
+    // had no .icns and no CFBundleIconFile, and Finder and the dmg showed
+    // macOS's blank placeholder. `tauri dev` uses a built-in default icon, so
+    // nothing looked wrong until the release was installed.
+    const confPath = fileURLToPath(new URL("../src-tauri/tauri.conf.json", import.meta.url));
+    const conf: unknown = JSON.parse(readFileSync(confPath, "utf-8"));
+    const icons =
+      typeof conf === "object" && conf !== null && "bundle" in conf &&
+      typeof conf.bundle === "object" && conf.bundle !== null && "icon" in conf.bundle &&
+      Array.isArray(conf.bundle.icon)
+        ? conf.bundle.icon.filter((entry): entry is string => typeof entry === "string")
+        : [];
+
+    const icns = icons.filter((entry) => entry.endsWith(".icns"));
+    expect(icns, "bundle.icon must list an .icns for macOS").not.toHaveLength(0);
+    for (const entry of icns) {
+      const onDisk = fileURLToPath(new URL(`../src-tauri/${entry}`, import.meta.url));
+      expect(existsSync(onDisk), `${entry} should exist under src-tauri/`).toBe(true);
+    }
+  });
+});
