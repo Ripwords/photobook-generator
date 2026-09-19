@@ -17,6 +17,32 @@ use std::path::Path;
 /// change" the next time this constant needs bumping.
 pub const ANALYZER_VERSION: u32 = 2;
 
+/// A file's size and modified time. When both match what they were when the
+/// file was last hashed, its contents are taken to be unchanged and the hash
+/// is reused rather than read again -- the check backup and sync tools make.
+/// Re-reading a folder of RAW files on an external drive took over a minute
+/// when every photo was already analysed.
+///
+/// An edit that keeps both the size and the modified time slips past it.
+/// Editors and cameras set the modified time on every write, so that takes a
+/// tool that deliberately restores it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileStamp {
+    pub size: i64,
+    pub modified_ns: i64,
+}
+
+impl FileStamp {
+    pub fn of(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+        Some(Self {
+            size: i64::try_from(meta.len()).ok()?,
+            modified_ns: i64::try_from(modified.as_nanos()).ok()?,
+        })
+    }
+}
+
 pub struct Db {
     pub(crate) conn: Connection,
 }
@@ -87,6 +113,12 @@ impl Db {
                  state      TEXT NOT NULL,
                  PRIMARY KEY (project_id, hash)
              );
+             CREATE TABLE IF NOT EXISTS file_stamps (
+                 path        TEXT PRIMARY KEY,
+                 size        INTEGER NOT NULL,
+                 modified_ns INTEGER NOT NULL,
+                 hash        TEXT NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS project_folders (
                  project_id INTEGER NOT NULL REFERENCES projects(id),
                  position   INTEGER NOT NULL,
@@ -117,6 +149,33 @@ impl Db {
             rusqlite::params![hash, path, json, ANALYZER_VERSION],
         )?;
         Ok(())
+    }
+
+    /// The content hash last computed for `path`, with the size and modified
+    /// time the file had then. See `FileStamp`.
+    pub fn get_stamp(&self, path: &str) -> rusqlite::Result<Option<(FileStamp, String)>> {
+        self.conn
+            .prepare_cached("SELECT size, modified_ns, hash FROM file_stamps WHERE path = ?1")?
+            .query_row([path], |row| {
+                Ok((FileStamp { size: row.get(0)?, modified_ns: row.get(1)? }, row.get(2)?))
+            })
+            .optional()
+    }
+
+    /// Records the hash computed for each file, in one transaction.
+    pub fn put_stamps(&self, stamps: &[(&str, FileStamp, &str)]) -> rusqlite::Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut insert = tx.prepare_cached(
+                "INSERT INTO file_stamps (path, size, modified_ns, hash) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(path) DO UPDATE SET
+                     size = excluded.size, modified_ns = excluded.modified_ns, hash = excluded.hash",
+            )?;
+            for (path, stamp, hash) in stamps {
+                insert.execute(rusqlite::params![path, stamp.size, stamp.modified_ns, hash])?;
+            }
+        }
+        tx.commit()
     }
 
     /// Persists a new project. `book` is serialised whole into `book_json`

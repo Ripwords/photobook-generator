@@ -12,6 +12,12 @@
 //! hit. The sidecar is spawned by a discarded first run, so cold runs time
 //! analysis rather than process start. `HOME` points at a throwaway
 //! directory, so the real app's cache is never touched.
+//!
+//! With `PBG_BENCH_SEED_DB` set to a copy of the app's database, the cold
+//! runs are skipped and every run starts from that cache instead, so a folder
+//! the app has already analysed can be timed without re-running Vision on it.
+//! The first warm run is the one after a restart; later ones reuse what it
+//! recorded.
 
 use std::time::{Duration, Instant};
 
@@ -64,6 +70,15 @@ fn main() {
     let clear_cache = || {
         let _ = std::fs::remove_dir_all(&data_dir);
     };
+
+    if let Ok(seed) = std::env::var("PBG_BENCH_SEED_DB") {
+        std::fs::create_dir_all(&data_dir).expect("create data dir");
+        std::fs::copy(&seed, data_dir.join("photobook.sqlite")).expect("copy seed database");
+        let warm: Vec<Duration> = (1..=runs).map(|i| run(&format!("seeded {i}"))).collect();
+        println!("seeded first {:.2?}, median {:.2?}", warm[0], median(warm.clone()));
+        let _ = std::fs::remove_dir_all(&home);
+        return;
+    }
 
     clear_cache();
     run("spawn (discarded)");

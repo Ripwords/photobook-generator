@@ -247,3 +247,8 @@ It points `HOME` at a throwaway directory, so the app's real cache is never touc
 discards a first run that spawns the sidecar. Each run logs its split, for example
 `gather 419ms = hash+lookup 44ms + sidecar 370ms`, and the app writes the same line to its
 log for every analysis.
+
+To time a folder the app has already analysed without running Vision on it again, point
+`PBG_BENCH_SEED_DB` at a copy of the app's database (`sqlite3 <database> ".backup copy.sqlite"`).
+Every run then starts from that cache. The first run is the one after a restart. The first
+run after upgrading from a version without file stamps reads every file once.

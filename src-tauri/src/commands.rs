@@ -13,7 +13,7 @@ use crate::preview::BookLayout;
 use crate::project::{ExportRecord, Project};
 use crate::protocol::ExportItem;
 use crate::templates::{Library, Weights};
-use crate::{cluster, db::Db, ranking, sidecar::SidecarPool};
+use crate::{cluster, db::{Db, FileStamp}, ranking, sidecar::SidecarPool};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -532,7 +532,46 @@ pub(crate) fn lookup_cache(db: &Db, paths: &[String]) -> Result<CacheLookup, Str
     let mut misses = Vec::new();
     let mut hash_failures = 0usize;
 
-    for (path, hash) in paths.iter().zip(hash_files(paths)) {
+    let stamps: Vec<Option<FileStamp>> = paths.iter().map(|path| FileStamp::of(Path::new(path))).collect();
+    let mut hashes: Vec<Option<std::io::Result<String>>> = Vec::with_capacity(paths.len());
+    for (path, stamp) in paths.iter().zip(&stamps) {
+        let known = match stamp {
+            Some(stamp) => db
+                .get_stamp(path)
+                .map_err(|e| e.to_string())?
+                .filter(|(seen, _)| seen == stamp)
+                .map(|(_, hash)| Ok(hash)),
+            None => None,
+        };
+        hashes.push(known);
+    }
+
+    let unknown: Vec<String> = paths
+        .iter()
+        .zip(&hashes)
+        .filter(|(_, hash)| hash.is_none())
+        .map(|(path, _)| path.clone())
+        .collect();
+    let mut fresh = hash_files(&unknown).into_iter();
+    let mut stamped = Vec::new();
+    for ((path, stamp), hash) in paths.iter().zip(&stamps).zip(hashes.iter_mut()) {
+        if hash.is_none() {
+            let computed = fresh.next().expect("one hash per unstamped path");
+            if let (Ok(computed), Some(stamp)) = (&computed, stamp) {
+                stamped.push((path.as_str(), *stamp, computed.clone()));
+            }
+            *hash = Some(computed);
+        }
+    }
+    let rows: Vec<(&str, FileStamp, &str)> =
+        stamped.iter().map(|(path, stamp, hash)| (*path, *stamp, hash.as_str())).collect();
+    // A stamp only saves the next run a read, so failing to write one is
+    // not worth failing this run over.
+    if let Err(err) = db.put_stamps(&rows) {
+        log::warn!("failed to record file stamps: {err}");
+    }
+
+    for (path, hash) in paths.iter().zip(hashes.into_iter().flatten()) {
         match hash {
             Ok(hash) => match db.get_features(&hash).map_err(|e| e.to_string())? {
                 Some(json) => match serde_json::from_str::<serde_json::Value>(&json) {
@@ -2610,6 +2649,101 @@ mod tests {
         let expected_misses: Vec<String> = paths.iter().skip(1).step_by(2).cloned().collect();
         assert_eq!(hits, expected_hits);
         assert_eq!(result.misses, expected_misses);
+    }
+
+    /// Sets a file's modified time to `secs` after the epoch.
+    fn set_modified(path: &str, secs: u64) {
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(secs)).unwrap();
+    }
+
+    fn set_readable(path: &str, readable: bool) {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if readable { 0o644 } else { 0o000 };
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// The point of the stamp: a file seen before, with the same size and
+    /// modified time, is not read again. An unreadable file proves it --
+    /// hashing it would fail, so a hit means nothing opened it.
+    #[test]
+    fn an_unchanged_file_is_a_hit_without_being_read_again() {
+        let db = Db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("seen.arw").to_string_lossy().into_owned();
+        std::fs::write(&path, b"seen before").unwrap();
+        let hash = hash_file(Path::new(&path)).unwrap();
+        db.put_features(&hash, &path, r#"{"status":"ok"}"#).unwrap();
+        lookup_cache(&db, std::slice::from_ref(&path)).unwrap();
+
+        set_readable(&path, false);
+        let result = lookup_cache(&db, std::slice::from_ref(&path));
+        set_readable(&path, true);
+
+        let result = result.unwrap();
+        assert_eq!(result.hash_failures, 0, "the file was read again");
+        assert_eq!(result.hits.len(), 1);
+    }
+
+    /// A miss is stamped too: the sidecar caches its features under the hash
+    /// Rust computed, so the next run finds both without reading the file.
+    #[test]
+    fn a_miss_is_stamped_so_the_next_run_does_not_read_it() {
+        let db = Db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.arw").to_string_lossy().into_owned();
+        std::fs::write(&path, b"never analysed").unwrap();
+        assert_eq!(lookup_cache(&db, std::slice::from_ref(&path)).unwrap().misses.len(), 1);
+        let hash = hash_file(Path::new(&path)).unwrap();
+        db.put_features(&hash, &path, r#"{"status":"ok"}"#).unwrap();
+
+        set_readable(&path, false);
+        let result = lookup_cache(&db, std::slice::from_ref(&path));
+        set_readable(&path, true);
+
+        assert_eq!(result.unwrap().hits.len(), 1);
+    }
+
+    /// Same size, new contents, a new modified time: an edit made in place.
+    /// The old features must not come back for it.
+    #[test]
+    fn a_file_with_a_new_modified_time_is_read_again() {
+        let db = Db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edited.arw").to_string_lossy().into_owned();
+        std::fs::write(&path, b"before edit").unwrap();
+        set_modified(&path, 1_700_000_000);
+        let hash = hash_file(Path::new(&path)).unwrap();
+        db.put_features(&hash, &path, r#"{"status":"ok"}"#).unwrap();
+        lookup_cache(&db, std::slice::from_ref(&path)).unwrap();
+
+        std::fs::write(&path, b"after edits").unwrap();
+        set_modified(&path, 1_700_000_060);
+        let result = lookup_cache(&db, std::slice::from_ref(&path)).unwrap();
+
+        assert!(result.hits.is_empty(), "served the features of the old contents");
+        assert_eq!(result.misses, vec![path]);
+    }
+
+    /// New contents of a different length under the old modified time, which
+    /// a copy that preserves times produces.
+    #[test]
+    fn a_file_with_a_new_size_is_read_again() {
+        let db = Db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("resized.arw").to_string_lossy().into_owned();
+        std::fs::write(&path, b"short").unwrap();
+        set_modified(&path, 1_700_000_000);
+        let hash = hash_file(Path::new(&path)).unwrap();
+        db.put_features(&hash, &path, r#"{"status":"ok"}"#).unwrap();
+        lookup_cache(&db, std::slice::from_ref(&path)).unwrap();
+
+        std::fs::write(&path, b"a good deal longer").unwrap();
+        set_modified(&path, 1_700_000_000);
+        let result = lookup_cache(&db, std::slice::from_ref(&path)).unwrap();
+
+        assert!(result.hits.is_empty(), "served the features of the old contents");
+        assert_eq!(result.misses, vec![path]);
     }
 
     // --- `gather_chunked`: the incremental hash -> cache -> sidecar ->

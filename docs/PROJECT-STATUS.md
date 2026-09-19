@@ -63,6 +63,18 @@ harness (`bun run ui:mock`) covers the flow end to end in light and dark.
    sidecar call (planned) was dropped: hashing is now ~9 ms of a cold run, the most it
    could save.
 
+   **An unchanged file is not read again (2026-09-19).** On a real external drive the
+   table above did not hold: 283 Sony ARW files on `/Volumes/Universal` (exFAT, USB),
+   every one already analysed, took **72.96 s** to reopen, all of it `hash+lookup`. The
+   SSD folder above was fast because it was small and already in the OS file cache.
+   `file_stamps (path, size, modified_ns, hash)` now records each file's size and
+   modified time when it is hashed, and `lookup_cache` reuses the hash when both still
+   match, without opening the file. Same folder, `PBG_BENCH_SEED_DB` = a copy of the
+   app's database: first run 72.96 s (no stamps yet, so every file is read once), then
+   **17.9 ms** and 6.2 ms. An edit that keeps a file's size and modified time is not
+   noticed; tests pin that a new size or a new time is (`a_file_with_a_new_*`), and
+   comparing either alone fails one of them.
+
    Export, same folder, 4 sidecar calls of 8 items as `export_book` sends them, median of 5
    (the harness pipes `export` requests straight into the built sidecar):
 
@@ -178,7 +190,7 @@ Apple Vision plus local embeddings rather than a VLM.
 
 All 15 planned tasks are done and reviewed, plus four unplanned additions.
 
-**Working end to end:** point the app at a folder → it hashes each file, consults a SQLite
+**Working end to end:** point the app at a folder → it hashes each new or changed file, consults a SQLite
 cache, sends only cache misses to the Swift sidecar, runs Apple Vision (aesthetics,
 `isUtility`, faces with pose and capture quality, saliency, horizon, scene tags, text
 detection) plus classical metrics (tile-max sharpness, Oklab-ish palette, perceptual
