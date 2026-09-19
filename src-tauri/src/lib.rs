@@ -65,7 +65,14 @@ pub fn run() {
             commands::rename_project,
             commands::set_favourite,
             commands::reveal_in_finder,
+            commands::cache_status,
+            commands::set_cache_limit,
+            commands::clear_unused_cache,
         ])
+        .setup(|app| {
+            commands::spawn_cache_enforcement(app.handle().clone());
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

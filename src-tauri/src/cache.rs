@@ -32,7 +32,11 @@ pub struct EvictionPlan {
 pub fn plan_eviction(entries: &[CacheEntry], limit_bytes: u64) -> EvictionPlan {
     let mut bytes: u64 = entries.iter().map(|e| e.bytes).sum();
     let mut candidates: Vec<&CacheEntry> = entries.iter().filter(|e| !e.pinned).collect();
-    candidates.sort_by(|a, b| a.last_used_at.cmp(&b.last_used_at).then_with(|| a.hash.cmp(&b.hash)));
+    candidates.sort_by(|a, b| {
+        a.last_used_at
+            .cmp(&b.last_used_at)
+            .then_with(|| a.hash.cmp(&b.hash))
+    });
     let mut evict = Vec::new();
     for entry in candidates {
         if bytes <= limit_bytes {
@@ -41,7 +45,11 @@ pub fn plan_eviction(entries: &[CacheEntry], limit_bytes: u64) -> EvictionPlan {
         bytes -= entry.bytes;
         evict.push(entry.hash.clone());
     }
-    EvictionPlan { evict, bytes_after: bytes, over_budget: bytes > limit_bytes }
+    EvictionPlan {
+        evict,
+        bytes_after: bytes,
+        over_budget: bytes > limit_bytes,
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -85,7 +93,10 @@ pub struct CacheStatus {
 /// that moved from one to the other in between.
 pub fn pins(db: &Db, live: impl IntoIterator<Item = String>) -> rusqlite::Result<HashSet<String>> {
     let mut pins: HashSet<String> = live.into_iter().collect();
-    for sql in ["SELECT hash FROM project_photos", "SELECT hash FROM project_photo_overrides"] {
+    for sql in [
+        "SELECT hash FROM project_photos",
+        "SELECT hash FROM project_photo_overrides",
+    ] {
         let mut stmt = db.conn.prepare(sql)?;
         for hash in stmt.query_map([], |r| r.get::<_, String>(0))? {
             pins.insert(hash?);
@@ -103,10 +114,16 @@ pub fn pins(db: &Db, live: impl IntoIterator<Item = String>) -> rusqlite::Result
         if let Some(overrides) = draft["overrides"].as_object() {
             pins.extend(overrides.keys().cloned());
         }
-        let folders = draft["folders"].as_array().into_iter().flatten().filter_map(|f| f.as_str());
+        let folders = draft["folders"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|f| f.as_str());
         for folder in folders {
             let folder = folder.trim_end_matches('/');
-            for hash in under.query_map([folder.to_string(), format!("{folder}/")], |r| r.get::<_, String>(0))? {
+            for hash in under.query_map([folder.to_string(), format!("{folder}/")], |r| {
+                r.get::<_, String>(0)
+            })? {
                 pins.insert(hash?);
             }
         }
@@ -122,16 +139,26 @@ pub fn pins(db: &Db, live: impl IntoIterator<Item = String>) -> rusqlite::Result
 /// The caller must hold the cache gate exclusively. The sidecar writes a
 /// thumbnail before its row exists, so running beside an analysis would
 /// delete that thumbnail as an orphan.
-pub fn enforce(db: &Db, thumb_dir: &Path, pins: &HashSet<String>, limit: u64) -> rusqlite::Result<CacheReport> {
+pub fn enforce(
+    db: &Db,
+    thumb_dir: &Path,
+    pins: &HashSet<String>,
+    limit: u64,
+) -> rusqlite::Result<CacheReport> {
     let bytes_before = measure(db, thumb_dir, pins)?.0;
 
-    let stale_rows_purged =
-        db.conn.execute("DELETE FROM features WHERE analyzer_version != ?1", [ANALYZER_VERSION])?;
+    let stale_rows_purged = db.conn.execute(
+        "DELETE FROM features WHERE analyzer_version != ?1",
+        [ANALYZER_VERSION],
+    )?;
 
     let rows = current_rows(db)?;
     let mut thumbs = thumbnails(thumb_dir);
-    let orphans: Vec<String> =
-        thumbs.keys().filter(|h| !rows.contains_key(*h) && !pins.contains(*h)).cloned().collect();
+    let orphans: Vec<String> = thumbs
+        .keys()
+        .filter(|h| !rows.contains_key(*h) && !pins.contains(*h))
+        .cloned()
+        .collect();
     let orphan_thumbnails_removed = remove_thumbnails(thumb_dir, &orphans);
     for hash in &orphans {
         thumbs.remove(hash);
@@ -139,12 +166,25 @@ pub fn enforce(db: &Db, thumb_dir: &Path, pins: &HashSet<String>, limit: u64) ->
 
     let mut entries: HashMap<&str, CacheEntry> = HashMap::new();
     for (hash, &(bytes, last_used_at)) in &rows {
-        entries.insert(hash, CacheEntry { hash: hash.clone(), bytes, last_used_at, pinned: pins.contains(hash) });
+        entries.insert(
+            hash,
+            CacheEntry {
+                hash: hash.clone(),
+                bytes,
+                last_used_at,
+                pinned: pins.contains(hash),
+            },
+        );
     }
     for (hash, &bytes) in &thumbs {
         entries
             .entry(hash)
-            .or_insert_with(|| CacheEntry { hash: hash.clone(), bytes: 0, last_used_at: 0, pinned: pins.contains(hash) })
+            .or_insert_with(|| CacheEntry {
+                hash: hash.clone(),
+                bytes: 0,
+                last_used_at: 0,
+                pinned: pins.contains(hash),
+            })
             .bytes += bytes;
     }
     let entries: Vec<CacheEntry> = entries.into_values().collect();
@@ -160,8 +200,7 @@ pub fn enforce(db: &Db, thumb_dir: &Path, pins: &HashSet<String>, limit: u64) ->
     tx.commit()?;
     remove_thumbnails(thumb_dir, &plan.evict);
 
-    let stamps_removed =
-        db.conn.execute("DELETE FROM file_stamps WHERE hash NOT IN (SELECT hash FROM features)", [])?;
+    let stamps_removed = remove_stamps(db, pins)?;
     let vacuumed = reclaim(db)?;
 
     Ok(CacheReport {
@@ -176,12 +215,46 @@ pub fn enforce(db: &Db, thumb_dir: &Path, pins: &HashSet<String>, limit: u64) ->
     })
 }
 
+/// File stamps naming a hash that is no longer cached. A pinned hash keeps
+/// its stamp even without a row: re-analysing that book then skips hashing
+/// every photo again, and a stamp is a hundred-odd bytes.
+fn remove_stamps(db: &Db, pins: &HashSet<String>) -> rusqlite::Result<usize> {
+    let tx = db.conn.unchecked_transaction()?;
+    let dangling: Vec<(String, String)> = tx
+        .prepare(
+            "SELECT path, hash FROM file_stamps WHERE hash NOT IN (SELECT hash FROM features)",
+        )?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut removed = 0;
+    {
+        let mut delete = tx.prepare("DELETE FROM file_stamps WHERE path = ?1")?;
+        for (path, hash) in &dangling {
+            if !pins.contains(hash) {
+                removed += delete.execute([path])?;
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(removed)
+}
+
 /// What the cache holds now, without changing anything: current rows and
 /// every thumbnail on disk, orphans included, since they take space until
 /// the next enforcement removes them.
-pub fn status(db: &Db, thumb_dir: &Path, pins: &HashSet<String>, limit: u64) -> rusqlite::Result<CacheStatus> {
+pub fn status(
+    db: &Db,
+    thumb_dir: &Path,
+    pins: &HashSet<String>,
+    limit: u64,
+) -> rusqlite::Result<CacheStatus> {
     let (used_bytes, pinned_bytes) = measure(db, thumb_dir, pins)?;
-    Ok(CacheStatus { used_bytes, pinned_bytes, limit_bytes: limit, over_budget: used_bytes > limit })
+    Ok(CacheStatus {
+        used_bytes,
+        pinned_bytes,
+        limit_bytes: limit,
+        over_budget: used_bytes > limit,
+    })
 }
 
 /// Free pages SQLite holds after a delete before a VACUUM is worth rewriting
@@ -190,7 +263,9 @@ pub fn status(db: &Db, thumb_dir: &Path, pins: &HashSet<String>, limit: u64) -> 
 const VACUUM_MIN_FREE_BYTES: i64 = 4 * 1024 * 1024;
 
 fn reclaim(db: &Db) -> rusqlite::Result<bool> {
-    let free_pages: i64 = db.conn.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+    let free_pages: i64 = db
+        .conn
+        .query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
     let page_size: i64 = db.conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
     if free_pages * page_size < VACUUM_MIN_FREE_BYTES {
         return Ok(false);
@@ -198,7 +273,10 @@ fn reclaim(db: &Db) -> rusqlite::Result<bool> {
     // Another connection reading or writing makes VACUUM fail with
     // SQLITE_BUSY. The free pages stay reusable, and the next enforcement
     // tries again.
-    if let Err(err) = db.conn.execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);") {
+    if let Err(err) = db
+        .conn
+        .execute_batch("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);")
+    {
         log::warn!("cache: VACUUM skipped: {err}");
         return Ok(false);
     }
@@ -208,7 +286,10 @@ fn reclaim(db: &Db) -> rusqlite::Result<bool> {
 fn measure(db: &Db, thumb_dir: &Path, pins: &HashSet<String>) -> rusqlite::Result<(u64, u64)> {
     let rows = current_rows(db)?;
     let thumbs = thumbnails(thumb_dir);
-    let sized = rows.iter().map(|(h, &(bytes, _))| (h, bytes)).chain(thumbs.iter().map(|(h, &b)| (h, b)));
+    let sized = rows
+        .iter()
+        .map(|(h, &(bytes, _))| (h, bytes))
+        .chain(thumbs.iter().map(|(h, &b)| (h, b)));
     let (mut used, mut pinned) = (0, 0);
     for (hash, bytes) in sized {
         used += bytes;
@@ -226,7 +307,12 @@ fn current_rows(db: &Db) -> rusqlite::Result<HashMap<String, (u64, i64)>> {
          FROM features WHERE analyzer_version = ?1",
     )?;
     let rows = stmt
-        .query_map([ANALYZER_VERSION], |r| Ok((r.get::<_, String>(0)?, (r.get::<_, i64>(1)? as u64, r.get(2)?))))?
+        .query_map([ANALYZER_VERSION], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, i64>(1)? as u64, r.get(2)?),
+            ))
+        })?
         .collect();
     rows
 }
@@ -248,7 +334,10 @@ fn thumbnails(dir: &Path) -> HashMap<String, u64> {
         .filter_map(|entry| {
             let name = entry.file_name().into_string().ok()?;
             let hash = name.strip_suffix(".jpg")?;
-            let is_hash = hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+            let is_hash = hash.len() == 64
+                && hash
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
             let meta = entry.metadata().ok().filter(|m| m.is_file())?;
             is_hash.then(|| (hash.to_string(), meta.len()))
         })
@@ -258,14 +347,16 @@ fn thumbnails(dir: &Path) -> HashMap<String, u64> {
 fn remove_thumbnails(dir: &Path, hashes: &[String]) -> usize {
     hashes
         .iter()
-        .filter(|hash| match std::fs::remove_file(dir.join(format!("{hash}.jpg"))) {
-            Ok(()) => true,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
-            Err(err) => {
-                log::warn!("cache: cannot remove thumbnail {hash}: {err}");
-                false
-            }
-        })
+        .filter(
+            |hash| match std::fs::remove_file(dir.join(format!("{hash}.jpg"))) {
+                Ok(()) => true,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+                Err(err) => {
+                    log::warn!("cache: cannot remove thumbnail {hash}: {err}");
+                    false
+                }
+            },
+        )
         .count()
 }
 
@@ -274,14 +365,26 @@ mod tests {
     use super::*;
 
     fn entry(hash: &str, bytes: u64, last_used_at: i64, pinned: bool) -> CacheEntry {
-        CacheEntry { hash: hash.into(), bytes, last_used_at, pinned }
+        CacheEntry {
+            hash: hash.into(),
+            bytes,
+            last_used_at,
+            pinned,
+        }
     }
 
     #[test]
     fn plan_under_the_limit_evicts_nothing() {
         let entries = [entry("a", 10, 1, false), entry("b", 20, 2, false)];
         let plan = plan_eviction(&entries, 30);
-        assert_eq!(plan, EvictionPlan { evict: vec![], bytes_after: 30, over_budget: false });
+        assert_eq!(
+            plan,
+            EvictionPlan {
+                evict: vec![],
+                bytes_after: 30,
+                over_budget: false
+            }
+        );
     }
 
     #[test]
@@ -299,7 +402,11 @@ mod tests {
 
     #[test]
     fn plan_breaks_a_last_used_tie_by_hash() {
-        let entries = [entry("b", 10, 5, false), entry("a", 10, 5, false), entry("c", 10, 9, false)];
+        let entries = [
+            entry("b", 10, 5, false),
+            entry("a", 10, 5, false),
+            entry("c", 10, 9, false),
+        ];
         assert_eq!(plan_eviction(&entries, 20).evict, vec!["a".to_string()]);
     }
 
@@ -318,7 +425,11 @@ mod tests {
 
     #[test]
     fn plan_with_a_zero_limit_evicts_every_unpinned_entry() {
-        let entries = [entry("a", 1, 3, false), entry("p", 1, 1, true), entry("b", 1, 2, false)];
+        let entries = [
+            entry("a", 1, 3, false),
+            entry("p", 1, 1, true),
+            entry("b", 1, 2, false),
+        ];
         let plan = plan_eviction(&entries, 0);
         assert_eq!(plan.evict, vec!["b".to_string(), "a".to_string()]);
         assert_eq!(plan.bytes_after, 1);
@@ -334,9 +445,13 @@ mod tests {
     }
 
     fn put(db: &Db, hash: &str, json_bytes: usize, last_used_at: i64) {
-        db.put_features(hash, "/p.jpg", &"x".repeat(json_bytes)).unwrap();
+        db.put_features(hash, "/p.jpg", &"x".repeat(json_bytes))
+            .unwrap();
         db.conn
-            .execute("UPDATE features SET last_used_at = ?1 WHERE hash = ?2", rusqlite::params![last_used_at, hash])
+            .execute(
+                "UPDATE features SET last_used_at = ?1 WHERE hash = ?2",
+                rusqlite::params![last_used_at, hash],
+            )
             .unwrap();
     }
 
@@ -407,7 +522,10 @@ mod tests {
             format!("{}.jpg", &h(4)[1..]),
             format!("{}.jpeg", h(5)),
         ];
-        for name in others.iter().chain([&format!("{kept}.jpg"), &format!("{orphan}.jpg")]) {
+        for name in others
+            .iter()
+            .chain([&format!("{kept}.jpg"), &format!("{orphan}.jpg")])
+        {
             thumb(dir.path(), name, 5);
         }
 
@@ -417,7 +535,10 @@ mod tests {
         assert!(!dir.path().join(format!("{orphan}.jpg")).exists());
         assert!(dir.path().join(format!("{kept}.jpg")).exists());
         for name in &others {
-            assert!(dir.path().join(name).exists(), "{name} is not a thumbnail and must be left alone");
+            assert!(
+                dir.path().join(name).exists(),
+                "{name} is not a thumbnail and must be left alone"
+            );
         }
     }
 
@@ -427,15 +548,29 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         put(&db, &h(1), 10, 1);
         put_stale(&db, &h(2));
-        let stamp = crate::db::FileStamp { size: 1, modified_ns: 1 };
-        db.put_stamps(&[("/a.jpg", stamp, &h(1)), ("/b.jpg", stamp, &h(2)), ("/c.jpg", stamp, &h(3))]).unwrap();
+        let stamp = crate::db::FileStamp {
+            size: 1,
+            modified_ns: 1,
+        };
+        put_stale(&db, &h(4));
+        db.put_stamps(&[
+            ("/a.jpg", stamp, &h(1)),
+            ("/b.jpg", stamp, &h(2)),
+            ("/c.jpg", stamp, &h(3)),
+            ("/book.jpg", stamp, &h(4)),
+        ])
+        .unwrap();
 
-        let report = enforce(&db, dir.path(), &HashSet::new(), u64::MAX).unwrap();
+        let report = enforce(&db, dir.path(), &pinned(&[&h(4)]), u64::MAX).unwrap();
 
         assert_eq!(report.stamps_removed, 2);
         assert!(db.get_stamp("/a.jpg").unwrap().is_some());
         assert!(db.get_stamp("/b.jpg").unwrap().is_none());
         assert!(db.get_stamp("/c.jpg").unwrap().is_none());
+        assert!(
+            db.get_stamp("/book.jpg").unwrap().is_some(),
+            "re-analysing a saved book whose rows went stale skips hashing its photos again"
+        );
     }
 
     #[test]
@@ -463,7 +598,11 @@ mod tests {
         let again = enforce(&db, dir.path(), &pinned(&[&book]), 300).unwrap();
         assert_eq!(
             again,
-            CacheReport { bytes_before: 300, bytes_after: 300, ..CacheReport::default() },
+            CacheReport {
+                bytes_before: 300,
+                bytes_after: 300,
+                ..CacheReport::default()
+            },
             "a second run converges and does nothing"
         );
     }
@@ -505,7 +644,12 @@ mod tests {
 
         assert_eq!(
             status,
-            CacheStatus { used_bytes: 177, pinned_bytes: 130, limit_bytes: 150, over_budget: true }
+            CacheStatus {
+                used_bytes: 177,
+                pinned_bytes: 130,
+                limit_bytes: 150,
+                over_budget: true
+            }
         );
         assert_eq!(rows(&db).len(), 3);
         assert_eq!(files(dir.path()).len(), 2);
@@ -515,11 +659,25 @@ mod tests {
     fn pins_cover_every_book_including_trashed_ones_their_overrides_drafts_and_open_runs() {
         use crate::book::cull::{Override, Overrides};
         let db = Db::open_in_memory().unwrap();
-        let book = crate::book::pace::Book { controls: Default::default(), seed: 1, dropped: 0, pages: vec![] };
+        let book = crate::book::pace::Book {
+            controls: Default::default(),
+            seed: 1,
+            dropped: 0,
+            pages: vec![],
+        };
         let mut overrides = Overrides::new();
         overrides.set("book-override", Override::Exclude);
-        db.save_project("Live", "/p", &book, &["live-photo".into()], &overrides).unwrap();
-        let trashed = db.save_project("Trashed", "/p", &book, &["trashed-photo".into()], &Overrides::new()).unwrap();
+        db.save_project("Live", "/p", &book, &["live-photo".into()], &overrides)
+            .unwrap();
+        let trashed = db
+            .save_project(
+                "Trashed",
+                "/p",
+                &book,
+                &["trashed-photo".into()],
+                &Overrides::new(),
+            )
+            .unwrap();
         db.delete_project(trashed).unwrap();
         db.save_draft(
             1,
@@ -527,8 +685,12 @@ mod tests {
         )
         .unwrap();
         db.save_draft(2, "not json").unwrap();
-        db.save_draft(3, r#"{"folders":"not a list","overrides":[]}"#).unwrap();
-        let stamp = crate::db::FileStamp { size: 1, modified_ns: 1 };
+        db.save_draft(3, r#"{"folders":"not a list","overrides":[]}"#)
+            .unwrap();
+        let stamp = crate::db::FileStamp {
+            size: 1,
+            modified_ns: 1,
+        };
         db.put_stamps(&[
             ("/photos/kyoto/a.jpg", stamp, "in-draft-folder"),
             ("/photos/kyoto/day2/b.jpg", stamp, "in-draft-subfolder"),
@@ -552,5 +714,171 @@ mod tests {
                 "trashed-photo",
             ]
         );
+    }
+
+    /// Runs enforcement against a COPY of a real database and thumbnail
+    /// directory and reports what it did, and whether every saved book
+    /// (trashed ones included) still resolves before and after:
+    ///
+    /// PBG_CACHE_DB=<copy>/photobook.sqlite PBG_CACHE_THUMBS=<copy>/thumbnails \
+    /// PBG_CACHE_LIMIT=20000000 cargo test --lib real_cache -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn real_cache_enforcement_report() {
+        let db_path = std::path::PathBuf::from(std::env::var("PBG_CACHE_DB").unwrap());
+        let thumbs = std::path::PathBuf::from(std::env::var("PBG_CACHE_THUMBS").unwrap());
+        let limit: u64 = std::env::var("PBG_CACHE_LIMIT").unwrap().parse().unwrap();
+        assert!(
+            !db_path.starts_with(dirs_home().join("Library/Application Support")),
+            "run this against a copy, never the app's own data"
+        );
+
+        let db = Db::open(&db_path).unwrap();
+        let pins = pins(&db, Vec::new()).unwrap();
+        println!("pinned hashes: {}", pins.len());
+        snapshot("before", &db, &db_path, &thumbs, &pins, limit);
+
+        if std::env::var("PBG_CACHE_TOUCH").is_ok() {
+            measure_touch(&db);
+        }
+        let unpinned_last_used: HashMap<String, i64> = current_rows(&db)
+            .unwrap()
+            .into_iter()
+            .filter(|(hash, _)| !pins.contains(hash))
+            .map(|(hash, (_, last_used))| (hash, last_used))
+            .collect();
+
+        let started = std::time::Instant::now();
+        let report = enforce(&db, &thumbs, &pins, limit).unwrap();
+        println!("enforce({limit}) in {:.2?}: {report:?}", started.elapsed());
+        let survivors = current_rows(&db).unwrap();
+        let (evicted, kept): (Vec<_>, Vec<_>) = unpinned_last_used
+            .iter()
+            .partition(|(hash, _)| !survivors.contains_key(*hash));
+        println!(
+            "unpinned: {} evicted (last used {:?}..{:?}), {} kept (last used {:?}..{:?})",
+            evicted.len(),
+            evicted.iter().map(|(_, t)| **t).min(),
+            evicted.iter().map(|(_, t)| **t).max(),
+            kept.len(),
+            kept.iter().map(|(_, t)| **t).min(),
+            kept.iter().map(|(_, t)| **t).max(),
+        );
+        snapshot("after", &db, &db_path, &thumbs, &pins, limit);
+
+        let started = std::time::Instant::now();
+        let again = enforce(&db, &thumbs, &pins, limit).unwrap();
+        println!("second enforce in {:.2?}: {again:?}", started.elapsed());
+    }
+
+    /// The touch's cost on the real cache-hit path: every stamped file
+    /// looked up in the same ramped chunks an analysis uses, with the touch
+    /// each chunk does timed again on its own.
+    fn measure_touch(db: &Db) {
+        let paths: Vec<String> = db
+            .conn
+            .prepare("SELECT path FROM file_stamps ORDER BY path")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let chunks = crate::sidecar::chunk_paths_ramped(&paths);
+        let (mut lookup, mut touch, mut hits) =
+            (std::time::Duration::ZERO, std::time::Duration::ZERO, 0);
+        for chunk in &chunks {
+            let started = std::time::Instant::now();
+            let found = crate::commands::lookup_cache(db, chunk).unwrap();
+            lookup += started.elapsed();
+            let hashes: Vec<&str> = found
+                .hits
+                .iter()
+                .filter_map(|f| f["hash"].as_str())
+                .collect();
+            hits += hashes.len();
+            let started = std::time::Instant::now();
+            db.touch_features(&hashes).unwrap();
+            touch += started.elapsed();
+        }
+        println!(
+            "touch: {} paths in {} chunks, {hits} hits; lookup_cache total {lookup:.2?} (touch included), \
+             the touches alone {touch:.2?}",
+            paths.len(),
+            chunks.len()
+        );
+    }
+
+    fn dirs_home() -> std::path::PathBuf {
+        std::path::PathBuf::from(std::env::var("HOME").unwrap())
+    }
+
+    fn snapshot(
+        label: &str,
+        db: &Db,
+        db_path: &Path,
+        thumbs: &Path,
+        pins: &HashSet<String>,
+        limit: u64,
+    ) {
+        let file = |p: &Path| std::fs::metadata(p).map_or(0, |m| m.len());
+        let wal = db_path.with_extension("sqlite-wal");
+        let thumb_bytes: u64 = thumbnails(thumbs).values().sum();
+        println!(
+            "[{label}] sqlite {} B (+wal {} B), thumbnails {} files {} B",
+            file(db_path),
+            file(&wal),
+            thumbnails(thumbs).len(),
+            thumb_bytes
+        );
+        let by_version: Vec<(i64, i64)> = db
+            .conn
+            .prepare("SELECT analyzer_version, count(*) FROM features GROUP BY analyzer_version")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let stamps: i64 = db
+            .conn
+            .query_row("SELECT count(*) FROM file_stamps", [], |r| r.get(0))
+            .unwrap();
+        let free: i64 = db
+            .conn
+            .query_row("PRAGMA freelist_count", [], |r| r.get(0))
+            .unwrap();
+        println!("[{label}] rows by analyzer_version {by_version:?}, file_stamps {stamps}, freelist pages {free}");
+        println!("[{label}] {:?}", status(db, thumbs, pins, limit).unwrap());
+        let projects: Vec<(i64, String, Option<i64>)> = db
+            .conn
+            .prepare("SELECT id, name, deleted_at FROM projects ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        for (id, name, deleted_at) in projects {
+            let hashes: Vec<String> = db
+                .conn
+                .prepare("SELECT hash FROM project_photos WHERE project_id = ?1 ORDER BY position")
+                .unwrap()
+                .query_map([id], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            let resolved = crate::commands::resolve_photos(db, &hashes);
+            println!(
+                "[{label}] project {id} {name:?}{} ({} photos): {}",
+                if deleted_at.is_some() {
+                    " (trashed)"
+                } else {
+                    ""
+                },
+                hashes.len(),
+                match resolved {
+                    Ok(photos) => format!("Ok, {} photos", photos.len()),
+                    Err(err) => format!("Err: {err}"),
+                }
+            );
+        }
     }
 }
