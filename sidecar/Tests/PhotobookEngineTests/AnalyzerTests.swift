@@ -71,8 +71,12 @@ private func fixture(_ name: String) -> String {
     worker.start()
     // Waiting here would park a cooperative-pool thread for the whole batch;
     // see offCooperativePool's doc comment.
-    let outcome = await offCooperativePool { done.wait(timeout: .now() + 120) }
-    #expect(outcome == .success, "analyze deadlocked: did not complete within 120s")
+    // The budget has to clear a slow runner, not just a hang: the 3-core
+    // macos-15 runner takes 87-103s for this batch, and at 120s it failed
+    // twice on 2026-09-20 with no deadlock in the change. A real hang still
+    // fails here, and `scripts/ci-swift-test.sh` samples stacks at 300s.
+    let outcome = await offCooperativePool { done.wait(timeout: .now() + 200) }
+    #expect(outcome == .success, "analyze deadlocked: did not complete within 200s")
     guard outcome == .success else { return }
 
     #expect(records.count == 300)
