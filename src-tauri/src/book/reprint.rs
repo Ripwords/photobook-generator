@@ -182,6 +182,7 @@ mod tests {
         let ps = photos();
         Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: BTreeMap::new(),
             seed: 99,
             dropped: 3,

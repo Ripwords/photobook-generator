@@ -261,6 +261,7 @@ pub(crate) mod tests {
     pub(crate) fn small_book() -> Book {
         let mut book = Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             pages: vec![
                 page(
                     1,
@@ -373,6 +374,7 @@ pub(crate) mod tests {
         let photos = vec![source(&secret), source(&other)];
         let book = Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             pages: vec![page(
                 1,
                 Side::Right,

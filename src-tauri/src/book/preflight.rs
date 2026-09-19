@@ -407,6 +407,7 @@ mod tests {
     fn book_with(slot: Rect, crop: Rect, side: Side) -> Book {
         Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
@@ -873,6 +874,7 @@ mod tests {
         let short_slot = Rect::new(0.01, 0.0, 0.5, 1.0); // declares left bleed but stops short
         let book = Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,

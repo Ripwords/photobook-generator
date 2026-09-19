@@ -149,6 +149,7 @@ mod tests {
         let photos = vec![photo("/a.jpg", "haaa1111")];
         let book = Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 4242,
             dropped: 0,
@@ -180,6 +181,7 @@ mod tests {
         let photos = vec![photo("/a.jpg", "haaa1111")];
         let book = Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
@@ -227,6 +229,7 @@ mod tests {
             seed: 1,
             dropped: 0,
             spec,
+            cover: Default::default(),
             pages: vec![Page {
                 number: 1,
                 side: Side::Right,
@@ -263,6 +266,7 @@ mod tests {
         let crop = Rect::new(0.05, 0.1, 0.6, 0.7);
         let book = Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
@@ -296,6 +300,7 @@ mod tests {
         ];
         let book = Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 9,
             dropped: 0,

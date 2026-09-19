@@ -345,6 +345,7 @@ mod tests {
     fn book() -> Book {
         Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 424_242,
             dropped: 2,
