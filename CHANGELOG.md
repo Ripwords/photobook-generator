@@ -1,6 +1,26 @@
 # Changelog
 
 
+## v0.1.0...master
+
+[compare changes](https://github.com/Ripwords/photobook-generator/compare/v0.1.0...master)
+
+### 🚀 Enhancements
+
+- **chat:** Stream replies live and show the model's thinking ([aa2d5b9](https://github.com/Ripwords/photobook-generator/commit/aa2d5b9))
+
+### 🩹 Fixes
+
+- **bundle:** Ship the app icon in the macOS bundle ([ae2c05b](https://github.com/Ripwords/photobook-generator/commit/ae2c05b))
+
+### 🤖 CI
+
+- Publish a release only after CI passes on the tagged commit ([38f9276](https://github.com/Ripwords/photobook-generator/commit/38f9276))
+
+### ❤️ Contributors
+
+- JJ <teohjjteoh@gmail.com>
+
 ## ...master
 
 
