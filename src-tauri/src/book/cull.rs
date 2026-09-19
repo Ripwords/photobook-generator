@@ -376,9 +376,18 @@ impl FromIterator<(String, Override)> for Overrides {
 
 /// The single authority on which photo survives.
 ///
-/// Drops `is_utility`, then keeps one winner per near-duplicate cluster,
-/// ranked sharpness percentile -> face capture quality -> aesthetic
-/// percentile.
+/// Drops `is_utility`, then keeps one winner per near-duplicate cluster.
+/// The winner is ranked by:
+///
+/// 1. exposure: a frame with more than `CLIPPED_LIMIT` of its pixels crushed
+///    to black or blown to white loses to any frame that is not;
+/// 2. density: how many other photos in the cluster lie within
+///    `cluster::SIMILAR_DISTANCE` of its feature print. The photo most like
+///    the rest is the one the burst was aiming at, where the sharpest frame
+///    is often a stray one taken mid-turn;
+/// 3. sharpness percentile -> face capture quality -> aesthetic percentile.
+///
+/// A photo with no feature print has density 0.
 ///
 /// **Cull proposes; the user disposes.** `overrides` is applied on top of
 /// that verdict, and it wins:
@@ -413,7 +422,7 @@ impl FromIterator<(String, Override)> for Overrides {
 pub fn cull(photos: &[Photo], overrides: &Overrides) -> Vec<Photo> {
     use std::collections::BTreeMap;
 
-    let mut best: BTreeMap<u32, &Photo> = BTreeMap::new();
+    let mut contests: BTreeMap<u32, Vec<&Photo>> = BTreeMap::new();
     let mut included: Vec<&Photo> = Vec::new();
 
     for photo in photos {
@@ -430,13 +439,7 @@ pub fn cull(photos: &[Photo], overrides: &Overrides) -> Vec<Photo> {
                 if photo.is_utility {
                     continue;
                 }
-                best.entry(photo.near_dup_cluster)
-                    .and_modify(|incumbent| {
-                        if beats(photo, incumbent) {
-                            *incumbent = photo;
-                        }
-                    })
-                    .or_insert(photo);
+                contests.entry(photo.near_dup_cluster).or_default().push(photo);
             }
         }
     }
@@ -446,9 +449,41 @@ pub fn cull(photos: &[Photo], overrides: &Overrides) -> Vec<Photo> {
     // pins with deliberately unsorted input. The final sort by path then
     // interleaves the explicit choices with the automatic survivors rather
     // than appending them, because `pack` cuts chapters in this order.
-    let mut kept: Vec<Photo> = best.into_values().chain(included).cloned().collect();
+    let best = contests.into_values().filter_map(|contestants| winner(&contestants));
+    let mut kept: Vec<Photo> = best.chain(included).cloned().collect();
     kept.sort_by(|a, b| a.path.cmp(&b.path));
     kept
+}
+
+/// The share of clipped pixels past which a frame is badly exposed. Bali's
+/// three frames past it are moon shots that are almost entirely black.
+const CLIPPED_LIMIT: f64 = 0.9;
+
+fn winner<'a>(contestants: &[&'a Photo]) -> Option<&'a Photo> {
+    let exposed = |p: &Photo| p.clipped_low <= CLIPPED_LIMIT && p.clipped_high <= CLIPPED_LIMIT;
+    let density = |p: &Photo| {
+        let Some(print) = &p.feature_print else { return 0 };
+        contestants
+            .iter()
+            .filter(|other| !std::ptr::eq(**other, p))
+            .filter_map(|other| other.feature_print.as_deref())
+            .filter_map(|other| crate::cluster::feature_distance(print, other))
+            .filter(|&d| d <= crate::cluster::SIMILAR_DISTANCE)
+            .count()
+    };
+    contestants
+        .iter()
+        .map(|&p| (exposed(p), density(p), p))
+        .reduce(|incumbent, challenger| {
+            let (ie, id, ip) = incumbent;
+            let (ce, cd, cp) = challenger;
+            if (ce, cd) > (ie, id) || ((ce, cd) == (ie, id) && beats(cp, ip)) {
+                challenger
+            } else {
+                incumbent
+            }
+        })
+        .map(|(_, _, p)| p)
 }
 
 fn beats(challenger: &Photo, incumbent: &Photo) -> bool {
@@ -491,6 +526,53 @@ mod tests {
             captured_at: None,
             clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
         }
+    }
+
+    fn printed(path: &str, sharp: u8, x: f32) -> Photo {
+        Photo { feature_print: Some(vec![x, 0.0]), ..photo(path, 7, sharp, 50) }
+    }
+
+    fn winner(photos: &[Photo]) -> String {
+        let kept = cull(photos, &Overrides::new());
+        assert_eq!(kept.len(), 1, "one cluster keeps one photo");
+        kept[0].path.clone()
+    }
+
+    /// Densities at r = 0.35 are 2, 2, 3 and 1. The winner is the least sharp
+    /// photo, so a ranking that still led with sharpness would pick /d.jpg.
+    #[test]
+    fn cull_keeps_the_photo_most_like_the_rest_of_its_cluster() {
+        let photos = [
+            printed("/a.jpg", 50, 0.0),
+            printed("/b.jpg", 60, 0.1),
+            printed("/c.jpg", 40, 0.2),
+            printed("/d.jpg", 90, 0.5),
+        ];
+        assert_eq!(winner(&photos), "/c.jpg");
+    }
+
+    /// Equal density everywhere, so the sharpness ranking would pick the
+    /// clipped frame; the exposure screen must stop it.
+    #[test]
+    fn cull_never_picks_a_clipped_frame_over_one_that_is_exposed() {
+        let dark = Photo { clipped_low: 0.95, ..printed("/a.jpg", 90, 0.0) };
+        assert_eq!(winner(&[dark, printed("/b.jpg", 10, 0.1)]), "/b.jpg");
+        let blown = Photo { clipped_high: 0.95, ..printed("/a.jpg", 90, 0.0) };
+        assert_eq!(winner(&[blown, printed("/b.jpg", 10, 0.1)]), "/b.jpg");
+    }
+
+    /// A pHash can join a photo with no print to one that has one. A print
+    /// with no neighbours is density 0, the same as no print, so sharpness
+    /// decides; counting the photo as its own neighbour would hand it the win.
+    #[test]
+    fn cull_does_not_count_a_photo_as_its_own_neighbour() {
+        assert_eq!(winner(&[printed("/a.jpg", 10, 0.0), photo("/b.jpg", 7, 90, 50)]), "/b.jpg");
+    }
+
+    #[test]
+    fn cull_still_keeps_one_photo_when_every_frame_is_clipped() {
+        let dark = |path, sharp| Photo { clipped_low: 0.95, ..printed(path, sharp, 0.0) };
+        assert_eq!(winner(&[dark("/a.jpg", 10), dark("/b.jpg", 90)]), "/b.jpg");
     }
 
     #[test]
