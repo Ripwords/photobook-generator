@@ -11,7 +11,7 @@ Closes #
 - [ ] `bun run check:build` passes, if any `.vue` file changed
 - [ ] `bun run test:rust` and `bun run test:swift` pass, if `src-tauri/` or `sidecar/` changed (after `bun run sidecar`)
 - [ ] Each new or changed test was mutation-checked: I broke the code it guards and watched it fail. Evidence:
-- [ ] The README's "Using the app" manual is updated in this PR, if user-facing behaviour changed
+- [ ] The user manual (`docs/manual.md`) is updated in this PR, if user-facing behaviour changed
 
 **If this touches photo analysis or the sidecar**, say what it was run on:
 
