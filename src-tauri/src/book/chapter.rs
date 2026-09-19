@@ -9,6 +9,7 @@
 use crate::book::cull::Photo;
 use crate::cluster::EVENT_GAP_SECONDS;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// A GPS fix. Built only through `LatLon::new`, so every value is a real
 /// place on the globe.
@@ -159,6 +160,18 @@ pub fn split_chapters(
     ids.into_iter().map(|id| id.unwrap_or(undated)).collect()
 }
 
+/// The centre of each chapter with a located photo, by chapter id. `ids`
+/// is one chapter id per photo, as `chapters` returns.
+pub fn centroids(locations: &[Option<LatLon>], ids: &[u32]) -> BTreeMap<u32, LatLon> {
+    let mut sums: BTreeMap<u32, Centroid> = BTreeMap::new();
+    for (&id, location) in ids.iter().zip(locations) {
+        if let Some(p) = *location {
+            sums.entry(id).or_default().add(p);
+        }
+    }
+    sums.into_iter().filter_map(|(id, c)| Some((id, c.point()?))).collect()
+}
+
 /// The mean of a chapter's fixes, taken on the unit sphere so a chapter
 /// either side of the antimeridian does not average to longitude 0.
 #[derive(Default)]
@@ -206,6 +219,25 @@ mod tests {
     fn split(stops: &[(Option<i64>, Option<LatLon>)], km: f64) -> Vec<u32> {
         let (times, locations): (Vec<_>, Vec<_>) = stops.iter().copied().unzip();
         split_chapters(&times, &locations, Some(km))
+    }
+
+    #[test]
+    fn centroids_average_each_chapters_own_fixes() {
+        let ids = [1, 0, 2, 1, 0];
+        let locations = [at(35.0, 135.0), at(10.0, 20.0), None, at(35.2, 135.4), at(10.4, 20.2)];
+        let centres = centroids(&locations, &ids);
+        assert_eq!(centres.keys().copied().collect::<Vec<_>>(), vec![0, 1], "chapter 2 has no fix");
+        let (c0, c1) = (centres[&0], centres[&1]);
+        assert!((c0.lat() - 10.2).abs() < 0.01 && (c0.lon() - 20.1).abs() < 0.01, "{c0:?}");
+        assert!((c1.lat() - 35.1).abs() < 0.01 && (c1.lon() - 135.2).abs() < 0.01, "{c1:?}");
+    }
+
+    /// Fiji straddles the antimeridian. A plain mean of 179.9 and -179.9 is
+    /// longitude 0, the far side of the planet.
+    #[test]
+    fn centroids_of_a_chapter_across_the_antimeridian_stay_there() {
+        let centres = centroids(&[at(-17.0, 179.9), at(-17.0, -179.9)], &[0, 0]);
+        assert!(centres[&0].lon().abs() > 179.9, "{:?}", centres[&0]);
     }
 
     #[test]

@@ -1828,6 +1828,26 @@ pub async fn place_chapters(app: AppHandle, run_id: u64) -> Result<crate::book::
     .map_err(|e| e.to_string())?
 }
 
+/// A town name for each of run `run_id`'s place chapters that has one, by
+/// the ids `place_chapters` gives. Chapter centres not already cached go to
+/// Apple's geocoder, so the webview calls this only while Places is on. A
+/// sidecar that cannot answer leaves chapters unnamed rather than failing.
+#[tauri::command]
+pub async fn place_names(app: AppHandle, run_id: u64) -> Result<std::collections::HashMap<u32, String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let photos = cached_photos(&app, run_id)?;
+        let locations: Vec<_> = photos.iter().map(|p| p.location).collect();
+        let centres = crate::book::chapter::centroids(&locations, &crate::book::chapter::chapters(&photos, true));
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        let state = app.state::<AppState>();
+        Ok(crate::place_names::name_chapters(&db, &centres, |points| {
+            with_sidecar(&state, |pool| pool.geocode(&app, points))
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// The geometry a new book starts at.
 ///
 /// A command rather than a constant retyped in TypeScript, for the reason

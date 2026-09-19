@@ -355,9 +355,14 @@ pub(crate) mod tests {
     /// The named regression: **something §9.1 withholds reaches the model.**
     /// A value search, not a key search: renaming a leaked field would pass a
     /// key search while the value still leaves the machine.
+    ///
+    /// Places is on, so the place-chapter path runs, and the secret photo
+    /// carries a town name where one could plausibly arrive: a geocoded name
+    /// stored on the record, or the IPTC city a phone writes into EXIF. The
+    /// rounded cell `place_names` sends Apple is withheld too.
     #[test]
-    fn agent_view_contains_no_path_hash_gps_timestamp_face_box_or_raw_score() {
-        let secret = record(
+    fn agent_view_contains_no_path_hash_gps_timestamp_face_box_raw_score_or_place_name() {
+        let mut secret = record(
             "/Users/alice/Pictures/Lisbon Trip/IMG_4821.HEIC",
             "9f2c41d7e8ab3605",
             (4284, 5712),
@@ -365,6 +370,8 @@ pub(crate) mod tests {
             &["beach", "sky", "people"],
             (0.873_142, 1_234.567),
         );
+        secret["placeName"] = json!("Gion");
+        secret["exif"]["city"] = json!("Kyoto");
         let other = record(
             "/p/b.jpg",
             "hb",
@@ -385,7 +392,7 @@ pub(crate) mod tests {
             seed: 1,
             dropped: 1,
             controls: Default::default(),
-            options: Default::default(),
+            options: crate::book::pace::BookOptions { places: true },
         };
 
         let text = serde_json::to_string(&agent_view(&book, &frozen_library(), &photos)).unwrap();
@@ -420,6 +427,10 @@ pub(crate) mod tests {
             "c0ffee",
             "4284",
             "5712",
+            "Gion",
+            "Kyoto",
+            "51.5",
+            "-0.14",
         ];
         for value in withheld {
             assert!(

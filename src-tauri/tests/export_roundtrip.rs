@@ -123,6 +123,7 @@ fn real_sidecar_crops_and_writes_files_matching_the_requested_windows() {
             output_dir: output_dir_str.clone(),
             items: vec![jpeg_item, png_item],
         }),
+        coordinates: None,
     };
 
     let response = round_trip(&request);
