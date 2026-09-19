@@ -8,8 +8,9 @@
 
 use crate::book::cull::Photo;
 use crate::book::pace::Book;
-use crate::export::{output_filename, predicted_format};
-use crate::geometry::Rect;
+use crate::book::cover::Rgb;
+use crate::export::{cover_filename, output_filename, predicted_format};
+use crate::geometry::{CoverSide, Rect};
 use serde::{Deserialize, Serialize};
 
 /// One exported photo's record within a page.
@@ -66,6 +67,35 @@ pub struct Manifest {
     /// number a consumer reconciles against the SKU.
     pub page_count: usize,
     pub pages: Vec<ManifestPage>,
+    pub cover: ManifestCover,
+}
+
+/// The cover as it is handed to the printer: one file per side and the
+/// spine's colour.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ManifestCover {
+    /// One panel, front or back, in inches: the trim plus the wrap that
+    /// folds under the board. Both sides share it, so it is stated once.
+    pub panel_w_in: f64,
+    pub panel_h_in: f64,
+    /// `None` for a side with no photo, or one the sidecar failed to write.
+    pub front: Option<ManifestCoverPhoto>,
+    pub back: Option<ManifestCoverPhoto>,
+    /// `#rrggbb`, lowercase.
+    pub spine_hex: Rgb,
+}
+
+/// `ManifestPhoto` less the page and slot, which on a cover are always the
+/// whole panel.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ManifestCoverPhoto {
+    pub source_path: String,
+    pub hash: String,
+    pub crop: Rect,
+    /// Identical to the `filename` on the matching `ExportItem`.
+    pub filename: String,
+    /// Predicted, then reconciled, exactly as on `ManifestPhoto`.
+    pub format: String,
 }
 
 /// Builds the manifest for `book`. `photos` is the ORIGINAL slice
@@ -107,7 +137,27 @@ pub fn manifest(book: &Book, photos: &[Photo], project_id: i64) -> Manifest {
         })
         .collect();
 
-    Manifest { project_id, seed: book.seed, page_count: book.pages.len(), pages }
+    let cover_photo = |side: CoverSide| {
+        book.cover.side(side).map(|c| {
+            let photo = &photos[c.photo_index];
+            ManifestCoverPhoto {
+                source_path: photo.path.clone(),
+                hash: photo.hash.clone(),
+                crop: c.crop,
+                filename: cover_filename(side, &photo.hash),
+                format: predicted_format(&photo.path).to_string(),
+            }
+        })
+    };
+    let cover = ManifestCover {
+        panel_w_in: spec.cover_panel_w_in(),
+        panel_h_in: spec.cover_panel_h_in(),
+        front: cover_photo(CoverSide::Front),
+        back: cover_photo(CoverSide::Back),
+        spine_hex: book.cover.spine,
+    };
+
+    Manifest { project_id, seed: book.seed, page_count: book.pages.len(), pages, cover }
 }
 
 #[cfg(test)]
@@ -116,6 +166,7 @@ mod tests {
     use crate::book::pace::{Page, Placement};
     use crate::geometry::Side;
     use crate::export::build_items;
+    use crate::book::cover::{Cover, CoverPhoto, Rgb};
     use crate::print_spec::{odd_spec, pixajoy_spec};
 
     fn photo(path: &str, hash: &str) -> Photo {
@@ -300,7 +351,11 @@ mod tests {
         ];
         let book = Book {
             spec: pixajoy_spec(),
-            cover: Default::default(),
+            cover: Cover {
+                front: Some(CoverPhoto { photo_index: 2, crop: Rect::new(0.0, 0.1, 1.0, 0.6) }),
+                back: Some(CoverPhoto { photo_index: 0, crop: Rect::new(0.2, 0.0, 0.7, 1.0) }),
+                spine: Default::default(),
+            },
             controls: Default::default(),
             seed: 9,
             dropped: 0,
@@ -331,9 +386,47 @@ mod tests {
         let items = build_items(&book, &photos);
         let m = manifest(&book, &photos, 1);
         let manifest_filenames: Vec<&str> =
-            m.pages.iter().flat_map(|p| p.photos.iter().map(|ph| ph.filename.as_str())).collect();
+            m.pages.iter().flat_map(|p| p.photos.iter().map(|ph| ph.filename.as_str()))
+                .chain([&m.cover.front, &m.cover.back].into_iter().flatten().map(|c| c.filename.as_str()))
+                .collect();
         let item_filenames: Vec<&str> = items.iter().map(|i| i.filename.as_str()).collect();
 
         assert_eq!(manifest_filenames, item_filenames);
+    }
+
+    #[test]
+    fn manifest_records_the_cover_panel_size_and_spine() {
+        let photos = vec![photo("/a.jpg", "haaa1111"), photo("/b.png", "hbbb2222")];
+        let crop = Rect::new(0.05, 0.1, 0.75, 0.8);
+        let book = Book {
+            spec: odd_spec(),
+            cover: Cover {
+                front: None,
+                back: Some(CoverPhoto { photo_index: 1, crop }),
+                spine: Rgb::try_from("#1a2b3c".to_string()).unwrap(),
+            },
+            controls: Default::default(),
+            seed: 9,
+            dropped: 0,
+            pages: Vec::new(),
+        };
+
+        let m = manifest(&book, &photos, 1);
+        assert_eq!(m.cover.front, None);
+        assert_eq!(
+            m.cover.back,
+            Some(ManifestCoverPhoto {
+                source_path: "/b.png".into(),
+                hash: "hbbb2222".into(),
+                crop,
+                filename: "cover-back-hbbb2222".into(),
+                format: "png".into(),
+            })
+        );
+        assert_eq!(m.cover.panel_w_in, odd_spec().cover_panel_w_in());
+        assert_eq!(m.cover.panel_h_in, odd_spec().cover_panel_h_in());
+
+        let json = serde_json::to_value(&m).unwrap();
+        assert_eq!(json["cover"]["spine_hex"], "#1a2b3c");
     }
 }
