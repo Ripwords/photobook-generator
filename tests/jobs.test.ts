@@ -416,6 +416,44 @@ describe("analysis jobs", () => {
       ]);
     });
 
+    it("brings a draft's Places option back after a restart", async () => {
+      const before = createAnalysisJobs();
+      await before.restoreDrafts();
+      const id = before.startJob({ name: "Kansai", folders: ["/k"] });
+      before.setOptions(id, { places: true });
+      await settle();
+
+      const after = createAnalysisJobs();
+      await after.restoreDrafts();
+      expect(after.jobs.value[0]!.options).toStrictEqual({ places: true });
+    });
+
+    it("keeps a re-edited book's options on its draft", () => {
+      const store = createAnalysisJobs();
+      const id = store.startJob({
+        name: "Kansai",
+        folders: ["/k"],
+        replacing: { id: 4, name: "Kansai" },
+        options: { places: true },
+      });
+      expect(store.find(id)!.options).toStrictEqual({ places: true });
+    });
+
+    it("reads a draft saved before options existed, or with torn ones, as every option off", async () => {
+      savedDrafts.set(3, JSON.stringify({ id: 3, name: "Old", folders: ["/f"], replacing: null, overrides: {} }));
+      savedDrafts.set(4, JSON.stringify({ id: 4, name: "Torn", folders: ["/f"], replacing: null, overrides: {}, options: { places: "yes" } }));
+      savedDrafts.set(5, JSON.stringify({ id: 5, name: "On", folders: ["/f"], replacing: null, overrides: {}, options: { places: true } }));
+
+      const store = createAnalysisJobs();
+      await store.restoreDrafts();
+
+      expect(store.jobs.value.map((job) => [job.name, job.options])).toEqual([
+        ["Old", { places: false }],
+        ["Torn", { places: false }],
+        ["On", { places: true }],
+      ]);
+    });
+
     it("skips a saved draft it cannot read", async () => {
       savedDrafts.set(1, "not json");
       savedDrafts.set(2, JSON.stringify({ id: 2, name: "No folders" }));

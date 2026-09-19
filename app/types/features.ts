@@ -314,15 +314,22 @@ export interface EventGroup {
  * the undated bucket (always the highest id -- see `event_clusters`) sorts
  * last as a result, which is the desired place for it regardless of where
  * its members' filenames happen to fall.
+ *
+ * `chapters`, when given, replaces each photo's `eventCluster` by path: the
+ * place chapters from `place_chapters`, numbered the same chronological way.
  */
-export function groupByEvent(photos: AnalyzedPhoto[]): EventGroup[] {
+export function groupByEvent(
+  photos: AnalyzedPhoto[],
+  chapters: Readonly<Record<string, number>> | null = null,
+): EventGroup[] {
   const byCluster = new Map<number, AnalyzedPhoto[]>();
 
   for (const photo of photos) {
-    let bucket = byCluster.get(photo.eventCluster);
+    const chapter = chapters?.[photo.path] ?? photo.eventCluster;
+    let bucket = byCluster.get(chapter);
     if (!bucket) {
       bucket = [];
-      byCluster.set(photo.eventCluster, bucket);
+      byCluster.set(chapter, bucket);
     }
     bucket.push(photo);
   }

@@ -76,3 +76,16 @@ export function mockPhotos(count = 36): AnalyzedPhoto[] {
 
   return photos;
 }
+
+/**
+ * What `place_chapters` returns for `mockPhotos`: each event moves to a
+ * second town after its fifth photo. `located` is 0 when `noLocation` is set,
+ * for the draft screen's disabled switch.
+ */
+export function mockPlaceChapters(noLocation: boolean, count = 36) {
+  const chapters: Record<string, number> = {};
+  for (const [i, photo] of mockPhotos(count).entries()) {
+    chapters[photo.path] = noLocation ? photo.eventCluster : photo.eventCluster * 2 + (i % 9 >= 5 ? 1 : 0);
+  }
+  return { located: noLocation ? 0 : count, chapters };
+}
