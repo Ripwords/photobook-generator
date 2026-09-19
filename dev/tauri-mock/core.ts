@@ -228,6 +228,8 @@ declare global {
   interface Window {
     /** Milliseconds between streamed batches. Raise it to leave a draft mid-run. */
     pbgAnalysisBatchMs?: number;
+    /** Photos in the analysed folder. Raise it to see how the screens cope with a large one. */
+    pbgAnalysisPhotoCount?: number;
   }
 }
 
@@ -237,12 +239,15 @@ let nextRunId = 1;
 async function analyze(channel: Channel<AnalysisEvent>): Promise<AnalysisSummary> {
   const runId = nextRunId++;
   const batchMs = globalThis.window?.pbgAnalysisBatchMs ?? 220;
-  channel.onmessage({ kind: "scanned", total: photos.length + 2 });
+  const count = globalThis.window?.pbgAnalysisPhotoCount;
+  const runPhotos = count ? mockPhotos(count) : photos;
+  channel.onmessage({ kind: "scanned", total: runPhotos.length + 2 });
   await sleep(250);
 
   let analysed = 0;
-  for (let start = 0; start < photos.length; start += 6) {
-    const batch = photos.slice(start, start + 6);
+  const batchSize = count ? 16 : 6;
+  for (let start = 0; start < runPhotos.length; start += batchSize) {
+    const batch = runPhotos.slice(start, start + batchSize);
     analysed += batch.length;
     channel.onmessage({ kind: "batch", photos: batch, analysed, cached: 0, failed: 0 });
     await sleep(batchMs);
@@ -253,10 +258,10 @@ async function analyze(channel: Channel<AnalysisEvent>): Promise<AnalysisSummary
   // rewriting one and not the other silently drops every photo from the book.
   const summary: AnalysisSummary = {
     runId,
-    total: photos.length + 2,
+    total: runPhotos.length + 2,
     failed: 2,
     cached: 0,
-    photos,
+    photos: runPhotos,
   };
   channel.onmessage({ kind: "done", summary });
   return summary;

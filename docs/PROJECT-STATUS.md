@@ -401,12 +401,13 @@ produced it, every reader hands back the id its own summary carried, and a
 mismatch is refused (`commands::select_run`). See **"Multiple source folders
 (built 2026-09-16)"** for the whole decision.
 
-**The contact sheet is not virtualized.** It renders every analysed photo so
-the include control has something to act on, but 500 photos is 500 tiles,
-re-patched on every toggle. `showsLeftOutByDefault` turns the "show the N left
-out" switch off above **200** photos. If a real folder makes even the keeper
-grid slow, virtualize it — do not go back to hiding the left-out photos, which
-makes the feature unusable.
+**The contact sheet is virtualized (2026-09-19).** `ContactSheet.vue` renders only
+the rows in view (`@tanstack/vue-virtual`); `types/sheet.ts` cuts the photos into rows.
+Row heights are computed, not measured. With 3,000 photos in the browser mock,
+opening the draft went from 5,984 ms and 56,668 DOM nodes to 134 ms and 524.
+The left-out photos are therefore shown by default at every size. The
+`showsLeftOutByDefault` threshold of 200 existed only because the grid was not
+virtualized, and it is gone.
 
 **A reopened project's selection is visible and editable.** The panel states
 it (`selectionLabel`) and offers "Edit the selection", which re-analyses the

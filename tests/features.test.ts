@@ -8,8 +8,6 @@ import {
   isFailed,
   isRanked,
   keepers,
-  showsLeftOutByDefault,
-  LEFT_OUT_SHOWN_BY_DEFAULT_UP_TO,
   pickHero,
   smilePercent,
   type AnalysisEvent,
@@ -133,30 +131,6 @@ describe("feature helpers", () => {
       photo({ path: "/p/a.jpg", kept: true }),
     ]);
     expect(result.map((p) => p.path)).toEqual(["/p/c.jpg", "/p/b.jpg", "/p/a.jpg"]);
-  });
-});
-
-/**
- * The contact sheet renders every analysed photo so the include control has
- * something to act on, but the grid is not virtualized -- 500 photos is 500
- * tiles, all re-patched on every toggle. The switch therefore starts off
- * above a threshold rather than the feature becoming unusable on a large
- * folder.
- */
-describe("showsLeftOutByDefault", () => {
-  it("shows them for a folder small enough to render cheaply", () => {
-    expect(showsLeftOutByDefault(1)).toBe(true);
-    expect(showsLeftOutByDefault(30)).toBe(true);
-  });
-
-  // At the boundary, not near it.
-  it("switches over exactly at the threshold", () => {
-    expect(showsLeftOutByDefault(LEFT_OUT_SHOWN_BY_DEFAULT_UP_TO)).toBe(true);
-    expect(showsLeftOutByDefault(LEFT_OUT_SHOWN_BY_DEFAULT_UP_TO + 1)).toBe(false);
-  });
-
-  it("hides them for a folder large enough to make the grid the bottleneck", () => {
-    expect(showsLeftOutByDefault(1000)).toBe(false);
   });
 });
 

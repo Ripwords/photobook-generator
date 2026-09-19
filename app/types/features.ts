@@ -144,24 +144,6 @@ export function toggledOverride(current: PhotoOverride, pressed: Exclude<PhotoOv
   return current === pressed ? "auto" : pressed;
 }
 
-/**
- * Above this many analysed photos, the contact sheet does not show the
- * left-out ones by default.
- *
- * Showing every photo is what makes the include control usable at all -- a
- * photo you cannot see is one you cannot ask for -- but the grid is not
- * virtualized, so a 500-photo folder renders 500 tiles instead of ~30 and
- * re-patches all of them on every toggle. Below the threshold the extra tiles
- * cost nothing worth measuring; above it, discoverability is bought with a
- * switch whose label already names the count.
- */
-export const LEFT_OUT_SHOWN_BY_DEFAULT_UP_TO = 200;
-
-/** Whether the "show the ones left out" switch starts on, for a set this size. */
-export function showsLeftOutByDefault(analysedCount: number): boolean {
-  return analysedCount <= LEFT_OUT_SHOWN_BY_DEFAULT_UP_TO;
-}
-
 /** Type guard distinguishing a still-streaming tile from a fully-ranked one. */
 export function isRanked(photo: PartialAnalyzedPhoto | AnalyzedPhoto): photo is AnalyzedPhoto {
   return "aestheticPct" in photo;

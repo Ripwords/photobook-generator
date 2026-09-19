@@ -6,7 +6,6 @@ import {
   keepers,
   overrideFor,
   pickHero,
-  showsLeftOutByDefault,
   type AnalyzedPhoto,
   type PhotoOverride,
   type PhotoOverrides,
@@ -34,7 +33,8 @@ const summary = computed(() => job.stream.summary);
 const runId = computed(() => jobRunId(job));
 const scannedTotal = computed(() => job.stream.scannedTotal);
 const processed = computed(() => jobProgress(job).processed);
-const partialPhotos = computed(() => job.stream.partialPhotos);
+/** The photos streamed so far, as the one group the sheet shows while analysing. */
+const streamedGroups = computed(() => [{ eventCluster: 0, photos: job.stream.partialPhotos }]);
 
 async function chooseOtherFolders() {
   const folders = await pickFolders();
@@ -73,21 +73,14 @@ const stage = computed(() => selectStage(job.running, job.error, summary.value))
 const kept = computed(() => keepers(photos.value));
 
 /**
- * Whether photos the book will leave out are shown.
- *
- * On by default, and that is a deliberate change: the sheet used to render
- * only the keepers, which made a photo the engine dropped invisible -- and a
- * photo you cannot see is one you cannot ask for. The include control has
- * nothing to act on without this.
- *
- * Off above `LEFT_OUT_SHOWN_BY_DEFAULT_UP_TO`, because the grid is not
- * virtualized: a 500-photo folder would render 500 tiles and re-patch all of
- * them on every toggle. Re-evaluated per analysed SET, not per toggle, so it
- * never fights a choice the user just made.
+ * Whether photos the book will leave out are shown. On for every new set of
+ * photos: a photo you cannot see is one you cannot ask for, and the include
+ * control has nothing to act on without it. Reset per analysed SET, not per
+ * toggle, so it never fights a choice the user just made.
  */
 const showLeftOut = ref(true);
 watch(photoSetId, () => {
-  showLeftOut.value = showsLeftOutByDefault(analysed.value.length);
+  showLeftOut.value = true;
 });
 const visiblePhotos = computed(() => (showLeftOut.value ? photos.value : kept.value));
 const eventGroups = computed(() => groupByEvent(visiblePhotos.value));
@@ -114,6 +107,7 @@ const folderTitle = computed(() => job.folders.join("\n"));
 
 /** The contact sheet's smallest tile width, in CSS pixels. The slider in its toolbar sets it. */
 const tileSize = ref(160);
+const scroller = useTemplateRef("scroller");
 const gridClass = "grid gap-3";
 const gridStyle = computed(() => ({
   gridTemplateColumns: `repeat(auto-fill, minmax(${tileSize.value}px, 1fr))`,
@@ -178,7 +172,7 @@ function onGenerated(projectId: number) {
   </AppHeader>
 
   <div class="flex min-h-0 flex-1">
-    <main class="min-w-0 flex-1 overflow-y-auto">
+    <main ref="scroller" class="min-w-0 flex-1 overflow-y-auto">
       <div v-if="stage === 'running'" class="space-y-6 p-6">
         <div class="max-w-sm space-y-2">
           <UProgress color="primary" size="sm" :model-value="progressValue" :max="scannedTotal" />
@@ -194,14 +188,25 @@ function onGenerated(projectId: number) {
             </template>
           </p>
         </div>
-        <div :class="gridClass" :style="gridStyle">
-          <PhotoTile v-for="photo in partialPhotos" :key="photo.path" :photo="photo" />
-          <USkeleton
-            v-for="n in remainingSkeletonCount"
-            :key="`pending-${n}`"
-            class="aspect-square w-full"
-            aria-hidden="true"
-          />
+        <div>
+          <ContactSheet
+            :groups="streamedGroups"
+            :headers="false"
+            :tile-size
+            :scroll-element="scroller"
+          >
+            <template #tile="{ photo }">
+              <PhotoTile :photo />
+            </template>
+          </ContactSheet>
+          <div v-if="remainingSkeletonCount > 0" :class="gridClass" class="mt-3" :style="gridStyle">
+            <USkeleton
+              v-for="n in remainingSkeletonCount"
+              :key="`pending-${n}`"
+              class="aspect-square w-full"
+              aria-hidden="true"
+            />
+          </div>
         </div>
       </div>
 
@@ -325,29 +330,24 @@ function onGenerated(projectId: number) {
             class="mx-auto max-w-lg"
           />
 
-          <section v-for="(group, index) in eventGroups" :key="group.eventCluster" class="space-y-3">
-            <h2
-              class="sticky top-11 z-10 -mx-6 flex items-baseline gap-2 bg-default/95 px-6 py-2 text-sm font-semibold text-highlighted backdrop-blur"
-            >
-              Event {{ index + 1 }}
-              <span class="font-normal text-muted tabular-nums"
-                >{{ group.photos.length }}
-                {{ group.photos.length === 1 ? "photo" : "photos" }}</span
-              >
-            </h2>
-            <div :class="gridClass" :style="gridStyle">
+          <ContactSheet
+            v-else
+            :groups="eventGroups"
+            :tile-size
+            :scroll-element="scroller"
+            :sticky-top="44"
+          >
+            <template #tile="{ photo }">
               <PhotoTile
-                v-for="photo in group.photos"
-                :key="photo.path"
-                :photo="photo"
+                :photo
                 :burst-size="burstMap.get(photo.nearDupCluster) ?? 1"
                 :is-hero="heroPaths.has(photo.path)"
                 :is-kept="photo.kept"
                 :override="overrideFor(overrides, photo.hash)"
                 @set-override="onSetOverride(photo, $event)"
               />
-            </div>
-          </section>
+            </template>
+          </ContactSheet>
         </div>
       </template>
     </main>
