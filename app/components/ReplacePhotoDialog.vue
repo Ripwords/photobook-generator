@@ -2,6 +2,8 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import {
   cropStyle,
+  pickAspect,
+  pickEdit,
   refusalText,
   replaceCandidates,
   type BookEdit,
@@ -9,30 +11,32 @@ import {
   type CandidateFilter,
   type CandidateRow,
   type CandidateSort,
-  type PlacementRef,
+  type PickTarget,
   type SlotCandidate,
 } from "~/types/preview";
 
 /**
- * Picks any analysed photo for one slot: one the engine left out, or one
- * already in the book, which then trades places. Each tile shows the photo
- * cropped as this slot would print it, and a photo a hard constraint refuses
- * says why instead of failing after the click. Rust decides both (see
- * `slot_candidates`); the dialog only filters and sorts what it is told.
+ * Picks any analysed photo for one slot or one side of the cover. For a slot,
+ * a photo already in the book trades places; the cover takes a copy and
+ * leaves the pages alone. Each tile shows the photo cropped as the target
+ * would print it, and a photo a hard constraint refuses says why instead of
+ * failing after the click. Rust decides both (see `slot_candidates` and
+ * `cover_candidates`); the dialog only filters and sorts what it is told.
  */
 const open = defineModel<boolean>("open", { required: true });
 
 const { layout, target } = defineProps<{
   layout: BookLayout;
-  /** The slot being filled. */
-  target: PlacementRef;
+  target: PickTarget;
 }>();
 
 const emit = defineEmits<{ edit: [edit: BookEdit] }>();
 
 const candidates = ref<SlotCandidate[] | null>(null);
 const loadError = ref<string | null>(null);
-const filter = ref<CandidateFilter>("leftOut");
+/** A slot starts on the left-out photos; the cover usually wants one already in the book. */
+const initialFilter = (): CandidateFilter => (target.kind === "cover" ? "all" : "leftOut");
+const filter = ref<CandidateFilter>(initialFilter());
 const sort = ref<CandidateSort>("best");
 const chosen = ref<number | null>(null);
 /** Only the latest request may land, so a slow answer for another slot never shows here. */
@@ -43,10 +47,13 @@ async function load() {
   candidates.value = null;
   loadError.value = null;
   try {
-    const answer = await invoke<SlotCandidate[]>("slot_candidates", {
-      projectId: layout.projectId,
-      placement: target,
-    });
+    const answer =
+      target.kind === "cover"
+        ? await invoke<SlotCandidate[]>("cover_candidates", { projectId: layout.projectId, side: target.side })
+        : await invoke<SlotCandidate[]>("slot_candidates", {
+            projectId: layout.projectId,
+            placement: target.placement,
+          });
     if (mine === request) candidates.value = answer;
   } catch (e) {
     if (mine === request) loadError.value = String(e);
@@ -59,7 +66,7 @@ watch(
   (isOpen) => {
     if (!isOpen) return;
     chosen.value = null;
-    filter.value = "leftOut";
+    filter.value = initialFilter();
     void load();
   },
   { immediate: true },
@@ -85,18 +92,26 @@ const SORTS = [
   { value: "taken", label: "Time taken" },
 ];
 
-/** The slot's printed shape, so every tile is framed the way the page frames it. */
-const aspect = computed(() => {
-  const page = layout.pages.find((p) => p.number === target.page);
-  const rect = page?.placements.find((p) => p.z === target.z)?.slotRect;
-  if (!rect) return 1;
-  return (rect.w * layout.geometry.pageWIn) / (rect.h * layout.geometry.pageHIn);
-});
+const aspect = computed(() => pickAspect(layout, target));
+
+const copy = computed(() =>
+  target.kind === "cover"
+    ? {
+        title: `Choose the ${target.side} cover photo`,
+        description: `Each photo is shown as the ${target.side} cover would print it, wrap included.`,
+        current: `On the ${target.side} cover now`,
+      }
+    : {
+        title: `Replace the photo on page ${target.placement.page}`,
+        description: "Each photo is shown as this slot would print it.",
+        current: "In this slot now",
+      },
+);
 
 function blocked(row: CandidateRow): string | null {
-  if (row.current) return "In this slot now";
+  if (row.current) return copy.value.current;
   if (row.locked) return "On a locked page";
-  return row.refused ? refusalText(row.refused) : null;
+  return row.refused ? refusalText(row.refused, target.kind) : null;
 }
 
 const tiles = computed(() =>
@@ -111,9 +126,19 @@ const tiles = computed(() =>
 
 const selection = computed(() => tiles.value.find((tile) => tile.index === chosen.value) ?? null);
 
-const confirmLabel = computed(() =>
-  selection.value?.placedAt ? `Swap with page ${selection.value.placedAt.page}` : "Replace",
-);
+const confirmLabel = computed(() => {
+  if (target.kind === "cover") return `Use on the ${target.side} cover`;
+  return selection.value?.placedAt ? `Swap with page ${selection.value.placedAt.page}` : "Replace";
+});
+
+/** Only the cover can be left empty; a page slot always holds a photo. */
+const removable = computed(() => target.kind === "cover" && layout.cover[target.side].photo !== null);
+
+function remove() {
+  if (target.kind !== "cover") return;
+  emit("edit", { kind: "setCoverPhoto", side: target.side, photo: null });
+  open.value = false;
+}
 
 function choose(tile: { index: number; blocked: string | null }) {
   if (tile.blocked === null) chosen.value = tile.index;
@@ -122,7 +147,7 @@ function choose(tile: { index: number; blocked: string | null }) {
 function confirm() {
   const tile = selection.value;
   if (!tile || tile.blocked !== null) return;
-  emit("edit", { kind: "replacePhoto", placement: target, photo: tile.index });
+  emit("edit", pickEdit(target, tile.index));
   open.value = false;
 }
 
@@ -136,8 +161,8 @@ const scroller = useTemplateRef<HTMLElement>("scroller");
 <template>
   <UModal
     v-model:open="open"
-    :title="`Replace the photo on page ${target.page}`"
-    description="Each photo is shown as this slot would print it."
+    :title="copy.title"
+    :description="copy.description"
     :ui="{
       content: 'sm:max-w-4xl',
       body: 'flex min-h-0 flex-col overflow-hidden p-0 sm:p-0',
@@ -272,6 +297,9 @@ const scroller = useTemplateRef<HTMLElement>("scroller");
         <template v-else>Choose a photo. Double-click to use it at once.</template>
       </p>
       <div class="flex shrink-0 gap-2">
+        <UButton v-if="removable" color="neutral" variant="ghost" icon="i-lucide-trash-2" @click="remove">
+          Remove
+        </UButton>
         <UButton color="neutral" variant="outline" @click="open = false">Cancel</UButton>
         <UButton color="primary" :disabled="!selection" @click="confirm">{{ confirmLabel }}</UButton>
       </div>
