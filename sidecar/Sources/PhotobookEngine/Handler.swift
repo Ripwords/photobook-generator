@@ -92,6 +92,15 @@ func handle(line: String) -> Response {
                 ))
             }
             return Response(id: request.id, result: .exported(Exporter.export(export)))
+        case .geocode:
+            guard let coordinates = request.coordinates else {
+                return Response(id: request.id, result: .error(
+                    ErrorResult(message: "geocode request is missing its `coordinates`")
+                ))
+            }
+            return Response(id: request.id, result: .geocoded(
+                Geocoder.names(for: coordinates, lookup: Geocoder.appleLookup)
+            ))
         }
     }
     let id = (try? decoder.decode(RequestEnvelope.self, from: Data(line.utf8)))?.id ?? "unknown"
