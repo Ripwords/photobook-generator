@@ -60,9 +60,12 @@ jobs:
       - name: Build sidecar
         id: sidecar
         run: bun run sidecar
+      # Wrapped so a hang fails in minutes with every thread's stack in the
+      # log, rather than running silently until someone cancels the job.
       - name: Swift tests
         if: ${{ !cancelled() }}
-        run: bun run test:swift
+        timeout-minutes: 15
+        run: bash scripts/ci-swift-test.sh
       - name: Rust tests
         if: ${{ !cancelled() && steps.sidecar.outcome == 'success' }}
         run: bun run test:rust
