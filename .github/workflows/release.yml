@@ -1,0 +1,142 @@
+name: Release
+
+# A pushed `v*` tag (normally from `bun run release`) opens a draft release
+# with changelogen notes, builds the Apple Silicon dmg into it, and publishes
+# it. Running the workflow by hand only builds the dmg and attaches it to the
+# run as an artifact; it never creates a release.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-24.04
+    outputs:
+      release_id: ${{ steps.create.outputs.result }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # full history and tags, so changelogen can diff
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      # The dmg is named from tauri.conf.json's version and the README links
+      # to it by the tag, so a hand-pushed tag that disagrees would publish a
+      # release the download button cannot reach.
+      - name: Check the tag matches the app version
+        run: |
+          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          if [ "v${VERSION}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match tauri.conf.json version ${VERSION}"
+            exit 1
+          fi
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            PREV_TAG=$(git rev-list --max-parents=0 HEAD | tail -1)
+          fi
+          echo "Generating notes from ${PREV_TAG} to ${GITHUB_REF_NAME}"
+          # Written to a file because stdout carries consola's [log] prefix in
+          # CI; the "## <from>...<to>" heading and leading blank lines go.
+          bun x changelogen --output RELEASE_NOTES.md --from "${PREV_TAG}" --to "${GITHUB_REF_NAME}"
+          NOTES=$(sed '/^## /d' RELEASE_NOTES.md | sed '/./,$!d')
+          rm -f RELEASE_NOTES.md
+          {
+            echo "body<<CHANGELOG_EOF"
+            echo "${NOTES}"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create draft release
+        id: create
+        uses: actions/github-script@v8
+        env:
+          RELEASE_BODY: ${{ steps.notes.outputs.body }}
+        with:
+          script: |
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: process.env.GITHUB_REF_NAME,
+              name: `PhotobookGen ${process.env.GITHUB_REF_NAME}`,
+              body: process.env.RELEASE_BODY || 'See the assets below to download this version.',
+              draft: true,
+              prerelease: false
+            })
+            return data.id
+
+  build:
+    needs: create-release
+    # Runs after a successful create-release on a tag, or on its own when
+    # dispatched by hand (create-release is then skipped).
+    if: ${{ !cancelled() && (needs.create-release.result == 'success' || (github.event_name == 'workflow_dispatch' && needs.create-release.result == 'skipped')) }}
+    runs-on: macos-15 # Apple Silicon; arm64 only, never universal
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build sidecar
+        run: bun run sidecar
+
+      # With no releaseId (the manual run) tauri-action only builds.
+      - name: Build the dmg and upload it to the release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          args: --target aarch64-apple-darwin
+
+      - name: Attach the dmg to the run
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhotobookGen-aarch64-dmg
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  publish:
+    needs: [create-release, build]
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish the release
+        uses: actions/github-script@v8
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: ${{ needs.create-release.outputs.release_id }},
+              draft: false
+            })
