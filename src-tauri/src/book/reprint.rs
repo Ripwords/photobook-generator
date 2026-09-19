@@ -166,6 +166,7 @@ mod tests {
             palette: Vec::<PaletteColor>::new(), capture_quality: None,
             scene_tags: Vec::new(), captured_at: None,
             clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
+            location: None,
         }
     }
 
@@ -200,6 +201,7 @@ mod tests {
                     })
                     .collect(),
             }],
+            options: Default::default(),
         }
     }
 

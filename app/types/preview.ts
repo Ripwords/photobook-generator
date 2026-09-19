@@ -28,6 +28,7 @@
  * `tests/fixtures/wire/book-layout.json` that Rust asserts itself against.
  */
 
+import type { BookOptions } from "./book";
 import type { PrintSpec } from "./printSpec";
 
 /** Mirrors `geometry::Rect`, which serialises its fields unrenamed. */
@@ -127,6 +128,8 @@ export interface BookLayout {
    * below is what the preview draws, derived from it in Rust.
    */
   spec: PrintSpec;
+  /** The book's own options, carried into its draft by "Edit photos" like `spec`. */
+  options: BookOptions;
   geometry: PreviewGeometry;
   /** Every analysed photo, in the order `photoIndex` indexes. */
   photos: PreviewPhoto[];

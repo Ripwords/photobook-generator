@@ -137,6 +137,7 @@ mod tests {
             scene_tags: Vec::new(),
             captured_at: None,
             clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
+            location: None,
         }
     }
 
@@ -163,6 +164,7 @@ mod tests {
                     Rect::new(0.0, 0.0, 1.0, 1.0),
                 )],
             }],
+            options: Default::default(),
         };
         let m = manifest(&book, &photos, 77);
         assert_eq!(m.project_id, 77);
@@ -197,6 +199,7 @@ mod tests {
                     )],
                 },
             ],
+            options: Default::default(),
         };
         let m = manifest(&book, &photos, 1);
         assert_eq!(m.page_count, 2, "book has 2 pages, manifest must report 2");
@@ -233,6 +236,7 @@ mod tests {
                 template_id: "t".into(),
                 placements: vec![placement(0, 1, slot_rect, Rect::new(0.0, 0.0, 1.0, 1.0))],
             }],
+            options: Default::default(),
         };
         let m = manifest(&book, &photos, 1);
         let dest = m.pages[0].photos[0].dest_rect_in;
@@ -272,6 +276,7 @@ mod tests {
                 template_id: "t".into(),
                 placements: vec![placement(0, 2, Rect::new(0.0, 0.0, 0.4, 0.4), crop)],
             }],
+            options: Default::default(),
         };
         let m = manifest(&book, &photos, 1);
         let p = &m.pages[0].photos[0];
@@ -321,6 +326,7 @@ mod tests {
                     )],
                 },
             ],
+            options: Default::default(),
         };
 
         let items = build_items(&book, &photos);

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { folderListLabel } from "~/types/book";
+import { invoke } from "@tauri-apps/api/core";
+import { folderListLabel, type PlaceChapters } from "~/types/book";
 import {
   burstSizes,
   groupByEvent,
@@ -27,7 +28,7 @@ const emit = defineEmits<{
   discarded: [];
 }>();
 
-const { changeFolders, retry: retryJob, rename, setSpec, remove } = useAnalysisJobs();
+const { changeFolders, retry: retryJob, rename, setSpec, setOptions, remove } = useAnalysisJobs();
 
 const summary = computed(() => job.stream.summary);
 const runId = computed(() => jobRunId(job));
@@ -83,7 +84,26 @@ watch(photoSetId, () => {
   showLeftOut.value = true;
 });
 const visiblePhotos = computed(() => (showLeftOut.value ? photos.value : kept.value));
-const eventGroups = computed(() => groupByEvent(visiblePhotos.value));
+
+/** The analysed run's place chapters, fetched once per run whatever the switch says, so the switch knows whether it can do anything. */
+const placeChapters = ref<PlaceChapters | null>(null);
+watch(
+  runId,
+  async (run) => {
+    placeChapters.value = null;
+    if (run === 0) return;
+    try {
+      const next = await invoke<PlaceChapters>("place_chapters", { runId: run });
+      if (runId.value === run) placeChapters.value = next;
+    } catch (e) {
+      console.warn("could not read the place chapters", e);
+    }
+  },
+  { immediate: true },
+);
+const chapterOverride = computed(() => (job.options.places ? (placeChapters.value?.chapters ?? null) : null));
+
+const eventGroups = computed(() => groupByEvent(visiblePhotos.value, chapterOverride.value));
 const burstMap = computed<Map<number, number>>(() => burstSizes(photos.value));
 // One hero per event group - the outline and star mark exactly this
 // photo, so it stays meaningful instead of becoming decoration. Chosen from
@@ -91,7 +111,7 @@ const burstMap = computed<Map<number, number>>(() => burstSizes(photos.value));
 const heroPaths = computed<Set<string>>(
   () =>
     new Set(
-      groupByEvent(kept.value)
+      groupByEvent(kept.value, chapterOverride.value)
         .map((group) => pickHero(group.photos)?.path)
         .filter((path): path is string => path !== undefined),
     ),
@@ -376,6 +396,9 @@ function onGenerated(projectId: number) {
         @update:name="rename(job.id, $event)"
         :spec="job.spec"
         @update:spec="setSpec(job.id, $event)"
+        :options="job.options"
+        @update:options="setOptions(job.id, $event)"
+        :located="placeChapters?.located ?? null"
         @generated="onGenerated"
       />
 

@@ -101,6 +101,17 @@ counts and a key to the marks on the tiles. **Choose different folders** at the 
 again from other folders. The app recommends the shortest Pixajoy length that fits the keepers and says
 how many each length would leave out.
 
+**Split chapters by place**, under **Print size**, is off for a new book. The book is laid
+out in chapters, one per event, and with the switch off a chapter ends only at a break of more
+than four hours. With it on, a chapter also ends when you move to another town, so a day in
+Kyoto and an evening in Osaka are separate chapters on separate spreads. A chapter too small to
+fill a spread of its own, such as one photo taken from a train, still joins its neighbour. Two places count
+as different towns when they are more than 25 km apart, which keeps a whole city as one
+chapter. One stray location does not start a chapter: the photo after it has to be far away
+too. The contact sheet regroups as soon as you switch it on. It uses the location your camera
+or phone recorded in each photo. Photos with no location stay in the chapter they were taken
+in. When none of the photos has a location, the switch is disabled and says so.
+
 The book aims for variety over density. It places about four photos per spread, so a
 40-page book places around 85 rather than the 130 its layouts could squeeze in, and it mixes
 sparse spreads with the occasional six-up. Photos taken within two minutes of each other
@@ -119,12 +130,14 @@ analyse at once, taking turns. When one finishes while you are elsewhere, a noti
 ready, with **Open** to go to it. The trash button at the top right of the draft,
 **Discard draft**, throws it away after asking.
 
-Drafts are saved as you go, with their names, folders and your choices, and come back when
+Drafts are saved as you go, with their names, folders, print size, **Split chapters by
+place** and your choices, and come back when
 the app is reopened. A draft that was still analysing when you quit starts again; the
 analysis is cached, so photos it already reached are quick.
 
 Arriving here from **Edit photos** on a saved book is the same screen, as a draft named after
-that book, with its decisions restored once the analysis is done (**Edit photos** again
+that book, with its decisions, print size and **Split chapters by place** restored once the
+analysis is done (**Edit photos** again
 reopens the same draft), and the generate control becomes two: **Update "<name>"** replaces the
 saved book (its export history goes with it), **Save as a new photobook** keeps both.
 Choosing different folders makes it a new book again, since a book built from a different

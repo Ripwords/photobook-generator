@@ -24,6 +24,25 @@
 
 import type { PhotoOverrides } from "~/types/features";
 
+/**
+ * Mirrors `book::pace::BookOptions`: the draft screen's switches for one
+ * book. Every option off is the book the app always built.
+ */
+export interface BookOptions {
+  /** Chapters split where the photos move between towns, not only at a gap in time. */
+  places: boolean;
+}
+
+/** Mirrors `book::chapter::PlaceChapters`: what "Split chapters by place" would do to a draft. */
+export interface PlaceChapters {
+  /** How many photos carry a usable location. With none, the option can do nothing. */
+  located: number;
+  /** Each photo's place chapter by path, numbered chronologically like `eventCluster`. */
+  chapters: Record<string, number>;
+}
+
+export const DEFAULT_BOOK_OPTIONS: Readonly<BookOptions> = Object.freeze({ places: false });
+
 /** Mirrors `book::preflight::Severity`, which serialises lowercase. */
 export type FindingSeverity = "block" | "warn";
 

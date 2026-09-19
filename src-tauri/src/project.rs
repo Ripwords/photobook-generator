@@ -161,6 +161,7 @@ mod tests {
             seed: 0,
             dropped: 0,
             pages: vec![],
+            options: Default::default(),
         }
     }
 
@@ -194,6 +195,7 @@ mod tests {
                     placements: vec![placement(1, 1), placement(2, 2)],
                 },
             ],
+            options: Default::default(),
         };
 
         let (pages, photos) = book_counts(&book);
@@ -221,6 +223,7 @@ mod tests {
                 page(2, vec![placement(3, 1), placement(5, 2)]),
                 page(3, vec![placement(9, 1), placement(1, 2)]),
             ],
+            options: Default::default(),
         };
 
         assert_eq!(cover_photo_indices(&book, 4), vec![3, 7, 5, 9]);

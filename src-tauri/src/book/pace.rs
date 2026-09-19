@@ -84,6 +84,27 @@ pub struct Book {
     /// cannot retroactively reinterpret an old book.
     #[serde(default = "PrintSpec::pixajoy")]
     pub spec: PrintSpec,
+    /// What the user switched on for this book on the draft screen. Omitted
+    /// from the JSON while every option is off, so a book saved before
+    /// options existed and a book generated with them all off are the same
+    /// bytes, and the golden did not move. Unlike `spec`, the default can
+    /// never be reinterpreted: off means the chapters are time-only.
+    #[serde(default, skip_serializing_if = "BookOptions::is_default")]
+    pub options: BookOptions,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BookOptions {
+    /// Chapters split where the photos move between towns as well as at a
+    /// gap in time. See `book::chapter`.
+    pub places: bool,
+}
+
+impl BookOptions {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// Deterministic tie-breaker. The ONLY stochastic choice in the engine is
@@ -480,7 +501,14 @@ pub fn assemble(
     }
 
     let mut book =
-        Book { pages: out, seed, dropped: 0, controls: BTreeMap::new(), spec: *spec };
+        Book {
+        pages: out,
+        seed,
+        dropped: 0,
+        controls: BTreeMap::new(),
+        spec: *spec,
+        options: BookOptions::default(),
+    };
     repace(&mut book, lib, photos, w, seed);
 
     // Counted from what actually survived into the book, after repacing, so
@@ -912,6 +940,7 @@ mod tests {
                     scene_tags: Vec::new(),
                     captured_at: None,
                     clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
+                    location: None,
                 }
             })
             .collect()
@@ -1565,6 +1594,7 @@ mod tests {
             scene_tags: Vec::new(),
             captured_at: None,
             clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
+            location: None,
         }
     }
 
@@ -2200,6 +2230,26 @@ mod spec_persistence_tests {
         assert_eq!(book.pages.len(), 1);
     }
 
+    /// A hand-written literal for the same reason as the test above.
+    #[test]
+    fn a_book_saved_before_options_loads_with_every_option_off() {
+        let stored = r#"{ "pages": [], "seed": 1234, "dropped": 0 }"#;
+        let book: Book = serde_json::from_str(stored).expect("an old book must still load");
+        assert!(!book.options.places, "a book saved before Places was laid out by time alone");
+    }
+
+    #[test]
+    fn a_book_states_its_options_only_when_one_is_on() {
+        let off = Book { pages: Vec::new(), seed: 7, dropped: 0, controls: BTreeMap::new(), spec: pixajoy_spec(), options: BookOptions::default() };
+        let json = serde_json::to_value(&off).unwrap();
+        assert!(json.get("options").is_none(), "all-off must be the bytes an old book has: {json}");
+
+        let on = Book { options: BookOptions { places: true }, ..off };
+        let json = serde_json::to_value(&on).unwrap();
+        assert_eq!(json["options"], serde_json::json!({ "places": true }));
+        assert_eq!(serde_json::from_value::<Book>(json).unwrap().options, on.options);
+    }
+
     /// R14. The stored spec survives the round trip, so a book cannot be
     /// reopened under a geometry it was not laid out under.
     #[test]
@@ -2210,6 +2260,7 @@ mod spec_persistence_tests {
             seed: 7,
             dropped: 0,
             controls: BTreeMap::new(),
+            options: Default::default(),
         };
         let json = serde_json::to_string(&book).expect("a book must serialise");
         assert!(json.contains("\"pageWIn\":8.0"), "the spec must be written out: {json}");

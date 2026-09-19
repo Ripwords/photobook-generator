@@ -64,6 +64,9 @@
       "rejected": []
     }
   ],
+  "options": {
+    "places": true
+  },
   "pageCount": 4,
   "pages": [
     {

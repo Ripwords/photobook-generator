@@ -5,6 +5,7 @@ import {
   includeOverflowLabel,
   optionFor,
   recommendedOption,
+  type BookOptions,
 } from "~/types/book";
 import type { AnalyzedPhoto, PhotoOverrides } from "~/types/features";
 import type { ReplacedProject } from "~/types/navigation";
@@ -17,6 +18,7 @@ const {
   runId = 0,
   folders = [],
   replacing = null,
+  located = null,
 } = defineProps<{
   /** The analysed photos, exactly as Rust sent them -- see `useBook`. */
   photos?: AnalyzedPhoto[];
@@ -34,6 +36,8 @@ const {
   folders?: string[];
   /** The saved book this selection was re-opened from, and can be generated back over. */
   replacing?: ReplacedProject | null;
+  /** How many photos carry a location, or `null` until `place_chapters` answers. */
+  located?: number | null;
 }>();
 
 const emit = defineEmits<{
@@ -79,6 +83,15 @@ function choosePrintSize(next: PrintSpec) {
   spec.value = next;
   printSizeOpen.value = false;
 }
+
+/** The draft's switches, owned by its job like `spec`. */
+const options = defineModel<BookOptions>("options", { required: true });
+const places = computed({
+  get: () => options.value.places && located !== 0,
+  set: (on: boolean) => {
+    options.value = { ...options.value, places: on };
+  },
+});
 
 /** The draft's name, owned by its job so the sidebar shows the same one. */
 const name = defineModel<string>("name", { required: true });
@@ -180,7 +193,7 @@ watch(recommendation, (next) => {
  */
 async function onGenerate(replace: boolean) {
   if (pages.value === null || overflowMessage.value !== null) return;
-  await generate(name.value, pages.value, spec.value);
+  await generate(name.value, pages.value, spec.value, options.value);
   const projectId = generated.value?.projectId;
   if (projectId === undefined) return;
   if (replace && replacing) await deleteProject(replacing.id);
@@ -222,6 +235,21 @@ async function onGenerate(replace: boolean) {
             Change…
           </UButton>
         </div>
+      </UFormField>
+
+      <UFormField
+        :help="
+          located === 0
+            ? 'None of these photos records where it was taken.'
+            : 'A new chapter starts when you move to another town, not only after a break in time.'
+        "
+      >
+        <USwitch
+          v-model="places"
+          label="Split chapters by place"
+          color="neutral"
+          :disabled="busy || located === 0"
+        />
       </UFormField>
     </div>
 

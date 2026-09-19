@@ -399,6 +399,7 @@ mod tests {
             palette: Vec::<PaletteColor>::new(), capture_quality: None,
             scene_tags: Vec::new(), captured_at: None,
             clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
+            location: None,
         }
     }
 
@@ -416,6 +417,7 @@ mod tests {
                 template_id: "fx".into(),
                 placements: vec![Placement { photo_index: 0, slot_rect: slot, crop, z: 1 }],
             }],
+            options: Default::default(),
         }
     }
 
@@ -900,6 +902,7 @@ mod tests {
                     }],
                 },
             ],
+            options: Default::default(),
         };
         let bleed = vec![Vec::new(), vec![crate::geometry::BleedEdge::Left]];
         let findings = preflight_with_bleed(&book, &[p], dir.path(), &bleed);

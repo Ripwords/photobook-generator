@@ -50,7 +50,7 @@ import type {
 } from "../../app/types/features";
 import type { PreflightFinding } from "../../app/types/book";
 import { cancelModelRequest, modelRequest, type ModelRequestArgs } from "./model";
-import { mockPhotos, thumbnail } from "./photos";
+import { mockPhotos, mockPlaceChapters, thumbnail } from "./photos";
 
 const layout: BookLayout = structuredClone(layoutFixture) as BookLayout;
 // The fixture is pinned against an EMPTY library, so it offers no alternative
@@ -430,6 +430,8 @@ function coverFrom(start: number): string[] {
 type Args = Record<string, unknown> | undefined;
 
 const DRAFTS_KEY = "pbg-mock-drafts";
+/** Set to any value to analyse a folder whose photos carry no location. */
+const NO_GPS_KEY = "pbg-mock-no-gps";
 
 const MiB = 1024 * 1024;
 const cache = { usedBytes: 1450 * MiB, pinnedBytes: 610 * MiB, limitBytes: 2048 * MiB };
@@ -534,6 +536,9 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
         includedCount: Object.values(overrides).filter((state) => state === "include").length,
       } as T;
     }
+
+    case "place_chapters":
+      return mockPlaceChapters(localStorage.getItem(NO_GPS_KEY) !== null) as T;
 
     case "default_print_spec":
       return structuredClone(PIXAJOY) as T;

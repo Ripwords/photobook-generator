@@ -49,6 +49,7 @@ pub fn run() {
             commands::delete_draft,
             commands::apply_photo_overrides,
             commands::recommend_book,
+            commands::place_chapters,
             commands::generate_book,
             commands::default_print_spec,
             commands::check_print_spec,

@@ -823,6 +823,7 @@ mod tests {
                     ],
                 },
             ],
+            options: Default::default(),
         }
     }
 

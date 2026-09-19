@@ -8,6 +8,7 @@ import {
   summarizeExport,
 } from "~/types/book";
 import type { PhotoOverrides } from "~/types/features";
+import type { BookOptions } from "~/types/book";
 import { sizeLabel, type PrintSpec } from "~/types/printSpec";
 import type { PreviewGeometry } from "~/types/preview";
 import { shortcutCombo, shortcutKbds } from "~/types/shortcuts";
@@ -33,6 +34,8 @@ const emit = defineEmits<{
       overrides: PhotoOverrides;
       /** Its print size, so generating it again keeps the book it was. */
       spec: PrintSpec | null;
+      /** Its options, for the same reason. */
+      options: BookOptions | null;
     },
   ];
 }>();
@@ -175,6 +178,7 @@ function requestEditPhotos() {
     sourceFolders: project.sourceFolders,
     overrides: project.overrides,
     spec: layout.value?.spec ?? null,
+    options: layout.value?.options ?? null,
   });
 }
 
