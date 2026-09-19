@@ -50,7 +50,7 @@ import type {
 } from "../../app/types/features";
 import type { PreflightFinding } from "../../app/types/book";
 import { cancelModelRequest, modelRequest, type ModelRequestArgs } from "./model";
-import { mockPhotos, mockPlaceChapters, thumbnail } from "./photos";
+import { mockPhotos, mockPlaceChapters, mockPlaceNames, thumbnail } from "./photos";
 
 const layout: BookLayout = structuredClone(layoutFixture) as BookLayout;
 // The fixture is pinned against an EMPTY library, so it offers no alternative
@@ -539,6 +539,10 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
 
     case "place_chapters":
       return mockPlaceChapters(localStorage.getItem(NO_GPS_KEY) !== null) as T;
+
+    case "place_names":
+      await sleep(300);
+      return mockPlaceNames(localStorage.getItem(NO_GPS_KEY) !== null) as T;
 
     case "default_print_spec":
       return structuredClone(PIXAJOY) as T;

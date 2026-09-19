@@ -41,6 +41,9 @@ export interface PlaceChapters {
   chapters: Record<string, number>;
 }
 
+/** What `place_names` answers: a town name by place chapter id, for the chapters that have one. */
+export type PlaceNames = Readonly<Record<number, string>>;
+
 export const DEFAULT_BOOK_OPTIONS: Readonly<BookOptions> = Object.freeze({ places: false });
 
 /** Mirrors `book::preflight::Severity`, which serialises lowercase. */

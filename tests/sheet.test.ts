@@ -53,16 +53,24 @@ describe("sheetRows", () => {
   it("puts each event's header before its own rows", () => {
     const rows = sheetRows(groups, 2);
     expect(
-      rows.map((row) => (row.kind === "event" ? `event ${row.ordinal}` : row.photos.length)),
-    ).toEqual(["event 1", 2, 2, 1, "event 2", 2]);
+      rows.map((row) => (row.kind === "event" ? row.title : row.photos.length)),
+    ).toEqual(["Event 1", 2, 2, 1, "Event 2", 2]);
   });
 
   it("numbers events in order and counts their photos", () => {
     const headers = sheetRows(groups, 2).filter((row) => row.kind === "event");
-    expect(headers.map((row) => [row.ordinal, row.count])).toEqual([
-      [1, 5],
-      [2, 2],
+    expect(headers.map((row) => [row.title, row.count])).toEqual([
+      ["Event 1", 5],
+      ["Event 2", 2],
     ]);
+  });
+
+  it("titles a chapter with its town by chapter id, and numbers the rest by position", () => {
+    const three = [...groups, { eventCluster: 12, photos: photos(7, 1) }];
+    const headers = sheetRows(three, 2, { 9: "Kyoto", 1: "Osaka", 2: "Nara" }).filter(
+      (row) => row.kind === "event",
+    );
+    expect(headers.map((row) => row.title)).toEqual(["Event 1", "Kyoto", "Event 3"]);
   });
 
   it("ends each event with its own last row, not only the sheet's", () => {
