@@ -1,6 +1,6 @@
 # PhotobookGen — Project Status
 
-**Last updated:** 2026-09-19
+**Last updated:** 2026-09-20
 **Branch:** `master`
 
 This document exists so a new agent can pick the project up without re-deriving what
@@ -1683,8 +1683,19 @@ Also explicitly deferred:
   permissively licensed face embedder was found, and InsightFace/ArcFace is non-commercial
   research-only, including its auto-downloaded weights. Face *detection* is unaffected. Do
   not reach for InsightFace. `BookOptions` has no `people` field.
-- **The cover.** Different geometry from the interior (~0.75" wrap band plus a spine whose
-  width depends on page count and paper stock). Own spec.
+- ~~**The cover.**~~ **Built** (`book/cover.rs`, spec
+  `docs/superpowers/specs/2026-09-20-cover-places-people-design.md`). `Book.cover` holds an
+  optional front and back `CoverPhoto` and a plain `spine: Rgb`. `assemble` fills it with
+  `cover::choose`, which picks the best kept photo, a back photo from another event when
+  there is one, and the front's dominant palette colour. The panel is the board plus
+  `PrintSpec.cover_wrap_in` (default 0.75") on the top, bottom and outer edge. Crops go
+  through `cover::rejects`, which refuses a face in the wrap, too near the board edge, cut,
+  or below the lowest DPI. Edits are `SetCoverPhoto`, `SetCoverCrop` and `SetSpineColour`,
+  and `reprint` re-crops the cover when the panel shape changes. Export writes
+  `cover-front-{hash8}` and `cover-back-{hash8}` at full panel size, and `Manifest.cover`
+  carries `spine_hex`. **Not built:** a spine image or a single wrap-around cover file,
+  because Pixajoy publishes no spine-width formula. The preview draws the spine at a nominal
+  width. The cover is uploaded in Pixajoy's own cover editor.
 
 ### Deferred: smile detection calibration
 

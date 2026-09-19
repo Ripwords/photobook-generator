@@ -211,7 +211,11 @@ board ends and the blue one is the safe margin inside it, as on the pages. There
 at the spine edge, because that edge does not fold. The spine is drawn at a nominal width in
 its colour, because Pixajoy publishes no formula for how wide it prints.
 
-Both cover photos are optional and a new book has none. An empty side reads **Choose a front
+Generating a book fills the cover for you: the front gets the best-looking photo the book
+keeps that fits the panel, the back gets the next best, from a different part of the trip
+when there is one, and the spine takes the front photo's main colour. Both cover photos are
+optional. A book saved before the cover existed opens with none and a white spine, and either side can be
+emptied. An empty side reads **Choose a front
 cover photo** (or back); click it to open the same photo dialog as a page, titled **Choose
 the front cover photo**, with every analysed photo shown cropped to the cover's shape.
 Any photo can go on the cover, including one already on a page: the cover uses a copy and
