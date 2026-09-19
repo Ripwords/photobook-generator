@@ -571,6 +571,7 @@ pub(crate) fn lookup_cache(db: &Db, paths: &[String]) -> Result<CacheLookup, Str
         log::warn!("failed to record file stamps: {err}");
     }
 
+    let mut used = Vec::new();
     for (path, hash) in paths.iter().zip(hashes.into_iter().flatten()) {
         match hash {
             Ok(hash) => match db.get_features(&hash).map_err(|e| e.to_string())? {
@@ -587,6 +588,7 @@ pub(crate) fn lookup_cache(db: &Db, paths: &[String]) -> Result<CacheLookup, Str
                     Ok(mut features) => {
                         features["path"] = path.clone().into();
                         hits.push(features);
+                        used.push(hash);
                     }
                     Err(_) => misses.push(path.clone()),
                 },
@@ -597,6 +599,13 @@ pub(crate) fn lookup_cache(db: &Db, paths: &[String]) -> Result<CacheLookup, Str
                 hash_failures += 1;
             }
         }
+    }
+
+    let used: Vec<&str> = used.iter().map(String::as_str).collect();
+    // Only the eviction order depends on it, so a failure costs this run
+    // nothing.
+    if let Err(err) = db.touch_features(&used) {
+        log::warn!("failed to mark cache hits as used: {err}");
     }
 
     Ok(CacheLookup {
@@ -2648,6 +2657,31 @@ mod tests {
             "a cached hash must not appear in the miss list"
         );
         assert_eq!(result.hash_failures, 0);
+    }
+
+    /// Eviction is least recently used, so a folder answered from the cache
+    /// must count as a use, or re-opening a draft every day would not stop
+    /// its photos being evicted first.
+    #[test]
+    fn a_cache_hit_is_marked_used_and_nothing_else_is() {
+        let db = Db::open_in_memory().unwrap();
+        let hit = write_temp_file("touch-hit.jpg", b"touch hit bytes");
+        let miss = write_temp_file("touch-miss.jpg", b"touch miss bytes");
+        let hit_hash = hash_file(Path::new(&hit)).unwrap();
+        db.put_features(&hit_hash, &hit, r#"{"status":"ok"}"#).unwrap();
+        db.put_features("some-other-photo", "/elsewhere.jpg", r#"{"status":"ok"}"#).unwrap();
+        db.conn.execute("UPDATE features SET last_used_at = 1", []).unwrap();
+        let last_used = |hash: &str| -> i64 {
+            db.conn
+                .query_row("SELECT last_used_at FROM features WHERE hash = ?1", [hash], |r| r.get(0))
+                .unwrap()
+        };
+
+        let result = lookup_cache(&db, &[hit, miss]).unwrap();
+
+        assert_eq!(result.hits.len(), 1);
+        assert!(last_used(&hit_hash) > 1_700_000_000, "a hit is marked used now");
+        assert_eq!(last_used("some-other-photo"), 1, "a row nobody asked for is left alone");
     }
 
     #[test]
@@ -5076,6 +5110,56 @@ mod tests {
             items, original_items,
             "the reopened project must export the same sources, crops and filenames"
         );
+    }
+
+    /// Saves a book through the real generate path, then fills the cache
+    /// with photos nothing uses, all more recently used than the book's, so
+    /// least-recently-used order alone would evict the book first.
+    fn book_beside_stray_photos(db: &Db) -> i64 {
+        let records = records_with_hashes_out_of_slice_order(12);
+        cache_records(db, &records);
+        let photos = photos_from_records(&records).unwrap();
+        let meta = NewProject { name: "Kyoto", source_folders: vec!["/photos".into()], pages: 20, seed: 5 };
+        let generated =
+            generate_and_save(db, &meta, &photos, &fixture_library(), &Weights::default(), &Overrides::new()).unwrap();
+        db.conn.execute("UPDATE features SET last_used_at = 0", []).unwrap();
+        for n in 0..20 {
+            db.put_features(&format!("{n:064x}"), "/stray.jpg", r#"{"stray":true}"#).unwrap();
+        }
+        generated.project_id
+    }
+
+    fn enforce_with_a_tiny_limit(db: &Db) -> crate::cache::CacheReport {
+        let thumbs = tempfile::tempdir().unwrap();
+        let pins = crate::cache::pins(db, Vec::new()).unwrap();
+        crate::cache::enforce(db, thumbs.path(), &pins, 1).unwrap()
+    }
+
+    #[test]
+    fn enforcing_the_cache_limit_never_breaks_a_saved_book() {
+        let db = Db::open_in_memory().unwrap();
+        let id = book_beside_stray_photos(&db);
+
+        let report = enforce_with_a_tiny_limit(&db);
+
+        let project = db.load_project(id).unwrap().unwrap();
+        resolve_photos(&db, &project.photo_hashes).expect("the saved book still opens");
+        assert_eq!(report.evicted, 20, "every stray photo goes");
+        assert!(report.over_budget, "the book alone exceeds one byte");
+    }
+
+    #[test]
+    fn enforcing_the_cache_limit_never_breaks_a_trashed_book_that_is_later_restored() {
+        let db = Db::open_in_memory().unwrap();
+        let id = book_beside_stray_photos(&db);
+        db.delete_project(id).unwrap();
+
+        let report = enforce_with_a_tiny_limit(&db);
+
+        assert_eq!(db.restore_project(id).unwrap(), 1);
+        let project = db.load_project(id).unwrap().unwrap();
+        resolve_photos(&db, &project.photo_hashes).expect("the restored book still opens");
+        assert_eq!(report.evicted, 20);
     }
 
     #[test]

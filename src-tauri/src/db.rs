@@ -22,6 +22,8 @@ use std::path::Path;
 /// incomplete. The bump turns that refusal into a re-analysis.
 pub const ANALYZER_VERSION: u32 = 3;
 
+pub const DEFAULT_CACHE_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
+
 /// A file's size and modified time. When both match what they were when the
 /// file was last hashed, its contents are taken to be unchanged and the hash
 /// is reused rather than read again -- the check backup and sync tools make.
@@ -134,6 +136,10 @@ impl Db {
                  position   INTEGER NOT NULL,
                  path       TEXT NOT NULL,
                  PRIMARY KEY (project_id, position)
+             );
+             CREATE TABLE IF NOT EXISTS settings (
+                 key   TEXT PRIMARY KEY,
+                 value TEXT NOT NULL
              );",
         )?;
         let has_deleted_at: bool = self
@@ -151,6 +157,16 @@ impl Db {
             self.conn
                 .execute("ALTER TABLE projects ADD COLUMN favourite INTEGER NOT NULL DEFAULT 0", [])?;
         }
+        let has_last_used_at: bool = self
+            .conn
+            .prepare("SELECT 1 FROM pragma_table_info('features') WHERE name = 'last_used_at'")?
+            .exists([])?;
+        if !has_last_used_at {
+            self.conn.execute_batch(
+                "ALTER TABLE features ADD COLUMN last_used_at INTEGER;
+                 UPDATE features SET last_used_at = created_at WHERE last_used_at IS NULL;",
+            )?;
+        }
         Ok(())
     }
 
@@ -166,13 +182,50 @@ impl Db {
 
     pub fn put_features(&self, hash: &str, path: &str, json: &str) -> rusqlite::Result<()> {
         self.conn.execute(
-            "INSERT INTO features (hash, path, json, analyzer_version)
-             VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO features (hash, path, json, analyzer_version, last_used_at)
+             VALUES (?1, ?2, ?3, ?4, unixepoch())
              ON CONFLICT(hash) DO UPDATE SET
                  path = excluded.path,
                  json = excluded.json,
-                 analyzer_version = excluded.analyzer_version",
+                 analyzer_version = excluded.analyzer_version,
+                 last_used_at = excluded.last_used_at",
             rusqlite::params![hash, path, json, ANALYZER_VERSION],
+        )?;
+        Ok(())
+    }
+
+    /// Marks cache hits as used now, for least-recently-used eviction. One
+    /// transaction for the whole batch: a commit per row would fsync once per
+    /// photo on a folder that is otherwise answered entirely from the cache.
+    pub fn touch_features(&self, hashes: &[&str]) -> rusqlite::Result<()> {
+        if hashes.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut touch = tx.prepare_cached("UPDATE features SET last_used_at = unixepoch() WHERE hash = ?1")?;
+            for hash in hashes {
+                touch.execute([hash])?;
+            }
+        }
+        tx.commit()
+    }
+
+    /// How many bytes of analysis cache the user allows. Stored as text
+    /// because SQLite integers are signed and the limit is a `u64`.
+    pub fn cache_limit(&self) -> rusqlite::Result<u64> {
+        let stored: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = 'cache_limit_bytes'", [], |r| r.get(0))
+            .optional()?;
+        Ok(stored.and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_CACHE_LIMIT))
+    }
+
+    pub fn set_cache_limit(&self, limit_bytes: u64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('cache_limit_bytes', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [limit_bytes.to_string()],
         )?;
         Ok(())
     }
@@ -1397,4 +1450,67 @@ mod tests {
         assert!(db.get_features("old").unwrap().is_none());
     }
 
+    fn last_used_at(db: &Db, hash: &str) -> Option<i64> {
+        db.conn
+            .query_row("SELECT last_used_at FROM features WHERE hash = ?1", [hash], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn migrate_adds_last_used_at_to_a_features_table_that_predates_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE features (
+                     hash TEXT PRIMARY KEY, path TEXT NOT NULL, json TEXT NOT NULL,
+                     analyzer_version INTEGER NOT NULL,
+                     created_at INTEGER NOT NULL DEFAULT (unixepoch()));
+                 INSERT INTO features (hash, path, json, analyzer_version, created_at)
+                     VALUES ('h1', '/a.jpg', '{}', 3, 1234), ('h2', '/b.jpg', '{}', 3, 5678);",
+            )
+            .unwrap();
+        }
+
+        let db = Db::open(&path).unwrap();
+
+        assert_eq!(last_used_at(&db, "h1"), Some(1234));
+        assert_eq!(last_used_at(&db, "h2"), Some(5678));
+        assert_eq!(db.get_features("h1").unwrap().as_deref(), Some("{}"), "the cached row survives");
+    }
+
+    #[test]
+    fn putting_features_marks_them_used_now() {
+        let db = Db::open_in_memory().unwrap();
+        db.put_features("abc", "/a.jpg", "{}").unwrap();
+        db.conn.execute("UPDATE features SET last_used_at = 1", []).unwrap();
+        db.put_features("abc", "/a.jpg", "{}").unwrap();
+        assert!(last_used_at(&db, "abc").unwrap() > 1_700_000_000);
+    }
+
+    #[test]
+    fn touching_features_marks_only_the_named_hashes_used_now() {
+        let db = Db::open_in_memory().unwrap();
+        for hash in ["hit1", "hit2", "untouched"] {
+            db.put_features(hash, "/x.jpg", "{}").unwrap();
+        }
+        db.conn.execute("UPDATE features SET last_used_at = 1", []).unwrap();
+
+        db.touch_features(&["hit1", "hit2"]).unwrap();
+
+        assert!(last_used_at(&db, "hit1").unwrap() > 1_700_000_000);
+        assert!(last_used_at(&db, "hit2").unwrap() > 1_700_000_000);
+        assert_eq!(last_used_at(&db, "untouched"), Some(1));
+    }
+
+    #[test]
+    fn the_cache_limit_defaults_to_two_gibibytes_and_round_trips() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.cache_limit().unwrap(), 2 * 1024 * 1024 * 1024);
+        db.set_cache_limit(500 * 1024 * 1024).unwrap();
+        assert_eq!(db.cache_limit().unwrap(), 500 * 1024 * 1024);
+        db.set_cache_limit(u64::MAX).unwrap();
+        assert_eq!(db.cache_limit().unwrap(), u64::MAX, "stored as text, so no i64 overflow");
+    }
 }
