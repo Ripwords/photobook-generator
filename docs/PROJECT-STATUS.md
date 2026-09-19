@@ -24,10 +24,83 @@ deliberately-parked decision that this file is the only surviving record of.**
 
 ---
 
+## What changed on 2026-09-19: similarity-aware culling (complaint 3)
+
+`nearDupCluster` is no longer pHash single-link. `cluster::similar_clusters` links two
+photos when their feature prints are within `SIMILAR_DISTANCE = 0.35`, or when their pHashes
+match (Hamming <= 4) and their prints are within `PHASH_VETO_DISTANCE = 0.5`. A photo with
+no print links by pHash alone. Clusters grow by **complete linkage**: two clusters merge
+only when every cross pair is linked. No pair more than `SIMILAR_SPAN_SECONDS = 120`
+apart is linked, so no cluster spans more than 120 s of dated photos. `cull` then ranks
+each cluster by exposure (a frame more than 90% clipped low or high loses to any that is
+not), then density (other contestants within 0.35), then the old sharpness, capture
+quality and aesthetic order. Overrides are unchanged.
+
+**Calibration** (all pairs, 4 h events). Bali 2025 is 283 photos in 8 events. The
+Iceland 2025 a6400 slice is the first 300 photos, 38.8 h, in 3 events.
+
+| Bali pairs | n | p5 | p25 | p50 | p75 | p95 |
+|---|---|---|---|---|---|---|
+| (a) pHash <= 4 | 111 | .132 | .202 | .265 | .361 | .597 |
+| (b) within 120 s | 1356 | .260 | .449 | .634 | .910 | 1.123 |
+| (c) same event | 9785 | .526 | .894 | .986 | 1.059 | 1.181 |
+| (d) across events | 30118 | .848 | .961 | 1.026 | 1.091 | 1.193 |
+
+| Iceland pairs | n | p5 | p25 | p50 | p75 | p95 |
+|---|---|---|---|---|---|---|
+| (a) pHash <= 4 | 194 | .147 | .228 | .524 | .892 | 1.031 |
+| (b) within 120 s | 1817 | .234 | .449 | .605 | .824 | 1.009 |
+| (c) same event | 20089 | .563 | .829 | .934 | 1.024 | 1.144 |
+| (d) across events | 24761 | .841 | .955 | 1.015 | 1.073 | 1.177 |
+
+Contact sheets of pairs pHash does not already join, in 0.05 bands: up to 0.30 every
+pair was the same shot with a smile or head tilt changed. From 0.30 to 0.35 it was the
+same shot with a pose change, with one exception (the Bali civet, landscape versus portrait
+framing, at 0.338). In a narrow 0.33 to 0.35 sheet, 22 of 24 pairs were near-duplicates. From
+0.35 to 0.40 about half were distinct framings, and from 0.40 to 0.45 most were. Hence 0.35.
+Every pair at or below 0.35 was within 96 s (Bali) and 110 s (Iceland), which is where
+the 120 s cap comes from.
+
+**Why not the union of pHash and prints.** Iceland's pHash (a) median is 0.52 and its p75
+0.89: flat grey sky and mist collapse into near-identical hashes. 8 of 8 sampled pHash
+pairs past 0.6 were different pictures (a statue and a waterfall 28 h apart). pHash
+single-link built one 26-photo cluster spanning 108,543 s whose worst pair was 1.18
+apart. A union with the print links kept that cluster (27 photos, 30 h) and added an
+8-photo, 5 h one. pHash pairs from 0.35 to 0.6 were mostly the same shot, so the veto
+sits at 0.5. A 300-photo Iceland time-lapse is all look-alikes (same-event p75 0.29), and
+without the time cap it collapsed into 2 or 3 clusters. With the cap it gives 9.
+
+**Result.** Bali keeps 191 of 283, down from 210 (200 clusters, largest 9 photos in 37 s).
+Iceland keeps 157 of 300, down from 192 (176 clusters, largest 9 in 80 s, where it was 26
+across 30 h). In the 20-page book built from each, Iceland placed one shot 3 extra times
+before and 0 after. Bali had no repeats either way, and 5 of its 45 placed photos changed.
+The 12 largest clusters were all one subject at one spot. On Iceland several are one
+person at one rock face in different poses, merged at 0.35.
+
+**Full Iceland (1525 photos, 11 events).** pHash single-link made a 435-photo cluster
+spanning 599,922 s (7 days) and kept 317. Now the largest cluster is 60 photos and none
+spans more than 120 s. 310 are kept. The 60s are time-lapse runs, where each 120 s window
+still keeps one frame.
+
+**Boundary merge was tried and dropped.** The plan was to merge two adjacent 4 h events when
+any of the last 3 photos of one is within 0.35 of any of the first 3 of the next. Across
+all 17 real boundaries (7 in Bali, 10 in the full Iceland set) the closest border pair
+was 0.656 and most were past 0.8. It never fires, so it was not built. Event ids are
+also re-derived by `agent/view.rs` from `event_clusters`, so a merge would have to live
+in both places.
+
+**Not handled: jpg/dng twins.** Their pHash is mostly past 4 and their prints reach 0.66
+(the dng is analysed from its embedded preview), so they are neither joined today nor
+by this change. Twins need handling by file stem.
+
+**Cost.** Candidate pairs are all i < j, and the O(n^2) loop skips dated pairs past the
+cap before computing a distance. A library with no capture dates computes every
+distance (768 floats each).
+
 ## What changed on 2026-09-19: feature prints, clipping, and analyzer v3
 
-This is groundwork for similarity-aware selection. Nothing reads the new fields yet.
-Clustering and culling are unchanged.
+This was groundwork for similarity-aware selection. The section above is what now reads
+the prints and the clipping fields.
 
 **New analysis fields.** The sidecar's single Vision batch now also runs
 `VNGenerateImageFeaturePrintRequest`, pinned to revision 2 so an OS update cannot silently
@@ -1136,6 +1209,11 @@ isolation test varying exactly one axis with the other two held byte-identical, 
 three are individually load-bearing — which matters, because the term's whole claim is
 "three signals, equal weight".
 
+**Built 2026-09-19: near-duplicates by feature print.** The first paragraph above is no
+longer true. Photos of one shot taken with a changed pose, smile or small reframing now
+share a cluster and only one survives the cull. See "similarity-aware culling" at the top.
+This is cull-level, not spread-level. `spread_diversity` is still at weight 0.0.
+
 **Equal weighting is a starting point, not a claim.** Nobody has measured whether scene
 tags, palette and time deserve the same share, or whether one of them dominates on real
 photographs. That is a tuning question, and the tuning session below is where it gets
@@ -1592,6 +1670,19 @@ Be precise about this. Several things look verified and are not.
 
 Each of these was a real bug found during Phase 1. They are documented because the
 tests did not catch them and a fresh reader would repeat them.
+
+**Similarity clustering**
+- **Never single-link feature prints or pHash.** A~B and B~C does not make A~C. pHash
+  single-link chained flat grey skies across 30 h on Iceland. `similar_clusters` is complete
+  linkage, and `similar_clusters_do_not_chain_through_a_middle_photo` pins it.
+- **Look-alike is not the same as time-adjacent.** A time-lapse is all look-alikes, which is
+  why the 120 s cap exists. A 6 s gap can separate a close portrait from a wide street shot,
+  so time alone is not a substitute either.
+- **pHash says nothing reliable about sky, mist or snow.** Iceland's pHash-matching pairs have
+  a median print distance of 0.52. Trust the print when both photos have one.
+- **Density is the count of OTHER photos within 0.35.** Counting the photo itself hands a
+  pHash-joined printed photo the win over a sharper print-less one
+  (`cull_does_not_count_a_photo_as_its_own_neighbour`).
 
 **Apple Vision**
 - `VNFaceLandmarkRegion2D.normalizedPoints` are normalised to the **face's bounding box**,

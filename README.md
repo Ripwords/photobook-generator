@@ -103,6 +103,10 @@ on this Mac (nothing leaves the machine). Several folders are one set: every pho
 against all the others, and photos shot the same afternoon fall into one event whichever
 folder they came from.
 
+When you shot the same picture several times within two minutes, the app keeps one. It
+keeps the frame most like the rest of that group, not merely the sharpest, and a frame
+that is almost entirely black or blown out never wins over one that is properly exposed.
+
 The contact sheet shows every photo with the ones the book would leave out dimmed. Use **+**
 and **−** on a photo to include or exclude it yourself. The bar above the sheet stays pinned
 while you scroll it: **All photos** or **Keepers only**, the keeper count, and the tile
