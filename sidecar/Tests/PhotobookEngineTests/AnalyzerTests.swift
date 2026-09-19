@@ -102,6 +102,9 @@ private func fixture(_ name: String) -> String {
     #expect(f.sharpness >= 0)
     #expect((0...1).contains(f.warmth))
     #expect((0...1).contains(f.contrast))
+    #expect((0...1).contains(f.clippedLow))
+    #expect((0...1).contains(f.clippedHigh))
+    #expect(f.featurePrint.flatMap(FeaturePrint.decode)?.count == 768)
     #expect(!f.palette.isEmpty)
     #expect(f.faces.isEmpty)
     #expect(f.faceAreaFraction == 0)
@@ -274,7 +277,10 @@ private func sampleFeatures() -> PhotoFeatures {
         palette: [],
         warmth: 0.5,
         contrast: 0.5,
+        clippedLow: 0,
+        clippedHigh: 0,
         phash: 42,
+        featurePrint: nil,
         thumbnailPath: nil
     )
 }
@@ -338,7 +344,10 @@ private func decodedJSONObject(_ data: Data) throws -> [String: Any] {
         palette: [],
         warmth: 0.5,
         contrast: 0.5,
+        clippedLow: 0.1,
+        clippedHigh: 0.2,
         phash: 42,
+        featurePrint: "AACAPwAAIMA=",
         thumbnailPath: "/tmp/abc.jpg"
     )
 
@@ -350,7 +359,8 @@ private func decodedJSONObject(_ data: Data) throws -> [String: Any] {
         "path", "hash", "width", "height", "exif", "isUtility",
         "aestheticScore", "sharpness", "faces", "faceAreaFraction",
         "smileFraction", "saliencyBox", "horizonTiltDeg", "sceneTags",
-        "hasText", "palette", "warmth", "contrast", "phash", "thumbnailPath",
+        "hasText", "palette", "warmth", "contrast", "clippedLow", "clippedHigh",
+        "phash", "featurePrint", "thumbnailPath",
     ]
 
     let missing = pinned.subtracting(keys)

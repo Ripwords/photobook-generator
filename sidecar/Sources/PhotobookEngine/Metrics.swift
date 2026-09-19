@@ -175,16 +175,28 @@ enum Metrics {
         }.clamped(0, 1)
     }
 
-    /// Global luma spread, normalised to 0...1.
-    static func contrast(_ image: CGImage) -> Double {
+    private static func lumas(_ image: CGImage) -> [Double] {
         let side = 128
         let bytes = rgbaBuffer(image, width: side, height: side)
-        var lo = 255.0, hi = 0.0
-        for p in 0..<(side * side) {
-            let v = luma(bytes, p * 4)
-            lo = min(lo, v); hi = max(hi, v)
-        }
-        return ((hi - lo) / 255.0).clamped(0, 1)
+        return (0..<(side * side)).map { luma(bytes, $0 * 4) }
+    }
+
+    /// Global luma spread from the 5th to the 95th percentile, normalised to
+    /// 0...1. Percentiles rather than min/max so a few hot pixels or a
+    /// specular highlight cannot saturate it.
+    static func contrast(_ image: CGImage) -> Double {
+        let sorted = lumas(image).sorted()
+        let at = { (q: Double) in sorted[Int((q * Double(sorted.count - 1)).rounded())] }
+        return ((at(0.95) - at(0.05)) / 255.0).clamped(0, 1)
+    }
+
+    /// Fractions of luma below 5% and above 95% of full scale.
+    static func clipping(_ image: CGImage) -> (low: Double, high: Double) {
+        let values = lumas(image)
+        let n = Double(values.count)
+        let low = values.filter { $0 < 0.05 * 255 }.count
+        let high = values.filter { $0 > 0.95 * 255 }.count
+        return (Double(low) / n, Double(high) / n)
     }
 }
 

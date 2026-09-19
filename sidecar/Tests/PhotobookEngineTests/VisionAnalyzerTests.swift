@@ -18,11 +18,23 @@ private func fixture(_ name: String) -> String {
 // `AnalyzerTests.analyzerHandlesA300PhotoBatchWithoutDeadlockingOnVisionConcurrency`
 // timed out at its own 120s watchdog. Gating these three closed that
 // loophole -- confirmed by re-running the full suite several times after.
+// Adding a fourth Vision-calling test here (2026-09-19, for the feature
+// print) brought the same deadlock back even though it was gated, so new
+// Vision assertions go into one of these three instead.
 @Test func visionReturnsResultForPlainImageWithoutCrashing() throws {
     let img = try ImageLoader.loadThumbnail(path: fixture("landscape.jpg"), maxPixel: 1024)
     let result = VisionGate.run { VisionAnalyzer.analyze(img) }
     #expect(result.faces.isEmpty)
     #expect(result.aestheticScore >= -1.0 && result.aestheticScore <= 1.0)
+
+    // Feature print revision 2: 768 Float32 elements, L2-normalised, so
+    // Euclidean distance equals Apple's `computeDistance` (measured on real
+    // photos). Asserted here rather than in a test of its own: a fourth
+    // Vision-calling test in this file deadlocks the full suite (see above).
+    let print = try #require(result.featurePrint)
+    #expect(print.count == 768)
+    let norm = print.reduce(Float(0)) { $0 + $1 * $1 }.squareRoot()
+    #expect(abs(norm - 1) < 0.01)
 }
 
 @Test func visionBoxesAreNormalisedAndTopLeftOrigin() throws {

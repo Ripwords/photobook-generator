@@ -34,6 +34,7 @@ struct VisionResult: Codable {
     var horizonTiltDeg: Double?
     var sceneTags: [String] = []
     var hasText: Bool = false
+    var featurePrint: [Float]?
 }
 
 enum VisionAnalyzer {
@@ -73,11 +74,15 @@ enum VisionAnalyzer {
         let classify = VNClassifyImageRequest()
         let text = VNRecognizeTextRequest()
         text.recognitionLevel = .fast
+        // Pinned so an OS update cannot silently change the embedding space:
+        // prints cached under one revision are not comparable with another's.
+        let print = VNGenerateImageFeaturePrintRequest()
+        print.revision = VNGenerateImageFeaturePrintRequestRevision2
 
         // One handler for everything: Vision reuses the decoded surface across
         // requests, so a second perform() on the same handler is nearly free.
         let handler = VNImageRequestHandler(cgImage: image, options: [:])
-        try? handler.perform([aesthetics, faces, saliency, horizon, classify, text])
+        try? handler.perform([aesthetics, faces, saliency, horizon, classify, text, print])
 
         // Landmarks and capture quality must be seeded with the rectangles
         // request's observations. Running them standalone returns their own
@@ -143,6 +148,8 @@ enum VisionAnalyzer {
         }
 
         result.hasText = !(text.results ?? []).isEmpty
+
+        result.featurePrint = print.results?.first.map(FeaturePrint.elements(of:))
 
         return result
     }

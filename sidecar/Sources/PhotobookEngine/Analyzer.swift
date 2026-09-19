@@ -20,7 +20,14 @@ struct PhotoFeatures: Codable {
     let palette: [PaletteColor]
     let warmth: Double
     let contrast: Double
+    /// Fraction of luma below 5% of full scale.
+    let clippedLow: Double
+    /// Fraction of luma above 95% of full scale.
+    let clippedHigh: Double
     let phash: UInt64
+    /// Vision's image feature print, encoded by `FeaturePrint.encode`. Nil
+    /// when Vision produced none.
+    let featurePrint: String?
     /// Path to a small JPEG contact-sheet thumbnail, or nil if none was
     /// requested (`thumbnailDir` was nil) or writing it failed. A missing
     /// thumbnail degrades to a blank grid tile in the UI -- it must never
@@ -116,6 +123,7 @@ enum Analyzer {
 
             let palette = Metrics.palette(image, count: 6)
             let faceArea = vision.faces.reduce(0.0) { $0 + $1.box[2] * $1.box[3] }
+            let clipping = Metrics.clipping(image)
 
             // Reuses the CGImage already decoded above -- never decodes the
             // source file a second time just to make a thumbnail. A failed
@@ -152,7 +160,10 @@ enum Analyzer {
                 palette: palette,
                 warmth: Metrics.warmth(palette),
                 contrast: Metrics.contrast(image),
+                clippedLow: clipping.low,
+                clippedHigh: clipping.high,
                 phash: Metrics.perceptualHash(image),
+                featurePrint: vision.featurePrint.map(FeaturePrint.encode),
                 thumbnailPath: thumbnailPath
             )
         }

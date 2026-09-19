@@ -286,3 +286,45 @@ private func hamming(_ a: UInt64, _ b: UInt64) -> Int {
     let absoluteDescription = "hamming(base, nearDuplicate)=\(distNear) of 64 bits was not small enough for a brightness-shifted near-duplicate"
     #expect(distNear < 10, "\(absoluteDescription)")
 }
+
+// A 256x160 gradient from 80 to 170, then the same image with a few 8x8
+// blocks forced to pure black and pure white: 0.6% of the area, which is what
+// specular highlights and dead pixels look like after the 128x128 resample.
+// max-min jumps from ~0.35 to 1.0 on them; a p5-p95 spread must not move.
+private func gradient(hotPixels: Bool) -> CGImage {
+    makeImage(width: 256, height: 160) { x, y in
+        if hotPixels, y < 8 {
+            if (16..<24).contains(x) || (80..<88).contains(x) { return 255 }
+            if (144..<152).contains(x) || (208..<216).contains(x) { return 0 }
+        }
+        return UInt8(80 + x * 90 / 255)
+    }
+}
+
+@Test func metricsContrastIgnoresAFewHotPixels() {
+    let clean = Metrics.contrast(gradient(hotPixels: false))
+    let hot = Metrics.contrast(gradient(hotPixels: true))
+    #expect(clean > 0.2 && clean < 0.4, "the clean spread is the gradient's, got \(clean)")
+    #expect(abs(hot - clean) < 0.02, "hot pixels moved contrast from \(clean) to \(hot)")
+}
+
+@Test func metricsClippingCountsTheFractionPastEachEnd() {
+    // Left 30% black, right 10% white, the rest mid-grey. Non-square on purpose.
+    let image = makeImage(width: 200, height: 120) { x, _ in
+        x < 60 ? 0 : (x >= 180 ? 255 : 128)
+    }
+    let c = Metrics.clipping(image)
+    #expect(abs(c.low - 0.30) < 0.01, "low was \(c.low)")
+    #expect(abs(c.high - 0.10) < 0.01, "high was \(c.high)")
+}
+
+// 5% of 255 is 12.75 and 95% is 242.25, so 12 and 243 are clipped and 13 and
+// 242 are not.
+@Test func metricsClippingThresholdsSitAtFiveAndNinetyFivePercent() {
+    let flat = { (v: UInt8) in Metrics.clipping(makeImage(width: 64, height: 40) { _, _ in v }) }
+    #expect(flat(12).low == 1)
+    #expect(flat(13).low == 0)
+    #expect(flat(243).high == 1)
+    #expect(flat(242).high == 0)
+    #expect(flat(128).low == 0 && flat(128).high == 0)
+}
