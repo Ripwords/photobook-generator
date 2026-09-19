@@ -2463,6 +2463,7 @@ mod tests {
             capture_quality: None,
             scene_tags: Vec::new(),
             captured_at: None,
+            clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
         }
     }
 
@@ -3230,6 +3231,7 @@ mod tests {
             "faceAreaFraction": 0.0,
             "palette": [],
             "sceneTags": [],
+            "clippedLow": 0.0, "clippedHigh": 0.0,
         })
     }
 
@@ -3465,6 +3467,7 @@ mod tests {
             "faceAreaFraction": 0.0,
             "palette": [],
             "sceneTags": [],
+            "clippedLow": 0.0, "clippedHigh": 0.0,
         })
     }
 
@@ -3506,6 +3509,7 @@ mod tests {
             "height": 3024,
             "isUtility": false,
             "sceneTags": ["beach", "sunset"],
+            "clippedLow": 0.0, "clippedHigh": 0.0,
             "faces": [serde_json::json!({}), serde_json::json!({})],
             "aestheticScore": 0.7,
             "sharpness": 12.0,
@@ -3816,6 +3820,7 @@ mod tests {
             "faceAreaFraction": 0.0,
             "palette": [],
             "sceneTags": [],
+            "clippedLow": 0.0, "clippedHigh": 0.0,
         })
     }
 
@@ -3911,6 +3916,7 @@ mod tests {
             "faceAreaFraction": 0.0,
             "palette": [],
             "sceneTags": [],
+            "clippedLow": 0.0, "clippedHigh": 0.0,
         })
     }
 
@@ -3959,6 +3965,7 @@ mod tests {
             capture_quality: None,
             scene_tags: Vec::new(),
             captured_at: None,
+            clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
         }
     }
 

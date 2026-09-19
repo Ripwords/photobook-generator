@@ -870,6 +870,7 @@ mod tests {
                     capture_quality: if i % 3 == 0 { Some(0.4) } else { None },
                     scene_tags: Vec::new(),
                     captured_at: None,
+                    clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
                 }
             })
             .collect()
@@ -1522,6 +1523,7 @@ mod tests {
             capture_quality: Some(0.5),
             scene_tags: Vec::new(),
             captured_at: None,
+            clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
         }
     }
 

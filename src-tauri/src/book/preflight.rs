@@ -389,6 +389,7 @@ mod tests {
             faces: Vec::new(), face_area_fraction: 0.0, saliency_box: None,
             palette: Vec::<PaletteColor>::new(), capture_quality: None,
             scene_tags: Vec::new(), captured_at: None,
+            clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
         }
     }
 

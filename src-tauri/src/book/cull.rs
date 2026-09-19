@@ -52,6 +52,13 @@ pub struct Photo {
     /// a scan or an export often carries no EXIF date at all -- so absence
     /// is tolerated here, unlike `scene_tags`.
     pub captured_at: Option<i64>,
+    /// Fraction of luma below 5% of full scale.
+    pub clipped_low: f64,
+    /// Fraction of luma above 95% of full scale.
+    pub clipped_high: f64,
+    /// Vision's image feature print, compared with
+    /// `cluster::feature_distance`. `None` when Vision produced none.
+    pub feature_print: Option<Vec<f32>>,
 }
 
 impl Photo {
@@ -59,6 +66,22 @@ impl Photo {
     pub fn aspect(&self) -> f64 {
         self.width as f64 / self.height as f64
     }
+}
+
+/// Decodes the sidecar's `featurePrint`: base64 of little-endian Float32s,
+/// as Swift's `FeaturePrint.encode` writes it.
+pub fn decode_feature_print(encoded: &str) -> Option<Vec<f32>> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).ok()?;
+    if bytes.len() % 4 != 0 {
+        return None;
+    }
+    Some(
+        bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect(),
+    )
 }
 
 fn rect_from(v: &serde_json::Value) -> Option<Rect> {
@@ -190,6 +213,13 @@ fn parse_features(v: &serde_json::Value, derived: Derived) -> Option<Photo> {
     // is ordinary rather than malformed.
     let captured_at = v["exif"]["captureDate"].as_f64().map(|t| t as i64);
 
+    // Optional like `saliencyBox`: Swift omits it when Vision returns no
+    // print. Present but undecodable is corruption and refuses the record.
+    let feature_print = match v.get("featurePrint") {
+        None => None,
+        Some(encoded) => Some(decode_feature_print(encoded.as_str()?)?),
+    };
+
     Some(Photo {
         path: v["path"].as_str()?.to_string(),
         hash: v["hash"].as_str()?.to_string(),
@@ -210,6 +240,9 @@ fn parse_features(v: &serde_json::Value, derived: Derived) -> Option<Photo> {
         capture_quality,
         scene_tags,
         captured_at,
+        clipped_low: v["clippedLow"].as_f64()?,
+        clipped_high: v["clippedHigh"].as_f64()?,
+        feature_print,
     })
 }
 
@@ -456,6 +489,7 @@ mod tests {
             capture_quality: None,
             scene_tags: Vec::new(),
             captured_at: None,
+            clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
         }
     }
 
@@ -798,7 +832,8 @@ mod tests {
             "faceAreaFraction": 0.12,
             "saliencyBox": [0.2,0.1,0.5,0.6],
             "palette": [{"r":0.5,"g":0.2,"b":0.1,"weight":0.6}],
-            "sceneTags": ["beach", "sunset"]
+            "sceneTags": ["beach", "sunset"],
+            "clippedLow": 0.0, "clippedHigh": 0.0
         });
         let p = from_features(&v).expect("well-formed record");
         assert_eq!(p.faces.len(), 1);
@@ -816,7 +851,8 @@ mod tests {
             "path": "/p/a.jpg", "hash": "abc", "width": 4032, "height": 3024,
             "isUtility": false, "aestheticPct": 80, "sharpnessPct": 60,
             "nearDupCluster": 2, "eventCluster": 1,
-            "faces": [], "faceAreaFraction": 0.0, "palette": [], "sceneTags": []
+            "faces": [], "faceAreaFraction": 0.0, "palette": [], "sceneTags": [],
+            "clippedLow": 0.0, "clippedHigh": 0.0
         });
         let p = from_features(&v).expect("well-formed record");
         assert!(p.saliency_box.is_none());
@@ -835,7 +871,10 @@ mod tests {
             "saliencyBox": [0.2,0.1,0.5,0.6],
             "palette": [{"r":0.5,"g":0.2,"b":0.1,"weight":0.6}],
             "sceneTags": ["beach", "sunset"],
-            "exif": { "captureDate": 1_700_000_000.0 }
+            "exif": { "captureDate": 1_700_000_000.0 },
+            "clippedLow": 0.25,
+            "clippedHigh": 0.125,
+            "featurePrint": "AACAPwAAIMA="
         })
     }
 
@@ -877,6 +916,39 @@ mod tests {
         );
     }
 
+    /// The literal Swift pins in `featurePrintEncodesFloat32LittleEndianAsBase64`.
+    #[test]
+    fn cull_decodes_the_feature_print_swift_pins() {
+        assert_eq!(decode_feature_print("AACAPwAAIMA="), Some(vec![1.0, -2.5]));
+    }
+
+    #[test]
+    fn cull_feature_print_decode_refuses_a_truncated_element_or_non_base64() {
+        // Six bytes: one Float32 and half of another.
+        assert_eq!(decode_feature_print("AACAPwAA"), None);
+        assert_eq!(decode_feature_print("not base64!"), None);
+    }
+
+    #[test]
+    fn cull_from_features_reads_clipping_and_the_feature_print() {
+        let p = from_features(&full_record()).expect("the fixture parses");
+        assert_eq!(p.clipped_low, 0.25);
+        assert_eq!(p.clipped_high, 0.125);
+        assert_eq!(p.feature_print, Some(vec![1.0, -2.5]));
+    }
+
+    /// Swift omits `featurePrint` when Vision returns none, so absence is a
+    /// real answer. A value that does not decode is corruption.
+    #[test]
+    fn cull_from_features_tolerates_an_absent_feature_print_but_not_a_corrupt_one() {
+        let p = from_features(&without("featurePrint")).expect("absent is legitimate");
+        assert_eq!(p.feature_print, None);
+
+        let mut v = full_record();
+        v["featurePrint"] = "AACAPwAA".into();
+        assert!(from_features(&v).is_none());
+    }
+
     fn without(key: &str) -> serde_json::Value {
         let mut v = full_record();
         v.as_object_mut().unwrap().remove(key).unwrap_or_else(|| panic!("{key} not in fixture"));
@@ -906,6 +978,8 @@ mod tests {
             "faceAreaFraction",
             "palette",
             "sceneTags",
+            "clippedLow",
+            "clippedHigh",
         ] {
             assert!(
                 from_features(&without(key)).is_none(),

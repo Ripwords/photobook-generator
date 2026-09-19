@@ -58,6 +58,9 @@ fn photo(i: usize, event: u32) -> Photo {
         capture_quality: None,
         scene_tags: Vec::new(),
         captured_at: Some(1_700_000_000 + (event as i64) * 86_400 + (i as i64) * 600),
+        clipped_low: 0.0,
+        clipped_high: 0.0,
+        feature_print: None,
     }
 }
 

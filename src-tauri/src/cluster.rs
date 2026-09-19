@@ -3,6 +3,15 @@ pub fn hamming(a: u64, b: u64) -> u32 {
     (a ^ b).count_ones()
 }
 
+/// Euclidean distance between two Vision feature prints, the same value as
+/// Apple's `VNFeaturePrintObservation.computeDistance` for revision 2 (checked
+/// on real photos). `None` when the lengths differ: such prints come from
+/// different models and are not comparable.
+pub fn feature_distance(a: &[f32], b: &[f32]) -> Option<f32> {
+    (a.len() == b.len())
+        .then(|| a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum::<f32>().sqrt())
+}
+
 /// Single-link agglomerative clustering over Hamming distance, via union-find.
 /// Returns a cluster id for each input index. O(n^2), which is fine at n <= 300.
 pub fn near_duplicate_clusters(phashes: &[u64], max_distance: u32) -> Vec<usize> {
@@ -88,6 +97,17 @@ pub fn event_clusters(timestamps: &[Option<i64>], gap_seconds: i64) -> Vec<usize
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn feature_distance_is_euclidean() {
+        assert_eq!(feature_distance(&[0.0, 0.0], &[3.0, 4.0]), Some(5.0));
+        assert_eq!(feature_distance(&[1.0, -2.0], &[1.0, -2.0]), Some(0.0));
+    }
+
+    #[test]
+    fn feature_distance_refuses_prints_of_different_lengths() {
+        assert_eq!(feature_distance(&[0.0, 0.0], &[3.0, 4.0, 0.0]), None);
+    }
+
     use super::*;
 
     #[test]

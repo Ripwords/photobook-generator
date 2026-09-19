@@ -15,7 +15,12 @@ use std::path::Path;
 /// pipeline as v2 rows (see raw-performance-report.md for the measured
 /// deltas). This is the worked example for what counts as a "semantic
 /// change" the next time this constant needs bumping.
-pub const ANALYZER_VERSION: u32 = 2;
+///
+/// v3: adds `clippedLow`, `clippedHigh` and `featurePrint`, and `contrast`
+/// became the p5-p95 luma spread instead of min-max. `from_features` requires
+/// the clipping fields, so a v2 row served from the cache would be refused as
+/// incomplete. The bump turns that refusal into a re-analysis.
+pub const ANALYZER_VERSION: u32 = 3;
 
 /// A file's size and modified time. When both match what they were when the
 /// file was last hashed, its contents are taken to be unchanged and the hash
