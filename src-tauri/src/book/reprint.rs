@@ -42,6 +42,7 @@
 //! which is why a bleed, margin, fold or resolution edit leaves every crop
 //! byte-identical.
 
+use crate::book::cover;
 use crate::book::crop::choose_crop;
 use crate::book::cull::Photo;
 use crate::book::pace::Book;
@@ -81,6 +82,11 @@ pub fn reprint(book: &Book, photos: &[Photo], to: &PrintSpec) -> Reprint {
                 pl.crop = choose_crop(photo, slot_aspect(to, &slot_for(pl.slot_rect)));
             }
         }
+    }
+    // The cover panel is trim plus wrap, so a bleed or wrap edit reshapes it
+    // even when every page keeps its shape.
+    if book.spec.cover_aspect() != to.cover_aspect() {
+        cover::recut(&mut next.cover, photos, to);
     }
 
     // `u64::MAX` and an empty missing set: this is a question about geometry,
@@ -183,6 +189,7 @@ mod tests {
         let ps = photos();
         Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: BTreeMap::new(),
             seed: 99,
             dropped: 3,
@@ -220,6 +227,7 @@ mod tests {
             safe_margin_in: spec.safe_margin_in(),
             min_dpi: spec.min_dpi(),
             warn_dpi: spec.warn_dpi(),
+            cover_wrap_in: spec.cover_wrap_in(),
         }
     }
 
@@ -284,6 +292,7 @@ mod tests {
             safe_margin_in: 0.125,
             min_dpi: 150.0,
             warn_dpi: 250.0,
+            cover_wrap_in: 0.75,
         })
         .unwrap();
         let cases = vec![
@@ -325,6 +334,7 @@ mod tests {
             safe_margin_in: 0.125,
             min_dpi: 200.0,
             warn_dpi: 300.0,
+            cover_wrap_in: 0.75,
         })
         .expect("fixture spec must be valid")
     }
@@ -462,6 +472,7 @@ mod tests {
             safe_margin_in: 0.0625,
             min_dpi: 180.0,
             warn_dpi: 240.0,
+            cover_wrap_in: 0.75,
         })
         .unwrap();
 

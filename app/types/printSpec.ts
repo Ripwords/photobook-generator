@@ -46,6 +46,11 @@ export interface PrintSpec {
   minDpi: number;
   /** At or above this, resolution stops counting against a placement. */
   warnDpi: number;
+  /**
+   * How far a cover photo runs past the trim to fold around the board, on
+   * the top, bottom and outer edge.
+   */
+  coverWrapIn: number;
 }
 
 /** The panel's one display unit. A preference, never part of the spec. */
@@ -87,6 +92,7 @@ export interface PrintSizeFields {
   fold: string;
   minDpi: string;
   warnDpi: string;
+  coverWrap: string;
 }
 
 export type PrintSizeField = keyof PrintSizeFields;
@@ -99,6 +105,7 @@ const LABELS: Record<PrintSizeField, string> = {
   fold: "Fold",
   minDpi: "Lowest print resolution",
   warnDpi: "Target resolution",
+  coverWrap: "Cover wrap",
 };
 
 /** The trim is the page minus the bleed: once across, top and bottom down. */
@@ -116,6 +123,7 @@ export function fieldsFromSpec(spec: PrintSpec, unit: LengthUnit): PrintSizeFiel
     fold: formatLength(spec.gutterIn, unit),
     minDpi: String(spec.minDpi),
     warnDpi: String(spec.warnDpi),
+    coverWrap: formatLength(spec.coverWrapIn, unit),
   };
 }
 
@@ -161,6 +169,7 @@ export function proposeSpec(fields: PrintSizeFields, base: PrintSpec, unit: Leng
       safeMarginIn: length("safeMargin", base.safeMarginIn),
       minDpi: typed.minDpi,
       warnDpi: typed.warnDpi,
+      coverWrapIn: length("coverWrap", base.coverWrapIn),
     },
   };
 }
@@ -276,6 +285,7 @@ const FIELD_OF: Record<SpecField, PrintSizeField> = {
   safeMarginIn: "safeMargin",
   minDpi: "minDpi",
   warnDpi: "warnDpi",
+  coverWrapIn: "coverWrap",
 };
 
 /** The input a refusal points at, or `null` when it is about several. */
@@ -296,7 +306,9 @@ export function refusalText(error: SpecError, unit: LengthUnit): string {
     case "negative":
       return `${LABELS[FIELD_OF[error.field]]} cannot be negative.`;
     case "tooLarge":
-      return `${LABELS[FIELD_OF[error.field]]} with its bleed can be at most ${len(error.limit)}.`;
+      return error.field === "coverWrapIn"
+        ? `${LABELS.coverWrap} can be at most ${len(error.limit)}.`
+        : `${LABELS[FIELD_OF[error.field]]} with its bleed can be at most ${len(error.limit)}.`;
     case "noSafeArea":
       return error.axis === "horizontal"
         ? `Bleed, safe margin and fold add up to ${len(error.insetsIn)} across a ${len(error.pageIn)} page, which leaves no room for photos.`

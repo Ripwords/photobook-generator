@@ -157,6 +157,7 @@ mod tests {
     fn empty_book() -> Book {
         Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 0,
             dropped: 0,
@@ -178,6 +179,7 @@ mod tests {
     fn book_counts_sums_placements_across_every_page_not_just_the_first() {
         let book = Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
@@ -214,6 +216,7 @@ mod tests {
         };
         let book = Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,

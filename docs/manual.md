@@ -197,7 +197,11 @@ beside the book. It holds what a printer publishes: the **Book size** (width and
 the finished page after trimming), the **Bleed** on the three outer edges, the **Safe margin**
 inside the trim and the **Fold** strip measured in from the binding, and the **Lowest** and
 **Target** print resolution in DPI. Below the lowest, export stops; below the target, it
-warns. **in** and **mm** at the top switch every length between inches and millimetres; that
+warns. Under **Cover**, **Cover wrap** is how far the front and back cover photos run past
+the trim to fold around the board, on the top, bottom and outer edge but not at the spine
+(Pixajoy: 0.75 in, at most 3 in). It sets the shape the cover photos are cropped to, and
+faces are kept out of the part that folds under. A book or draft saved before this field
+existed opens with 0.75 in. **in** and **mm** at the top switch every length between inches and millimetres; that
 is a display choice only and never changes the book. At the top of the panel, a drawing of
 one spread labels the trimmed width and height and shades the bleed (red), safe margin (blue)
 and fold (amber) in the same colours as the editor's guides, with each value in the legend.

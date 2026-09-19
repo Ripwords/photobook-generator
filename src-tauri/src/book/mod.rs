@@ -6,6 +6,7 @@
 //! `percentiles` and `imageNormalizedTopLeft`.
 
 pub mod chapter;
+pub mod cover;
 pub mod crop;
 pub mod cull;
 pub mod edit;

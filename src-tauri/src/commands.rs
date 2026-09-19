@@ -1568,8 +1568,8 @@ fn export_failures(records: &[serde_json::Value]) -> Vec<ExportFailure> {
 /// An entry with no successful record is REMOVED: it names no file, so
 /// listing it (with any format at all) would be a claim about a file nobody
 /// wrote. Pages themselves are never removed, preserving `manifest`'s own
-/// rule that `page_count` always reconciles against the SKU. Returns how many
-/// entries were dropped.
+/// rule that `page_count` always reconciles against the SKU. A cover side
+/// is reconciled the same way. Returns how many entries were dropped.
 pub(crate) fn reconcile_manifest(m: &mut Manifest, records: &[serde_json::Value]) -> usize {
     let written = written_extensions(records);
     let mut dropped = 0usize;
@@ -1584,6 +1584,16 @@ pub(crate) fn reconcile_manifest(m: &mut Manifest, records: &[serde_json::Value]
                 false
             }
         });
+    }
+    for side in [&mut m.cover.front, &mut m.cover.back] {
+        let Some(photo) = side else { continue };
+        match written.get(&photo.filename) {
+            Some(extension) => photo.format.clone_from(extension),
+            None => {
+                *side = None;
+                dropped += 1;
+            }
+        }
     }
     dropped
 }
@@ -1937,7 +1947,6 @@ pub async fn export_book(
         // anyway.
         let findings = crate::book::preflight::preflight(&project.book, &parsed, &output);
 
-        let total = placement_total(&project.book);
         let mut completed = 0usize;
 
         let result = run_export(
@@ -1947,6 +1956,7 @@ pub async fn export_book(
             &output_dir,
             findings,
             |items| {
+                let total = items.len();
                 if let Err(err) = on_event.send(ExportEvent::Started { total }) {
                     log::warn!("failed to send export Started event: {err}");
                 }
@@ -2537,6 +2547,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let book = crate::book::pace::Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 0,
             dropped: 0,
@@ -4284,11 +4295,11 @@ mod tests {
     // ================================================================
 
     use crate::book::cull::Photo;
+    use crate::book::cover::CoverPhoto;
     use crate::book::manifest::Manifest;
     use crate::book::pace::{Book, Page, Placement};
     use crate::book::preflight::{Finding, Severity};
     use crate::geometry::{Rect, Side};
-    use crate::protocol::ExportItem;
     use crate::templates::Library;
 
     /// The frozen five-template library `book::pace`'s goldens already use.
@@ -4388,6 +4399,7 @@ mod tests {
         };
         let book = Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 99,
             dropped: 0,
@@ -5475,6 +5487,7 @@ mod tests {
         };
         let book = Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
@@ -5847,14 +5860,43 @@ mod tests {
         );
     }
 
-    /// A `Vec<ExportItem>` is built from the book and handed straight to the
-    /// sidecar, so the count the UI is told to expect must be the count that
-    /// is actually sent -- otherwise the progress bar's denominator is a
-    /// different number from its numerator's source.
+    /// The cover goes through the same reconcile as a page: its format is read
+    /// off the written path, and a side the sidecar failed on is left out of
+    /// the manifest and counted with the other unwritten files.
     #[test]
-    fn the_progress_total_is_the_number_of_items_actually_sent() {
-        let (book, photos) = two_page_book();
-        let items: Vec<ExportItem> = crate::export::build_items(&book, &photos);
-        assert_eq!(items.len(), placement_total(&book));
+    fn a_cover_side_the_sidecar_failed_on_is_left_out_of_the_manifest() {
+        let (mut book, photos) = two_page_book();
+        book.cover.front = Some(CoverPhoto { photo_index: 1, crop: Rect::new(0.0, 0.1, 1.0, 0.6) });
+        book.cover.back = Some(CoverPhoto { photo_index: 2, crop: Rect::new(0.1, 0.0, 0.8, 1.0) });
+        let dir = tempfile::tempdir().unwrap();
+
+        let result = run_export(
+            &book,
+            &photos,
+            42,
+            &dir.path().to_string_lossy(),
+            Vec::new(),
+            |items| {
+                items
+                    .iter()
+                    .map(|i| match i.filename.as_str() {
+                        "cover-front-hbbb2222" => ok_record(&i.filename, "png"),
+                        "cover-back-hccc3333" => failed_record(&i.filename, "disk full"),
+                        _ => ok_record(&i.filename, "jpg"),
+                    })
+                    .collect()
+            },
+            manifest_writer(dir.path()),
+        )
+        .unwrap();
+
+        assert_eq!(result.written.len(), 4, "three page files and the front cover");
+        let written: Manifest = serde_json::from_str(
+            &std::fs::read_to_string(result.manifest_path.unwrap()).unwrap(),
+        )
+        .unwrap();
+        let front = written.cover.front.expect("the front cover was written");
+        assert_eq!((front.filename.as_str(), front.format.as_str()), ("cover-front-hbbb2222", "png"));
+        assert_eq!(written.cover.back, None, "the back cover was not written");
     }
 }

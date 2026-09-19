@@ -28,8 +28,9 @@ use crate::book::cull::Photo;
 use crate::book::edit::{alternatives, opening_count};
 use crate::book::pace::{Book, BookOptions};
 use crate::templates::Library;
-use crate::export::output_filename;
-use crate::geometry::{Rect, Side};
+use crate::book::cover::Rgb;
+use crate::export::{cover_filename, output_filename};
+use crate::geometry::{CoverSide, Rect, Side};
 use crate::print_spec::PrintSpec;
 use serde::Serialize;
 
@@ -194,6 +195,43 @@ pub struct BookLayout {
     pub pages: Vec<PreviewPage>,
     /// One entry per opening, in `toSpreads` order.
     pub openings: Vec<PreviewOpening>,
+    pub cover: PreviewCover,
+}
+
+/// The cover as the webview draws it: two panels and the spine between them.
+///
+/// `aspect` and each side's `visible` rect come from the book's own spec for
+/// the same reason the page guides do. The panel is not a page: its wrap
+/// folds under the board, and the webview has no other way to learn where.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewCover {
+    /// Panel width over height, in inches: the shape a cover crop is cut to.
+    pub aspect: f64,
+    pub spine: Rgb,
+    pub front: PreviewCoverSide,
+    pub back: PreviewCoverSide,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewCoverSide {
+    /// Panel-normalised: what shows on the finished board, less the safe
+    /// margin.
+    pub visible: Rect,
+    pub photo: Option<PreviewCoverPhoto>,
+}
+
+/// Shaped like `PreviewPlacement` less the slot, which on a cover is always
+/// the whole panel.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewCoverPhoto {
+    pub photo_index: usize,
+    pub crop: Rect,
+    /// From `export::cover_filename`, for the reason `PreviewPlacement`
+    /// takes its name from `output_filename`.
+    pub filename: Option<String>,
 }
 
 /// The guides one spec implies, normalised, as the webview receives them.
@@ -281,6 +319,8 @@ pub fn book_layout(
         })
         .collect();
 
+    let cover = preview_cover(book, &photos);
+
     BookLayout {
         project_id,
         seed: book.seed,
@@ -293,6 +333,24 @@ pub fn book_layout(
         photos,
         pages,
         openings,
+        cover,
+    }
+}
+
+fn preview_cover(book: &Book, photos: &[PreviewPhoto]) -> PreviewCover {
+    let side = |side: CoverSide| PreviewCoverSide {
+        visible: book.spec.cover_visible_rect(side),
+        photo: book.cover.side(side).map(|c| PreviewCoverPhoto {
+            photo_index: c.photo_index,
+            crop: c.crop,
+            filename: photos.get(c.photo_index).map(|p| cover_filename(side, &p.hash)),
+        }),
+    };
+    PreviewCover {
+        aspect: book.spec.cover_aspect(),
+        spine: book.cover.spine,
+        front: side(CoverSide::Front),
+        back: side(CoverSide::Back),
     }
 }
 
@@ -300,6 +358,7 @@ pub fn book_layout(
 mod tests {
     use super::*;
     use crate::book::cull::PaletteColor;
+    use crate::book::cover::{Cover, CoverPhoto, Rgb};
     use crate::book::manifest::manifest;
     use crate::book::pace::{Page, Placement, BLANK_TEMPLATE_ID};
     use crate::print_spec::{odd_spec, pixajoy_spec, PrintSpec};
@@ -350,6 +409,11 @@ mod tests {
     fn book() -> Book {
         Book {
             spec: pixajoy_spec(),
+            cover: Cover {
+                front: Some(CoverPhoto { photo_index: 4, crop: Rect::new(0.0, 0.125, 1.0, 0.567) }),
+                back: None,
+                spine: Rgb { r: 0x1a, g: 0x2b, b: 0x3c },
+            },
             controls: Default::default(),
             seed: 424_242,
             dropped: 2,
@@ -833,6 +897,43 @@ mod tests {
         assert_eq!(value["photos"][2]["thumbnailPath"], serde_json::Value::Null);
         assert!(value["geometry"]["left"]["gutter"]["w"].is_number());
         assert!(value["geometry"]["right"]["trim"]["x"].is_number());
+    }
+
+    /// The fixture's front cover is photo 4, which is also the only photo no
+    /// page places, so a cover read off the pages instead of `book.cover`
+    /// has nothing to find.
+    #[test]
+    fn preview_carries_the_cover_the_book_chose() {
+        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() });
+        let front = layout.cover.front.photo.as_ref().expect("the book has a front cover");
+
+        assert_eq!(front.photo_index, 4);
+        assert_eq!(front.crop, Rect::new(0.0, 0.125, 1.0, 0.567));
+        assert_eq!(front.filename.as_deref(), Some("cover-front-hash-e"));
+        assert_eq!(layout.cover.back.photo, None, "an empty side stays empty");
+        assert_eq!(layout.cover.spine.hex(), "#1a2b3c");
+
+        let mut b = book();
+        b.cover.back = Some(CoverPhoto { photo_index: 2, crop: Rect::new(0.1, 0.0, 0.8, 1.0) });
+        let layout = book_layout(7, &b, preview_photos(), &Library { spreads: Vec::new() });
+        let back = layout.cover.back.photo.expect("the back now has a photo");
+        assert_eq!((back.photo_index, back.filename.as_deref()), (2, Some("cover-back-hash-c")));
+    }
+
+    /// Read from the book's own spec, like the page guides: the two sides
+    /// differ because the back's wrap is on its left and the front's on its
+    /// right, and a portrait spec changes every number.
+    #[test]
+    fn preview_cover_geometry_is_read_from_the_books_spec() {
+        for spec in [pixajoy_spec(), odd_spec()] {
+            let mut b = book();
+            b.spec = spec;
+            let layout = book_layout(7, &b, preview_photos(), &Library { spreads: Vec::new() });
+
+            assert_eq!(layout.cover.aspect, spec.cover_aspect());
+            assert_eq!(layout.cover.front.visible, spec.cover_visible_rect(CoverSide::Front));
+            assert_eq!(layout.cover.back.visible, spec.cover_visible_rect(CoverSide::Back));
+        }
     }
 
     /// The Rust half of the wire pin -- see `tests/fixtures/wire/README.md`

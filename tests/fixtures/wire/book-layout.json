@@ -1,4 +1,35 @@
 {
+  "cover": {
+    "aspect": 1.175,
+    "back": {
+      "photo": null,
+      "visible": {
+        "h": 0.825,
+        "w": 0.9148936170212766,
+        "x": 0.07446808510638298,
+        "y": 0.0875
+      }
+    },
+    "front": {
+      "photo": {
+        "crop": {
+          "h": 0.567,
+          "w": 1.0,
+          "x": 0.0,
+          "y": 0.125
+        },
+        "filename": "cover-front-hash-e",
+        "photoIndex": 4
+      },
+      "visible": {
+        "h": 0.825,
+        "w": 0.9148936170212766,
+        "x": 0.010638297872340424,
+        "y": 0.0875
+      }
+    },
+    "spine": "#1a2b3c"
+  },
   "droppedPhotos": 2,
   "geometry": {
     "left": {
@@ -208,6 +239,7 @@
     "pageHIn": 8.894,
     "pageWIn": 11.197,
     "safeMarginIn": 0.125,
-    "warnDpi": 300.0
+    "warnDpi": 300.0,
+    "coverWrapIn": 0.75
   }
 }

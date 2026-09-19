@@ -21,8 +21,9 @@
 
 use crate::book::cull::Photo;
 use crate::book::pace::Book;
-use crate::book::score::effective_dpi;
-use crate::geometry::{bleeds_correctly, clear_of_gutter, in_safe_margin, in_trim, BleedEdge, Rect};
+use crate::book::cover;
+use crate::book::score::{effective_dpi, Rejection};
+use crate::geometry::{bleeds_correctly, clear_of_gutter, in_safe_margin, in_trim, BleedEdge, CoverSide, Rect};
 use crate::templates::{Role, Slot};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -112,15 +113,17 @@ fn placement_count(book: &Book) -> usize {
 }
 
 /// The one filesystem read pre-flight's shell performs on behalf of the
-/// core: which placed photos are no longer at their analysed path.
+/// core: which placed photos are no longer at their analysed path,
+/// on the pages or the cover.
 ///
 /// Built once over the distinct paths in the book rather than once per
 /// placement, so a photo used twice is statted once.
 fn missing_sources(book: &Book, photos: &[Photo]) -> std::collections::BTreeSet<String> {
     book.pages
         .iter()
-        .flat_map(|p| p.placements.iter())
-        .filter_map(|pl| photos.get(pl.photo_index))
+        .flat_map(|p| p.placements.iter().map(|pl| pl.photo_index))
+        .chain([book.cover.front, book.cover.back].into_iter().flatten().map(|c| c.photo_index))
+        .filter_map(|i| photos.get(i))
         .map(|photo| photo.path.clone())
         .collect::<std::collections::BTreeSet<String>>()
         .into_iter()
@@ -335,22 +338,83 @@ pub(crate) fn preflight_core(
         }
     }
 
+    let cover_files = cover_findings(book, photos, missing, &mut findings);
+
     // Estimated output size vs. free disk space -- BLOCK. A whole-book
     // concern rather than one photo's, so it is not attributed to a page or
     // photo.
-    let estimate = placement_idx as u64 * EST_BYTES_PER_PLACEMENT;
+    let files = placement_idx + cover_files;
+    let estimate = files as u64 * EST_BYTES_PER_PLACEMENT;
     if estimate > available_bytes {
         findings.push(Finding {
             severity: Severity::Block,
             page: 0,
             photo_path: String::new(),
             message: format!(
-                "Estimated output size ({estimate} bytes across {placement_idx} placements) exceeds available disk space ({available_bytes} bytes)"
+                "Estimated output size ({estimate} bytes across {files} files) exceeds available disk space ({available_bytes} bytes)"
             ),
         });
     }
 
     findings
+}
+
+/// The interior's source, resolution and face checks, for each side of the
+/// cover. Reported on page 0, which the findings list shows without a page
+/// number, so every message names the side. Returns how many cover files the
+/// export will write.
+fn cover_findings(
+    book: &Book,
+    photos: &[Photo],
+    missing: &std::collections::BTreeSet<String>,
+    findings: &mut Vec<Finding>,
+) -> usize {
+    let spec = &book.spec;
+    let mut files = 0;
+    for side in [CoverSide::Front, CoverSide::Back] {
+        let Some(c) = book.cover.side(side) else { continue };
+        let Some(photo) = photos.get(c.photo_index) else { continue };
+        files += 1;
+        let name = cover::side_name(side);
+        let mut label = name.to_string();
+        label[..1].make_ascii_uppercase();
+        let mut push = |severity, message| {
+            findings.push(Finding { severity, page: 0, photo_path: photo.path.clone(), message });
+        };
+
+        if missing.contains(&photo.path) {
+            push(
+                Severity::Block,
+                format!("{label} source file {} no longer exists at its analysed path", photo.path),
+            );
+        }
+        let dpi = cover::effective_dpi(spec, photo, &c.crop);
+        if dpi < spec.min_dpi() {
+            push(
+                Severity::Block,
+                format!(
+                    "{label} photo resolves at {dpi:.0} DPI across the panel, below the {:.0} DPI floor",
+                    spec.min_dpi()
+                ),
+            );
+        } else if dpi < spec.warn_dpi() {
+            push(
+                Severity::Warn,
+                format!(
+                    "{label} photo resolves at {dpi:.0} DPI across the panel, below the {:.0} DPI target",
+                    spec.warn_dpi()
+                ),
+            );
+        }
+        if let Some(reason) = cover::face_rejection(spec, photo, &c.crop, side) {
+            let problem = match reason {
+                Rejection::FaceClipped => "is cut by the crop",
+                _ => "falls where the cover wraps under the board, or too near its edge",
+            };
+            push(Severity::Block, format!("Face on the {name} {problem}"));
+        }
+    }
+    files
 }
 
 /// Free bytes on the volume containing `output_dir`, via `statfs`. macOS
@@ -386,6 +450,8 @@ mod tests {
     use super::*;
     use crate::print_spec::{odd_spec, pixajoy_spec};
     use crate::book::cull::{Face, PaletteColor};
+    use crate::book::cover::CoverPhoto;
+    use crate::geometry::CoverSide;
     use crate::book::pace::{Book, Page, Placement};
     use crate::geometry::Side;
 
@@ -408,6 +474,7 @@ mod tests {
     fn book_with(slot: Rect, crop: Rect, side: Side) -> Book {
         Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
@@ -875,6 +942,7 @@ mod tests {
         let short_slot = Rect::new(0.01, 0.0, 0.5, 1.0); // declares left bleed but stops short
         let book = Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
@@ -911,5 +979,111 @@ mod tests {
             .find(|f| f.message.contains("bleed"))
             .expect("expected a bleed finding");
         assert_eq!(bleed_finding.page, 2, "the bleed finding must attach to page 2, not page 1");
+    }
+
+    // --- the cover ----------------------------------------------------------
+
+    /// Portrait, so a full-width crop cut to the landscape panel keeps part of
+    /// the height: its DPI is its width over the PANEL, which is wider than a
+    /// page. Sized for `dpi` across the panel.
+    fn cover_photo(dpi: f64) -> Photo {
+        let w = (dpi * pixajoy_spec().cover_panel_w_in()).round() as u32;
+        let mut p = photo(w, w * 4 / 3);
+        p.path = "/p/cover.jpg".into();
+        p
+    }
+
+    fn cover_crop() -> Rect {
+        Rect::new(0.0, 0.1, 1.0, 0.638)
+    }
+
+    /// The clean page book with photo 1 on one side of the cover.
+    fn cover_book(side: CoverSide) -> Book {
+        let mut book = one_placement_book();
+        *book.cover.side_mut(side) = Some(CoverPhoto { photo_index: 1, crop: cover_crop() });
+        book
+    }
+
+    fn core(book: &Book, photos: &[Photo], missing: &[&str]) -> Vec<Finding> {
+        let missing = missing.iter().map(|s| s.to_string()).collect();
+        preflight_core(book, photos, &[Vec::new()], u64::MAX, &missing)
+    }
+
+    #[test]
+    fn preflight_passes_a_clean_cover() {
+        let photos = [preflight_photo("/p/a.jpg"), cover_photo(400.0)];
+        assert_eq!(core(&cover_book(CoverSide::Front), &photos, &[]), Vec::new());
+    }
+
+    /// 195 DPI across the 11.75" panel is about 205 across the 11.197" page,
+    /// so measuring over the page would let it through.
+    #[test]
+    fn preflight_measures_the_cover_dpi_over_the_panel_and_names_the_side() {
+        let photos = [preflight_photo("/p/a.jpg"), cover_photo(195.0)];
+        let findings = core(&cover_book(CoverSide::Back), &photos, &[]);
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].severity, Severity::Block);
+        assert_eq!(findings[0].page, 0, "the cover is not a page");
+        assert_eq!(findings[0].photo_path, "/p/cover.jpg");
+        assert!(findings[0].message.starts_with("Back cover"), "{findings:?}");
+        assert!(findings[0].message.contains("195 DPI"), "{findings:?}");
+    }
+
+    #[test]
+    fn preflight_warns_on_a_cover_in_the_dpi_warn_band() {
+        let photos = [preflight_photo("/p/a.jpg"), cover_photo(250.0)];
+        let findings = core(&cover_book(CoverSide::Front), &photos, &[]);
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].severity, Severity::Warn);
+        assert!(findings[0].message.starts_with("Front cover"), "{findings:?}");
+    }
+
+    /// A reprint recuts the cover without asking whether the new crop is
+    /// allowed, so the last gate has to.
+    #[test]
+    fn preflight_blocks_a_face_that_the_cover_wraps_under_the_board() {
+        let mut p = cover_photo(400.0);
+        p.faces.push(Face { box_: Rect::new(0.4, 0.11, 0.1, 0.1), capture_quality: None });
+        let photos = [preflight_photo("/p/a.jpg"), p];
+        let findings = core(&cover_book(CoverSide::Front), &photos, &[]);
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].severity, Severity::Block);
+        assert!(findings[0].message.contains("front cover"), "{findings:?}");
+    }
+
+    #[test]
+    fn preflight_blocks_a_cover_source_that_has_moved() {
+        let photos = [preflight_photo("/dev/null"), cover_photo(400.0)];
+        let book = cover_book(CoverSide::Front);
+
+        let findings = core(&book, &photos, &["/p/cover.jpg"]);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].message.starts_with("Front cover"), "{findings:?}");
+        assert!(findings[0].message.contains("no longer exists"), "{findings:?}");
+
+        let dir = tempdir();
+        let findings = preflight(&book, &photos, dir.path());
+        assert!(
+            findings.iter().any(|f| f.photo_path == "/p/cover.jpg" && f.message.contains("no longer exists")),
+            "the shell must stat the cover's source too: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn preflight_counts_the_cover_files_in_the_disk_estimate() {
+        let mut book = cover_book(CoverSide::Front);
+        book.cover.back = Some(CoverPhoto { photo_index: 1, crop: cover_crop() });
+        let photos = [preflight_photo("/p/a.jpg"), cover_photo(400.0)];
+
+        let findings = preflight_core(
+            &book, &photos, &[Vec::new()], 2 * EST_BYTES_PER_PLACEMENT, &Default::default(),
+        );
+        assert!(
+            findings.iter().any(|f| f.message.contains("across 3 files")),
+            "one page file and two cover files: {findings:?}"
+        );
     }
 }

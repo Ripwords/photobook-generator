@@ -96,6 +96,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const SPEC_KEYS = ["pageWIn", "pageHIn", "bleedIn", "gutterIn", "safeMarginIn", "minDpi", "warnDpi"] as const;
 
 /**
+ * The wrap a spec saved before covers existed is read with: Rust's own
+ * serde default for `coverWrapIn`. Pinned to it from both sides by
+ * `tests/fixtures/wire/legacy-print-spec.json`.
+ */
+const LEGACY_COVER_WRAP_IN = 0.75;
+
+/**
  * A saved print size, or `null` for the default. Shape only: Rust validates
  * it again when the book is generated, and refuses one that makes no sense.
  */
@@ -107,6 +114,9 @@ function parseSpec(value: unknown): PrintSpec | null {
     if (typeof n !== "number" || !Number.isFinite(n)) return null;
     spec[key] = n;
   }
+  const wrap = value.coverWrapIn ?? LEGACY_COVER_WRAP_IN;
+  if (typeof wrap !== "number" || !Number.isFinite(wrap)) return null;
+  spec.coverWrapIn = wrap;
   return spec;
 }
 

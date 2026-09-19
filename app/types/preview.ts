@@ -136,6 +136,36 @@ export interface BookLayout {
   pages: PreviewPage[];
   /** One entry per opening, in `toSpreads` order -- see `openingFor`. */
   openings: PreviewOpening[];
+  cover: PreviewCover;
+}
+
+/**
+ * Mirrors `preview::PreviewCover`. `aspect` and each `visible` rect come from
+ * the book's spec in Rust, like the page guides, and are never re-derived here.
+ */
+export interface PreviewCover {
+  /** Panel width over height in inches: the shape a cover crop is cut to. */
+  aspect: number;
+  /** Lowercase `#rrggbb`. */
+  spine: string;
+  front: PreviewCoverSide;
+  back: PreviewCoverSide;
+}
+
+/** Mirrors `preview::PreviewCoverSide`. */
+export interface PreviewCoverSide {
+  /** Panel-normalised: what shows on the finished board, less the safe margin. */
+  visible: PreviewRect;
+  photo: PreviewCoverPhoto | null;
+}
+
+/** Mirrors `preview::PreviewCoverPhoto`. */
+export interface PreviewCoverPhoto {
+  /** Indexes `BookLayout.photos`. */
+  photoIndex: number;
+  crop: PreviewRect;
+  /** Built by `export::cover_filename`; `null` only when the index is out of range. */
+  filename: string | null;
 }
 
 /**
@@ -189,7 +219,16 @@ export type BookEdit =
    * Deliberately absent from `app/agent/tools.ts`: the chat agent edits
    * layouts, it does not get to change what book the user is buying.
    */
-  | { kind: "setPrintSpec"; spec: PrintSpec };
+  | { kind: "setPrintSpec"; spec: PrintSpec }
+  /** Put any analysed photo on one side of the cover, or clear it with `null`. */
+  | { kind: "setCoverPhoto"; side: CoverSide; photo: number | null }
+  /** A hand crop on the cover; Rust derives the height from the cover panel. */
+  | { kind: "setCoverCrop"; side: CoverSide; x: number; y: number; w: number }
+  /** The plain spine colour, `#rrggbb`. */
+  | { kind: "setSpineColour"; rgb: string };
+
+/** Mirrors `geometry::CoverSide`. */
+export type CoverSide = "front" | "back";
 
 /** Mirrors `score::Rejection`: the hard constraints an edit can break. */
 export type Rejection = "faceClipped" | "faceInGutter" | "faceInSafeMargin" | "tooLowResolution";

@@ -10,6 +10,7 @@
 //! facing the inside back cover; neither has a partner, so both draw from
 //! the pool of page-halves rather than from whole spread templates.
 
+use crate::book::cover::{self, Cover};
 use crate::book::crop::choose_crop;
 use crate::book::cull::{cull, Overrides, Photo};
 use crate::book::edit::OpeningControls;
@@ -91,6 +92,10 @@ pub struct Book {
     /// never be reinterpreted: off means the chapters are time-only.
     #[serde(default, skip_serializing_if = "BookOptions::is_default")]
     pub options: BookOptions,
+    /// Chosen once by `assemble` and then only changed by the user. A book
+    /// saved before covers existed loads with none and a white spine.
+    #[serde(default)]
+    pub cover: Cover,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -500,14 +505,16 @@ pub fn assemble(
         page.number = i as u32 + 1;
     }
 
-    let mut book =
-        Book {
+    let candidates: Vec<usize> =
+        kept.iter().filter_map(|p| by_path.get(p.path.as_str()).copied()).collect();
+    let mut book = Book {
         pages: out,
         seed,
         dropped: 0,
         controls: BTreeMap::new(),
         spec: *spec,
         options: BookOptions::default(),
+        cover: cover::choose(spec, photos, &candidates),
     };
     repace(&mut book, lib, photos, w, seed);
 
@@ -2169,6 +2176,61 @@ mod tests {
         );
     }
 
+    // --- cover -------------------------------------------------------------
+
+    /// The best-looking photo the book keeps, found without `cover::choose`.
+    /// Nothing in the fixture has a face near an edge or too few pixels, so
+    /// fitting the cover never disqualifies one here.
+    fn best_kept(photos: &[Photo], excluded: &str) -> String {
+        photos
+            .iter()
+            .filter(|p| !p.is_utility && p.hash != excluded)
+            .max_by(|a, b| a.aesthetic_pct.cmp(&b.aesthetic_pct).then(b.path.cmp(&a.path)))
+            .map(|p| p.path.clone())
+            .expect("fixture has keepers")
+    }
+
+    /// The cover's indices are into `photos`, not into the culled list. The
+    /// fixture culls every seventh photo, so an unmapped `kept` index names a
+    /// different file; excluding the top photo shifts every index after it.
+    #[test]
+    fn assemble_puts_the_best_kept_photo_on_the_front_by_its_photos_index() {
+        let lib = frozen_library();
+        let photos = fixture_photos(40);
+        let run = |o: &Overrides| {
+            assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 7, o).unwrap()
+        };
+
+        let book = run(&Overrides::new());
+        let front = book.cover.front.expect("the fixture has a cover photo");
+        assert_eq!(photos[front.photo_index].path, best_kept(&photos, ""));
+        let back = book.cover.back.expect("the fixture has a second event");
+        assert_ne!(photos[back.photo_index].event_cluster, photos[front.photo_index].event_cluster);
+        assert_eq!(
+            book.cover.spine,
+            crate::book::cover::choose(&pixajoy_spec(), &photos, &[front.photo_index]).spine
+        );
+
+        let top = photos[front.photo_index].hash.clone();
+        let book = run(&overrides(&[(top.as_str(), Override::Exclude)]));
+        let front = book.cover.front.unwrap();
+        assert_eq!(photos[front.photo_index].path, best_kept(&photos, &top));
+    }
+
+    /// A culled photo never reaches the cover, however good it looks.
+    #[test]
+    fn assemble_never_puts_a_culled_photo_on_the_cover() {
+        let lib = frozen_library();
+        let mut photos = fixture_photos(40);
+        photos[14].aesthetic_pct = 100;
+        assert!(photos[14].is_utility, "fixture: every seventh photo is culled");
+        let book =
+            assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 7, &Overrides::new())
+                .unwrap();
+        assert_ne!(book.cover.front.unwrap().photo_index, 14);
+        assert_ne!(book.cover.back.unwrap().photo_index, 14);
+    }
+
     // --- golden -----------------------------------------------------------
 
     #[test]
@@ -2228,6 +2290,7 @@ mod spec_persistence_tests {
         );
         assert_eq!(book.seed, 1234, "the rest of the book must be untouched");
         assert_eq!(book.pages.len(), 1);
+        assert_eq!(book.cover, Cover::default(), "a book from before covers has none");
     }
 
     /// A hand-written literal for the same reason as the test above.
@@ -2240,7 +2303,7 @@ mod spec_persistence_tests {
 
     #[test]
     fn a_book_states_its_options_only_when_one_is_on() {
-        let off = Book { pages: Vec::new(), seed: 7, dropped: 0, controls: BTreeMap::new(), spec: pixajoy_spec(), options: BookOptions::default() };
+        let off = Book { pages: Vec::new(), seed: 7, dropped: 0, controls: BTreeMap::new(), spec: pixajoy_spec(), options: BookOptions::default(), cover: Default::default() };
         let json = serde_json::to_value(&off).unwrap();
         assert!(json.get("options").is_none(), "all-off must be the bytes an old book has: {json}");
 
@@ -2256,6 +2319,7 @@ mod spec_persistence_tests {
     fn a_book_round_trips_a_non_default_spec() {
         let book = Book {
             spec: odd_spec(),
+            cover: Default::default(),
             pages: Vec::new(),
             seed: 7,
             dropped: 0,
