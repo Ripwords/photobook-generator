@@ -1,6 +1,26 @@
 # Changelog
 
 
+## v0.1.1...master
+
+[compare changes](https://github.com/Ripwords/photobook-generator/compare/v0.1.1...master)
+
+### 🩹 Fixes
+
+- **preview:** Zoom a photo only on ⌘-scroll so a plain scroll moves the book ([500a9f0](https://github.com/Ripwords/photobook-generator/commit/500a9f0))
+
+### 📖 Documentation
+
+- **readme:** Cut the README to essentials and add screenshots ([d99fa8c](https://github.com/Ripwords/photobook-generator/commit/d99fa8c))
+
+### 🤖 CI
+
+- Reuse the push CI run for releases and stamp the README after publish ([b5ca8ce](https://github.com/Ripwords/photobook-generator/commit/b5ca8ce))
+
+### ❤️ Contributors
+
+- JJ <teohjjteoh@gmail.com>
+
 ## v0.1.0...master
 
 [compare changes](https://github.com/Ripwords/photobook-generator/compare/v0.1.0...master)
