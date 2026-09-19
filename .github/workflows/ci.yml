@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      # Each check runs even when an earlier one failed, so one failure does
+      # not hide the others.
+      - name: Unit tests
+        if: ${{ !cancelled() }}
+        run: bun run test
+      - name: Lint
+        if: ${{ !cancelled() }}
+        run: bun run lint
+      # The only step that compiles .vue files; lint and vitest never parse a
+      # Vue template.
+      - name: Build check (nuxt generate)
+        if: ${{ !cancelled() }}
+        run: bun run check:build
+
+  native:
+    # Apple Silicon, macOS 15: the sidecar needs Apple Vision and the app is
+    # arm64 only.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+      # tauri-build checks at compile time that the sidecar binary exists, so
+      # every cargo step needs this first.
+      - name: Build sidecar
+        id: sidecar
+        run: bun run sidecar
+      - name: Swift tests
+        if: ${{ !cancelled() }}
+        run: bun run test:swift
+      - name: Rust tests
+        if: ${{ !cancelled() && steps.sidecar.outcome == 'success' }}
+        run: bun run test:rust
