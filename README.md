@@ -471,7 +471,10 @@ fields or the README link is missing, rather than shipping a dead button. It the
 The tag starts [`.github/workflows/release.yml`](.github/workflows/release.yml). It opens a
 draft release named `PhotobookGen v<version>` with changelogen notes, builds
 `PhotobookGen_<version>_aarch64.dmg` on a macOS 15 Apple Silicon runner, uploads it with the
-updater archive and its `latest.json`, and publishes the release. Running the workflow by
+updater archive and its `latest.json`, and publishes the release. It publishes only after
+the full CI suite (`ci.yml`, called from the release workflow) passes on the tagged commit.
+The dmg builds while CI runs; if CI fails, the release stays a draft that users and the
+updater cannot see, and you delete it along with the tag. Running the workflow by
 hand from the Actions tab builds the dmg and attaches it to the run as an artifact, without
 creating a release.
 

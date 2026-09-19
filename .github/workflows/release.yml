@@ -14,6 +14,14 @@ permissions:
   contents: write
 
 jobs:
+  # The tag's own CI run, not master's: a tag pushed seconds after a commit
+  # would otherwise publish while that commit's CI is still running, or after
+  # it failed. The build runs alongside this into a draft release, which users
+  # and the updater cannot see; only publish waits for it.
+  ci:
+    if: ${{ github.event_name == 'push' }}
+    uses: ./.github/workflows/ci.yml
+
   create-release:
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-24.04
@@ -137,7 +145,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [create-release, build]
+    needs: [ci, create-release, build]
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-24.04
     steps:
