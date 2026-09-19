@@ -62,10 +62,23 @@ you are. Right-click a book there for the same menu the library gives it (see be
 | ⌘J | Show or hide the chat | Book editor |
 | ⌘E | Export | Book editor |
 
-**Settings** has three tabs. **General** sets the appearance (System, Light or Dark) and
-lists the shortcuts above. **API keys** is where the chat's keys are saved. **About**
+**Settings** has three tabs. **General** sets the appearance (System, Light or Dark),
+manages storage, and lists the shortcuts above. **API keys** is where the chat's keys are saved. **About**
 shows the version and what leaves this Mac: no image ever does, and the chat sends only a
 description of the book (its layouts, page numbers and photo tags).
+
+**Storage** (in **General**) shows how much disk the analysis cache uses against its
+limit. The cache is every analysed photo's results plus the small preview image the contact
+sheet shows, about 34 KB per photo; your original photos are never in it and never touched.
+The limit is 2 GB unless you pick another (500 MB, 1 GB, 2 GB, 5 GB or 10 GB). When the cache
+is over it, the app removes the photos no book or draft uses, least recently analysed first,
+at startup and after each analysis. It never removes a photo that a saved book, a book
+deleted within the last 30 days, a draft, or the photos on screen use, because the book
+could not open without it. If those alone are over the limit, the section says so and
+nothing they use is removed. **Clear unused** removes every photo nothing uses, straight
+away. A removed photo is analysed again the next time its folder is chosen. Results
+from an older version of the analyser are removed regardless of the limit, since the app can
+no longer use them.
 
 ### 1. The library
 
@@ -85,8 +98,9 @@ title in the editor too. Deleting the book you have open returns you to the libr
 first, then removes the book, with a notice offering **Undo**. A deleted book is kept for 30
 days before its layout, your include/exclude decisions and its export history are gone for
 good, though only that notice can bring it back. Files you already exported to disk are not
-touched, and neither is the photo analysis cache, so reopening those folders later will not
-re-scan your photos.
+touched. The photo analysis cache keeps the book's photos while it is in the trash; after
+that they count as unused, so reopening those folders re-analyses only the photos that
+**Storage** has since removed.
 
 With no books yet, the library is a short explanation of the three steps and a **New
 photobook** button, which does the same as the one in the sidebar.

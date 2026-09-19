@@ -338,6 +338,17 @@ type Args = Record<string, unknown> | undefined;
 
 const DRAFTS_KEY = "pbg-mock-drafts";
 
+const MiB = 1024 * 1024;
+const cache = { usedBytes: 1450 * MiB, pinnedBytes: 610 * MiB, limitBytes: 2048 * MiB };
+
+function cacheStatus() {
+  return { ...cache, overBudget: cache.usedBytes > cache.limitBytes };
+}
+
+function evictTo(limit: number) {
+  cache.usedBytes = Math.max(cache.pinnedBytes, Math.min(cache.usedBytes, limit));
+}
+
 function savedDrafts(): Record<number, string> {
   try {
     return JSON.parse(localStorage.getItem(DRAFTS_KEY) ?? "{}") as Record<number, string>;
@@ -510,6 +521,19 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
         onEvent: args?.onEvent as ModelRequestArgs["onEvent"],
       })) as T;
     }
+
+    case "cache_status":
+      return cacheStatus() as T;
+
+    case "set_cache_limit":
+      cache.limitBytes = args?.limitBytes as number;
+      evictTo(cache.limitBytes);
+      return cacheStatus() as T;
+
+    case "clear_unused_cache":
+      await sleep(400);
+      evictTo(0);
+      return cacheStatus() as T;
 
     case "cancel_model_request":
       return cancelModelRequest(args?.id as string) as T;

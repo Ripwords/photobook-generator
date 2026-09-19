@@ -155,6 +155,10 @@ impl AnalysedRuns {
     pub fn forget(&mut self, run_id: u64) {
         self.runs.remove(&run_id);
     }
+
+    pub fn hashes(&self) -> Vec<String> {
+        self.runs.values().flat_map(|photos| photos.iter().map(|p| p.hash.clone())).collect()
+    }
 }
 
 #[derive(Default)]
@@ -177,6 +181,13 @@ pub struct AppState {
     /// Minted once per `analyze_folders` call, before any work starts, so two
     /// overlapping runs get distinct ids.
     runs: std::sync::atomic::AtomicU64,
+    /// Every analysis holds this shared; cache enforcement holds it
+    /// exclusively and never waits for it. The sidecar writes a photo's
+    /// thumbnail before Rust writes its features row, so enforcement running
+    /// beside an analysis would take that thumbnail for an orphan and delete
+    /// it. An enforcement that finds the gate taken is skipped, not queued:
+    /// the analysis holding it enforces when it finishes.
+    pub cache_gate: std::sync::Arc<tokio::sync::RwLock<()>>,
 }
 
 /// Runs `f` with the sidecar, holding it for exactly that long.
@@ -582,6 +593,7 @@ pub(crate) fn lookup_cache(db: &Db, paths: &[String]) -> Result<CacheLookup, Str
         log::warn!("failed to record file stamps: {err}");
     }
 
+    let mut used = Vec::new();
     for (path, hash) in paths.iter().zip(hashes.into_iter().flatten()) {
         match hash {
             Ok(hash) => match db.get_features(&hash).map_err(|e| e.to_string())? {
@@ -598,6 +610,7 @@ pub(crate) fn lookup_cache(db: &Db, paths: &[String]) -> Result<CacheLookup, Str
                     Ok(mut features) => {
                         features["path"] = path.clone().into();
                         hits.push(features);
+                        used.push(hash);
                     }
                     Err(_) => misses.push(path.clone()),
                 },
@@ -608,6 +621,13 @@ pub(crate) fn lookup_cache(db: &Db, paths: &[String]) -> Result<CacheLookup, Str
                 hash_failures += 1;
             }
         }
+    }
+
+    let used: Vec<&str> = used.iter().map(String::as_str).collect();
+    // Only the eviction order depends on it, so a failure costs this run
+    // nothing.
+    if let Err(err) = db.touch_features(&used) {
+        log::warn!("failed to mark cache hits as used: {err}");
     }
 
     Ok(CacheLookup {
@@ -752,6 +772,18 @@ pub async fn analyze_folders(
     folders: Vec<String>,
     on_event: Channel<AnalysisEvent>,
 ) -> Result<AnalysisSummary, String> {
+    let gate = app.state::<AppState>().cache_gate.clone().read_owned().await;
+    let summary = analyze_folders_gated(app.clone(), folders, on_event).await;
+    drop(gate);
+    spawn_cache_enforcement(app);
+    summary
+}
+
+async fn analyze_folders_gated(
+    app: AppHandle,
+    folders: Vec<String>,
+    on_event: Channel<AnalysisEvent>,
+) -> Result<AnalysisSummary, String> {
     let started = Instant::now();
     if folders.is_empty() {
         return Err("choose at least one folder".into());
@@ -767,8 +799,6 @@ pub async fn analyze_folders(
         log::warn!("failed to send Scanned event: {err}");
     }
 
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-
     let db_path = database_path(&app)?;
 
     // The webview cannot decode RAW/HEIC originals at all and loading
@@ -776,7 +806,7 @@ pub async fn analyze_folders(
     // writes small JPEG thumbnails here during analysis. Rust owns
     // `app_data_dir`, so the directory is computed and created here rather
     // than hardcoded on the Swift side.
-    let thumbnail_dir = app_data_dir.join("thumbnails");
+    let thumbnail_dir = thumbnail_dir(&app)?;
     // A missing thumbnail is a blank grid tile, not a lost photo (see the
     // doc comment on `PhotoFeatures.thumbnailPath` in Analyzer.swift) -- so
     // failing to even create the directory must not abort a potentially
@@ -1109,6 +1139,12 @@ pub(crate) fn database_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join("photobook.sqlite"))
+}
+
+/// Where the sidecar writes each photo's `<hash>.jpg` thumbnail. Created by
+/// `analyze_folders`, so it may not exist yet.
+pub(crate) fn thumbnail_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("thumbnails"))
 }
 
 /// The bundled template directory, with a source-tree fallback for `tauri
@@ -2188,6 +2224,91 @@ pub async fn slot_candidates(
     .map_err(|e| e.to_string())?
 }
 
+/// Photos in any open contact sheet. A poisoned lock still holds a usable
+/// map, and ignoring it would unpin every photo on screen.
+fn live_hashes(state: &AppState) -> Vec<String> {
+    state.analysed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).hashes()
+}
+
+/// Pins, sizes and the stored limit, read in the order `cache::pins`
+/// requires: the in-memory runs before the database.
+fn cache_context(app: &AppHandle) -> Result<(Db, PathBuf, std::collections::HashSet<String>, u64), String> {
+    let live = live_hashes(&app.state::<AppState>());
+    let db = Db::open(&database_path(app)?).map_err(|e| e.to_string())?;
+    let pins = crate::cache::pins(&db, live).map_err(|e| e.to_string())?;
+    let limit = db.cache_limit().map_err(|e| e.to_string())?;
+    Ok((db, thumbnail_dir(app)?, pins, limit))
+}
+
+/// Enforces `limit`, or the stored limit when `None`, holding `gate` until
+/// done. Returns the status against the stored limit.
+async fn enforce_cache(
+    app: AppHandle,
+    gate: tokio::sync::OwnedRwLockWriteGuard<()>,
+    limit: Option<u64>,
+) -> Result<crate::cache::CacheStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _gate = gate;
+        let started = Instant::now();
+        let (db, thumbs, pins, stored) = cache_context(&app)?;
+        let report =
+            crate::cache::enforce(&db, &thumbs, &pins, limit.unwrap_or(stored)).map_err(|e| e.to_string())?;
+        log::info!("cache: enforced in {:.2?}: {report:?}", started.elapsed());
+        crate::cache::status(&db, &thumbs, &pins, stored).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Enforces the stored cache limit in the background, at startup and after
+/// each analysis. Skipped while another analysis runs: that one enforces
+/// when it finishes, so the cache still converges.
+pub(crate) fn spawn_cache_enforcement(app: AppHandle) {
+    let Ok(gate) = app.state::<AppState>().cache_gate.clone().try_write_owned() else {
+        log::info!("cache: an analysis is running, enforcement deferred to its end");
+        return;
+    };
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) = enforce_cache(app, gate, None).await {
+            log::warn!("cache: enforcement failed: {err}");
+        }
+    });
+}
+
+#[tauri::command]
+pub async fn cache_status(app: AppHandle) -> Result<crate::cache::CacheStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (db, thumbs, pins, limit) = cache_context(&app)?;
+        crate::cache::status(&db, &thumbs, &pins, limit).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Stores the limit, then enforces it unless an analysis is running, in
+/// which case that analysis enforces it when it finishes.
+#[tauri::command]
+pub async fn set_cache_limit(app: AppHandle, limit_bytes: u64) -> Result<crate::cache::CacheStatus, String> {
+    with_db(app.clone(), move |db| db.set_cache_limit(limit_bytes)).await?;
+    let gate = app.state::<AppState>().cache_gate.clone().try_write_owned();
+    match gate {
+        Ok(gate) => enforce_cache(app, gate, None).await,
+        Err(_) => cache_status(app).await,
+    }
+}
+
+/// Removes every photo nothing pins, whatever the limit.
+#[tauri::command]
+pub async fn clear_unused_cache(app: AppHandle) -> Result<crate::cache::CacheStatus, String> {
+    let gate = app
+        .state::<AppState>()
+        .cache_gate
+        .clone()
+        .try_write_owned()
+        .map_err(|_| "Wait for the analysis to finish, then clear the cache.".to_string())?;
+    enforce_cache(app, gate, Some(0)).await
+}
+
 /// How long a deleted book stays restorable before it is removed for good.
 const TRASH_SECONDS: i64 = 30 * 24 * 60 * 60;
 
@@ -2492,6 +2613,20 @@ mod tests {
         assert!(unknown.contains("analyse"), "{unknown}");
     }
 
+    /// Every open contact sheet's photos are pinned against eviction, so
+    /// the hashes must cover every run, not just the latest.
+    #[test]
+    fn analysed_runs_list_the_hashes_of_every_run() {
+        let photo = |path: &str, hash: &str| Photo { hash: hash.into(), ..run_photo(path) };
+        let mut runs = AnalysedRuns::default();
+        runs.insert(1, vec![photo("/a.jpg", "ha"), photo("/b.jpg", "hb")]);
+        runs.insert(2, vec![photo("/c.jpg", "hc")]);
+
+        let mut hashes = runs.hashes();
+        hashes.sort();
+        assert_eq!(hashes, vec!["ha", "hb", "hc"]);
+    }
+
     /// Two drafts analysing at once is the point of keeping several runs: the
     /// first draft's toggles must still work after the second one finishes.
     #[test]
@@ -2659,6 +2794,31 @@ mod tests {
             "a cached hash must not appear in the miss list"
         );
         assert_eq!(result.hash_failures, 0);
+    }
+
+    /// Eviction is least recently used, so a folder answered from the cache
+    /// must count as a use, or re-opening a draft every day would not stop
+    /// its photos being evicted first.
+    #[test]
+    fn a_cache_hit_is_marked_used_and_nothing_else_is() {
+        let db = Db::open_in_memory().unwrap();
+        let hit = write_temp_file("touch-hit.jpg", b"touch hit bytes");
+        let miss = write_temp_file("touch-miss.jpg", b"touch miss bytes");
+        let hit_hash = hash_file(Path::new(&hit)).unwrap();
+        db.put_features(&hit_hash, &hit, r#"{"status":"ok"}"#).unwrap();
+        db.put_features("some-other-photo", "/elsewhere.jpg", r#"{"status":"ok"}"#).unwrap();
+        db.conn.execute("UPDATE features SET last_used_at = 1", []).unwrap();
+        let last_used = |hash: &str| -> i64 {
+            db.conn
+                .query_row("SELECT last_used_at FROM features WHERE hash = ?1", [hash], |r| r.get(0))
+                .unwrap()
+        };
+
+        let result = lookup_cache(&db, &[hit, miss]).unwrap();
+
+        assert_eq!(result.hits.len(), 1);
+        assert!(last_used(&hit_hash) > 1_700_000_000, "a hit is marked used now");
+        assert_eq!(last_used("some-other-photo"), 1, "a row nobody asked for is left alone");
     }
 
     #[test]
@@ -4720,6 +4880,17 @@ mod tests {
     }
 
     #[test]
+    fn cache_status_serialises_exactly_the_keys_the_webview_reads() {
+        let value = crate::cache::CacheStatus {
+            used_bytes: 2_684_354_560,
+            pinned_bytes: 2_400_000_000,
+            limit_bytes: 2_147_483_648,
+            over_budget: true,
+        };
+        assert_eq!(serde_json::to_value(&value).unwrap(), wire_fixture("cache-status.json"));
+    }
+
+    #[test]
     fn book_recommendation_serialises_exactly_the_keys_the_webview_reads() {
         let value = BookRecommendation {
             keeper_count: 26,
@@ -5108,6 +5279,56 @@ mod tests {
             items, original_items,
             "the reopened project must export the same sources, crops and filenames"
         );
+    }
+
+    /// Saves a book through the real generate path, then fills the cache
+    /// with photos nothing uses, all more recently used than the book's, so
+    /// least-recently-used order alone would evict the book first.
+    fn book_beside_stray_photos(db: &Db) -> i64 {
+        let records = records_with_hashes_out_of_slice_order(12);
+        cache_records(db, &records);
+        let photos = photos_from_records(&records).unwrap();
+        let meta = NewProject { name: "Kyoto", source_folders: vec!["/photos".into()], pages: 20, seed: 5 };
+        let generated =
+            generate_and_save(db, &meta, &photos, &fixture_library(), &Weights::default(), &Overrides::new()).unwrap();
+        db.conn.execute("UPDATE features SET last_used_at = 0", []).unwrap();
+        for n in 0..20 {
+            db.put_features(&format!("{n:064x}"), "/stray.jpg", r#"{"stray":true}"#).unwrap();
+        }
+        generated.project_id
+    }
+
+    fn enforce_with_a_tiny_limit(db: &Db) -> crate::cache::CacheReport {
+        let thumbs = tempfile::tempdir().unwrap();
+        let pins = crate::cache::pins(db, Vec::new()).unwrap();
+        crate::cache::enforce(db, thumbs.path(), &pins, 1).unwrap()
+    }
+
+    #[test]
+    fn enforcing_the_cache_limit_never_breaks_a_saved_book() {
+        let db = Db::open_in_memory().unwrap();
+        let id = book_beside_stray_photos(&db);
+
+        let report = enforce_with_a_tiny_limit(&db);
+
+        let project = db.load_project(id).unwrap().unwrap();
+        resolve_photos(&db, &project.photo_hashes).expect("the saved book still opens");
+        assert_eq!(report.evicted, 20, "every stray photo goes");
+        assert!(report.over_budget, "the book alone exceeds one byte");
+    }
+
+    #[test]
+    fn enforcing_the_cache_limit_never_breaks_a_trashed_book_that_is_later_restored() {
+        let db = Db::open_in_memory().unwrap();
+        let id = book_beside_stray_photos(&db);
+        db.delete_project(id).unwrap();
+
+        let report = enforce_with_a_tiny_limit(&db);
+
+        assert_eq!(db.restore_project(id).unwrap(), 1);
+        let project = db.load_project(id).unwrap().unwrap();
+        resolve_photos(&db, &project.photo_hashes).expect("the restored book still opens");
+        assert_eq!(report.evicted, 20);
     }
 
     #[test]
