@@ -1,8 +1,8 @@
 # Cover, places and people: design
 
 **Date:** 2026-09-20
-**Status:** approved in conversation 2026-09-20; §4 (people) is gated on the face-identity
-experiment in §4.1.
+**Status:** approved in conversation 2026-09-20. §4 (people) is blocked. The face-identity
+experiment in §4.1 failed.
 
 Closes the three entries `docs/PROJECT-STATUS.md` lists under "Also explicitly deferred":
 the cover, GPS location clustering and same-person grouping.
@@ -20,14 +20,14 @@ the cover, GPS location clustering and same-person grouping.
 
 One struct, saved on the book and on the draft, read by every step that changes behaviour.
 
-`BookOptions { places: bool, people: bool }` sits on `Book` as `options`, with
-`#[serde(default)]`. A book saved before this has neither key and loads with both off,
+`BookOptions { places: bool }` (people was dropped, see §4.1) sits on `Book` as `options`, with
+`#[serde(default)]`. A book saved before this has no key and loads with places off,
 which is exactly how it was made. It is passed to `recommend_book` and `generate_book`
 beside `spec`, and saved on `SavedDraft` beside `spec`.
 
-The draft screen's inspector (`GenerateBook.vue`) shows two switches under Print size:
-**Split chapters by place** and **Group by people**. Each switch is disabled with a reason
-when the analysed set has nothing for it (no photo carries GPS; nobody recurs).
+The draft screen's inspector (`GenerateBook.vue`) shows one switch under Print size,
+**Split chapters by place**. It is disabled with a reason when no analysed photo carries
+GPS.
 
 ## 3. Places
 
@@ -73,6 +73,32 @@ An experiment on the real Iceland, Bali, Japan and Vietnam photos measures same-
 versus different-person distances against a hand-labelled ground truth. **§4.2 onward is
 built only if that separates people.** If it does not, people grouping is reported as
 blocked, with the numbers, and the toggle is not shipped.
+
+**Result (2026-09-20): blocked.** 555 faces from 1,751 photos across the four trips, labelled
+by eye (one main subject with 375 faces, one recurring man with 19, three companions,
+13 strangers). Euclidean distance between feature prints of 1.4× roll-aligned face crops:
+
+| Pair | p5 | p50 | p95 |
+|---|---|---|---|
+| Same person, same trip | 0.23 | 0.59 | 1.05 |
+| Same person, different trip | 0.63 | 0.93 | 1.13 |
+| Different people, same photo | 0.61 | 0.75 | 0.90 |
+| Different people, same trip | 0.67 | 0.92 | 1.09 |
+
+Two different people in one photo are closer than one person on two trips. AUC is 0.705,
+and recall at 95% precision is 0.26. Other crop margins (0.6× to 2.0×) and quality, size
+and yaw filters raised AUC to 0.82 at most. A linkage sweep produced no setting that was
+both pure and useful. The clusters split by headwear, lighting and pose: the main subject
+and two companions in red helmets on one glacier land in one cluster, while the main
+subject's own faces split into 50 to 200 clusters. The print measures the scene, not the
+person.
+
+No permissively licensed face embedder was found. dlib's model is public domain but
+trained on non-commercial datasets. OpenCV SFace is trained on research-only datasets.
+fal's AuraFace-v1 does not disclose its training data and its weights file carries
+InsightFace's file name. §4.2 to §4.5 are not built, and `BookOptions` has no `people`
+field. If a cleared embedder appears, the experiment's roll-aligned 1.4× crop is the input
+to feed it.
 
 ### 4.2 Data
 
