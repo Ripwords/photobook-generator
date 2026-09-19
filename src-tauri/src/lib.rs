@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod book;
+pub mod cache;
 pub mod cluster;
 pub mod commands;
 pub mod db;
