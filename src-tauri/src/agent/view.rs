@@ -540,6 +540,7 @@ pub(crate) mod tests {
                 scene_tags: tags,
                 captured_at: Some(T0 + i as i64 * 600),
                 clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
+                location: None,
             },
             aesthetic_score: i as f64,
             sharpness: 1.0,
