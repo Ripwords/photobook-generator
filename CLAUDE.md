@@ -44,12 +44,18 @@ bun run check:build # nuxt generate -- the only step that actually compiles .vue
 
 ## Conventions
 
-**Print geometry is normalised to the spread canvas** (22.394" × 8.894"). One exception:
+**Print geometry is per book.** Every size lives on `Book.spec`, a `PrintSpec`
+(`src-tauri/src/print_spec.rs`) that can only be built through its validator
+(`try_from = "RawPrintSpec"`); `PrintSpec::pixajoy()` (11.197" × 8.894" page, 22.394" ×
+8.894" spread) is the default for new books and for books saved before the field existed.
+Engine code takes `&PrintSpec` or reads `book.spec`; never reintroduce a module-level page
+constant. Template rects are normalised, so they fit any spec. One exception:
 `aspect_pref` in `templates/*.json` is a **real-world inch ratio**, not the normalised rect
-ratio. The canvas is 2.518:1, so conflating the two units mis-scores every slot — that trap
-is real, but it lives in `score::slot_aspect`/`Rect::aspect_in`, which do the conversion.
-`aspect_pref` itself is **validator-only**: parsed, stored, never read by the scorer. A
-wrong value fails `tests/templates.test.ts` rather than changing a layout.
+ratio — conflating the two mis-scores every slot, and the conversion lives in
+`score::slot_aspect`/`PrintSpec::page_aspect`. `aspect_pref` is **validator-only**: parsed,
+stored, never read by the scorer, validated against the reference (Pixajoy) canvas at
+authoring time and not re-validated per book. A wrong value fails `tests/templates.test.ts`
+rather than changing a layout.
 
 **Vue:** prop shorthand when the name matches, `useTemplateRef()` over manually typed refs,
 destructuring defaults on `defineProps` rather than `withDefaults`.

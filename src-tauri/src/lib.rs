@@ -7,6 +7,7 @@ pub mod db;
 pub mod export;
 pub mod geometry;
 pub mod preview;
+pub mod print_spec;
 pub mod project;
 pub mod protocol;
 pub mod ranking;
@@ -49,6 +50,8 @@ pub fn run() {
             commands::apply_photo_overrides,
             commands::recommend_book,
             commands::generate_book,
+            commands::default_print_spec,
+            commands::check_print_spec,
             commands::export_book,
             commands::list_projects,
             commands::open_project,

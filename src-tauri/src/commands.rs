@@ -10,6 +10,7 @@ use crate::book::pack::{recommend_pages, Capacity};
 use crate::book::preflight::{Finding, Severity};
 use crate::export::build_items;
 use crate::preview::BookLayout;
+use crate::print_spec::PrintSpec;
 use crate::project::{ExportRecord, Project};
 use crate::protocol::ExportItem;
 use crate::templates::{Library, Weights};
@@ -1441,6 +1442,11 @@ pub(crate) struct NewProject<'a> {
     pub source_folders: Vec<String>,
     pub pages: u32,
     pub seed: u64,
+    /// The print geometry to lay the book out under. Rides here rather than
+    /// being chosen inside `generate_and_save` so the one place that decides
+    /// a NEW book's geometry is the command boundary, where the user's
+    /// choice actually arrives.
+    pub spec: PrintSpec,
 }
 
 /// Assembles a book and PERSISTS it, returning the new project's id.
@@ -1460,8 +1466,16 @@ pub(crate) fn generate_and_save(
     // `assemble` refuses rather than returning a book that lost a photo the
     // user explicitly asked for. Surfaced as a command error, with the
     // numbers they need to fix it -- see `book::pack::IncludeOverflow`.
-    let book = crate::book::pace::assemble(photos, meta.pages, lib, weights, meta.seed, overrides)
-        .map_err(|e| e.to_string())?;
+    let book = crate::book::pace::assemble(
+        &meta.spec,
+        photos,
+        meta.pages,
+        lib,
+        weights,
+        meta.seed,
+        overrides,
+    )
+    .map_err(|e| e.to_string())?;
     // The hash of EVERY photo the book was assembled against, in that
     // slice's order -- `Placement::photo_index` indexes it positionally.
     // This is what makes the project exportable after a restart; see
@@ -1788,6 +1802,18 @@ pub async fn recommend_book(
     .map_err(|e| e.to_string())?
 }
 
+/// The geometry a new book starts at.
+///
+/// A command rather than a constant retyped in TypeScript, for the reason
+/// `preview.rs`'s header already gives about guides: a number hand-copied
+/// across the boundary is a number that can drift out of step with the one
+/// the engine enforces. Synchronous and pure -- it touches no disk and no
+/// `AppHandle` -- so the draft screen can call it before anything is loaded.
+#[tauri::command]
+pub fn default_print_spec() -> PrintSpec {
+    PrintSpec::pixajoy()
+}
+
 /// Assembles a book and saves it as a project, returning its id.
 #[tauri::command]
 pub async fn generate_book(
@@ -1802,6 +1828,11 @@ pub async fn generate_book(
     // this call -- which is what finally gives them somewhere durable to
     // live. `None` from a caller that has none means an empty map.
     overrides: Option<Overrides>,
+    // The print geometry the draft screen was showing. Arriving as a
+    // `PrintSpec` rather than seven loose numbers means tauri's own argument
+    // deserialisation runs `TryFrom<RawPrintSpec>`, so an impossible geometry
+    // is refused here and can never reach `assemble`.
+    spec: Option<PrintSpec>,
 ) -> Result<GeneratedBook, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let lib = load_library(&app)?;
@@ -1821,7 +1852,10 @@ pub async fn generate_book(
                 .unwrap_or(0)
         });
         let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
-        let meta = NewProject { name: &name, source_folders, pages, seed };
+        // One of the three audited `pixajoy()` call sites: a caller that names
+        // no geometry gets the printer this app was built against.
+        let spec = spec.unwrap_or_else(PrintSpec::pixajoy);
+        let meta = NewProject { name: &name, source_folders, pages, seed, spec };
         generate_and_save(&db, &meta, &parsed, &lib, &weights, &overrides)
     })
     .await
@@ -2227,6 +2261,42 @@ pub async fn edit_book(
     .map_err(|e| e.to_string())?
 }
 
+/// Whether `spec` is a buildable print size, what its guides look like, and
+/// -- for a saved book -- what would fail if the book were printed at it,
+/// without changing anything.
+///
+/// The dry run behind the Print size panel; see `reprint::check`. It takes
+/// the RAW spec so a refusal comes back as a structured `SpecCheck::Refused`
+/// rather than Tauri's argument-parsing error string.
+///
+/// `project_id` is `None` on the draft screen, before a book exists. With a
+/// project it is also the app's first read-only route to pre-flight: until
+/// now `preflight` was reachable only through `export_book`.
+///
+/// It touches no disk beyond loading the project, so the panel may call it on
+/// every debounced keystroke.
+#[tauri::command]
+pub async fn check_print_spec(
+    app: AppHandle,
+    project_id: Option<i64>,
+    spec: crate::print_spec::RawPrintSpec,
+) -> Result<crate::book::reprint::SpecCheck, String> {
+    let Some(project_id) = project_id else {
+        return Ok(crate::book::reprint::check(spec, None));
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        let project = db
+            .load_project(project_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("project {project_id} no longer exists"))?;
+        let parsed = resolve_photos(&db, &project.photo_hashes)?;
+        Ok(crate::book::reprint::check(spec, Some((&project.book, &parsed))))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// How every analysed photo of a saved book would sit in one slot: the crop
 /// it would get there and the hard constraint that refuses it, if any, in the
 /// order `BookLayout.photos` lists them. Read-only; the picker behind "Choose
@@ -2436,7 +2506,13 @@ mod tests {
     #[test]
     fn deleting_a_book_clears_only_what_has_been_in_the_trash_over_thirty_days() {
         let db = Db::open_in_memory().unwrap();
-        let book = crate::book::pace::Book { controls: Default::default(), seed: 0, dropped: 0, pages: vec![] };
+        let book = crate::book::pace::Book {
+            spec: pixajoy_spec(),
+            controls: Default::default(),
+            seed: 0,
+            dropped: 0,
+            pages: vec![],
+        };
         let save = |name: &str| db.save_project(name, "/tmp/x", &book, &[], &Overrides::new()).unwrap();
         let (stale, fresh, now_deleted) = (save("Stale"), save("Fresh"), save("Now"));
         let now = 10_000_000;
@@ -2455,6 +2531,20 @@ mod tests {
     }
 
     use super::*;
+    use crate::print_spec::pixajoy_spec;
+
+    /// A draft that names one source folder and today's default geometry.
+    /// Everything these tests vary is an argument; everything they do not
+    /// care about stays out of the call.
+    fn new_project(name: &str, pages: u32, seed: u64) -> NewProject<'_> {
+        NewProject {
+            name,
+            source_folders: vec!["/photos".into()],
+            pages,
+            seed,
+            spec: pixajoy_spec(),
+        }
+    }
 
     #[test]
     fn accepts_supported_photo_extensions() {
@@ -4264,6 +4354,7 @@ mod tests {
             z,
         };
         let book = Book {
+            spec: pixajoy_spec(),
             controls: Default::default(),
             seed: 99,
             dropped: 0,
@@ -4530,6 +4621,44 @@ mod tests {
 
     // --- `generate_and_save`: generation the user cannot lose -------------
 
+    /// The geometry the draft screen was showing must be the geometry the
+    /// book is laid out under AND the one persisted with it.
+    ///
+    /// The mutation is `assemble(&meta.spec, ..)` -> `assemble(&pixajoy(), ..)`,
+    /// which every other test in this section survives because every other
+    /// one generates at the default. Asserting the page count or the seed
+    /// cannot catch it; asserting the round-tripped spec is what does.
+    #[test]
+    fn a_new_book_is_laid_out_under_the_geometry_it_was_asked_for() {
+        let db = Db::open_in_memory().unwrap();
+        let lib = fixture_library();
+        let photos = photos_from_records(&distinct_records(12)).unwrap();
+
+        let meta = NewProject { spec: crate::print_spec::odd_spec(), ..new_project("Portrait", 20, 7) };
+        let generated =
+            generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
+
+        let loaded = db.load_project(generated.project_id).unwrap().expect("the project must be readable");
+        assert_eq!(loaded.book.spec, crate::print_spec::odd_spec());
+        assert_ne!(
+            loaded.book.spec,
+            PrintSpec::pixajoy(),
+            "a book generated on a caller's own spec must not be stored under the default"
+        );
+    }
+
+    /// The seed the draft screen starts from. Two-sided on purpose: pinning
+    /// only the page would let the DPI band drift, and this is the value a
+    /// user's very first book inherits, so every field matters.
+    #[test]
+    fn default_print_spec_is_the_printer_this_app_was_built_against() {
+        assert_eq!(default_print_spec(), PrintSpec::pixajoy());
+        assert_eq!(default_print_spec().page_w_in(), 11.197);
+        assert_eq!(default_print_spec().page_h_in(), 8.894);
+        assert_eq!(default_print_spec().min_dpi(), 200.0);
+        assert_eq!(default_print_spec().warn_dpi(), 300.0);
+    }
+
     /// The regression this task names by name: a `generate_book` that
     /// assembles a book and hands it back without writing it means quitting
     /// the app loses it. The assertion is not "a function was called" but
@@ -4540,7 +4669,7 @@ mod tests {
         let lib = fixture_library();
         let photos = photos_from_records(&distinct_records(12)).unwrap();
 
-        let meta = NewProject { name: "Japan 2026", source_folders: vec!["/photos".into()], pages: 20, seed: 7 };
+        let meta = new_project("Japan 2026", 20, 7);
         let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
 
         let loaded = db
@@ -4580,7 +4709,7 @@ mod tests {
         overrides.set(photos[3].hash.clone(), crate::book::cull::Override::Include);
         overrides.set(photos[9].hash.clone(), crate::book::cull::Override::Exclude);
 
-        let meta = NewProject { name: "Japan 2026", source_folders: vec!["/photos".into()], pages: 20, seed: 7 };
+        let meta = new_project("Japan 2026", 20, 7);
         let generated =
             generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &overrides).unwrap();
 
@@ -4617,7 +4746,7 @@ mod tests {
         let mut overrides = Overrides::new();
         overrides.set(photos[3].hash.clone(), crate::book::cull::Override::Include);
         overrides.set(photos[9].hash.clone(), crate::book::cull::Override::Exclude);
-        let meta = NewProject { name: "Japan 2026", source_folders: vec!["/photos".into()], pages: 20, seed: 7 };
+        let meta = new_project("Japan 2026", 20, 7);
         let generated =
             generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &overrides).unwrap();
 
@@ -4651,7 +4780,7 @@ mod tests {
             .map(|p| (p.hash.clone(), crate::book::cull::Override::Include))
             .collect();
 
-        let meta = NewProject { name: "Too many", source_folders: vec!["/photos".into()], pages: 20, seed: 7 };
+        let meta = new_project("Too many", 20, 7);
         let err = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &overrides)
             .expect_err("a book that cannot hold every explicit choice must not be built");
 
@@ -4671,7 +4800,7 @@ mod tests {
         let lib = fixture_library();
         let photos = photos_from_records(&distinct_records(12)).unwrap();
 
-        let meta = NewProject { name: "Japan 2026", source_folders: vec!["/photos".into()], pages: 20, seed: 7 };
+        let meta = new_project("Japan 2026", 20, 7);
         let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
 
         let listed = db.list_projects().unwrap();
@@ -4686,7 +4815,7 @@ mod tests {
         let lib = fixture_library();
         let photos = photos_from_records(&distinct_records(30)).unwrap();
 
-        let meta = NewProject { name: "b", source_folders: vec!["/photos".into()], pages: 40, seed: 3 };
+        let meta = new_project("b", 40, 3);
         let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
 
         assert_eq!(generated.page_count, 40);
@@ -4710,7 +4839,9 @@ mod tests {
     fn expected_photo_count_reconstructs_the_slice_the_book_was_built_against() {
         let lib = fixture_library();
         let photos = photos_from_records(&distinct_records(12)).unwrap();
-        let book = crate::book::pace::assemble(&photos, 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("no overrides");
+        let book =
+            crate::book::pace::assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 5, &Overrides::new())
+                .expect("no overrides");
 
         assert_eq!(expected_photo_count(&book), 12);
     }
@@ -5235,6 +5366,7 @@ mod tests {
             z: 1,
         };
         let book = Book {
+            spec: pixajoy_spec(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
@@ -5345,7 +5477,7 @@ mod tests {
             cache_records(&db, &records);
             let photos = photos_from_records(&records).unwrap();
             let meta =
-                NewProject { name: "Japan", source_folders: vec!["/photos".into()], pages: 20, seed: 11 };
+                new_project("Japan", 20, 11);
             let generated =
                 generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
             let book = db.load_project(generated.project_id).unwrap().unwrap().book;
@@ -5375,7 +5507,7 @@ mod tests {
         let records = records_with_hashes_out_of_slice_order(12);
         cache_records(db, &records);
         let photos = photos_from_records(&records).unwrap();
-        let meta = NewProject { name: "Kyoto", source_folders: vec!["/photos".into()], pages: 20, seed: 5 };
+        let meta = new_project("Kyoto", 20, 5);
         let generated =
             generate_and_save(db, &meta, &photos, &fixture_library(), &Weights::default(), &Overrides::new()).unwrap();
         db.conn.execute("UPDATE features SET last_used_at = 0", []).unwrap();
@@ -5424,7 +5556,7 @@ mod tests {
         let lib = fixture_library();
         let records = records_with_hashes_out_of_slice_order(12);
         let photos = photos_from_records(&records).unwrap();
-        let meta = NewProject { name: "b", source_folders: vec!["/photos".into()], pages: 20, seed: 2 };
+        let meta = new_project("b", 20, 2);
 
         let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
 

@@ -9,7 +9,7 @@
 use crate::book::cull::Photo;
 use crate::book::pace::Book;
 use crate::export::{output_filename, predicted_format};
-use crate::geometry::{Rect, PAGE_H_IN, PAGE_W_IN};
+use crate::geometry::Rect;
 use serde::{Deserialize, Serialize};
 
 /// One exported photo's record within a page.
@@ -27,7 +27,7 @@ pub struct ManifestPhoto {
     /// space `Placement::crop` and `ExportItem`'s `crop_*` fields use.
     pub crop: Rect,
     /// Where the photo lands on the printed PAGE, in real inches
-    /// (`PAGE_W_IN` x `PAGE_H_IN`). Deliberately NOT the raw normalised
+    /// (the book's own page size). Deliberately NOT the raw normalised
     /// `Placement::slot_rect` -- a manifest recording normalised units would
     /// silently misreport where the photo actually prints, since normalised
     /// coordinates on the page canvas are not directly comparable to any
@@ -72,6 +72,10 @@ pub struct Manifest {
 /// `Placement::photo_index` indexes into, matching `export::build_items`'s
 /// own contract.
 pub fn manifest(book: &Book, photos: &[Photo], project_id: i64) -> Manifest {
+    // The book's own geometry, never a default: a manifest is the hand-off to
+    // the printer, so naming the wrong page size here is the one bug nothing
+    // downstream can catch.
+    let spec = &book.spec;
     let pages = book
         .pages
         .iter()
@@ -90,10 +94,10 @@ pub fn manifest(book: &Book, photos: &[Photo], project_id: i64) -> Manifest {
                         z: placement.z,
                         crop: placement.crop,
                         dest_rect_in: Rect::new(
-                            placement.slot_rect.x * PAGE_W_IN,
-                            placement.slot_rect.y * PAGE_H_IN,
-                            placement.slot_rect.w * PAGE_W_IN,
-                            placement.slot_rect.h * PAGE_H_IN,
+                            placement.slot_rect.x * spec.page_w_in(),
+                            placement.slot_rect.y * spec.page_h_in(),
+                            placement.slot_rect.w * spec.page_w_in(),
+                            placement.slot_rect.h * spec.page_h_in(),
                         ),
                         filename: output_filename(page.number, placement.z, &photo.hash),
                         format: predicted_format(&photo.path).to_string(),
@@ -112,6 +116,7 @@ mod tests {
     use crate::book::pace::{Page, Placement};
     use crate::geometry::Side;
     use crate::export::build_items;
+    use crate::print_spec::{odd_spec, pixajoy_spec};
 
     fn photo(path: &str, hash: &str) -> Photo {
         Photo {
@@ -143,6 +148,7 @@ mod tests {
     fn manifest_carries_the_project_id_seed_and_page_count() {
         let photos = vec![photo("/a.jpg", "haaa1111")];
         let book = Book {
+            spec: pixajoy_spec(),
             controls: Default::default(),
             seed: 4242,
             dropped: 0,
@@ -173,6 +179,7 @@ mod tests {
     fn manifest_records_a_page_with_zero_placements_as_an_empty_entry() {
         let photos = vec![photo("/a.jpg", "haaa1111")];
         let book = Book {
+            spec: pixajoy_spec(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
@@ -199,18 +206,27 @@ mod tests {
         assert_eq!(m.pages[1].photos.len(), 1);
     }
 
-    /// Regression: the destination rect must be converted to real inches on
-    /// the PAGE canvas, never left as the raw normalised `slot_rect`. Chosen
-    /// with a `slot_rect` whose components are NOT 0 or 1, so a bug that
-    /// forgets the multiplication cannot coincidentally still pass.
+    /// R11. The destination rect must be converted to real inches on the
+    /// BOOK'S OWN page canvas, never left as the raw normalised `slot_rect`
+    /// and never converted against Pixajoy's page.
+    ///
+    /// Runs under `odd_spec` (8.0 x 10.0), not the default: under Pixajoy's
+    /// numbers a hardcoded `11.197` is indistinguishable from reading
+    /// `spec.page_w_in()`. It is also PORTRAIT, so transposing the two axes
+    /// is visible here too.
+    ///
+    /// `slot_rect`'s components are all NOT 0 or 1, so a bug that forgets the
+    /// multiplication cannot coincidentally still pass.
     #[test]
-    fn manifest_reports_the_destination_rect_in_inches_not_normalised_units() {
+    fn manifest_dest_rect_is_in_the_books_own_page_inches() {
         let photos = vec![photo("/a.jpg", "haaa1111")];
         let slot_rect = Rect::new(0.1, 0.2, 0.3, 0.4);
+        let spec = odd_spec();
         let book = Book {
             controls: Default::default(),
             seed: 1,
             dropped: 0,
+            spec,
             pages: vec![Page {
                 number: 1,
                 side: Side::Right,
@@ -221,15 +237,24 @@ mod tests {
         let m = manifest(&book, &photos, 1);
         let dest = m.pages[0].photos[0].dest_rect_in;
 
-        assert!((dest.x - slot_rect.x * PAGE_W_IN).abs() < 1e-9);
-        assert!((dest.y - slot_rect.y * PAGE_H_IN).abs() < 1e-9);
-        assert!((dest.w - slot_rect.w * PAGE_W_IN).abs() < 1e-9);
-        assert!((dest.h - slot_rect.h * PAGE_H_IN).abs() < 1e-9);
+        assert!((dest.x - slot_rect.x * 8.0).abs() < 1e-9, "x was {}", dest.x);
+        assert!((dest.y - slot_rect.y * 10.0).abs() < 1e-9, "y was {}", dest.y);
+        assert!((dest.w - slot_rect.w * 8.0).abs() < 1e-9, "w was {}", dest.w);
+        assert!((dest.h - slot_rect.h * 10.0).abs() < 1e-9, "h was {}", dest.h);
 
-        // Sanity: PAGE_W_IN/PAGE_H_IN are not 1, so a bug that skips the
+        // The same book under Pixajoy's page must give different numbers, or
+        // this fixture cannot tell "reads the spec" from "hardcodes 11.197".
+        let pixajoy = Book { spec: pixajoy_spec(), ..book };
+        let other = manifest(&pixajoy, &photos, 1).pages[0].photos[0].dest_rect_in;
+        assert!((other.w - dest.w).abs() > 0.1, "the two specs must be distinguishable");
+
+        // Sanity: the page is not 1" square, so a bug that skips the
         // conversion (returns the raw normalised rect) is distinguishable
         // from a correct implementation on this fixture.
-        assert!((dest.w - slot_rect.w).abs() > 1.0, "fixture must distinguish inches from normalised units");
+        assert!(
+            (dest.w - slot_rect.w).abs() > 1.0,
+            "fixture must distinguish inches from normalised units"
+        );
     }
 
     #[test]
@@ -237,6 +262,7 @@ mod tests {
         let photos = vec![photo("/photos/a.jpg", "deadbeef99")];
         let crop = Rect::new(0.05, 0.1, 0.6, 0.7);
         let book = Book {
+            spec: pixajoy_spec(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
@@ -269,6 +295,7 @@ mod tests {
             photo("/c.jpg", "hccc3333"),
         ];
         let book = Book {
+            spec: pixajoy_spec(),
             controls: Default::default(),
             seed: 9,
             dropped: 0,

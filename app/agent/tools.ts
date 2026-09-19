@@ -193,7 +193,7 @@ export const AGENT_TOOLS = {
   swap_photos: writeTool({
     description:
       "Exchange the photos in two slots, anywhere in the book. Refused when either photo " +
-      "would have a face cut, sit in the gutter or margin, or print below 200 DPI.",
+      "would have a face cut, sit in the gutter or margin, or print below the book's lowest print resolution.",
     input: z.object({ a: slotRef, b: slotRef }),
     toEdit: ({ a, b }) => ({ kind: "swapPhotos", a: placement(a), b: placement(b) }),
   }),

@@ -1,6 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { effectScope, nextTick, toRef } from "vue";
 import type { AnalysisEvent, AnalysisSummary, AnalyzedPhoto } from "../app/types/features";
+import type { PrintSpec } from "../app/types/printSpec";
+
+/** A print size nobody would get by accident: square, 3 mm bleed. */
+const SQUARE: PrintSpec = {
+  pageWIn: 8.118,
+  pageHIn: 8.236,
+  bleedIn: 0.118,
+  gutterIn: 0.3,
+  safeMarginIn: 0.2,
+  minDpi: 180,
+  warnDpi: 260,
+};
 
 /**
  * Analysis jobs live in a store rather than in the select screen, so leaving
@@ -371,6 +383,37 @@ describe("analysis jobs", () => {
       const ids = after.jobs.value.map((job) => job.id);
       expect(new Set(ids).size).toBe(2);
       expect(savedNames().toSorted()).toEqual(["New", "Saved"]);
+    });
+
+    it("brings a draft's print size back after a restart", async () => {
+      const before = createAnalysisJobs();
+      await before.restoreDrafts();
+      const id = before.startJob({ name: "Square", folders: ["/s"] });
+      before.setSpec(id, SQUARE);
+      await settle();
+
+      const after = createAnalysisJobs();
+      await after.restoreDrafts();
+      expect(after.jobs.value[0]!.spec).toStrictEqual(SQUARE);
+    });
+
+    it("keeps a re-edited book's print size on its draft", () => {
+      const store = createAnalysisJobs();
+      const id = store.startJob({ name: "Kyoto", folders: ["/k"], replacing: { id: 4, name: "Kyoto" }, spec: SQUARE });
+      expect(store.find(id)!.spec).toStrictEqual(SQUARE);
+    });
+
+    it("reads a draft saved before print sizes existed as the default size, not as unreadable", async () => {
+      savedDrafts.set(3, JSON.stringify({ id: 3, name: "Old", folders: ["/f"], replacing: null, overrides: {} }));
+      savedDrafts.set(4, JSON.stringify({ id: 4, name: "Torn", folders: ["/f"], replacing: null, overrides: {}, spec: { pageWIn: 6 } }));
+
+      const store = createAnalysisJobs();
+      await store.restoreDrafts();
+
+      expect(store.jobs.value.map((job) => [job.name, job.spec])).toEqual([
+        ["Old", null],
+        ["Torn", null],
+      ]);
     });
 
     it("skips a saved draft it cannot read", async () => {

@@ -5,18 +5,21 @@
  * **This file recomputes nothing about the book.** Every rect here arrives
  * from `src-tauri/src/preview.rs`, which copies it straight off the `Book`
  * that `pace::assemble` produced and `project.rs` persisted, and every guide
- * constant is one `geometry.rs` shipped on the wire rather than one restated
- * here. That is deliberate: a preview whose job is to reveal defects -- a
- * crop that cuts a face, salient content sliding into the gutter, a page that
- * prints blank -- has to be showing the same geometry that was validated, or
- * it flatters the engine and the user is wrong at the printer.
+ * is derived in Rust from THAT BOOK'S OWN `PrintSpec` and shipped on the wire
+ * rather than restated here. That is deliberate: a preview whose job is to
+ * reveal defects -- a crop that cuts a face, salient content sliding into the
+ * gutter, a page that prints blank -- has to be showing the same geometry
+ * that was validated, or it flatters the engine and the user is wrong at the
+ * printer. Now that the geometry is per book, a guide restated here would not
+ * merely drift; it would be wrong for every book that is not 11 x 8.5.
  *
  * **Positioned DOM elements with CSS transforms, not a canvas.** Photos are
  * `<img>` with a transform for the crop; guides are absolutely positioned
  * overlays. Hit-testing, focus and accessibility come free and the geometry
  * is inspectable in devtools. Rendering is at roughly 1400 x 556 per spread;
- * print resolution is 6718 x 2668, which is 71.7 MB of canvas per spread and
- * well past what WKWebView will do.
+ * print resolution for the default 11 x 8.5 book is 6718 x 2668, which is
+ * 71.7 MB of canvas per spread and well past what WKWebView will do -- and a
+ * book with a larger page or a higher target resolution is worse still.
  *
  * The functions live here rather than inside `BookPreview.vue` for the same
  * reason `applyAnalysisEvent` lives in `features.ts`: a component's template
@@ -24,6 +27,8 @@
  * bugs would be. `tests/preview.test.ts` pins all of it against the same
  * `tests/fixtures/wire/book-layout.json` that Rust asserts itself against.
  */
+
+import type { PrintSpec } from "./printSpec";
 
 /** Mirrors `geometry::Rect`, which serialises its fields unrenamed. */
 export interface PreviewRect {
@@ -83,15 +88,30 @@ export interface PreviewPage {
   placements: PreviewPlacement[];
 }
 
-/** Mirrors `preview::PreviewGeometry` -- `geometry.rs`'s own constants. */
+/**
+ * Mirrors `preview::PageGuides`: one page's three guide rects, page-normalised
+ * and finished. `safe` is a strict subset of `trim` on every edge but the
+ * fold; `gutter` is a full-height strip AGAINST the fold, overlapping both.
+ */
+export interface PageGuides {
+  trim: PreviewRect;
+  safe: PreviewRect;
+  gutter: PreviewRect;
+}
+
+/**
+ * Mirrors `preview::PreviewGeometry`: the guides one book's spec implies,
+ * one set per side, ready to position.
+ *
+ * Derived, never authored -- the editable measurements are `BookLayout.spec`.
+ * Indexed by `PageSide`, so a page reads `geometry[side].trim` and never has
+ * to know which of its edges is the fold. That asymmetry lives in Rust alone.
+ */
 export interface PreviewGeometry {
   pageWIn: number;
   pageHIn: number;
-  trimU: number;
-  trimV: number;
-  safeU: number;
-  safeV: number;
-  gutterU: number;
+  left: PageGuides;
+  right: PageGuides;
 }
 
 /** Mirrors `preview::BookLayout`, returned by the `book_layout` command. */
@@ -101,6 +121,12 @@ export interface BookLayout {
   pageCount: number;
   placedPhotos: number;
   droppedPhotos: number;
+  /**
+   * The book's own print geometry, in the inches the user typed. This is what
+   * the Print size panel edits and hands back to `setPrintSpec`; `geometry`
+   * below is what the preview draws, derived from it in Rust.
+   */
+  spec: PrintSpec;
   geometry: PreviewGeometry;
   /** Every analysed photo, in the order `photoIndex` indexes. */
   photos: PreviewPhoto[];
@@ -150,7 +176,17 @@ export type BookEdit =
   | { kind: "swapPhotos"; a: PlacementRef; b: PlacementRef }
   | { kind: "setCrop"; placement: PlacementRef; x: number; y: number; w: number }
   | { kind: "setSlot"; placement: PlacementRef; rect: PreviewRect }
-  | { kind: "replacePhoto"; placement: PlacementRef; photo: number };
+  | { kind: "replacePhoto"; placement: PlacementRef; photo: number }
+  /**
+   * Print this book at a different size. Rust re-cuts every crop and keeps
+   * the layout; see `book::reprint`. Unlike every other edit here it is never
+   * refused, so the caller shows the findings from `check_print_spec` BEFORE
+   * sending it, not a rejection afterwards.
+   *
+   * Deliberately absent from `app/agent/tools.ts`: the chat agent edits
+   * layouts, it does not get to change what book the user is buying.
+   */
+  | { kind: "setPrintSpec"; spec: PrintSpec };
 
 /** Mirrors `score::Rejection`: the hard constraints an edit can break. */
 export type Rejection = "faceClipped" | "faceInGutter" | "faceInSafeMargin" | "tooLowResolution";
@@ -271,53 +307,6 @@ export function rectStyle(rect: PreviewRect): BoxStyle {
     top: `${pct(rect.y * 100)}%`,
     width: `${pct(rect.w * 100)}%`,
     height: `${pct(rect.h * 100)}%`,
-  };
-}
-
-/**
- * The trim rectangle: what survives the guillotine. Mirrors
- * `geometry::in_trim` -- the outer vertical edge and top/bottom are inset by
- * the bleed, and **the fold edge is not inset at all**, because the paper is
- * continuous there.
- */
-export function trimRect(geometry: PreviewGeometry, side: PageSide): PreviewRect {
-  const x = side === "left" ? geometry.trimU : 0;
-  return {
-    x,
-    w: 1 - geometry.trimU,
-    y: geometry.trimV,
-    h: 1 - 2 * geometry.trimV,
-  };
-}
-
-/**
- * The safe area: Pixajoy's published 1/8" clearance inside the trim, on every
- * edge except the fold -- where the gutter band already governs clearance and
- * a second inset would double-count it. Mirrors `geometry::in_safe_margin`,
- * and is therefore a STRICT subset of `trimRect`.
- */
-export function safeRect(geometry: PreviewGeometry, side: PageSide): PreviewRect {
-  const inset = geometry.trimU + geometry.safeU;
-  return {
-    x: side === "left" ? inset : 0,
-    w: 1 - inset,
-    y: geometry.trimV + geometry.safeV,
-    h: 1 - 2 * (geometry.trimV + geometry.safeV),
-  };
-}
-
-/**
- * The gutter dead band: the strip nearest the fold that curls into the
- * binding. Mirrors `geometry::clear_of_gutter`, so it is measured inward FROM
- * THE FOLD -- the inner edge of each page, which is `x = 1` on a left page and
- * `x = 0` on a right one, never the outer edge.
- */
-export function gutterRect(geometry: PreviewGeometry, side: PageSide): PreviewRect {
-  return {
-    x: side === "left" ? 1 - geometry.gutterU : 0,
-    w: geometry.gutterU,
-    y: 0,
-    h: 1,
   };
 }
 
@@ -533,7 +522,7 @@ export function cropMoved(crop: PreviewRect, delta: SlotDelta): PreviewRect {
  * of the photo (the window shrinks), `factor < 1` shows more. The window never
  * grows past the photo on either axis, never shrinks below 2% of it, and keeps
  * its shape, so the slot's aspect is preserved. Rust re-derives the height
- * from the slot anyway and refuses a window that would print below 200 DPI.
+ * from the slot anyway and refuses a window that would print below the book's DPI floor.
  */
 export function cropZoomed(crop: PreviewRect, factor: number): PreviewRect {
   if (!(factor > 0) || !Number.isFinite(factor)) return crop;
@@ -578,7 +567,7 @@ export interface SnapGuides {
  * Every line worth snapping to on a page: the canvas edges (bleed), the trim
  * and safe lines, the gutter line at the fold, and the edges of every OTHER
  * slot on the page. The same geometry the preview draws and the engine
- * enforces -- `PreviewGeometry` is `geometry.rs` on the wire, so a slot
+ * enforces -- `PreviewGeometry` is the book's own spec on the wire, so a slot
  * snapped to the safe line here is exactly inside `in_safe_margin` there.
  */
 export function pageGuides(
@@ -586,9 +575,7 @@ export function pageGuides(
   side: PageSide,
   others: readonly PreviewRect[],
 ): SnapGuides {
-  const trim = trimRect(geometry, side);
-  const safe = safeRect(geometry, side);
-  const gutter = gutterRect(geometry, side);
+  const { trim, safe, gutter } = geometry[side];
   const xs = [0, 1, trim.x, trim.x + trim.w, safe.x, safe.x + safe.w, gutter.x, gutter.x + gutter.w];
   const ys = [0, 1, trim.y, trim.y + trim.h, safe.y, safe.y + safe.h];
   for (const r of others) {

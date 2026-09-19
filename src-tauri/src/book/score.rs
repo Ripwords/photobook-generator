@@ -5,16 +5,12 @@
 //! ruined photo, and no weighting scheme should ever be able to outvote it.
 
 use crate::book::crop::choose_crop;
+use crate::print_spec::PrintSpec;
 use crate::book::cull::Photo;
 use crate::geometry::{
-    clear_of_gutter, gutter_overlap_area, in_safe_margin, Rect, Side, PAGE_H_IN, PAGE_W_IN,
+    clear_of_gutter, gutter_overlap_area, in_safe_margin, Rect, Side,
 };
 use crate::templates::{Role, Slot, SpreadTemplate, Weights};
-
-/// Pixajoy's published minimum: below this, print is visibly soft and no
-/// downstream step can fix it. Their recommended target is 300 DPI, which
-/// `resolution_headroom` below treats as a WARNING band, not a second floor.
-pub const MIN_DPI: f64 = 200.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,18 +32,19 @@ pub struct Candidate {
 
 /// A slot's real-world aspect ratio on the PAGE canvas.
 ///
-/// The trap: `rect` is normalised to the page (11.197" x 8.894" = 1.259:1),
-/// so `w / h` is NOT the ratio `aspect_pref` is expressed in. Comparing
-/// against the normalised ratio mis-scores every slot.
-pub fn slot_aspect(slot: &Slot) -> f64 {
-    slot.rect.aspect_in(PAGE_W_IN, PAGE_H_IN)
+/// The trap: `rect` is normalised to the page, so `w / h` is NOT the ratio
+/// `aspect_pref` is expressed in. Comparing against the normalised ratio
+/// mis-scores every slot. `page_aspect` does the conversion and takes no
+/// canvas argument, so there is nothing left to pass wrongly.
+pub fn slot_aspect(spec: &PrintSpec, slot: &Slot) -> f64 {
+    spec.page_aspect(&slot.rect)
 }
 
 /// Pixels per inch the photo actually resolves at, once cropped, when placed
 /// in this slot.
-pub fn effective_dpi(photo: &Photo, crop: &Rect, slot: &Slot) -> f64 {
+pub fn effective_dpi(spec: &PrintSpec, photo: &Photo, crop: &Rect, slot: &Slot) -> f64 {
     let cropped_px = photo.width as f64 * crop.w;
-    let slot_in = slot.rect.w * PAGE_W_IN;
+    let slot_in = slot.rect.w * spec.page_w_in();
     if slot_in <= 0.0 {
         return 0.0;
     }
@@ -74,8 +71,14 @@ fn face_in_page(face: &Rect, crop: &Rect, slot: &Slot) -> Option<Rect> {
 
 /// The three hard constraints. Returns the first violation, or `None` when
 /// the placement is acceptable.
-pub fn rejects(photo: &Photo, crop: &Rect, slot: &Slot, side: Side) -> Option<Rejection> {
-    if effective_dpi(photo, crop, slot) < MIN_DPI {
+pub fn rejects(
+    spec: &PrintSpec,
+    photo: &Photo,
+    crop: &Rect,
+    slot: &Slot,
+    side: Side,
+) -> Option<Rejection> {
+    if effective_dpi(spec, photo, crop, slot) < spec.min_dpi() {
         return Some(Rejection::TooLowResolution);
     }
 
@@ -96,10 +99,10 @@ pub fn rejects(photo: &Photo, crop: &Rect, slot: &Slot, side: Side) -> Option<Re
         }
 
         if let Some(page_rect) = face_in_page(&face.box_, crop, slot) {
-            if !clear_of_gutter(&page_rect, side) {
+            if !clear_of_gutter(spec, &page_rect, side) {
                 return Some(Rejection::FaceInGutter);
             }
-            if !in_safe_margin(&page_rect, side) {
+            if !in_safe_margin(spec, &page_rect, side) {
                 return Some(Rejection::FaceInSafeMargin);
             }
         }
@@ -110,8 +113,8 @@ pub fn rejects(photo: &Photo, crop: &Rect, slot: &Slot, side: Side) -> Option<Re
 
 /// How well a photo's aspect matches a slot, in [0,1]. 1.0 when the photo
 /// needs no crop at all; falls off with the fraction of the frame discarded.
-fn aspect_fit(photo: &Photo, slot: &Slot) -> f64 {
-    let target = slot_aspect(slot);
+fn aspect_fit(spec: &PrintSpec, photo: &Photo, slot: &Slot) -> f64 {
+    let target = slot_aspect(spec, slot);
     let actual = photo.aspect();
     let ratio = if target > actual { actual / target } else { target / actual };
     ratio.clamp(0.0, 1.0)
@@ -182,7 +185,7 @@ fn face_quality(photo: &Photo) -> f64 {
 ///
 /// Neutral at 1.0 with no saliency box: absence of a signal is not evidence
 /// of a bad placement.
-fn gutter_saliency(photo: &Photo, crop: &Rect, slot: &Slot, side: Side) -> f64 {
+fn gutter_saliency(spec: &PrintSpec, photo: &Photo, crop: &Rect, slot: &Slot, side: Side) -> f64 {
     let Some(visible) = photo.saliency_box.and_then(|s| s.intersect(crop)) else {
         return 1.0;
     };
@@ -196,7 +199,7 @@ fn gutter_saliency(photo: &Photo, crop: &Rect, slot: &Slot, side: Side) -> f64 {
     // Graded, not binary: half a saliency box in the crease is half as bad
     // as all of it. `clear_of_gutter` answers yes/no, which is the right
     // shape for a rejection and the wrong one for a penalty.
-    let in_band = gutter_overlap_area(&mapped, side);
+    let in_band = gutter_overlap_area(spec, &mapped, side);
     (1.0 - (in_band / area)).clamp(0.0, 1.0)
 }
 
@@ -214,10 +217,15 @@ fn hero_match(photo: &Photo, slot: &Slot, best_aesthetic: u8) -> f64 {
     }
 }
 
-/// Headroom above the hard floor, saturating at the 300 DPI target.
-fn resolution_headroom(photo: &Photo, crop: &Rect, slot: &Slot) -> f64 {
-    let dpi = effective_dpi(photo, crop, slot);
-    ((dpi - MIN_DPI) / (300.0 - MIN_DPI)).clamp(0.0, 1.0)
+/// Headroom above the book's hard floor, saturating at its target
+/// resolution.
+///
+/// Both ends come from the one spec. They used to be a module constant and
+/// a bare `300.0` literal here, with `preflight` holding a third copy --
+/// three numbers that had to agree and nothing making them.
+fn resolution_headroom(spec: &PrintSpec, photo: &Photo, crop: &Rect, slot: &Slot) -> f64 {
+    let dpi = effective_dpi(spec, photo, crop, slot);
+    ((dpi - spec.min_dpi()) / (spec.warn_dpi() - spec.min_dpi())).clamp(0.0, 1.0)
 }
 
 /// Rewards a spread whose photos share a coherent dominant hue: a spread
@@ -431,6 +439,7 @@ fn ordered_slots(t: &SpreadTemplate) -> Vec<(&Slot, Side)> {
 
 /// Scores one candidate. Returns `None` when any hard constraint rejects it.
 pub fn score_spread(
+    spec: &PrintSpec,
     t: &SpreadTemplate,
     photos: &[&Photo],
     assignment: &[usize],
@@ -447,17 +456,17 @@ pub fn score_spread(
 
     for (i, (slot, side)) in slots.iter().enumerate() {
         let photo = photos[assignment[i]];
-        let crop = choose_crop(photo, slot_aspect(slot));
-        if rejects(photo, &crop, slot, *side).is_some() {
+        let crop = choose_crop(photo, slot_aspect(spec, slot));
+        if rejects(spec, photo, &crop, slot, *side).is_some() {
             return None;
         }
-        total += w.aspect_fit * aspect_fit(photo, slot)
+        total += w.aspect_fit * aspect_fit(spec, photo, slot)
             + w.saliency_retention * saliency_retention(photo, &crop)
             + w.face_area_retention * face_area_retention(photo, &crop)
             + w.face_quality * face_quality(photo)
             + w.hero_match * hero_match(photo, slot, best_aesthetic)
-            + w.resolution_headroom * resolution_headroom(photo, &crop, slot)
-            + w.gutter_saliency * gutter_saliency(photo, &crop, slot, *side);
+            + w.resolution_headroom * resolution_headroom(spec, photo, &crop, slot)
+            + w.gutter_saliency * gutter_saliency(spec, photo, &crop, slot, *side);
     }
 
     // Spread-global terms, added once rather than per slot.
@@ -481,6 +490,7 @@ pub fn score_spread(
 /// Exact equality is the definition of the tie the seed exists to break;
 /// anything looser would let the seed override a real preference.
 pub fn best_spread<'a>(
+    spec: &PrintSpec,
     templates: &[&'a SpreadTemplate],
     photos: &[&Photo],
     previous: Option<&str>,
@@ -495,7 +505,7 @@ pub fn best_spread<'a>(
             continue;
         }
         for assignment in permutations(photos.len()) {
-            let Some(score) = score_spread(t, photos, &assignment, previous, w) else {
+            let Some(score) = score_spread(spec, t, photos, &assignment, previous, w) else {
                 continue;
             };
             if score > best {
@@ -549,6 +559,7 @@ fn permutations(n: usize) -> Vec<Vec<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::print_spec::pixajoy_spec;
     use crate::book::cull::{Face, PaletteColor};
     use crate::geometry::BleedEdge;
     use crate::templates::{Density, EdgeTreatment, Energy, PageLayout};
@@ -578,13 +589,13 @@ mod tests {
         }
     }
 
-    /// A slot exactly 6.0" wide. `6.0 / PAGE_W_IN` round-trips back through
-    /// `* PAGE_W_IN` to exactly 6.0 in IEEE doubles, so `effective_dpi` can
+    /// A slot exactly 6.0" wide. `6.0 / page_w_in()` round-trips back through
+    /// `* page_w_in()` to exactly 6.0 in IEEE doubles, so `effective_dpi` can
     /// return exactly 200.0 for an integer pixel count -- the only way to
     /// test the floor's inclusivity at all.
     fn six_inch_slot() -> Slot {
         Slot {
-            rect: Rect::new(0.1, 0.2, 6.0 / PAGE_W_IN, 0.5),
+            rect: Rect::new(0.1, 0.2, 6.0 / pixajoy_spec().page_w_in(), 0.5),
             role: Role::Hero,
             bleed: Vec::<BleedEdge>::new(),
             aspect_pref: (1.2, 1.6),
@@ -595,7 +606,7 @@ mod tests {
     fn score_slot_aspect_uses_page_inches_not_the_normalised_ratio() {
         let s = wide_slot();
         let normalised = s.rect.w / s.rect.h;
-        let real = slot_aspect(&s);
+        let real = slot_aspect(&pixajoy_spec(), &s);
         assert!((normalised - 1.0).abs() < 1e-9, "sanity: normalised is 1:1");
         assert!((real - 1.259).abs() < 0.002, "real was {real}");
     }
@@ -606,8 +617,8 @@ mod tests {
         let s = wide_slot(); // 5.5985" wide
         let full = Rect::new(0.0, 0.0, 1.0, 1.0);
         let half = Rect::new(0.25, 0.0, 0.5, 1.0);
-        let d_full = effective_dpi(&p, &full, &s);
-        let d_half = effective_dpi(&p, &half, &s);
+        let d_full = effective_dpi(&pixajoy_spec(), &p, &full, &s);
+        let d_half = effective_dpi(&pixajoy_spec(), &p, &half, &s);
         assert!((d_full - 4000.0 / 5.5985).abs() < 1.0, "was {d_full}");
         assert!((d_half - d_full / 2.0).abs() < 1.0, "cropping halves the DPI");
     }
@@ -618,7 +629,7 @@ mod tests {
         let s = wide_slot();
         let crop = Rect::new(0.0, 0.0, 1.0, 1.0);
         assert!(matches!(
-            rejects(&p, &crop, &s, Side::Left),
+            rejects(&pixajoy_spec(), &p, &crop, &s, Side::Left),
             Some(Rejection::TooLowResolution)
         ));
     }
@@ -627,7 +638,7 @@ mod tests {
     ///
     /// `wide_slot` cannot: 5.5985" needs 1119.7 px for 200 DPI, which rounds
     /// to 1120 px = 200.0357 DPI -- never on the boundary it was named for,
-    /// so `< MIN_DPI` could be flipped to `<= MIN_DPI` with the whole suite
+    /// so `< min_dpi()` could be flipped to `<= min_dpi()` with the whole suite
     /// still green. A slot exactly 6.0" wide has an integer answer: 1200 px
     /// is exactly 200.0 DPI (verified in the first assertion, since only
     /// exact IEEE equality distinguishes the two comparisons), and one pixel
@@ -639,15 +650,15 @@ mod tests {
 
         let at = photo(1200, 900);
         assert_eq!(
-            effective_dpi(&at, &crop, &s),
-            MIN_DPI,
+            effective_dpi(&pixajoy_spec(), &at, &crop, &s),
+            pixajoy_spec().min_dpi(),
             "the fixture must land ON the floor, not merely near it"
         );
-        assert!(rejects(&at, &crop, &s, Side::Left).is_none(), "the floor itself must pass");
+        assert!(rejects(&pixajoy_spec(), &at, &crop, &s, Side::Left).is_none(), "the floor itself must pass");
 
         let below = photo(1199, 899);
         assert!(matches!(
-            rejects(&below, &crop, &s, Side::Left),
+            rejects(&pixajoy_spec(), &below, &crop, &s, Side::Left),
             Some(Rejection::TooLowResolution)
         ));
     }
@@ -663,7 +674,7 @@ mod tests {
         p.faces = vec![Face { box_: Rect::new(0.65, 0.4, 0.12, 0.2), capture_quality: Some(0.8) }];
         let crop = Rect::new(0.0, 0.0, 0.7, 1.0);
         assert!(matches!(
-            rejects(&p, &crop, &wide_slot(), Side::Left),
+            rejects(&pixajoy_spec(), &p, &crop, &wide_slot(), Side::Left),
             Some(Rejection::FaceClipped)
         ));
     }
@@ -676,7 +687,7 @@ mod tests {
         let mut p = photo(4000, 3000);
         p.faces = vec![Face { box_: Rect::new(0.85, 0.4, 0.12, 0.2), capture_quality: Some(0.8) }];
         let crop = Rect::new(0.0, 0.0, 0.7, 1.0);
-        assert!(rejects(&p, &crop, &wide_slot(), Side::Left).is_none());
+        assert!(rejects(&pixajoy_spec(), &p, &crop, &wide_slot(), Side::Left).is_none());
     }
 
     #[test]
@@ -684,7 +695,7 @@ mod tests {
         let mut p = photo(4000, 3000);
         p.faces = vec![Face { box_: Rect::new(0.30, 0.4, 0.12, 0.2), capture_quality: Some(0.8) }];
         let crop = Rect::new(0.0, 0.0, 0.7, 1.0);
-        assert!(rejects(&p, &crop, &wide_slot(), Side::Left).is_none());
+        assert!(rejects(&pixajoy_spec(), &p, &crop, &wide_slot(), Side::Left).is_none());
     }
 
     #[test]
@@ -700,7 +711,7 @@ mod tests {
         };
         let crop = Rect::new(0.0, 0.0, 1.0, 1.0);
         assert!(matches!(
-            rejects(&p, &crop, &s, Side::Left),
+            rejects(&pixajoy_spec(), &p, &crop, &s, Side::Left),
             Some(Rejection::FaceInGutter)
         ));
     }
@@ -732,10 +743,10 @@ mod tests {
         // Sanity: prove the fixture is inside trim before asserting it is
         // rejected on safe-margin grounds specifically.
         let mapped = Rect::new(0.022, 0.4, 0.01, 0.01);
-        assert!(in_trim(&mapped, Side::Left), "fixture must sit inside trim");
+        assert!(in_trim(&pixajoy_spec(), &mapped, Side::Left), "fixture must sit inside trim");
 
         assert!(matches!(
-            rejects(&p, &crop, &s, Side::Left),
+            rejects(&pixajoy_spec(), &p, &crop, &s, Side::Left),
             Some(Rejection::FaceInSafeMargin)
         ));
     }
@@ -753,7 +764,7 @@ mod tests {
             aspect_pref: (1.0, 1.4),
         };
         let crop = Rect::new(0.0, 0.0, 1.0, 1.0);
-        assert!(rejects(&p, &crop, &s, Side::Left).is_none());
+        assert!(rejects(&pixajoy_spec(), &p, &crop, &s, Side::Left).is_none());
     }
 
     /// Order matters when a face violates BOTH constraints at once. Placed
@@ -778,7 +789,7 @@ mod tests {
         };
         let crop = Rect::new(0.0, 0.0, 1.0, 1.0);
         assert!(matches!(
-            rejects(&p, &crop, &s, Side::Left),
+            rejects(&pixajoy_spec(), &p, &crop, &s, Side::Left),
             Some(Rejection::FaceInGutter)
         ));
     }
@@ -797,7 +808,7 @@ mod tests {
             aspect_pref: (1.2, 1.35),
         };
         let crop = Rect::new(0.0, 0.0, 1.0, 1.0);
-        assert!(rejects(&p, &crop, &s, Side::Left).is_none());
+        assert!(rejects(&pixajoy_spec(), &p, &crop, &s, Side::Left).is_none());
     }
 
     /// The pixel dimensions are load-bearing, not incidental. The brief's
@@ -816,8 +827,8 @@ mod tests {
         let tall = photo(3000, 6000);
         let photos = vec![&wide, &tall];
 
-        let matched = score_spread(t, &photos, &[0, 1], None, &Weights::default());
-        let swapped = score_spread(t, &photos, &[1, 0], None, &Weights::default());
+        let matched = score_spread(&pixajoy_spec(), t, &photos, &[0, 1], None, &Weights::default());
+        let swapped = score_spread(&pixajoy_spec(), t, &photos, &[1, 0], None, &Weights::default());
         assert!(matched.unwrap() > swapped.unwrap(), "aspect fit must drive the choice");
     }
 
@@ -830,8 +841,8 @@ mod tests {
         let mut b = photo(3000, 2000);
         b.aesthetic_pct = 10;
         let photos = vec![&a, &b];
-        let hero_first = score_spread(t, &photos, &[0, 1], None, &Weights::default()).unwrap();
-        let hero_last = score_spread(t, &photos, &[1, 0], None, &Weights::default()).unwrap();
+        let hero_first = score_spread(&pixajoy_spec(), t, &photos, &[0, 1], None, &Weights::default()).unwrap();
+        let hero_last = score_spread(&pixajoy_spec(), t, &photos, &[1, 0], None, &Weights::default()).unwrap();
         assert!(hero_first > hero_last);
     }
 
@@ -841,9 +852,9 @@ mod tests {
         let t = &lib[0];
         let p = photo(3000, 2000);
         let photos = vec![&p, &p];
-        let fresh = score_spread(t, &photos, &[0, 1], None, &Weights::default()).unwrap();
+        let fresh = score_spread(&pixajoy_spec(), t, &photos, &[0, 1], None, &Weights::default()).unwrap();
         let repeat =
-            score_spread(t, &photos, &[0, 1], Some(&t.id), &Weights::default()).unwrap();
+            score_spread(&pixajoy_spec(), t, &photos, &[0, 1], Some(&t.id), &Weights::default()).unwrap();
         assert!(fresh > repeat, "variety must penalise an immediate repeat");
     }
 
@@ -909,14 +920,14 @@ mod tests {
         d.captured_at = Some(1_700_100_000);
 
         let w = Weights { spread_diversity: 1.0, ..Weights::default() };
-        let samey = score_spread(&t, &[&a, &b], &[0, 1], None, &w).expect("scores");
-        let varied = score_spread(&t, &[&c, &d], &[0, 1], None, &w).expect("scores");
+        let samey = score_spread(&pixajoy_spec(), &t, &[&a, &b], &[0, 1], None, &w).expect("scores");
+        let varied = score_spread(&pixajoy_spec(), &t, &[&c, &d], &[0, 1], None, &w).expect("scores");
         assert!(varied > samey, "spread_diversity never reached the total");
 
         let inert = Weights::default();
         assert_eq!(
-            score_spread(&t, &[&a, &b], &[0, 1], None, &inert),
-            score_spread(&t, &[&c, &d], &[0, 1], None, &inert),
+            score_spread(&pixajoy_spec(), &t, &[&a, &b], &[0, 1], None, &inert),
+            score_spread(&pixajoy_spec(), &t, &[&c, &d], &[0, 1], None, &inert),
             "the term must be inert at its shipped weight of 0.0"
         );
     }
@@ -1078,15 +1089,15 @@ mod tests {
         let refs: Vec<&Photo> = standout.iter().collect();
 
         let w = Weights { hero_prominence: 1.0, ..Weights::default() };
-        let d = score_spread(&dominant, &refs, &[0, 1, 2], None, &w).expect("scores");
-        let e = score_spread(&even, &refs, &[0, 1, 2], None, &w).expect("scores");
+        let d = score_spread(&pixajoy_spec(), &dominant, &refs, &[0, 1, 2], None, &w).expect("scores");
+        let e = score_spread(&pixajoy_spec(), &even, &refs, &[0, 1, 2], None, &w).expect("scores");
         assert!(d > e, "hero_prominence never reached the total: {d} vs {e}");
 
         // Inert at the shipped weight -- but hero_match still separates these
         // two templates, so compare the DELTA rather than asserting equality.
         let inert = Weights::default();
-        let id = score_spread(&dominant, &refs, &[0, 1, 2], None, &inert).expect("scores");
-        let ie = score_spread(&even, &refs, &[0, 1, 2], None, &inert).expect("scores");
+        let id = score_spread(&pixajoy_spec(), &dominant, &refs, &[0, 1, 2], None, &inert).expect("scores");
+        let ie = score_spread(&pixajoy_spec(), &even, &refs, &[0, 1, 2], None, &inert).expect("scores");
         assert!(
             (d - e) > (id - ie),
             "weighting the term must widen the gap it is responsible for"
@@ -1110,7 +1121,7 @@ mod tests {
     #[test]
     fn score_rewards_a_crop_that_keeps_the_salient_region() {
         let t = single_hero_template();
-        let target = slot_aspect(&t.left.slots[0]);
+        let target = slot_aspect(&pixajoy_spec(), &t.left.slots[0]);
 
         let mut kept = photo(4000, 3000);
         kept.saliency_box = Some(Rect::new(0.4, 0.4, 0.2, 0.2));
@@ -1123,8 +1134,8 @@ mod tests {
             "the fixture only isolates saliency_retention if the crops match"
         );
 
-        let a = score_spread(&t, &[&kept], &[0], None, &Weights::default()).unwrap();
-        let b = score_spread(&t, &[&cut], &[0], None, &Weights::default()).unwrap();
+        let a = score_spread(&pixajoy_spec(), &t, &[&kept], &[0], None, &Weights::default()).unwrap();
+        let b = score_spread(&pixajoy_spec(), &t, &[&cut], &[0], None, &Weights::default()).unwrap();
         assert!(a > b, "keeping the salient region must score higher: {a} vs {b}");
     }
 
@@ -1152,8 +1163,8 @@ mod tests {
             Face { box_: Rect::new(0.4, 0.95, 0.04, 0.04), capture_quality: Some(0.1) },
         ];
 
-        let a = score_spread(&t, &[&kept], &[0], None, &Weights::default()).unwrap();
-        let b = score_spread(&t, &[&lost], &[0], None, &Weights::default()).unwrap();
+        let a = score_spread(&pixajoy_spec(), &t, &[&kept], &[0], None, &Weights::default()).unwrap();
+        let b = score_spread(&pixajoy_spec(), &t, &[&lost], &[0], None, &Weights::default()).unwrap();
         assert!(a > b, "dropping a face out of frame must cost: {a} vs {b}");
     }
 
@@ -1168,8 +1179,8 @@ mod tests {
         let small = photo(2000, 1500);
         assert_eq!(big.aspect(), small.aspect(), "aspect_fit must not move");
 
-        let a = score_spread(&t, &[&big], &[0], None, &Weights::default()).unwrap();
-        let b = score_spread(&t, &[&small], &[0], None, &Weights::default()).unwrap();
+        let a = score_spread(&pixajoy_spec(), &t, &[&big], &[0], None, &Weights::default()).unwrap();
+        let b = score_spread(&pixajoy_spec(), &t, &[&small], &[0], None, &Weights::default()).unwrap();
         assert!(a > b, "resolution headroom must break the tie: {a} vs {b}");
     }
 
@@ -1197,9 +1208,9 @@ mod tests {
         b_tall.palette = vec![cool];
 
         let coherent =
-            score_spread(t, &[&a_wide, &a_tall], &[0, 1], None, &Weights::default()).unwrap();
+            score_spread(&pixajoy_spec(), t, &[&a_wide, &a_tall], &[0, 1], None, &Weights::default()).unwrap();
         let clashing =
-            score_spread(t, &[&b_wide, &b_tall], &[0, 1], None, &Weights::default()).unwrap();
+            score_spread(&pixajoy_spec(), t, &[&b_wide, &b_tall], &[0, 1], None, &Weights::default()).unwrap();
         assert!(coherent > clashing, "a coherent palette must score higher: {coherent} vs {clashing}");
     }
 
@@ -1237,8 +1248,8 @@ mod tests {
         good.capture_quality = Some(0.9);
 
         let w = Weights { face_quality: 1.0, ..Weights::default() };
-        let poor_score = score_spread(&t, &[&poor], &[0], None, &w).expect("scores");
-        let good_score = score_spread(&t, &[&good], &[0], None, &w).expect("scores");
+        let poor_score = score_spread(&pixajoy_spec(), &t, &[&poor], &[0], None, &w).expect("scores");
+        let good_score = score_spread(&pixajoy_spec(), &t, &[&good], &[0], None, &w).expect("scores");
         assert!(
             good_score > poor_score,
             "face_quality never reached the total: {good_score} vs {poor_score}"
@@ -1248,8 +1259,8 @@ mod tests {
         // means and what keeps the golden stable.
         let inert = Weights::default();
         assert_eq!(
-            score_spread(&t, &[&poor], &[0], None, &inert),
-            score_spread(&t, &[&good], &[0], None, &inert),
+            score_spread(&pixajoy_spec(), &t, &[&poor], &[0], None, &inert),
+            score_spread(&pixajoy_spec(), &t, &[&good], &[0], None, &inert),
             "the term must be inert at its shipped weight of 0.0"
         );
     }
@@ -1283,8 +1294,8 @@ mod tests {
         // Flush to the photo's own right edge, which maps into the dead band.
         in_gutter.saliency_box = Some(Rect::new(0.8125, 0.30, 0.1875, 0.30));
 
-        let crop_clear = choose_crop(&clear, slot_aspect(&slot));
-        let crop_gutter = choose_crop(&in_gutter, slot_aspect(&slot));
+        let crop_clear = choose_crop(&clear, slot_aspect(&pixajoy_spec(), &slot));
+        let crop_gutter = choose_crop(&in_gutter, slot_aspect(&pixajoy_spec(), &slot));
 
         // Prove the mapped rects land where the term needs them to: one
         // clearing the dead band entirely, one genuinely straddling it. See
@@ -1301,7 +1312,7 @@ mod tests {
             &slot,
         )
         .unwrap();
-        let band_start = 1.0 - crate::geometry::GUTTER_U;
+        let band_start = 1.0 - pixajoy_spec().gutter_u();
         eprintln!(
             "mapped_clear = {mapped_clear:?} (right={}), mapped_gutter = {mapped_gutter:?} (right={}), band_start={band_start}",
             mapped_clear.right(),
@@ -1319,8 +1330,8 @@ mod tests {
             mapped_gutter.right()
         );
 
-        let g_clear = gutter_saliency(&clear, &crop_clear, &slot, Side::Left);
-        let g_gutter = gutter_saliency(&in_gutter, &crop_gutter, &slot, Side::Left);
+        let g_clear = gutter_saliency(&pixajoy_spec(), &clear, &crop_clear, &slot, Side::Left);
+        let g_gutter = gutter_saliency(&pixajoy_spec(), &in_gutter, &crop_gutter, &slot, Side::Left);
 
         assert!(
             g_gutter < g_clear,
@@ -1330,7 +1341,7 @@ mod tests {
 
         // And it must remain a penalty, not a rejection.
         assert!(
-            rejects(&in_gutter, &crop_gutter, &slot, Side::Left).is_none(),
+            rejects(&pixajoy_spec(), &in_gutter, &crop_gutter, &slot, Side::Left).is_none(),
             "generic saliency in the gutter must not reject the candidate"
         );
     }
@@ -1342,8 +1353,8 @@ mod tests {
         let slot = full_left_page_slot();
         let mut p = photo(4000, 3000);
         p.saliency_box = None;
-        let crop = choose_crop(&p, slot_aspect(&slot));
-        assert_eq!(gutter_saliency(&p, &crop, &slot, Side::Left), 1.0);
+        let crop = choose_crop(&p, slot_aspect(&pixajoy_spec(), &slot));
+        assert_eq!(gutter_saliency(&pixajoy_spec(), &p, &crop, &slot, Side::Left), 1.0);
     }
 
     /// The term must reach the total; shipped weight is 0.0.
@@ -1364,13 +1375,13 @@ mod tests {
         in_gutter.saliency_box = Some(Rect::new(0.8125, 0.30, 0.1875, 0.30));
 
         let w = Weights { gutter_saliency: 1.0, ..Weights::default() };
-        let a = score_spread(&t, &[&clear], &[0], None, &w).expect("scores");
-        let b = score_spread(&t, &[&in_gutter], &[0], None, &w).expect("scores");
+        let a = score_spread(&pixajoy_spec(), &t, &[&clear], &[0], None, &w).expect("scores");
+        let b = score_spread(&pixajoy_spec(), &t, &[&in_gutter], &[0], None, &w).expect("scores");
         assert!(a > b, "gutter_saliency never reached the total: {a} vs {b}");
 
         let inert = Weights::default();
-        let ia = score_spread(&t, &[&clear], &[0], None, &inert).expect("scores");
-        let ib = score_spread(&t, &[&in_gutter], &[0], None, &inert).expect("scores");
+        let ia = score_spread(&pixajoy_spec(), &t, &[&clear], &[0], None, &inert).expect("scores");
+        let ib = score_spread(&pixajoy_spec(), &t, &[&in_gutter], &[0], None, &inert).expect("scores");
         assert_eq!(ia, ib, "the term must be inert at its shipped weight of 0.0");
     }
 
@@ -1380,7 +1391,7 @@ mod tests {
         let tiny = photo(60, 40);
         let refs: Vec<&SpreadTemplate> = lib.iter().collect();
         let photos = vec![&tiny, &tiny];
-        assert!(best_spread(&refs, &photos, None, &Weights::default(), 0).is_none());
+        assert!(best_spread(&pixajoy_spec(), &refs, &photos, None, &Weights::default(), 0).is_none());
     }
 
     /// The tie-break has to be REACHED to be tested. Two templates with
@@ -1411,9 +1422,9 @@ mod tests {
         let forward: Vec<&SpreadTemplate> = vec![&early, &late];
         let backward: Vec<&SpreadTemplate> = vec![&late, &early];
         let (a, a_assign, a_score) =
-            best_spread(&forward, &photos, None, &Weights::default(), 7).unwrap();
+            best_spread(&pixajoy_spec(), &forward, &photos, None, &Weights::default(), 7).unwrap();
         let (b, _, b_score) =
-            best_spread(&backward, &photos, None, &Weights::default(), 7).unwrap();
+            best_spread(&pixajoy_spec(), &backward, &photos, None, &Weights::default(), 7).unwrap();
 
         assert_eq!(a_score, b_score, "the fixture must actually reach a tie");
         assert_eq!(a.id, b.id, "iteration order must not decide the winner; the seed does");
@@ -1625,5 +1636,225 @@ mod tests {
             density: Density::Dense,
             energy: Energy::Lively,
         }
+    }
+}
+
+#[cfg(test)]
+mod spec_reading_tests {
+    use super::*;
+    use crate::book::cull::PaletteColor;
+    use crate::geometry::{
+        clear_of_gutter, gutter_overlap_area, in_safe_margin, in_trim, BleedEdge,
+    };
+    use crate::print_spec::{odd_spec, pixajoy_spec, spec_with_dpi, PrintSpec};
+
+    fn photo(w: u32, h: u32) -> Photo {
+        Photo {
+            path: "/p.jpg".into(), hash: "h".into(), width: w, height: h,
+            is_utility: false, aesthetic_pct: 50, sharpness_pct: 50,
+            near_dup_cluster: 0, event_cluster: 0,
+            faces: Vec::new(), face_area_fraction: 0.0, saliency_box: None,
+            palette: Vec::<PaletteColor>::new(), capture_quality: None,
+            scene_tags: Vec::new(), captured_at: None,
+            clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
+        }
+    }
+
+    fn slot(rect: Rect) -> Slot {
+        Slot { rect, role: Role::Hero, bleed: Vec::<BleedEdge>::new(), aspect_pref: (1.2, 1.35) }
+    }
+
+    /// A slot exactly 6.0" wide on Pixajoy's page, so a pixel count maps to a
+    /// round DPI. `6.0 / page_w_in()` round-trips back through
+    /// `* page_w_in()` to exactly 6.0 in IEEE doubles.
+    fn six_inch_slot() -> Slot {
+        slot(Rect::new(0.1, 0.2, 6.0 / pixajoy_spec().page_w_in(), 0.5))
+    }
+
+    fn full_crop() -> Rect {
+        Rect::new(0.0, 0.0, 1.0, 1.0)
+    }
+
+    /// R7. The sweep, enumerated BY NAME.
+    ///
+    /// This replaces `geometry_gutter_overlap_agrees_with_clear_of_gutter`,
+    /// a 200-step property test deleted in the same change. Once
+    /// `clear_of_gutter` and `gutter_overlap_area` both read
+    /// `PrintSpec::gutter_band`, that test became a tautology: a degenerate
+    /// band satisfies both halves, so it would have passed with the gutter
+    /// concept deleted, which is worse than no test.
+    ///
+    /// Every function that consumes print geometry is listed here
+    /// individually. A loop over "some functions" is the Phase-1
+    /// sharpness-baseline mistake: it reads as coverage and provides none.
+    /// If any of these ever goes back to reading a module constant it
+    /// survives every other test in the crate and fails only this one.
+    ///
+    /// ONE rect answers differently under both specs for all ten, which took
+    /// choosing. `x = 0.030` sits between Pixajoy's trim inset (0.017594)
+    /// and `odd_spec`'s (0.03125), AND between their safe insets (0.028758
+    /// and 0.0375). `right = 0.96` sits between the two gutter band edges
+    /// (0.982406 and 0.95). The vertical extent is clear of every horizontal
+    /// inset under both, so only the horizontal axis is under test and a
+    /// vertical mistake cannot mask a horizontal one.
+    #[test]
+    fn every_geometry_function_reads_the_spec_it_is_given() {
+        let a = pixajoy_spec();
+        let b = odd_spec();
+        let r = Rect::new(0.030, 0.05, 0.93, 0.50);
+        let s = slot(r);
+        // 2603 px across a 0.93-wide slot is ~249.97 DPI on Pixajoy's page
+        // and ~349.87 on `odd_spec`'s narrower one.
+        let p = photo(2603, 1400);
+        let crop = full_crop();
+
+        // (name, value under each spec). Rendered to a string so booleans,
+        // rects and floats can share one list.
+        let readings: Vec<(&str, String, String)> = vec![
+            ("PrintSpec::trim_rect", format!("{:?}", a.trim_rect(Side::Left)),
+                format!("{:?}", b.trim_rect(Side::Left))),
+            ("PrintSpec::safe_rect", format!("{:?}", a.safe_rect(Side::Left)),
+                format!("{:?}", b.safe_rect(Side::Left))),
+            ("PrintSpec::gutter_band", format!("{:?}", a.gutter_band(Side::Left)),
+                format!("{:?}", b.gutter_band(Side::Left))),
+            ("PrintSpec::page_aspect", format!("{}", a.page_aspect(&r)),
+                format!("{}", b.page_aspect(&r))),
+            ("geometry::in_trim", format!("{}", in_trim(&a, &r, Side::Left)),
+                format!("{}", in_trim(&b, &r, Side::Left))),
+            ("geometry::in_safe_margin", format!("{}", in_safe_margin(&a, &r, Side::Left)),
+                format!("{}", in_safe_margin(&b, &r, Side::Left))),
+            ("geometry::clear_of_gutter", format!("{}", clear_of_gutter(&a, &r, Side::Left)),
+                format!("{}", clear_of_gutter(&b, &r, Side::Left))),
+            ("geometry::gutter_overlap_area",
+                format!("{}", gutter_overlap_area(&a, &r, Side::Left)),
+                format!("{}", gutter_overlap_area(&b, &r, Side::Left))),
+            ("score::slot_aspect", format!("{}", slot_aspect(&a, &s)),
+                format!("{}", slot_aspect(&b, &s))),
+            ("score::effective_dpi", format!("{}", effective_dpi(&a, &p, &crop, &s)),
+                format!("{}", effective_dpi(&b, &p, &crop, &s))),
+            ("score::resolution_headroom",
+                format!("{}", resolution_headroom(&a, &p, &crop, &s)),
+                format!("{}", resolution_headroom(&b, &p, &crop, &s))),
+        ];
+
+        let mut checked = 0usize;
+        for (name, under_pixajoy, under_odd) in &readings {
+            assert_ne!(
+                under_pixajoy, under_odd,
+                "{name} answered the same under both specs ({under_pixajoy}), \
+                 so it is not reading the spec it was given"
+            );
+            checked += 1;
+        }
+        // Counted inside the loop, not taken from `readings.len()`. A first
+        // version of this guard asserted the Vec's length, and a mutation run
+        // proved it worthless: emptying the ITERATION (`readings.iter().take(0)`)
+        // left the length at 11 and the test green while it checked nothing.
+        // That is the same false-protection failure this project already has a
+        // written history of, so the number the assertion reads must be the one
+        // the loop produced.
+        assert_eq!(
+            checked, 11,
+            "every spec-reading function must be listed by name AND actually checked"
+        );
+    }
+
+    /// R8. Two-sided, because a one-sided version passes under the mutation.
+    ///
+    /// Only the DPI band moves between the two specs. If the page moved too,
+    /// `effective_dpi` would change for a second reason and the result could
+    /// not be attributed to the floor at all.
+    #[test]
+    fn score_rejects_below_the_specs_own_floor_not_a_hardcoded_200() {
+        let s = six_inch_slot();
+        let crop = full_crop();
+        // 1050 px across exactly 6.0" is exactly 175 DPI: above 150, below
+        // 250, and on neither boundary.
+        let p = photo(1050, 788);
+        let lenient = spec_with_dpi(150.0, 220.0);
+        let strict = spec_with_dpi(250.0, 300.0);
+
+        assert_eq!(
+            effective_dpi(&lenient, &p, &crop, &s),
+            175.0,
+            "the fixture must sit between the two floors, not near them"
+        );
+        assert!(
+            rejects(&lenient, &p, &crop, &s, Side::Left).is_none(),
+            "175 DPI is above a 150 DPI floor and must be accepted"
+        );
+        assert!(
+            matches!(
+                rejects(&strict, &p, &crop, &s, Side::Left),
+                Some(Rejection::TooLowResolution)
+            ),
+            "175 DPI is below a 250 DPI floor and must be rejected"
+        );
+    }
+
+    /// R9. This test FAILED on master before the refactor: `score.rs` divided
+    /// by a bare `300.0` literal, so a book with any other ceiling scored its
+    /// resolution against Pixajoy's.
+    ///
+    /// Two-sided. 230 DPI saturates a 220 DPI ceiling and does NOT saturate
+    /// Pixajoy's 300, which is the half that kills a reintroduced literal;
+    /// 210 DPI lands strictly inside the band, which pins that the ceiling
+    /// did not merely move but is still the denominator.
+    #[test]
+    fn resolution_headroom_saturates_at_the_specs_warn_dpi_not_at_300() {
+        let s = six_inch_slot();
+        let crop = full_crop();
+        let low_ceiling = spec_with_dpi(150.0, 220.0);
+
+        let at = photo(1380, 1035); // 1380 / 6.0" = exactly 230 DPI
+        assert_eq!(effective_dpi(&low_ceiling, &at, &crop, &s), 230.0, "fixture sanity");
+        assert_eq!(
+            resolution_headroom(&low_ceiling, &at, &crop, &s),
+            1.0,
+            "230 DPI is past a 220 DPI ceiling and must saturate"
+        );
+        let under_pixajoy = resolution_headroom(&pixajoy_spec(), &at, &crop, &s);
+        assert!(
+            under_pixajoy < 1.0,
+            "the same photo must NOT saturate Pixajoy's 300 DPI ceiling, or the \
+             test cannot tell the two ceilings apart: got {under_pixajoy}"
+        );
+
+        let inside = photo(1260, 945); // 1260 / 6.0" = exactly 210 DPI
+        let h = resolution_headroom(&low_ceiling, &inside, &crop, &s);
+        assert!(
+            h > 0.0 && h < 1.0,
+            "210 DPI is inside the 150-220 band and must be strictly interior: got {h}"
+        );
+        assert!(
+            (h - (210.0 - 150.0) / (220.0 - 150.0)).abs() < 1e-12,
+            "the band's endpoints must both come from the spec: got {h}"
+        );
+    }
+
+    /// The consequence pinned as well as the guard: because `TryFrom` refuses
+    /// `warn_dpi <= min_dpi`, `resolution_headroom`'s denominator can never be
+    /// zero, so no spec that exists can poison a weighted score with a NaN.
+    #[test]
+    fn resolution_headroom_is_finite_for_every_spec_that_parses() {
+        let s = six_inch_slot();
+        let crop = full_crop();
+        for spec in [pixajoy_spec(), odd_spec(), spec_with_dpi(1.0, 1.000_001)] {
+            for px in [1u32, 600, 1200, 100_000] {
+                let h = resolution_headroom(&spec, &photo(px, px), &crop, &s);
+                assert!(h.is_finite(), "headroom was {h} at {px}px under {spec:?}");
+                assert!((0.0..=1.0).contains(&h), "headroom was {h} at {px}px");
+            }
+        }
+    }
+
+    /// The spec a book was laid out under is the spec it is scored against.
+    /// `PrintSpec` is `Copy`, so nothing here can alias.
+    #[test]
+    fn a_spec_is_copied_not_shared() {
+        fn takes(_: PrintSpec) {}
+        let s = odd_spec();
+        takes(s);
+        assert_eq!(s.page_w_in(), 8.0, "the original must survive being passed by value");
     }
 }

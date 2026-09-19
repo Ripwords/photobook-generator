@@ -1,51 +1,28 @@
 //! Page-local geometry for the layout engine.
 //!
-//! The authoring format is the SPREAD canvas (22.394" x 8.894", normalised
-//! [0,1]); the engine's atom is the PAGE (11.197" x 8.894"). Pixajoy's
-//! picture boxes are page-local and cannot cross the fold, so a rect that
-//! spans the fold has no page representation at all -- `spread_to_page`
-//! returns `None` rather than clamping, and the template validator rejects
-//! such slots before they ever reach here.
+//! The authoring format is the SPREAD canvas (normalised [0,1] across two
+//! pages); the engine's atom is the PAGE. Pixajoy-style picture boxes are
+//! page-local and cannot cross the fold, so a rect that spans the fold has
+//! no page representation at all -- `spread_to_page` returns `None` rather
+//! than clamping, and the template validator rejects such slots before they
+//! ever reach here.
+//!
+//! The inch measurements live on the book's `PrintSpec`, not here. Every
+//! predicate below takes a `&PrintSpec`, and a `PrintSpec` cannot exist
+//! unless it passed `TryFrom`. So this module assumes WITHOUT CHECKING that
+//! page extents are finite and positive, that `trim_rect`, `safe_rect` and
+//! `gutter_band` all have positive area on both axes, and that
+//! `warn_dpi > min_dpi > 0` so `score::resolution_headroom` never divides by
+//! zero. Do not re-check these here. If you want to, the check belongs in
+//! `PrintSpec::try_from`.
 
+use crate::print_spec::PrintSpec;
 use serde::{Deserialize, Serialize};
 
-pub const SPREAD_W_IN: f64 = 22.394;
-pub const SPREAD_H_IN: f64 = 8.894;
-pub const PAGE_W_IN: f64 = 11.197;
-pub const PAGE_H_IN: f64 = 8.894;
-
-/// 11.197" and 8.894" at 300 DPI. Two pages sum to 6718 px, matching the
-/// spread canvas exactly, so no rounding drift accumulates across a book.
-pub const PAGE_W_PX: u32 = 3359;
-pub const PAGE_H_PX: u32 = 2668;
-
-/// 5 mm, on the three OUTER edges only. There is no bleed at the fold.
-pub const BLEED_IN: f64 = 0.197;
-
-/// Page-normalised trim inset on the outer vertical edge, and on top/bottom.
-pub const TRIM_U: f64 = BLEED_IN / PAGE_W_IN;
-pub const TRIM_V: f64 = BLEED_IN / PAGE_H_IN;
-
-/// Page-normalised width of the gutter dead strip, measured inward from the
-/// fold. Numerically equal to `TRIM_U` (both are 0.197" on an 11.197" page)
-/// but conceptually unrelated -- one is a guillotine allowance, the other is
-/// where the paper curls into the binding. Kept separate so changing one
-/// does not silently change the other.
-pub const GUTTER_U: f64 = BLEED_IN / PAGE_W_IN;
-
-/// Pixajoy's published guidance: "leave a gap of 1/8th of an inch between
-/// anything important that you don't want to cut off and the edge." This is
-/// clearance INSIDE the trim line, on top of the trim inset itself -- a face
-/// sitting flush against the trim line is still at real risk of being
-/// guillotined off in production, trim tolerances being what they are.
-pub const SAFE_MARGIN_IN: f64 = 0.125;
-
-/// Page-normalised safe-margin inset, converted exactly as `TRIM_U` is.
-pub const SAFE_U: f64 = SAFE_MARGIN_IN / PAGE_W_IN;
-/// Page-normalised safe-margin inset, converted exactly as `TRIM_V` is.
-pub const SAFE_V: f64 = SAFE_MARGIN_IN / PAGE_H_IN;
-
-/// The fold, normalised on the spread canvas.
+/// The fold, normalised on the spread canvas. The one measurement that is
+/// genuinely page-size independent: two equal pages put the fold in the
+/// middle whatever they measure, which is why every `templates/*.json` stays
+/// valid under any spec.
 const FOLD_X: f64 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -55,6 +32,11 @@ pub struct Rect {
     pub w: f64,
     pub h: f64,
 }
+
+/// Float tolerance shared by every predicate here. A rect landing exactly
+/// on a band edge is inside it: the alternative is a slot that a template
+/// authored flush to the trim line fails by one ulp.
+const EPS: f64 = 1e-9;
 
 impl Rect {
     pub fn new(x: f64, y: f64, w: f64, h: f64) -> Self {
@@ -77,12 +59,13 @@ impl Rect {
         }
     }
 
-    /// Real-world width/height ratio on a canvas of the given inch
-    /// dimensions. NEVER compare `aspect_pref` against `w / h` -- the
-    /// canvases are not square, so the normalised ratio and the inch ratio
-    /// are different numbers (2.518x apart on the spread canvas).
-    pub fn aspect_in(&self, canvas_w_in: f64, canvas_h_in: f64) -> f64 {
-        (self.w * canvas_w_in) / (self.h * canvas_h_in)
+    /// True when `inner` lies wholly within this rect, to within the
+    /// float tolerance every predicate in this module shares.
+    pub fn contains(&self, inner: &Rect) -> bool {
+        inner.x >= self.x - EPS
+            && inner.right() <= self.right() + EPS
+            && inner.y >= self.y - EPS
+            && inner.bottom() <= self.bottom() + EPS
     }
 
     pub fn intersect(&self, other: &Rect) -> Option<Rect> {
@@ -120,7 +103,6 @@ pub enum BleedEdge {
 /// Returns `None` for a rect that spans the fold: such a rect cannot be
 /// built in Pixajoy's editor and has no page representation.
 pub fn spread_to_page(rect: &Rect) -> Option<(Side, Rect)> {
-    const EPS: f64 = 1e-9;
     if rect.x < FOLD_X - EPS && rect.right() > FOLD_X + EPS {
         return None;
     }
@@ -133,71 +115,41 @@ pub fn spread_to_page(rect: &Rect) -> Option<(Side, Rect)> {
 }
 
 /// True when the rect lies wholly inside the trim rectangle of its page.
-/// The fold edge has no trim inset -- the paper is continuous there.
-pub fn in_trim(rect: &Rect, side: Side) -> bool {
-    const EPS: f64 = 1e-9;
-    let (x0, x1) = match side {
-        Side::Left => (TRIM_U, 1.0),
-        Side::Right => (0.0, 1.0 - TRIM_U),
-    };
-    rect.x >= x0 - EPS
-        && rect.right() <= x1 + EPS
-        && rect.y >= TRIM_V - EPS
-        && rect.bottom() <= 1.0 - TRIM_V + EPS
+pub fn in_trim(spec: &PrintSpec, rect: &Rect, side: Side) -> bool {
+    spec.trim_rect(side).contains(rect)
 }
 
 /// True when the rect lies wholly inside the SAFE rectangle of its page --
-/// `in_trim` inset by a further `SAFE_MARGIN_IN` (Pixajoy's published 1/8")
-/// on every edge EXCEPT the fold. There is no bleed and no trim inset at the
-/// fold either (the paper is continuous there), and the gutter dead strip
-/// already governs content clearance on that edge, so inserting a second
-/// inset there would double-count it. `in_safe_margin` is therefore always a
-/// SUBSET of `in_trim`: passing this implies passing `in_trim`, but not the
-/// reverse.
-pub fn in_safe_margin(rect: &Rect, side: Side) -> bool {
-    const EPS: f64 = 1e-9;
-    let (x0, x1) = match side {
-        Side::Left => (TRIM_U + SAFE_U, 1.0),
-        Side::Right => (0.0, 1.0 - TRIM_U - SAFE_U),
-    };
-    rect.x >= x0 - EPS
-        && rect.right() <= x1 + EPS
-        && rect.y >= TRIM_V + SAFE_V - EPS
-        && rect.bottom() <= 1.0 - TRIM_V - SAFE_V + EPS
+/// the trim rect inset by a further safe margin on every edge EXCEPT the
+/// fold. `in_safe_margin` is therefore always a SUBSET of `in_trim`: passing
+/// this implies passing `in_trim`, but not the reverse.
+pub fn in_safe_margin(spec: &PrintSpec, rect: &Rect, side: Side) -> bool {
+    spec.safe_rect(side).contains(rect)
 }
 
-/// True when the rect keeps clear of the gutter dead strip -- the 0.197"
+/// True when the rect keeps clear of the gutter dead strip -- the band
 /// nearest the fold, which curls into the binding. This is a CONTENT
 /// predicate (faces, salient regions), never a slot rejection: a slot may
 /// legitimately run flush to the fold.
-pub fn clear_of_gutter(rect: &Rect, side: Side) -> bool {
-    const EPS: f64 = 1e-9;
+///
+/// Reads `PrintSpec::gutter_band`, the one definition of the strip, rather
+/// than restating the inset. `gutter_overlap_area` is the graded
+/// counterpart and reads the same band.
+pub fn clear_of_gutter(spec: &PrintSpec, rect: &Rect, side: Side) -> bool {
+    let band = spec.gutter_band(side);
     match side {
-        Side::Left => rect.right() <= 1.0 - GUTTER_U + EPS,
-        Side::Right => rect.x >= GUTTER_U - EPS,
+        Side::Left => rect.right() <= band.x + EPS,
+        Side::Right => rect.x >= band.right() - EPS,
     }
 }
 
-/// The gutter dead band on `side`, as a page-normalised rect spanning the
-/// full page height.
+/// Area of `rect` (page-normalised, on `side`) falling inside the gutter
+/// band.
 ///
-/// `clear_of_gutter` expresses the same strip as a comparison against
-/// `GUTTER_U`. Both read that ONE constant: a second hand-typed copy of the
-/// band is exactly the duplicated-authority problem culling already had to
-/// fix, and the spread-canvas form of these numbers is different again.
-pub fn gutter_band(side: Side) -> Rect {
-    match side {
-        Side::Left => Rect::new(1.0 - GUTTER_U, 0.0, GUTTER_U, 1.0),
-        Side::Right => Rect::new(0.0, 0.0, GUTTER_U, 1.0),
-    }
-}
-
-/// Area of `rect` (page-normalised, on `side`) falling inside that band.
-///
-/// The graded counterpart to `clear_of_gutter`, which answers yes/no --
-/// the right shape for a rejection and the wrong one for a penalty.
-pub fn gutter_overlap_area(rect: &Rect, side: Side) -> f64 {
-    rect.intersect(&gutter_band(side)).map_or(0.0, |i| i.area())
+/// The graded counterpart to `clear_of_gutter`, which answers yes/no -- the
+/// right shape for a rejection and the wrong one for a penalty.
+pub fn gutter_overlap_area(spec: &PrintSpec, rect: &Rect, side: Side) -> f64 {
+    rect.intersect(&spec.gutter_band(side)).map_or(0.0, |i| i.area())
 }
 
 /// True when every declared bleed edge actually reaches past the page
@@ -207,7 +159,6 @@ pub fn gutter_overlap_area(rect: &Rect, side: Side) -> f64 {
 /// The fold edge cannot bleed: on a left page that is the RIGHT edge, on a
 /// right page the LEFT edge. Declaring it is always an error.
 pub fn bleeds_correctly(rect: &Rect, edges: &[BleedEdge], side: Side) -> bool {
-    const EPS: f64 = 1e-9;
     edges.iter().all(|edge| match (edge, side) {
         (BleedEdge::Right, Side::Left) | (BleedEdge::Left, Side::Right) => false,
         (BleedEdge::Left, Side::Left) => rect.x <= EPS,
@@ -220,6 +171,7 @@ pub fn bleeds_correctly(rect: &Rect, edges: &[BleedEdge], side: Side) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::print_spec::pixajoy_spec;
 
     // --- geometry: spread -> page conversion
 
@@ -267,16 +219,16 @@ mod tests {
 
     #[test]
     fn geometry_in_trim_rejects_a_rect_over_the_outer_bleed_on_a_left_page() {
-        // On a LEFT page the outer edge is x=0, so trim starts at TRIM_U.
-        assert!(!in_trim(&Rect::new(0.0, 0.5, 0.1, 0.1), Side::Left));
-        assert!(in_trim(&Rect::new(TRIM_U, 0.5, 0.1, 0.1), Side::Left));
+        // On a LEFT page the outer edge is x=0, so trim starts at pixajoy_spec().trim_u().
+        assert!(!in_trim(&pixajoy_spec(), &Rect::new(0.0, 0.5, 0.1, 0.1), Side::Left));
+        assert!(in_trim(&pixajoy_spec(), &Rect::new(pixajoy_spec().trim_u(), 0.5, 0.1, 0.1), Side::Left));
     }
 
     #[test]
     fn geometry_in_trim_rejects_a_rect_over_the_outer_bleed_on_a_right_page() {
-        // On a RIGHT page the outer edge is x=1, so trim ends at 1 - TRIM_U.
-        assert!(!in_trim(&Rect::new(0.95, 0.5, 0.1, 0.1), Side::Right));
-        assert!(in_trim(&Rect::new(0.8, 0.5, 1.0 - TRIM_U - 0.8, 0.1), Side::Right));
+        // On a RIGHT page the outer edge is x=1, so trim ends at 1 - pixajoy_spec().trim_u().
+        assert!(!in_trim(&pixajoy_spec(), &Rect::new(0.95, 0.5, 0.1, 0.1), Side::Right));
+        assert!(in_trim(&pixajoy_spec(), &Rect::new(0.8, 0.5, 1.0 - pixajoy_spec().trim_u() - 0.8, 0.1), Side::Right));
     }
 
     // --- geometry: safe margin
@@ -289,10 +241,10 @@ mod tests {
     /// mutation the brief names explicitly.
     #[test]
     fn geometry_in_safe_margin_is_a_strict_subset_of_in_trim() {
-        let rect = Rect::new(TRIM_U, 0.5, 0.05, 0.05);
-        assert!(in_trim(&rect, Side::Left), "sanity: sits right at the trim boundary");
+        let rect = Rect::new(pixajoy_spec().trim_u(), 0.5, 0.05, 0.05);
+        assert!(in_trim(&pixajoy_spec(), &rect, Side::Left), "sanity: sits right at the trim boundary");
         assert!(
-            !in_safe_margin(&rect, Side::Left),
+            !in_safe_margin(&pixajoy_spec(), &rect, Side::Left),
             "the converse of 'inside safe margin implies inside trim' must not hold"
         );
     }
@@ -301,18 +253,18 @@ mod tests {
     /// LEFT page (mirroring `geometry_in_trim_rejects_a_rect_over_the_outer_bleed_on_a_left_page`).
     #[test]
     fn geometry_in_safe_margin_insets_the_outer_edge_of_a_left_page_by_an_extra_eighth_inch() {
-        let x0 = TRIM_U + SAFE_U;
-        assert!(!in_safe_margin(&Rect::new(x0 - 1e-6, 0.5, 0.05, 0.05), Side::Left));
-        assert!(in_safe_margin(&Rect::new(x0, 0.5, 0.05, 0.05), Side::Left));
+        let x0 = pixajoy_spec().trim_u() + pixajoy_spec().safe_u();
+        assert!(!in_safe_margin(&pixajoy_spec(), &Rect::new(x0 - 1e-6, 0.5, 0.05, 0.05), Side::Left));
+        assert!(in_safe_margin(&pixajoy_spec(), &Rect::new(x0, 0.5, 0.05, 0.05), Side::Left));
     }
 
     /// Same boundary, opposite edge, on a RIGHT page -- the asymmetry
     /// `in_trim` itself has between left and right pages must carry through.
     #[test]
     fn geometry_in_safe_margin_insets_the_outer_edge_of_a_right_page_by_an_extra_eighth_inch() {
-        let x1 = 1.0 - TRIM_U - SAFE_U;
-        assert!(!in_safe_margin(&Rect::new(x1 - 0.05 + 1e-6, 0.5, 0.05, 0.05), Side::Right));
-        assert!(in_safe_margin(&Rect::new(x1 - 0.05, 0.5, 0.05, 0.05), Side::Right));
+        let x1 = 1.0 - pixajoy_spec().trim_u() - pixajoy_spec().safe_u();
+        assert!(!in_safe_margin(&pixajoy_spec(), &Rect::new(x1 - 0.05 + 1e-6, 0.5, 0.05, 0.05), Side::Right));
+        assert!(in_safe_margin(&pixajoy_spec(), &Rect::new(x1 - 0.05, 0.5, 0.05, 0.05), Side::Right));
     }
 
     /// The fold edge gets NO additional inset -- the gutter strip already
@@ -321,10 +273,10 @@ mod tests {
     /// (no inset there either) must stay legal for `in_safe_margin` too.
     #[test]
     fn geometry_in_safe_margin_does_not_inset_the_fold_edge() {
-        let rect = Rect::new(0.9, TRIM_V + SAFE_V, 0.1, 0.05);
-        assert!(in_trim(&rect, Side::Left), "sanity: flush to the fold is legal for trim");
+        let rect = Rect::new(0.9, pixajoy_spec().trim_v() + pixajoy_spec().safe_v(), 0.1, 0.05);
+        assert!(in_trim(&pixajoy_spec(), &rect, Side::Left), "sanity: flush to the fold is legal for trim");
         assert!(
-            in_safe_margin(&rect, Side::Left),
+            in_safe_margin(&pixajoy_spec(), &rect, Side::Left),
             "the fold edge must not be inset a second time"
         );
     }
@@ -332,9 +284,9 @@ mod tests {
     /// Boundary test AT the boundary, per the plan's anti-pattern rules.
     #[test]
     fn geometry_clear_of_gutter_is_exact_at_the_strip_edge() {
-        let strip_start = 1.0 - GUTTER_U;
-        assert!(clear_of_gutter(&Rect::new(0.5, 0.4, strip_start - 0.5, 0.2), Side::Left));
-        assert!(!clear_of_gutter(
+        let strip_start = 1.0 - pixajoy_spec().gutter_u();
+        assert!(clear_of_gutter(&pixajoy_spec(), &Rect::new(0.5, 0.4, strip_start - 0.5, 0.2), Side::Left));
+        assert!(!clear_of_gutter(&pixajoy_spec(),
             &Rect::new(0.5, 0.4, strip_start - 0.5 + 1e-6, 0.2),
             Side::Left
         ));
@@ -342,30 +294,8 @@ mod tests {
 
     #[test]
     fn geometry_clear_of_gutter_uses_the_opposite_edge_on_a_right_page() {
-        assert!(clear_of_gutter(&Rect::new(GUTTER_U, 0.4, 0.2, 0.2), Side::Right));
-        assert!(!clear_of_gutter(&Rect::new(GUTTER_U - 1e-6, 0.4, 0.2, 0.2), Side::Right));
-    }
-
-    /// The graded helper and the boolean one must describe the SAME strip. Two
-    /// definitions of the gutter that drift apart would let the scorer penalise
-    /// a rect pre-flight considers clear, on both sides of the fold.
-    #[test]
-    fn geometry_gutter_overlap_agrees_with_clear_of_gutter() {
-        for side in [Side::Left, Side::Right] {
-            // A tall, NARROW rect swept across the page: square or full-width
-            // fixtures make the two agree trivially.
-            for step in 0..200 {
-                let x = step as f64 / 200.0;
-                let rect = Rect::new(x, 0.25, 0.004, 0.5);
-                let clear = clear_of_gutter(&rect, side);
-                let overlap = gutter_overlap_area(&rect, side);
-                assert_eq!(
-                    clear,
-                    overlap <= 1e-9,
-                    "{side:?} disagreed at x={x}: clear={clear}, overlap={overlap}"
-                );
-            }
-        }
+        assert!(clear_of_gutter(&pixajoy_spec(), &Rect::new(pixajoy_spec().gutter_u(), 0.4, 0.2, 0.2), Side::Right));
+        assert!(!clear_of_gutter(&pixajoy_spec(), &Rect::new(pixajoy_spec().gutter_u() - 1e-6, 0.4, 0.2, 0.2), Side::Right));
     }
 
     #[test]
@@ -383,29 +313,6 @@ mod tests {
         let to_fold = Rect::new(0.5, 0.0, 0.5, 1.0);
         assert!(!bleeds_correctly(&to_fold, &[BleedEdge::Right], Side::Left));
     }
-
-    // --- geometry: aspect
-
-    /// The `aspect_pref` trap, pinned. A slot half the canvas wide and half
-    /// tall is 1:1 normalised but 2.518:1 in inches. A fixture where those
-    /// two numbers coincide would pass under the bug.
-    #[test]
-    fn geometry_aspect_in_uses_real_inches_not_the_normalised_ratio() {
-        let r = Rect::new(0.0, 0.0, 0.5, 0.5);
-        let normalised = r.w / r.h;
-        let real = r.aspect_in(SPREAD_W_IN, SPREAD_H_IN);
-        assert!((normalised - 1.0).abs() < 1e-9, "sanity: normalised is 1:1");
-        assert!((real - 2.518).abs() < 0.001, "real was {real}");
-        assert!((real - normalised).abs() > 1.0, "the fixture must distinguish the two");
-    }
-
-    #[test]
-    fn geometry_page_pixels_sum_to_the_spread_width() {
-        assert_eq!(PAGE_W_PX * 2, 6718);
-        assert_eq!(PAGE_H_PX, 2668);
-    }
-
-    // --- geometry: intersection
 
     #[test]
     fn geometry_intersect_returns_none_when_disjoint() {
@@ -458,7 +365,7 @@ mod tests {
         /// The brief's original version of this property always built a
         /// rect flush to the fold (`right() == 1.0`), which made the
         /// "beyond the gutter threshold" side of its `if`-guard constant
-        /// (1.0 is always past `1.0 - GUTTER_U`) and its assertion a
+        /// (1.0 is always past `1.0 - pixajoy_spec().gutter_u()`) and its assertion a
         /// restatement of `clear_of_gutter`'s own Left-side branch on that
         /// fixed input -- it would pass for any implementation that agrees
         /// with itself, including a `clear_of_gutter` disconnected from
@@ -488,8 +395,8 @@ mod tests {
                 // predicate holds.
                 _ => (Rect::new(0.95 - jx, 0.0, 0.05 + jx, 0.05), false, false),
             };
-            prop_assert_eq!(in_trim(&rect, Side::Left), expect_in_trim);
-            prop_assert_eq!(clear_of_gutter(&rect, Side::Left), expect_clear);
+            prop_assert_eq!(in_trim(&pixajoy_spec(), &rect, Side::Left), expect_in_trim);
+            prop_assert_eq!(clear_of_gutter(&pixajoy_spec(), &rect, Side::Left), expect_clear);
         }
 
         /// Round-tripping through the decomposition preserves width in
@@ -500,8 +407,8 @@ mod tests {
             let on_left = Rect::new(r.x * 0.5, r.y, r.w * 0.5, r.h);
             if let Some((side, page)) = spread_to_page(&on_left) {
                 prop_assert_eq!(side, Side::Left);
-                let before_in = on_left.w * SPREAD_W_IN;
-                let after_in = page.w * PAGE_W_IN;
+                let before_in = on_left.w * (2.0 * pixajoy_spec().page_w_in());
+                let after_in = page.w * pixajoy_spec().page_w_in();
                 prop_assert!((before_in - after_in).abs() < 1e-9,
                     "{} vs {}", before_in, after_in);
             }

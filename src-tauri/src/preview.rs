@@ -3,7 +3,7 @@
 //!
 //! Nothing here is a second layout engine. Every number it emits is either
 //! copied straight off the `Book` that `pace::assemble` produced and
-//! `project.rs` persisted, or read from `geometry.rs`'s own constants. The
+//! `project.rs` persisted, or read from that book's own `PrintSpec`. The
 //! preview's job is to REVEAL what the engine chose -- a crop that cuts a
 //! face, salient content sliding into the gutter, a page that prints blank --
 //! so anything it recomputes is a chance for the screen and the print to
@@ -11,12 +11,13 @@
 //!
 //! Two decisions follow from that:
 //!
-//! * **The guide constants travel on the wire.** `PreviewGeometry` carries
-//!   `TRIM_U`, `SAFE_U`, `GUTTER_U` and friends from `geometry.rs` rather
-//!   than letting TypeScript restate them. A guide drawn from a hand-copied
-//!   constant is a guide that can drift out of step with the predicate the
-//!   scorer actually enforced, and the whole point of drawing it is that it
-//!   is the same line.
+//! * **The guides travel on the wire.** `PreviewGeometry` carries the insets
+//!   derived from THE BOOK'S OWN spec rather than letting TypeScript restate
+//!   them. A guide drawn from a hand-copied constant is a guide that can
+//!   drift out of step with the predicate the scorer actually enforced, and
+//!   the whole point of drawing it is that it is the same line. Now that the
+//!   geometry is per book, a hardcoded guide would not merely drift -- it
+//!   would be wrong for every book that is not 11 x 8.5.
 //! * **Every page is emitted, including the ones that hold nothing.** Ten of
 //!   the 36 templates put all their slots on one page half (mostly because
 //!   they carry text zones nothing renders yet), so a full printed page comes
@@ -28,9 +29,8 @@ use crate::book::edit::{alternatives, opening_count};
 use crate::book::pace::Book;
 use crate::templates::Library;
 use crate::export::output_filename;
-use crate::geometry::{
-    Rect, Side, GUTTER_U, PAGE_H_IN, PAGE_W_IN, SAFE_U, SAFE_V, TRIM_U, TRIM_V,
-};
+use crate::geometry::{Rect, Side};
+use crate::print_spec::PrintSpec;
 use serde::Serialize;
 
 /// One photo of the set the book was assembled against, in the SAME ORDER as
@@ -110,27 +110,41 @@ pub struct PreviewPage {
     pub placements: Vec<PreviewPlacement>,
 }
 
+/// The three guide rectangles of one page, page-normalised and ready to
+/// position -- the same rects `geometry::in_trim`, `in_safe_margin` and
+/// `clear_of_gutter` test against.
+///
+/// Per side because the two are not mirror images of one thing the webview
+/// could flip: the fold edge carries no trim or safe inset at all, while the
+/// gutter band sits AGAINST that edge. Which edge is the fold depends on the
+/// side. That asymmetry used to be restated in TypeScript, three times, in
+/// terms of five scalar insets; shipping the finished rects deletes it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct PageGuides {
+    /// What survives the guillotine.
+    pub trim: Rect,
+    /// A strict subset of `trim`: the further clearance text and faces need.
+    pub safe: Rect,
+    /// The strip nearest the fold that curls into the binding. Full height,
+    /// and it overlaps `trim` and `safe` rather than insetting them.
+    pub gutter: Rect,
+}
+
 /// The engine's own print geometry, shipped so the preview draws the same
 /// lines the scorer enforced rather than a hand-copied approximation.
 ///
-/// Page-normalised, matching `Placement::slot_rect`. Derived here from
-/// `geometry.rs` -- never restated as literals, which is what
-/// `preview_geometry_is_read_from_the_engines_own_constants` pins.
+/// Page-normalised, matching `Placement::slot_rect`. Derived here from the
+/// book's own `PrintSpec` -- never restated as literals on either side of the
+/// wire, which is what `preview_geometry_is_read_from_the_spec_it_is_given`
+/// pins. The page's inch extent rides along because the webview sizes its
+/// page box by that aspect and has nowhere else to learn it.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewGeometry {
     pub page_w_in: f64,
     pub page_h_in: f64,
-    /// Trim inset on the outer vertical edge. There is NO inset at the fold.
-    pub trim_u: f64,
-    /// Trim inset on the top and bottom edges.
-    pub trim_v: f64,
-    /// Pixajoy's 1/8" safe margin, inside the trim, on every edge except the
-    /// fold -- where the gutter dead band already governs clearance.
-    pub safe_u: f64,
-    pub safe_v: f64,
-    /// Width of the gutter dead strip, measured inward FROM the fold.
-    pub gutter_u: f64,
+    pub left: PageGuides,
+    pub right: PageGuides,
 }
 
 /// The editable state of one opening, numbered as `toSpreads` draws them:
@@ -162,6 +176,16 @@ pub struct BookLayout {
     /// engine's own figure, covering every cause (culled, trimmed to
     /// capacity, left unplaced, overflowed a page half).
     pub dropped_photos: usize,
+    /// The book's own print geometry, in the units the user typed.
+    ///
+    /// Separate from `geometry` because the two answer different questions.
+    /// `geometry` is derived -- normalised insets, only ever read to draw
+    /// guides -- while this is the canonical model the Print size panel
+    /// edits and hands straight back to `SetPrintSpec`. Flattening the raw
+    /// measurements into `PreviewGeometry` would leave the panel guessing
+    /// which of its fields are authoritative and which are consequences,
+    /// which is the same drift this module's header refuses for guides.
+    pub spec: PrintSpec,
     pub geometry: PreviewGeometry,
     pub photos: Vec<PreviewPhoto>,
     pub pages: Vec<PreviewPage>,
@@ -169,16 +193,25 @@ pub struct BookLayout {
     pub openings: Vec<PreviewOpening>,
 }
 
-/// `geometry.rs`'s constants, as the webview receives them.
-pub fn preview_geometry() -> PreviewGeometry {
+/// The guides one spec implies, normalised, as the webview receives them.
+///
+/// One call per side rather than a `Side` parameter: both are drawn on every
+/// spread, and shipping them together means the webview never has to know
+/// which edge of which page is the fold.
+pub fn preview_geometry(spec: &PrintSpec) -> PreviewGeometry {
     PreviewGeometry {
-        page_w_in: PAGE_W_IN,
-        page_h_in: PAGE_H_IN,
-        trim_u: TRIM_U,
-        trim_v: TRIM_V,
-        safe_u: SAFE_U,
-        safe_v: SAFE_V,
-        gutter_u: GUTTER_U,
+        page_w_in: spec.page_w_in(),
+        page_h_in: spec.page_h_in(),
+        left: page_guides(spec, Side::Left),
+        right: page_guides(spec, Side::Right),
+    }
+}
+
+fn page_guides(spec: &PrintSpec, side: Side) -> PageGuides {
+    PageGuides {
+        trim: spec.trim_rect(side),
+        safe: spec.safe_rect(side),
+        gutter: spec.gutter_band(side),
     }
 }
 
@@ -251,7 +284,8 @@ pub fn book_layout(
         page_count: pages.len(),
         placed_photos: pages.iter().map(|p| p.placements.len()).sum(),
         dropped_photos: book.dropped,
-        geometry: preview_geometry(),
+        spec: book.spec,
+        geometry: preview_geometry(&book.spec),
         photos,
         pages,
         openings,
@@ -264,7 +298,7 @@ mod tests {
     use crate::book::cull::PaletteColor;
     use crate::book::manifest::manifest;
     use crate::book::pace::{Page, Placement, BLANK_TEMPLATE_ID};
-    use crate::geometry::{BLEED_IN, SAFE_MARGIN_IN};
+    use crate::print_spec::{odd_spec, pixajoy_spec, PrintSpec};
 
     /// NEVER square, and never the same shape twice -- a square photo makes
     /// `height/width == 1` and hides the whole class of aspect bug.
@@ -310,6 +344,7 @@ mod tests {
     /// `photo_index` produces different output.
     fn book() -> Book {
         Book {
+            spec: pixajoy_spec(),
             controls: Default::default(),
             seed: 424_242,
             dropped: 2,
@@ -598,58 +633,175 @@ mod tests {
 
     // --- the guides -------------------------------------------------------
 
-    /// The named regression: **a guide is drawn at the wrong place.** The
-    /// preview's guides must be the engine's own constants, not literals
-    /// retyped beside them -- a retyped constant is a guide that can drift
-    /// away from the predicate the scorer enforced while still looking
+    /// The named regression: **a guide is drawn at the wrong place.**
+    ///
+    /// The preview's guides must be the book's own spec, not literals retyped
+    /// beside it -- a retyped constant is a guide that can drift away from
+    /// the predicate the scorer actually enforced while still looking
     /// authoritative.
     ///
-    /// Asserted two ways on purpose. Against `geometry::` catches a hand-typed
-    /// literal here; against the INCH arithmetic catches the case where both
-    /// this and `geometry.rs` were edited together to a wrong value.
+    /// Asserted two ways on purpose. Against the spec's own rect methods
+    /// catches a hand-built rect here; against the INCH arithmetic catches
+    /// the case where both this and `PrintSpec` were edited together to a
+    /// wrong value.
+    ///
+    /// Runs under BOTH specs and BOTH sides. Under Pixajoy's numbers alone
+    /// the gutter and the bleed are the same width and the page is
+    /// landscape, so a transposed axis or a gutter wired to the bleed would
+    /// pass; on one side alone, a fold on the wrong edge would.
     #[test]
-    fn preview_geometry_is_read_from_the_engines_own_constants() {
-        let g = preview_geometry();
+    fn preview_geometry_is_read_from_the_spec_it_is_given() {
+        for spec in [PrintSpec::pixajoy(), odd_spec()] {
+            let g = preview_geometry(&spec);
+            assert_eq!(g.page_w_in, spec.page_w_in());
+            assert_eq!(g.page_h_in, spec.page_h_in());
 
-        assert_eq!(g.page_w_in, PAGE_W_IN);
-        assert_eq!(g.page_h_in, PAGE_H_IN);
-        assert_eq!(g.trim_u, TRIM_U);
-        assert_eq!(g.trim_v, TRIM_V);
-        assert_eq!(g.safe_u, SAFE_U);
-        assert_eq!(g.safe_v, SAFE_V);
-        assert_eq!(g.gutter_u, GUTTER_U);
+            for (side, guides) in [(Side::Left, g.left), (Side::Right, g.right)] {
+                assert_eq!(guides.trim, spec.trim_rect(side), "{side:?} trim");
+                assert_eq!(guides.safe, spec.safe_rect(side), "{side:?} safe");
+                assert_eq!(guides.gutter, spec.gutter_band(side), "{side:?} gutter");
 
-        assert!((g.trim_u - BLEED_IN / PAGE_W_IN).abs() < 1e-12, "trim_u was {}", g.trim_u);
-        assert!((g.trim_v - BLEED_IN / PAGE_H_IN).abs() < 1e-12, "trim_v was {}", g.trim_v);
-        assert!(
-            (g.safe_u - SAFE_MARGIN_IN / PAGE_W_IN).abs() < 1e-12,
-            "safe_u was {}",
-            g.safe_u
-        );
-        assert!(
-            (g.safe_v - SAFE_MARGIN_IN / PAGE_H_IN).abs() < 1e-12,
-            "safe_v was {}",
-            g.safe_v
-        );
-        assert!((g.gutter_u - BLEED_IN / PAGE_W_IN).abs() < 1e-12, "gutter_u was {}", g.gutter_u);
+                let (w, h) = (spec.page_w_in(), spec.page_h_in());
+                let (trim_u, trim_v) = (spec.bleed_in() / w, spec.bleed_in() / h);
+                let (safe_u, safe_v) = (spec.safe_margin_in() / w, spec.safe_margin_in() / h);
+                let gutter_u = spec.gutter_in() / w;
+
+                // The trim is inset by the bleed on three edges and NOT at
+                // the fold, which is x = 1 on a left page and x = 0 on a
+                // right one. Written out per side rather than folded into an
+                // expression, so a swap is visible here as a swap.
+                let (trim_x0, trim_x1) = match side {
+                    Side::Left => (trim_u, 1.0),
+                    Side::Right => (0.0, 1.0 - trim_u),
+                };
+                assert!((guides.trim.x - trim_x0).abs() < 1e-12, "{side:?} {:?}", guides.trim);
+                assert!(
+                    (guides.trim.x + guides.trim.w - trim_x1).abs() < 1e-12,
+                    "{side:?} {:?}",
+                    guides.trim
+                );
+                assert!((guides.trim.y - trim_v).abs() < 1e-12);
+                assert!((guides.trim.y + guides.trim.h - (1.0 - trim_v)).abs() < 1e-12);
+
+                // The safe rect is the trim inset by a further margin, again
+                // not at the fold.
+                let (safe_x0, safe_x1) = match side {
+                    Side::Left => (trim_u + safe_u, 1.0),
+                    Side::Right => (0.0, 1.0 - trim_u - safe_u),
+                };
+                assert!((guides.safe.x - safe_x0).abs() < 1e-12, "{side:?} {:?}", guides.safe);
+                assert!(
+                    (guides.safe.x + guides.safe.w - safe_x1).abs() < 1e-12,
+                    "{side:?} {:?}",
+                    guides.safe
+                );
+                assert!((guides.safe.y - (trim_v + safe_v)).abs() < 1e-12);
+
+                // The gutter sits AGAINST the fold, full height, and is the
+                // one guide that is not an inset of the page edge.
+                let gutter_x0 = match side {
+                    Side::Left => 1.0 - gutter_u,
+                    Side::Right => 0.0,
+                };
+                assert!((guides.gutter.x - gutter_x0).abs() < 1e-12, "{side:?} {:?}", guides.gutter);
+                assert!((guides.gutter.w - gutter_u).abs() < 1e-12);
+                assert_eq!((guides.gutter.y, guides.gutter.h), (0.0, 1.0));
+            }
+
+            // Every guide must have real area under every valid spec. A
+            // zero-area rect draws as nothing and reads as "this book has no
+            // margin" rather than as a bug.
+            for guides in [g.left, g.right] {
+                for r in [guides.trim, guides.safe, guides.gutter] {
+                    assert!(r.w > 0.0 && r.h > 0.0, "{r:?} has no area");
+                }
+            }
+        }
+
+        // The two specs must actually produce different guides, or every
+        // assertion above is satisfiable by a function that ignores its
+        // argument entirely.
+        let a = preview_geometry(&PrintSpec::pixajoy());
+        let b = preview_geometry(&odd_spec());
+        assert!((a.left.trim.x - b.left.trim.x).abs() > 1e-6);
+        assert!((a.left.gutter.x - b.left.gutter.x).abs() > 1e-6);
+        assert!((a.page_h_in - b.page_h_in).abs() > 1e-6);
     }
 
-    /// `trim_u` and `gutter_u` are numerically equal but conceptually
-    /// unrelated (`geometry.rs` says so where it defines them), and `safe_u`
-    /// must be a DIFFERENT number from both -- a preview that wired the safe
-    /// margin to the trim inset would draw two guides on one line and look
-    /// entirely plausible doing it.
+    /// The safe rect must be a STRICT subset of the trim, on both sides.
+    ///
+    /// A preview that wired the safe margin to the trim inset would draw two
+    /// guides on one line and look entirely plausible doing it -- and on the
+    /// fold edge, where neither is inset, the two genuinely DO coincide, so
+    /// the test has to say which edges it means.
     #[test]
-    fn preview_geometry_keeps_the_safe_margin_distinct_from_the_trim_inset() {
-        let g = preview_geometry();
+    fn preview_geometry_keeps_the_safe_margin_inside_the_trim() {
+        let g = preview_geometry(&PrintSpec::pixajoy());
 
-        assert!(
-            (g.safe_u - g.trim_u).abs() > 1e-6,
-            "safe_u {} must not be the trim inset {}",
-            g.safe_u,
-            g.trim_u
+        for (side, guides) in [(Side::Left, g.left), (Side::Right, g.right)] {
+            let (trim, safe) = (guides.trim, guides.safe);
+            assert!(safe.y > trim.y, "{side:?} top");
+            assert!(safe.y + safe.h < trim.y + trim.h, "{side:?} bottom");
+            // Only the OUTER vertical edge is inset further; the fold edge of
+            // both rects sits on the page boundary by design.
+            match side {
+                Side::Left => {
+                    assert!(safe.x > trim.x, "{side:?} outer");
+                    assert_eq!(safe.x + safe.w, 1.0, "the fold edge is never inset");
+                }
+                Side::Right => {
+                    assert!(safe.x + safe.w < trim.x + trim.w, "{side:?} outer");
+                    assert_eq!(safe.x, 0.0, "the fold edge is never inset");
+                }
+            }
+        }
+    }
+
+    /// The gutter is measured from the FOLD, so the two sides' bands sit
+    /// against each other across the middle of the spread rather than at the
+    /// outer edges.
+    ///
+    /// The mutation is a `gutter_band` that ignores its side. Every other
+    /// assertion in this file survives it, because under Pixajoy the band is
+    /// exactly as wide as the trim inset.
+    #[test]
+    fn preview_geometry_puts_both_gutter_bands_against_the_fold() {
+        let g = preview_geometry(&PrintSpec::pixajoy());
+
+        assert_eq!(g.left.gutter.x + g.left.gutter.w, 1.0, "the left page's fold is its RIGHT edge");
+        assert_eq!(g.right.gutter.x, 0.0, "the right page's fold is its LEFT edge");
+        assert_ne!(g.left.gutter.x, g.right.gutter.x, "both bands on one edge is the bug");
+    }
+
+    /// R12. The guides the webview draws must come from the book being
+    /// previewed, not from the default.
+    ///
+    /// Exactly the class of bug `PreviewGeometry` was invented to prevent,
+    /// one step further out: guides drawn from one geometry while the scorer
+    /// enforced another. The mutation is `preview_geometry(&book.spec)` ->
+    /// `preview_geometry(&PrintSpec::pixajoy())`, which every other preview
+    /// test in this file survives.
+    #[test]
+    fn book_layout_carries_the_books_own_spec_not_pixajoy() {
+        let mut b = book();
+        b.spec = odd_spec();
+        let layout = book_layout(7, &b, preview_photos(), &Library { spreads: Vec::new() });
+
+        assert_eq!(layout.geometry.page_w_in, 8.0, "must be the book's page, not 11.197");
+        assert_eq!(layout.geometry.page_h_in, 10.0, "must be the book's page, not 8.894");
+        assert_eq!(layout.geometry, preview_geometry(&odd_spec()));
+        assert_ne!(
+            layout.geometry,
+            preview_geometry(&PrintSpec::pixajoy()),
+            "a book on a non-default spec must not be previewed with Pixajoy's guides"
         );
-        assert!(g.safe_u < g.trim_u, "1/8\" is smaller than 5mm: {} vs {}", g.safe_u, g.trim_u);
+
+        // The editable half of the payload, which the Print size panel opens
+        // with and hands straight back to `SetPrintSpec`. Seeded with Pixajoy
+        // here, the panel would offer to "keep" a geometry the book is not in,
+        // and pressing Apply unchanged would silently reprint the whole book.
+        assert_eq!(layout.spec, odd_spec());
+        assert_ne!(layout.spec, PrintSpec::pixajoy());
     }
 
     // --- serialisation ----------------------------------------------------
@@ -673,7 +825,8 @@ mod tests {
         assert_eq!(value["pages"][1]["placements"][1]["crop"]["x"], 0.2);
         assert_eq!(value["photos"][0]["thumbnailPath"], "/thumbs/hash-a.jpg");
         assert_eq!(value["photos"][2]["thumbnailPath"], serde_json::Value::Null);
-        assert!(value["geometry"]["gutterU"].is_number());
+        assert!(value["geometry"]["left"]["gutter"]["w"].is_number());
+        assert!(value["geometry"]["right"]["trim"]["x"].is_number());
     }
 
     /// The Rust half of the wire pin -- see `tests/fixtures/wire/README.md`

@@ -61,5 +61,17 @@
       "z": 1
     },
     "photo": 12
+  },
+  {
+    "kind": "setPrintSpec",
+    "spec": {
+      "pageWIn": 8.0,
+      "pageHIn": 10.0,
+      "bleedIn": 0.25,
+      "gutterIn": 0.4,
+      "safeMarginIn": 0.05,
+      "minDpi": 150.0,
+      "warnDpi": 220.0
+    }
   }
 ]

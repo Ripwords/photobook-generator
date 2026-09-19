@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { invoke } from "@tauri-apps/api/core";
 import {
   canGenerateAt,
   includeOverflowLabel,
@@ -7,6 +8,7 @@ import {
 } from "~/types/book";
 import type { AnalyzedPhoto, PhotoOverrides } from "~/types/features";
 import type { ReplacedProject } from "~/types/navigation";
+import { sizeLabel, type PrintSpec } from "~/types/printSpec";
 
 const {
   photos = [],
@@ -56,6 +58,27 @@ const {
   deleteProject,
   reset,
 } = useBook(photosRef, foldersRef, overridesRef, runIdRef);
+
+/**
+ * The draft's print size, owned by its job so it survives a restart. `null`
+ * is the default, which is Rust's to name -- see `default_print_spec`.
+ */
+const spec = defineModel<PrintSpec | null>("spec", { default: null });
+const defaultSpec = ref<PrintSpec | null>(null);
+onMounted(async () => {
+  try {
+    defaultSpec.value = await invoke<PrintSpec>("default_print_spec");
+  } catch (e) {
+    console.warn("could not read the default print size", e);
+  }
+});
+const shownSpec = computed(() => spec.value ?? defaultSpec.value);
+const unit = usePrintUnit();
+const printSizeOpen = ref(false);
+function choosePrintSize(next: PrintSpec) {
+  spec.value = next;
+  printSizeOpen.value = false;
+}
 
 /** The draft's name, owned by its job so the sidebar shows the same one. */
 const name = defineModel<string>("name", { required: true });
@@ -157,7 +180,7 @@ watch(recommendation, (next) => {
  */
 async function onGenerate(replace: boolean) {
   if (pages.value === null || overflowMessage.value !== null) return;
-  await generate(name.value, pages.value);
+  await generate(name.value, pages.value, spec.value);
   const projectId = generated.value?.projectId;
   if (projectId === undefined) return;
   if (replace && replacing) await deleteProject(replacing.id);
@@ -185,7 +208,28 @@ async function onGenerate(replace: boolean) {
           class="w-full"
         />
       </UFormField>
+
+      <UFormField label="Print size">
+        <div class="flex items-center justify-between gap-2 rounded-md border border-default px-3 py-1.5">
+          <span class="text-sm tabular-nums">{{ shownSpec ? sizeLabel(shownSpec, unit) : "…" }}</span>
+          <UButton
+            color="neutral"
+            variant="outline"
+            size="xs"
+            :disabled="busy || !shownSpec"
+            @click="printSizeOpen = true"
+          >
+            Change…
+          </UButton>
+        </div>
+      </UFormField>
     </div>
+
+    <UModal v-model:open="printSizeOpen" title="Print size" :ui="{ content: 'max-w-md' }">
+      <template #body>
+        <PrintSizePanel v-if="shownSpec" :spec="shownSpec" @apply="choosePrintSize" />
+      </template>
+    </UModal>
 
     <!--
       The recommendation and its cost, stated before the user commits: a page
@@ -213,7 +257,7 @@ async function onGenerate(replace: boolean) {
         The recommended length is
         <span class="text-default">{{ recommendation.recommendedPages }}</span> pages.
       </template>
-      Every length offered is a real Pixajoy book.
+      Every length offered is a page count Pixajoy sells.
     </p>
     <p v-if="canGenerate && replacing" class="text-xs text-muted">
       Updating replaces the saved book and its export history. Saving as new keeps both.

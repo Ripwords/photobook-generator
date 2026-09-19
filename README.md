@@ -17,9 +17,10 @@
 
 Point PhotobookGen at one or more folders of photos. It analyses every photo on this Mac
 with Apple Vision, drops the utility shots and look-alikes, picks a varied set, and lays it
-out spread by spread on a curated template library sized for Pixajoy's 11 × 8.5" landscape
-book. You adjust the book as it will print, then export one cropped file per photo placement
-plus a `manifest.json`, ready to upload to Pixajoy. The app never talks to Pixajoy itself.
+out spread by spread on a curated template library designed for Pixajoy's 11 × 8.5" landscape
+book. Each book has its own print size, so another printer's page, bleed and margins work too.
+You adjust the book as it will print, then export one cropped file per photo placement plus a
+`manifest.json`, ready to upload to the printer. The app never talks to a printer itself.
 
 A macOS-only desktop app: Tauri 2 (Rust) and Nuxt 4, backed by a Swift sidecar
 (`sidecar/`, SwiftPM package `PhotobookEngine`) that performs the photo analysis and the
@@ -43,7 +44,11 @@ export crops.
   whole book around the locked openings.
 - **Hand editing.** Swap photos, replace one with any other, drag and scroll to crop, and
   move or resize the boxes with snapping to the trim, safe and gutter guides. Every edit that
-  would cut a face, put one in the fold or print below 200 DPI is refused with the reason.
+  would cut a face, put one in the fold or print below the book's lowest print resolution is
+  refused with the reason.
+- **Print size per book.** Page size, bleed, safe margin, fold and resolution limits, in
+  inches or millimetres. New books start at Pixajoy's 11 × 8.5". Changing a laid-out book
+  keeps every layout and edit, and says first what would stop printing well.
 - **Pre-flight export.** Anything that would print badly blocks the export and is listed.
 - **Library.** Covers or a list, search, sort, favourites, rename, a 30-day trash with undo,
   and drafts that keep analysing in the background.
@@ -192,7 +197,8 @@ The contact sheet shows every photo with the ones the book would leave out dimme
 and **−** on a photo to include or exclude it yourself. The bar above the sheet stays pinned
 while you scroll it: **All photos** or **Keepers only**, the keeper count, and the tile
 size. The panel on the
-right is the book itself: name it and pick a length there, and below that are the selection
+right is the book itself: name it, pick a length and, under **Print size**, **Change…** the
+page size (the same panel as in the editor, without the dry run), and below that are the selection
 counts and a key to the marks on the tiles. **Choose different folders** at the top starts
 again from other folders. The app recommends the shortest Pixajoy length that fits the keepers and says
 how many each length would leave out.
@@ -235,9 +241,9 @@ save and you can leave whenever you like through the sidebar.
 The toolbar at the top holds the title, with a pencil to rename the book; **Edit photos**,
 which takes its photo selection back to the contact sheet and re-analyses the book's own
 folders (every photo a cache hit, no new Vision work); **Chat** (⌘J), which shows or hides
-the chat beside the book; and **Export** (⌘E). The bar along the bottom counts the book's
-pages, the photos placed, any blank pages and the photos left out, and says what dragging a
-photo does in the current mode.
+the chat beside the book; and **Export** (⌘E). The bar along the bottom starts with the book's
+print size (for example **11 x 8.5 in**), then counts its pages, the photos placed, any blank
+pages and the photos left out, and says what dragging a photo does in the current mode.
 
 Every opening (page 1, each pair of facing pages, the last page) has four controls on its
 right. Page 1 is shown facing the inside front cover and the last page facing the inside
@@ -271,13 +277,43 @@ gutter guides, the page edge (which prints as bleed) and the other boxes on the 
 cannot leave the page, shrink below 5% of it, or overlap another box, and the photo is
 re-cropped for the new shape under the same rules as everything else. Switch back to **Crop
 and swap** to go back to swapping and cropping. A change that would cut a face, put one in the
-gutter or the safe margin, or print below 200 DPI is refused with the reason, and the book
-stays as it was.
+gutter or the safe margin, or print below the book's lowest print resolution is refused with
+the reason, and the book stays as it was.
+
+**Print size.** Click the size at the left of the bottom bar to open the **Print size** panel
+beside the book. It holds what a printer publishes: the **Book size** (width and height of
+the finished page after trimming), the **Bleed** on the three outer edges, the **Safe margin**
+inside the trim and the **Fold** strip measured in from the binding, and the **Lowest** and
+**Target** print resolution in DPI. Below the lowest, export stops; below the target, it
+warns. **in** and **mm** at the top switch every length between inches and millimetres; that
+is a display choice only and never changes the book. At the top of the panel, a drawing of
+one spread labels the trimmed width and height and shades the bleed (red), safe margin (blue)
+and fold (amber) in the same colours as the editor's guides, with each value in the legend.
+The band for the field you are editing lights up. Thin margins are drawn wider than scale so
+they stay visible, and the drawing says when it has done that; the numbers are exact. While
+a field holds something the app cannot build with, the drawing dims and keeps the last valid
+size. While you type, the book behind the
+panel redraws its page shape and trim, safe and fold guides at the new numbers, and the panel
+says what would fail at that size, for example "At this size, 3 problems would block the
+export", with the list. Anything the app cannot build with (a blank field, a margin that
+leaves no room for photos, a target resolution at or under the lowest) is refused with the
+reason and **Change print size** stays disabled. When the dry run finds problems the button
+reads **Change print size anyway**: the change is always allowed, and export will block
+until they are fixed. Applying keeps every layout, lock, swap and moved box; only the crops
+are recomputed when the page's shape changed, including crops you adjusted by hand.
+**Shuffle** or **Regenerate** re-lay openings against the new size if you want that.
+**Reset to Pixajoy 11 x 8.5** appears once the numbers differ from the default.
+
+The built-in layouts were drawn for a landscape page. A portrait or square size is allowed,
+and the panel says so: the layouts still fit but were not composed for that shape. A size is
+set per book. A new book starts at Pixajoy's size, not at the last book's; set it on the
+draft screen under **Print size** before generating, or here afterwards. Starting new books
+from the last book's size is a possible later change, not an oversight.
 
 **Export** opens a sheet from the right. Choose an output folder and export. Pre-flight
-runs first; anything that would print badly blocks the export and is listed in the sheet. The output is
-one cropped file per photo placement plus a `manifest.json` saying what went where, ready to
-upload to Pixajoy.
+runs first, at the book's print size; anything that would print badly blocks the export and
+is listed in the sheet. The output is one cropped file per photo placement plus a
+`manifest.json` saying what went where, ready to upload to the printer.
 
 ## Development
 

@@ -6,7 +6,6 @@ import {
   cropMoved,
   cropStyle,
   cropZoomed,
-  gutterRect,
   leftOutPhotos,
   nextSwapStep,
   openingFor,
@@ -17,7 +16,6 @@ import {
   rectStyle,
   refusalText,
   replaceCandidates,
-  safeRect,
   pageGuides,
   setCropEdit,
   setSlotEdit,
@@ -27,7 +25,6 @@ import {
   spreadTemplates,
   templateLabel,
   toSpreads,
-  trimRect,
   type BookEdit,
   type BookLayout,
   type PreviewGeometry,
@@ -74,6 +71,36 @@ describe("the wire fixture", () => {
     expect(layout.pages[2]?.templateId).toBe("03-hero-left-text-right");
     expect(layout.pages[2]?.blank).toBe(true);
     expect(layout.pages[2]?.placements).toHaveLength(0);
+  });
+
+  /**
+   * T24. The spec and the guides are two different kinds of number on one
+   * payload, and the failure this guards is reading the wrong one: the panel
+   * editing a normalised inset, or the preview drawing a raw inch value.
+   *
+   * So it asserts both halves and the arithmetic between them. The left
+   * trim's x is the bleed as a fraction of the page width, which is a
+   * relation neither side can satisfy by accident -- dropping `spec` yields
+   * `undefined`, and swapping the two structs' contents fails the ratio.
+   */
+  it("carries the book's own spec in inches alongside the guides it implies", () => {
+    expect(layout.spec).toEqual({
+      pageWIn: 11.197,
+      pageHIn: 8.894,
+      bleedIn: 0.197,
+      gutterIn: 0.197,
+      safeMarginIn: 0.125,
+      minDpi: 200,
+      warnDpi: 300,
+    });
+
+    const { pageWIn, bleedIn, gutterIn, safeMarginIn } = layout.spec;
+    expect(geometry.left.trim.x).toBeCloseTo(bleedIn / pageWIn, 15);
+    expect(geometry.left.gutter.w).toBeCloseTo(gutterIn / pageWIn, 15);
+    // The safe margin sits INSIDE the trim, so its distance from the page
+    // edge is bleed plus margin. A Rust-side "fix" that drops either term
+    // moves every safe guide and fails here.
+    expect(geometry.left.safe.x).toBeCloseTo((bleedIn + safeMarginIn) / pageWIn, 15);
   });
 
   it("carries an off-centre crop that is not the full frame", () => {
@@ -308,8 +335,9 @@ describe("pageSide", () => {
     expect(last?.left?.number).toBe(5);
     expect(pageSide(last?.left ?? null, "left")).toBe("right");
     // And the guides that follow from it are the RIGHT page's.
-    expect(gutterRect(geometry, pageSide(last?.left ?? null, "left")).x).toBeCloseTo(0, 12);
-    expect(trimRect(geometry, pageSide(last?.left ?? null, "left")).x).toBeCloseTo(0, 12);
+    const guides = geometry[pageSide(last?.left ?? null, "left")];
+    expect(guides.gutter.x).toBeCloseTo(0, 12);
+    expect(guides.trim.x).toBeCloseTo(0, 12);
   });
 });
 
@@ -341,24 +369,27 @@ describe("spreadTemplates", () => {
 
 describe("the guides", () => {
   /**
-   * The named regression: **a guide drawn at the wrong place.** These mirror
-   * `geometry::in_trim`, `in_safe_margin` and `clear_of_gutter` exactly, using
-   * the constants the engine itself shipped on the wire.
+   * The named regression: **a guide drawn at the wrong place.** Rust derives
+   * the rects `geometry::in_trim`, `in_safe_margin` and `clear_of_gutter`
+   * test against and ships them per side; these pin that what arrives is
+   * sided correctly, so the preview can draw them without re-deriving.
    */
   it("insets the trim on the outer edge but never at the fold", () => {
-    const left = trimRect(geometry, "left");
+    const left = geometry.left.trim;
+    const trimU = 0.197 / 11.197;
+    const trimV = 0.197 / 8.894;
     // A LEFT page's outer edge is x=0; its fold edge is x=1.
-    expect(left.x).toBeCloseTo(geometry.trimU, 12);
+    expect(left.x).toBeCloseTo(trimU, 12);
     expect(left.x + left.w).toBeCloseTo(1, 12);
 
-    const right = trimRect(geometry, "right");
+    const right = geometry.right.trim;
     // A RIGHT page is the mirror: fold at x=0, outer edge at x=1.
     expect(right.x).toBeCloseTo(0, 12);
-    expect(right.x + right.w).toBeCloseTo(1 - geometry.trimU, 12);
+    expect(right.x + right.w).toBeCloseTo(1 - trimU, 12);
 
     for (const rect of [left, right]) {
-      expect(rect.y).toBeCloseTo(geometry.trimV, 12);
-      expect(rect.y + rect.h).toBeCloseTo(1 - geometry.trimV, 12);
+      expect(rect.y).toBeCloseTo(trimV, 12);
+      expect(rect.y + rect.h).toBeCloseTo(1 - trimV, 12);
     }
   });
 
@@ -369,19 +400,19 @@ describe("the guides", () => {
    * other and look entirely plausible doing it.
    */
   it("insets the safe margin strictly inside the trim, except at the fold", () => {
-    const trim = trimRect(geometry, "left");
-    const safe = safeRect(geometry, "left");
+    const trim = geometry.left.trim;
+    const safe = geometry.left.safe;
 
     expect(safe.x).toBeGreaterThan(trim.x);
     expect(safe.y).toBeGreaterThan(trim.y);
     expect(safe.y + safe.h).toBeLessThan(trim.y + trim.h);
     // The fold edge is NOT inset a second time -- the gutter band governs it.
     expect(safe.x + safe.w).toBeCloseTo(trim.x + trim.w, 12);
-    expect(safe.x).toBeCloseTo(geometry.trimU + geometry.safeU, 12);
+    expect(safe.x).toBeCloseTo((0.197 + 0.125) / 11.197, 12);
 
-    const rightSafe = safeRect(geometry, "right");
+    const rightSafe = geometry.right.safe;
     expect(rightSafe.x).toBeCloseTo(0, 12);
-    expect(rightSafe.x + rightSafe.w).toBeCloseTo(1 - geometry.trimU - geometry.safeU, 12);
+    expect(rightSafe.x + rightSafe.w).toBeCloseTo(1 - (0.197 + 0.125) / 11.197, 12);
   });
 
   /**
@@ -390,13 +421,14 @@ describe("the guides", () => {
    * it on the outer edge is the mistake this pins.
    */
   it("puts the gutter band against the fold on both pages, never the outer edge", () => {
-    const left = gutterRect(geometry, "left");
-    expect(left.x).toBeCloseTo(1 - geometry.gutterU, 12);
+    const gutterU = 0.197 / 11.197;
+    const left = geometry.left.gutter;
+    expect(left.x).toBeCloseTo(1 - gutterU, 12);
     expect(left.x + left.w).toBeCloseTo(1, 12);
 
-    const right = gutterRect(geometry, "right");
+    const right = geometry.right.gutter;
     expect(right.x).toBeCloseTo(0, 12);
-    expect(right.x + right.w).toBeCloseTo(geometry.gutterU, 12);
+    expect(right.x + right.w).toBeCloseTo(gutterU, 12);
 
     // Full page height on both: the band is a strip, not a box.
     for (const rect of [left, right]) {
@@ -407,13 +439,45 @@ describe("the guides", () => {
 
   it("uses the engine's real Pixajoy figures, not round numbers", () => {
     // 5mm bleed on an 11.197" page, and Pixajoy's published 1/8" safe margin.
-    expect(geometry.trimU).toBeCloseTo(0.197 / 11.197, 12);
-    expect(geometry.trimV).toBeCloseTo(0.197 / 8.894, 12);
-    expect(geometry.safeU).toBeCloseTo(0.125 / 11.197, 12);
-    expect(geometry.safeV).toBeCloseTo(0.125 / 8.894, 12);
-    expect(geometry.gutterU).toBeCloseTo(0.197 / 11.197, 12);
+    expect(geometry.left.safe.y).toBeCloseTo((0.197 + 0.125) / 8.894, 12);
     expect(geometry.pageWIn).toBe(11.197);
     expect(geometry.pageHIn).toBe(8.894);
+  });
+
+  /**
+   * T23. The guides are drawn from whatever the payload carries, never
+   * rebuilt from a constant. A book printed at a different size ships
+   * different rects, and every consumer must follow them. `odd` is an 8 x 10
+   * portrait page (bleed 0.25, fold 0.4, safe 0.05) so no number coincides
+   * with Pixajoy's.
+   */
+  it("draws the guides the payload carries, not Pixajoy's", () => {
+    const odd: PreviewGeometry = {
+      pageWIn: 8,
+      pageHIn: 10,
+      left: {
+        trim: { x: 0.25 / 8, y: 0.025, w: 1 - 0.25 / 8, h: 0.95 },
+        safe: { x: 0.3 / 8, y: 0.03, w: 1 - 0.3 / 8, h: 0.94 },
+        gutter: { x: 1 - 0.4 / 8, y: 0, w: 0.4 / 8, h: 1 },
+      },
+      right: {
+        trim: { x: 0, y: 0.025, w: 1 - 0.25 / 8, h: 0.95 },
+        safe: { x: 0, y: 0.03, w: 1 - 0.3 / 8, h: 0.94 },
+        gutter: { x: 0, y: 0, w: 0.4 / 8, h: 1 },
+      },
+    };
+
+    const g = pageGuides(odd, "left", []);
+    expect(g.xs.some((x) => Math.abs(x - 0.25 / 8) < 1e-9)).toBe(true);
+    expect(g.xs.some((x) => Math.abs(x - (1 - 0.4 / 8)) < 1e-9)).toBe(true);
+    expect(g.ys.some((y) => Math.abs(y - 0.03) < 1e-9)).toBe(true);
+    // Nothing of Pixajoy's leaks through.
+    expect(g.xs.some((x) => Math.abs(x - 0.197 / 11.197) < 1e-6)).toBe(false);
+
+    const r = pageGuides(odd, "right", []);
+    expect(r.xs.some((x) => Math.abs(x - 0.4 / 8) < 1e-9)).toBe(true);
+    expect(r.xs.some((x) => Math.abs(x - (1 - 0.25 / 8)) < 1e-9)).toBe(true);
+    expect(rectStyle(odd.left.gutter)).not.toEqual(rectStyle(geometry.left.gutter));
   });
 
   it("renders a guide rect as page percentages", () => {
@@ -601,6 +665,18 @@ describe("the edit wire", () => {
       { kind: "setCrop", placement: { page: 3, z: 2 }, x: 0.125, y: 0, w: 0.75 },
       { kind: "setSlot", placement: { page: 3, z: 2 }, rect: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 } },
       { kind: "replacePhoto", placement: { page: 3, z: 1 }, photo: 12 },
+      {
+        kind: "setPrintSpec",
+        spec: {
+          pageWIn: 8,
+          pageHIn: 10,
+          bleedIn: 0.25,
+          gutterIn: 0.4,
+          safeMarginIn: 0.05,
+          minDpi: 150,
+          warnDpi: 220,
+        },
+      },
     ];
     expect(fixture).toEqual(typed);
   });
@@ -710,8 +786,8 @@ describe("slot editing", () => {
     const g = pageGuides(geometry, "left", [{ x: 0.1, y: 0.3, w: 0.2, h: 0.2 }]);
     expect(g.xs).toContain(0);
     expect(g.xs).toContain(1);
-    expect(g.xs.some((x) => Math.abs(x - geometry.trimU) < 1e-6)).toBe(true);
-    expect(g.xs.some((x) => Math.abs(x - (1 - geometry.gutterU)) < 1e-6)).toBe(true);
+    expect(g.xs.some((x) => Math.abs(x - geometry.left.trim.x) < 1e-6)).toBe(true);
+    expect(g.xs.some((x) => Math.abs(x - geometry.left.gutter.x) < 1e-6)).toBe(true);
     expect(g.xs).toContain(0.1);
     expect(g.xs.some((x) => Math.abs(x - 0.3) < 1e-6)).toBe(true);
     expect(g.ys).toContain(0.3);

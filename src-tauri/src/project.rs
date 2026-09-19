@@ -152,6 +152,17 @@ mod tests {
     use super::*;
     use crate::book::pace::{Page, Placement};
     use crate::geometry::{Rect, Side};
+    use crate::print_spec::pixajoy_spec;
+
+    fn empty_book() -> Book {
+        Book {
+            spec: pixajoy_spec(),
+            controls: Default::default(),
+            seed: 0,
+            dropped: 0,
+            pages: vec![],
+        }
+    }
 
     fn placement(photo_index: usize, z: u32) -> Placement {
         Placement {
@@ -165,6 +176,7 @@ mod tests {
     #[test]
     fn book_counts_sums_placements_across_every_page_not_just_the_first() {
         let book = Book {
+            spec: pixajoy_spec(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
@@ -199,6 +211,7 @@ mod tests {
             placements,
         };
         let book = Book {
+            spec: pixajoy_spec(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
@@ -213,14 +226,13 @@ mod tests {
         assert_eq!(cover_photo_indices(&book, 4), vec![3, 7, 5, 9]);
         assert_eq!(cover_photo_indices(&book, 2), vec![3, 7]);
         assert_eq!(
-            cover_photo_indices(&Book { controls: Default::default(), seed: 0, dropped: 0, pages: vec![] }, 4),
+            cover_photo_indices(&empty_book(), 4),
             Vec::<usize>::new()
         );
     }
 
     #[test]
     fn book_counts_of_an_empty_book_is_zero_and_zero() {
-        let book = Book { controls: Default::default(), seed: 0, dropped: 0, pages: vec![] };
-        assert_eq!(book_counts(&book), (0, 0));
+        assert_eq!(book_counts(&empty_book()), (0, 0));
     }
 }

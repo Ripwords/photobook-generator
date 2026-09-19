@@ -16,6 +16,7 @@ use crate::book::edit::OpeningControls;
 use crate::book::pack::{pack, Buildable, Capacity, Group, IncludeOverflow, SlotKind};
 use crate::book::score::{best_spread, rejects, slot_aspect};
 use crate::geometry::{Rect, Side};
+use crate::print_spec::PrintSpec;
 use crate::templates::{EdgeTreatment, Library, PageLayout, SpreadTemplate, Weights};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -69,6 +70,20 @@ pub struct Book {
     /// existed loads unchanged and the golden did not move.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub controls: BTreeMap<usize, OpeningControls>,
+    /// The print geometry this book was laid out under.
+    ///
+    /// Rides inside `projects.book_json` rather than sitting in a column of
+    /// its own, so "book A laid out under book B's spec" is unrepresentable
+    /// rather than merely untested. A book saved before the spec was
+    /// configurable has no `spec` key and loads as Pixajoy, which is exactly
+    /// the geometry it WAS laid out under -- correct by construction rather
+    /// than by a migration being right.
+    ///
+    /// Deliberately no `skip_serializing_if`: every book saved from now on
+    /// states its geometry explicitly, so a later change to `pixajoy()`
+    /// cannot retroactively reinterpret an old book.
+    #[serde(default = "PrintSpec::pixajoy")]
+    pub spec: PrintSpec,
 }
 
 /// Deterministic tie-breaker. The ONLY stochastic choice in the engine is
@@ -92,7 +107,12 @@ pub(crate) fn tie_break(seed: u64, n: usize) -> usize {
 /// Builds the placements for one page layout given the photos assigned to it.
 /// Slot order is z order: 1-based, distinct, and the order the boxes are
 /// stacked in the editor.
-pub(crate) fn place(layout: &PageLayout, photo_indices: &[usize], photos: &[Photo]) -> Vec<Placement> {
+pub(crate) fn place(
+    spec: &PrintSpec,
+    layout: &PageLayout,
+    photo_indices: &[usize],
+    photos: &[Photo],
+) -> Vec<Placement> {
     layout
         .slots
         .iter()
@@ -101,7 +121,7 @@ pub(crate) fn place(layout: &PageLayout, photo_indices: &[usize], photos: &[Phot
         .map(|(i, (slot, &photo_index))| Placement {
             photo_index,
             slot_rect: slot.rect,
-            crop: choose_crop(&photos[photo_index], slot_aspect(slot)),
+            crop: choose_crop(&photos[photo_index], slot_aspect(spec, slot)),
             z: i as u32 + 1,
         })
         .collect()
@@ -136,13 +156,18 @@ fn half_pool(lib: &Library) -> Vec<(&str, &PageLayout)> {
 /// Photos are zipped to slots in group order rather than permuted. A half has
 /// at most a few slots and no spread-level terms to trade off, so the
 /// permutation search `best_spread` runs is not worth its cost here.
-pub(crate) fn single_fit(layout: &PageLayout, indices: &[usize], photos: &[Photo]) -> Option<f64> {
+pub(crate) fn single_fit(
+    spec: &PrintSpec,
+    layout: &PageLayout,
+    indices: &[usize],
+    photos: &[Photo],
+) -> Option<f64> {
     let mut fit = 0.0;
     for (slot, &pi) in layout.slots.iter().zip(indices) {
         let photo = &photos[pi];
-        let target = slot_aspect(slot);
+        let target = slot_aspect(spec, slot);
         let crop = choose_crop(photo, target);
-        if rejects(photo, &crop, slot, layout.side).is_some() {
+        if rejects(spec, photo, &crop, slot, layout.side).is_some() {
             return None;
         }
         let actual = photo.aspect();
@@ -175,6 +200,7 @@ pub(crate) fn single_fit(layout: &PageLayout, indices: &[usize], photos: &[Photo
 /// in the same library was perfectly printable. A blank page is a legitimate
 /// pacing device but it must be the last resort, not the first failure.
 fn best_single<'a>(
+    spec: &PrintSpec,
     pool: &[(&'a str, &'a PageLayout)],
     photos: &[Photo],
     group: &Group,
@@ -194,7 +220,9 @@ fn best_single<'a>(
         let mut scored: Vec<(f64, &str, &PageLayout)> = pool
             .iter()
             .filter(|(_, l)| fits(l) && l.slots.len() == capacity)
-            .filter_map(|(id, l)| single_fit(l, &indices, photos).map(|fit| (fit, *id, *l)))
+            .filter_map(|(id, l)| {
+                single_fit(spec, l, &indices, photos).map(|fit| (fit, *id, *l))
+            })
             .collect();
         if scored.is_empty() {
             continue; // nothing at this size survived; try a smaller half
@@ -237,6 +265,7 @@ fn strongest(group: &Group, photos: &[Photo], capacity: usize) -> Vec<usize> {
 
 /// Builds one single page, blank when nothing can be laid out on it.
 fn single_page(
+    spec: &PrintSpec,
     side: Side,
     group: Option<&Group>,
     pool: &[(&str, &PageLayout)],
@@ -244,7 +273,7 @@ fn single_page(
     seed: u64,
 ) -> Page {
     let Some((id, layout, indices)) =
-        group.and_then(|g| best_single(pool, photos, g, side, seed))
+        group.and_then(|g| best_single(spec, pool, photos, g, side, seed))
     else {
         return blank_page(side);
     };
@@ -252,13 +281,14 @@ fn single_page(
         number: 0,
         side,
         template_id: half_id(id, side),
-        placements: place(layout, &indices, photos),
+        placements: place(spec, layout, &indices, photos),
     }
 }
 
 /// The two pages of one spread, or `None` when no eligible template survives
 /// the hard constraints.
 fn spread_pages<'a>(
+    spec: &PrintSpec,
     group: &Group,
     photos: &[Photo],
     lib: &'a Library,
@@ -268,14 +298,15 @@ fn spread_pages<'a>(
 ) -> Option<(&'a SpreadTemplate, [Page; 2])> {
     let refs: Vec<&Photo> = group.photos.iter().map(|&i| &photos[i]).collect();
     let eligible = lib.spreads_with(group.photos.len());
-    let (template, assignment, _) = best_spread(&eligible, &refs, previous, w, seed)?;
-    Some((template, rebuild(template, &assignment, &group.photos, photos)))
+    let (template, assignment, _) = best_spread(spec, &eligible, &refs, previous, w, seed)?;
+    Some((template, rebuild(spec, template, &assignment, &group.photos, photos)))
 }
 
 /// Lays `indices` (ordered as `assignment` indexes them) into a template's
 /// two halves. Shared by assembly and repacing so a swapped template can
 /// never keep the rects of the one it replaced.
 pub(crate) fn rebuild(
+    spec: &PrintSpec,
     template: &SpreadTemplate,
     assignment: &[usize],
     indices: &[usize],
@@ -289,13 +320,13 @@ pub(crate) fn rebuild(
             number: 0,
             side: Side::Left,
             template_id: template.id.clone(),
-            placements: place(&template.left, &left_idx, photos),
+            placements: place(spec, &template.left, &left_idx, photos),
         },
         Page {
             number: 0,
             side: Side::Right,
             template_id: template.id.clone(),
-            placements: place(&template.right, &right_idx, photos),
+            placements: place(spec, &template.right, &right_idx, photos),
         },
     ]
 }
@@ -349,6 +380,7 @@ impl std::fmt::Display for BookError {
 /// and the post-condition at the bottom of this function refuses to RETURN a
 /// book that lost one by any other route.
 pub fn assemble(
+    spec: &PrintSpec,
     photos: &[Photo],
     pages: u32,
     lib: &Library,
@@ -407,12 +439,15 @@ pub fn assemble(
         groups.iter().filter(|g| g.slot == SlotKind::Spread).collect();
 
     // Page 1: a single, facing the inside front cover.
-    out.push(single_page(Side::Right, opening, &pool, photos, seed));
+    out.push(single_page(spec, Side::Right, opening, &pool, photos, seed));
 
     // The middle: true spreads, two pages each.
     let mut previous: Option<String> = None;
     for s in 0..spread_count {
-        match middle.get(s).and_then(|g| spread_pages(g, photos, lib, w, previous.as_deref(), seed)) {
+        match middle
+            .get(s)
+            .and_then(|g| spread_pages(spec, g, photos, lib, w, previous.as_deref(), seed))
+        {
             Some((template, [left, right])) => {
                 previous = Some(template.id.clone());
                 out.push(left);
@@ -428,7 +463,7 @@ pub fn assemble(
     }
 
     // The final page: a single, facing the inside back cover.
-    out.push(single_page(Side::Left, closing, &pool, photos, seed));
+    out.push(single_page(spec, Side::Left, closing, &pool, photos, seed));
 
     // Odd or degenerate page counts are not real SKUs, but the promise is
     // exactly `pages` pages, so honour it either way.
@@ -444,7 +479,8 @@ pub fn assemble(
         page.number = i as u32 + 1;
     }
 
-    let mut book = Book { pages: out, seed, dropped: 0, controls: BTreeMap::new() };
+    let mut book =
+        Book { pages: out, seed, dropped: 0, controls: BTreeMap::new(), spec: *spec };
     repace(&mut book, lib, photos, w, seed);
 
     // Counted from what actually survived into the book, after repacing, so
@@ -528,6 +564,10 @@ fn spread_template<'a>(book: &Book, lib: &'a Library, s: usize) -> Option<&'a Sp
 /// which is unrenderable -- and it would skip the hard constraints, which the
 /// new template's slots have not been checked against.
 pub fn repace(book: &mut Book, lib: &Library, photos: &[Photo], w: &Weights, seed: u64) {
+    // Read off the book, never passed in: a second parameter here is a
+    // second authority that can disagree with what the book was laid out
+    // under.
+    let spec = &book.spec;
     let spread_count = book.pages.len().saturating_sub(2) / 2;
 
     for s in 2..spread_count {
@@ -569,12 +609,12 @@ pub fn repace(book: &mut Book, lib: &Library, photos: &[Photo], w: &Weights, see
         let refs: Vec<&Photo> = indices.iter().map(|&i| &photos[i]).collect();
         let previous = a.id.as_str();
         let Some((template, assignment, _)) =
-            best_spread(&candidates, &refs, Some(previous), w, seed)
+            best_spread(spec, &candidates, &refs, Some(previous), w, seed)
         else {
             continue;
         };
 
-        let [left, right] = rebuild(template, &assignment, &indices, photos);
+        let [left, right] = rebuild(spec, template, &assignment, &indices, photos);
         let numbers = (book.pages[1 + 2 * middle].number, book.pages[2 + 2 * middle].number);
         book.pages[1 + 2 * middle] = Page { number: numbers.0, ..left };
         book.pages[2 + 2 * middle] = Page { number: numbers.1, ..right };
@@ -584,6 +624,7 @@ pub fn repace(book: &mut Book, lib: &Library, photos: &[Photo], w: &Weights, see
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::print_spec::pixajoy_spec;
     use crate::book::cull::Override;
     use crate::book::cull::{Face, PaletteColor};
 
@@ -923,14 +964,14 @@ mod tests {
     fn pace_never_places_an_excluded_photo() {
         let lib = fixture_library();
         let photos = fixture_photos(24);
-        let before = assemble(&photos, 20, &lib, &Weights::default(), 42, &Overrides::new())
+        let before = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 42, &Overrides::new())
             .expect("no overrides");
         assert!(
             placed_paths(&before, &photos).contains(&"/photos/p005.jpg".to_string()),
             "fixture: this photo must be in the book without an override, or the test is inert"
         );
 
-        let after = assemble(
+        let after = assemble(&pixajoy_spec(),
             &photos,
             20,
             &lib,
@@ -963,7 +1004,7 @@ mod tests {
             photos[i].near_dup_cluster = 99;
             photos[i].sharpness_pct = sharp;
         }
-        let before = assemble(&photos, 20, &lib, &Weights::default(), 42, &Overrides::new())
+        let before = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 42, &Overrides::new())
             .expect("no overrides");
         let was = placed_paths(&before, &photos);
         assert!(was.contains(&"/photos/p003.jpg".to_string()), "fixture: 3 wins the burst");
@@ -972,7 +1013,7 @@ mod tests {
             "fixture: 5 must lose the burst without an override, or the test is inert"
         );
 
-        let after = assemble(
+        let after = assemble(&pixajoy_spec(),
             &photos,
             20,
             &lib,
@@ -998,7 +1039,7 @@ mod tests {
             photos[i].sharpness_pct = sharp;
         }
 
-        let book = assemble(
+        let book = assemble(&pixajoy_spec(),
             &photos,
             20,
             &lib,
@@ -1027,7 +1068,7 @@ mod tests {
         let all: Overrides =
             photos.iter().map(|p| (p.hash.clone(), Override::Include)).collect();
 
-        let err = assemble(&photos, 20, &lib, &Weights::default(), 42, &all)
+        let err = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 42, &all)
             .expect_err("every photo asked for, more than the book holds");
 
         assert_eq!(
@@ -1058,7 +1099,7 @@ mod tests {
         photos[5].width = 300;
         photos[5].height = 225;
 
-        let err = assemble(
+        let err = assemble(&pixajoy_spec(),
             &photos,
             20,
             &lib,
@@ -1094,7 +1135,7 @@ mod tests {
         photos[5].is_utility = false;
         photos[5].near_dup_cluster = 5000;
 
-        let before = assemble(&photos, 20, &lib, &Weights::default(), 42, &Overrides::new())
+        let before = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 42, &Overrides::new())
             .expect("no overrides");
         assert!(
             before.dropped > 0,
@@ -1105,7 +1146,7 @@ mod tests {
             "fixture: the trim must drop this photo without an override, or the test is inert"
         );
 
-        let after = assemble(
+        let after = assemble(&pixajoy_spec(),
             &photos,
             20,
             &lib,
@@ -1138,7 +1179,7 @@ mod tests {
             photos[i].height = 225;
         }
 
-        let err = assemble(
+        let err = assemble(&pixajoy_spec(),
             &photos,
             20,
             &lib,
@@ -1163,8 +1204,8 @@ mod tests {
     fn pace_with_no_overrides_assembles_exactly_the_same_book() {
         let lib = fixture_library();
         let photos = fixture_photos(30);
-        let a = assemble(&photos, 20, &lib, &Weights::default(), 1234, &Overrides::new()).unwrap();
-        let b = assemble(&photos, 20, &lib, &Weights::default(), 1234, &Overrides::default()).unwrap();
+        let a = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 1234, &Overrides::new()).unwrap();
+        let b = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 1234, &Overrides::default()).unwrap();
         assert_eq!(a, b);
         assert!(a.pages.iter().any(|p| !p.placements.is_empty()), "sanity: not an empty book");
     }
@@ -1175,7 +1216,7 @@ mod tests {
     fn pace_assembles_the_correct_page_count_for_twenty_pages() {
         let lib = fixture_library();
         let photos = fixture_photos(24);
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 42, &Overrides::new()).expect("the fixture must place every included photo");
+        let book = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 42, &Overrides::new()).expect("the fixture must place every included photo");
         assert_eq!(book.pages.len(), 20, "2 singles + 9 spreads = 20 pages");
         assert_eq!(book.pages[0].side, Side::Right, "page 1 faces the inside front cover");
         assert_eq!(
@@ -1188,7 +1229,7 @@ mod tests {
     #[test]
     fn pace_numbers_pages_consecutively_from_one() {
         let lib = fixture_library();
-        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 42, &Overrides::new()).expect("the fixture must place every included photo");
+        let book = assemble(&pixajoy_spec(), &fixture_photos(24), 20, &lib, &Weights::default(), 42, &Overrides::new()).expect("the fixture must place every included photo");
         let numbers: Vec<u32> = book.pages.iter().map(|p| p.number).collect();
         assert_eq!(numbers, (1..=20).collect::<Vec<u32>>());
     }
@@ -1201,7 +1242,7 @@ mod tests {
     #[test]
     fn pace_alternates_sides_so_odd_pages_are_right_hand_pages() {
         let lib = fixture_library();
-        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 42, &Overrides::new()).expect("the fixture must place every included photo");
+        let book = assemble(&pixajoy_spec(), &fixture_photos(24), 20, &lib, &Weights::default(), 42, &Overrides::new()).expect("the fixture must place every included photo");
         for page in &book.pages {
             let expected = if page.number % 2 == 1 { Side::Right } else { Side::Left };
             assert_eq!(page.side, expected, "page {} sits on the wrong side", page.number);
@@ -1220,7 +1261,7 @@ mod tests {
             p.width = 300;
             p.height = 225;
         }
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 42, &Overrides::new()).expect("the fixture must place every included photo");
+        let book = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 42, &Overrides::new()).expect("the fixture must place every included photo");
         assert_eq!(book.pages.len(), 20, "a 19-page book cannot be uploaded as a 20-page SKU");
         assert!(
             book.pages.iter().all(|p| p.placements.is_empty()),
@@ -1249,7 +1290,7 @@ mod tests {
             p.width = 300;
             p.height = 225;
         }
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
+        let book = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         assert_eq!(book.pages.len(), 20);
 
         let blanks: Vec<u32> = book
@@ -1263,7 +1304,7 @@ mod tests {
             !book.pages.last().unwrap().placements.is_empty(),
             "the closing single page was pushed out of the last position"
         );
-        let intact = assemble(&fixture_photos(36), 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
+        let intact = assemble(&pixajoy_spec(), &fixture_photos(36), 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         assert!(
             intact.pages.iter().all(|p| p.template_id != BLANK_TEMPLATE_ID),
             "fixture check: 36 photos fill all 11 slots, so only the failure blanks"
@@ -1282,7 +1323,7 @@ mod tests {
         // cannot fill every slot and the final group it cuts is a middle
         // spread, not the closing single.
         let photos = fixture_photos(4);
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 7, &Overrides::new())
+        let book = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 7, &Overrides::new())
             .expect("the fixture must place every included photo");
 
         let last = book.pages.last().expect("a 20-page book has a last page");
@@ -1301,8 +1342,8 @@ mod tests {
     fn pace_is_deterministic_for_the_same_seed() {
         let lib = fixture_library();
         let photos = fixture_photos(24);
-        let a = assemble(&photos, 20, &lib, &Weights::default(), 7, &Overrides::new()).expect("the fixture must place every included photo");
-        let b = assemble(&photos, 20, &lib, &Weights::default(), 7, &Overrides::new()).expect("the fixture must place every included photo");
+        let a = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 7, &Overrides::new()).expect("the fixture must place every included photo");
+        let b = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 7, &Overrides::new()).expect("the fixture must place every included photo");
         assert_eq!(a.pages, b.pages);
     }
 
@@ -1317,7 +1358,7 @@ mod tests {
         let photos = fixture_photos(24);
         let openings: BTreeSet<String> = (0..16)
             .map(|seed| {
-                assemble(&photos, 20, &lib, &Weights::default(), seed, &Overrides::new()).expect("the fixture must place every included photo").pages[0].template_id.clone()
+                assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), seed, &Overrides::new()).expect("the fixture must place every included photo").pages[0].template_id.clone()
             })
             .collect();
         assert!(
@@ -1347,7 +1388,7 @@ mod tests {
     #[test]
     fn pace_places_every_photo_within_its_page() {
         let lib = fixture_library();
-        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
+        let book = assemble(&pixajoy_spec(), &fixture_photos(24), 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         for page in &book.pages {
             for pl in &page.placements {
                 assert!(
@@ -1383,7 +1424,7 @@ mod tests {
     #[test]
     fn pace_places_into_slots_of_the_layout_the_page_names() {
         let lib = fixture_library();
-        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
+        let book = assemble(&pixajoy_spec(), &fixture_photos(24), 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         for page in &book.pages {
             if page.template_id == BLANK_TEMPLATE_ID {
                 assert!(page.placements.is_empty(), "a blank page holds nothing");
@@ -1413,7 +1454,7 @@ mod tests {
     #[test]
     fn pace_fills_every_slot_of_a_spread_template() {
         let lib = fixture_library();
-        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
+        let book = assemble(&pixajoy_spec(), &fixture_photos(24), 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         for page in &book.pages {
             if page.template_id == BLANK_TEMPLATE_ID || page.template_id.contains(':') {
                 continue;
@@ -1432,7 +1473,7 @@ mod tests {
     #[test]
     fn pace_assigns_distinct_z_order_within_a_page() {
         let lib = fixture_library();
-        let book = assemble(&fixture_photos(24), 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
+        let book = assemble(&pixajoy_spec(), &fixture_photos(24), 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         for page in &book.pages {
             let zs: BTreeSet<u32> = page.placements.iter().map(|p| p.z).collect();
             assert_eq!(zs.len(), page.placements.len(), "z values must be distinct");
@@ -1488,7 +1529,7 @@ mod tests {
 
         // Three photos onto a half that holds at most two.
         let group = Group { photos: vec![0, 1, 2], event_cluster: 0, slot: SlotKind::Single(Side::Right) };
-        let page = single_page(Side::Right, Some(&group), &half_pool(&lib), &photos, 5);
+        let page = single_page(&pixajoy_spec(), Side::Right, Some(&group), &half_pool(&lib), &photos, 5);
         assert_ne!(page.template_id, BLANK_TEMPLATE_ID, "a blank page is the wrong answer here");
         assert_eq!(
             page.placements.len(),
@@ -1535,7 +1576,7 @@ mod tests {
     fn pace_falls_back_to_a_smaller_half_when_the_largest_is_rejected() {
         let lib = fixture_library();
         let photos = vec![split_face_photo(0), split_face_photo(1)];
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 3, &Overrides::new()).expect("the fixture must place every included photo");
+        let book = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 3, &Overrides::new()).expect("the fixture must place every included photo");
 
         // Precondition: the group is two photos and the largest right-hand
         // half holds exactly two, so the fixed-capacity version stops there.
@@ -1601,7 +1642,7 @@ mod tests {
     fn pace_placement_indices_name_photos_that_survived_culling() {
         let lib = fixture_library();
         let photos = fixture_photos(24);
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
+        let book = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         assert!(!placed_indices(&book).is_empty());
         for i in placed_indices(&book) {
             assert!(i < photos.len(), "index {i} is out of range");
@@ -1621,7 +1662,7 @@ mod tests {
         for p in photos.iter_mut().filter(|p| !p.is_utility) {
             p.hash = duplicate.clone();
         }
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
+        let book = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
         let placed = placed_indices(&book);
         let unique: BTreeSet<usize> = placed.iter().copied().collect();
         assert_eq!(unique.len(), placed.len(), "a hash-keyed remap collapses onto one index");
@@ -1631,7 +1672,7 @@ mod tests {
         for page in &book.pages {
             if let Some(layout) = named_layout(&lib, page) {
                 for (i, pl) in page.placements.iter().enumerate() {
-                    let target = slot_aspect(&layout.slots[i]);
+                    let target = slot_aspect(&pixajoy_spec(), &layout.slots[i]);
                     let expected = choose_crop(&photos[pl.photo_index], target);
                     assert_eq!(pl.crop, expected, "page {} crop is for another photo", page.number);
                 }
@@ -1658,7 +1699,7 @@ mod tests {
     fn pace_accounts_for_every_photo_it_did_not_place() {
         let lib = fixture_library();
         let photos = fixture_photos(30);
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 11, &Overrides::new()).expect("the fixture must place every included photo");
+        let book = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 11, &Overrides::new()).expect("the fixture must place every included photo");
         let placed = placed_indices(&book);
         let unique: BTreeSet<usize> = placed.iter().copied().collect();
         assert_eq!(unique.len(), placed.len(), "a photo must not be placed twice");
@@ -1712,7 +1753,7 @@ mod tests {
                 // keepers) it places 45 by design, not by loss.
                 let keepers = cull(&photos, &Overrides::new()).len().min(target);
                 let book =
-                    assemble(&photos, 20, &lib, &Weights::default(), seed, &Overrides::new())
+                    assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), seed, &Overrides::new())
                         .expect("the real library must place every included photo");
                 let placed: usize = book.pages.iter().map(|p| p.placements.len()).sum();
                 assert_eq!(
@@ -1750,7 +1791,7 @@ mod tests {
             for n in [12, 20, 25, 30, 40, 60] {
                 for seed in [1, 7, 1234] {
                     let book =
-                        assemble(&fixture_photos(n), 20, &lib, &Weights::default(), seed, &Overrides::new())
+                        assemble(&pixajoy_spec(), &fixture_photos(n), 20, &lib, &Weights::default(), seed, &Overrides::new())
                             .expect("the fixture must place every included photo");
                     for (i, page) in book.pages.iter().enumerate() {
                         assert!(
@@ -1793,7 +1834,7 @@ mod tests {
         for n in [12, 20, 25, 30, 40, 60] {
             for seed in [1, 7, 1234] {
                 let book =
-                    assemble(&fixture_photos(n), 20, &lib, &Weights::default(), seed, &Overrides::new())
+                    assemble(&pixajoy_spec(), &fixture_photos(n), 20, &lib, &Weights::default(), seed, &Overrides::new())
                         .expect("the real library must place every included photo");
                 for (i, page) in book.pages.iter().enumerate() {
                     assert!(
@@ -1831,7 +1872,7 @@ mod tests {
         let solo = photos[20].hash.clone();
         let overrides: Overrides = [(solo, Override::Include)].into_iter().collect();
 
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 5, &overrides)
+        let book = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 5, &overrides)
             .expect("a lone included photo must not fail the whole book");
 
         assert!(
@@ -1938,7 +1979,7 @@ mod tests {
         }
         assert_eq!(keeper, 22, "fixture: 26 photos less the utility ones");
 
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 1234, &Overrides::new()).expect("the fixture must place every included photo");
+        let book = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 1234, &Overrides::new()).expect("the fixture must place every included photo");
         let spreads = (book.pages.len() - 2) / 2;
         let per_spread: Vec<usize> = (0..spreads)
             .map(|s| book.pages[1 + 2 * s].placements.len() + book.pages[2 + 2 * s].placements.len())
@@ -1966,7 +2007,7 @@ mod tests {
     fn pace_records_how_many_photos_were_dropped() {
         let lib = fixture_library();
         let photos = fixture_photos(500);
-        let book = assemble(&photos, 20, &lib, &Weights::default(), 1, &Overrides::new()).expect("the fixture must place every included photo");
+        let book = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 1, &Overrides::new()).expect("the fixture must place every included photo");
         let placed = placed_indices(&book);
         let unique: BTreeSet<usize> = placed.iter().copied().collect();
         assert_eq!(unique.len(), placed.len(), "a photo must not be placed twice");
@@ -1990,7 +2031,7 @@ mod tests {
         let flat = library_from(&[("f2.json", F2_TWO_UP_MARGIN)]);
         let photos = fixture_photos(24);
         let w = Weights::default();
-        let mut book = assemble(&photos, 20, &flat, &w, 9, &Overrides::new()).expect("the fixture must place every included photo");
+        let mut book = assemble(&pixajoy_spec(), &photos, 20, &flat, &w, 9, &Overrides::new()).expect("the fixture must place every included photo");
         let before: Vec<String> = book.pages.iter().map(|p| p.template_id.clone()).collect();
         assert!(
             before.iter().filter(|id| *id == "f2-two-up-margin").count() >= 6,
@@ -2029,7 +2070,7 @@ mod tests {
         let lib = fixture_library();
         let photos = fixture_photos(24);
         let w = Weights::default();
-        let mut book = assemble(&photos, 20, &flat, &w, 9, &Overrides::new()).expect("the fixture must place every included photo");
+        let mut book = assemble(&pixajoy_spec(), &photos, 20, &flat, &w, 9, &Overrides::new()).expect("the fixture must place every included photo");
         repace(&mut book, &lib, &photos, &w, 9);
 
         let mut swapped = 0;
@@ -2059,7 +2100,7 @@ mod tests {
         let flat = library_from(&[("f2.json", F2_TWO_UP_MARGIN)]);
         let photos = fixture_photos(24);
         let w = Weights::default();
-        let mut book = assemble(&photos, 20, &flat, &w, 9, &Overrides::new()).expect("the fixture must place every included photo");
+        let mut book = assemble(&pixajoy_spec(), &photos, 20, &flat, &w, 9, &Overrides::new()).expect("the fixture must place every included photo");
         repace(&mut book, &fixture_library(), &photos, &w, 9);
         for s in 0..(book.pages.len() - 2) / 2 {
             let left = &book.pages[1 + 2 * s];
@@ -2086,7 +2127,7 @@ mod tests {
         let chosen: Vec<String> = [1u64, 9, 1234, 77, 5150]
             .into_iter()
             .map(|seed| {
-                let book = assemble(&photos, 20, &lib, &Weights::default(), seed, &Overrides::new())
+                let book = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), seed, &Overrides::new())
                     .expect("the fixture must place every included photo");
                 // Page 1 is a single; the first MIDDLE spread is page index 1.
                 book.pages[1].template_id.clone()
@@ -2103,7 +2144,7 @@ mod tests {
     #[test]
     fn pace_golden_twenty_page_book() {
         let lib = frozen_library();
-        let book = assemble(&fixture_photos(30), 20, &lib, &Weights::default(), 1234, &Overrides::new()).expect("the fixture must place every included photo");
+        let book = assemble(&pixajoy_spec(), &fixture_photos(30), 20, &lib, &Weights::default(), 1234, &Overrides::new()).expect("the fixture must place every included photo");
         let actual = serde_json::to_string_pretty(&book).unwrap();
         let golden_path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/book-20.json");
@@ -2113,5 +2154,89 @@ mod tests {
         let expected =
             std::fs::read_to_string(&golden_path).expect("run with UPDATE_GOLDEN=1 first");
         assert_eq!(actual, expected);
+    }
+}
+
+#[cfg(test)]
+mod spec_persistence_tests {
+    use super::*;
+    use crate::print_spec::{odd_spec, pixajoy_spec};
+
+    /// R13. A book written before the spec was configurable.
+    ///
+    /// The fixture is a HAND-WRITTEN literal. Serialising a current `Book`
+    /// and string-replacing the `spec` key back out would test the string
+    /// replace, not serde -- and would keep passing after someone removed
+    /// the `#[serde(default = ...)]`, because the replacement would then be
+    /// operating on JSON that no longer had the key either.
+    #[test]
+    fn a_book_saved_without_a_spec_loads_as_pixajoy() {
+        let stored = r#"{
+            "pages": [
+                {
+                    "number": 1,
+                    "side": "right",
+                    "template_id": "07-two-up-symmetric-margin:right",
+                    "placements": [
+                        {
+                            "photo_index": 0,
+                            "slot_rect": { "x": 0.08, "y": 0.08, "w": 0.84, "h": 0.84 },
+                            "crop": { "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0 },
+                            "z": 1
+                        }
+                    ]
+                }
+            ],
+            "seed": 1234,
+            "dropped": 5
+        }"#;
+        let book: Book = serde_json::from_str(stored).expect("an old book must still load");
+        assert_eq!(
+            book.spec,
+            pixajoy_spec(),
+            "a book with no spec key was laid out under Pixajoy and must load as Pixajoy"
+        );
+        assert_eq!(book.seed, 1234, "the rest of the book must be untouched");
+        assert_eq!(book.pages.len(), 1);
+    }
+
+    /// R14. The stored spec survives the round trip, so a book cannot be
+    /// reopened under a geometry it was not laid out under.
+    #[test]
+    fn a_book_round_trips_a_non_default_spec() {
+        let book = Book {
+            spec: odd_spec(),
+            pages: Vec::new(),
+            seed: 7,
+            dropped: 0,
+            controls: BTreeMap::new(),
+        };
+        let json = serde_json::to_string(&book).expect("a book must serialise");
+        assert!(json.contains("\"pageWIn\":8.0"), "the spec must be written out: {json}");
+        let back: Book = serde_json::from_str(&json).expect("a book must round trip");
+        assert_eq!(back.spec, odd_spec(), "the stored spec must come back, not the default");
+        assert_ne!(back.spec, pixajoy_spec(), "and it must not have degraded to Pixajoy");
+    }
+
+    /// The persistence read is the boundary people forget. A stored book
+    /// whose spec is invalid must FAIL to load rather than silently becoming
+    /// Pixajoy -- the same reasoning `templates.rs` records for defaulted
+    /// fields, applied to a row someone edited by hand.
+    #[test]
+    fn a_book_with_an_impossible_stored_spec_refuses_to_load() {
+        let stored = r#"{
+            "pages": [], "seed": 1, "dropped": 0,
+            "spec": {
+                "pageWIn": 11.197, "pageHIn": 8.894,
+                "bleedIn": 6.0, "gutterIn": 6.0, "safeMarginIn": 0.125,
+                "minDpi": 200.0, "warnDpi": 300.0
+            }
+        }"#;
+        let parsed: Result<Book, _> = serde_json::from_str(stored);
+        assert!(
+            parsed.is_err(),
+            "insets wider than the page leave no printable area and must refuse, \
+             not silently load as something else: {parsed:?}"
+        );
     }
 }

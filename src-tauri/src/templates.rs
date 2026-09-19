@@ -46,6 +46,15 @@ pub enum EdgeTreatment {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Slot {
+    /// PAGE-normalised, never spread-normalised. `decompose` is the only
+    /// converter from the spread coordinates the template files are authored
+    /// in, so construct a `Slot` nowhere else.
+    ///
+    /// Being normalised is what makes a slot independent of the book's
+    /// `PrintSpec`: the same rect is valid at any page size, and only its
+    /// real-world inches change. The inch half of that trap is closed by
+    /// `PrintSpec::page_aspect`, which is the one place the conversion
+    /// happens and takes no canvas argument to get wrong.
     pub rect: Rect,
     pub role: Role,
     pub bleed: Vec<BleedEdge>,
@@ -182,6 +191,18 @@ fn decompose(raw: RawTemplate) -> Result<SpreadTemplate, TemplateError> {
             template: raw.id.clone(),
             slot: i,
         })?;
+        // The only place a `Slot` is built. Everything downstream -- the
+        // scorer, the preview guides, the export's dest rects -- multiplies
+        // this rect by the book's page inches, so a rect outside [0,1] would
+        // place a photo off the paper rather than fail anywhere visible.
+        debug_assert!(
+            page_rect.x >= -1e-9
+                && page_rect.y >= -1e-9
+                && page_rect.right() <= 1.0 + 1e-9
+                && page_rect.bottom() <= 1.0 + 1e-9,
+            "{}: slot {i} decomposed to {page_rect:?}, which is outside the page",
+            raw.id
+        );
         let slot = Slot {
             rect: page_rect,
             role: rs.role,

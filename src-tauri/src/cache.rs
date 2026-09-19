@@ -363,6 +363,7 @@ fn remove_thumbnails(dir: &Path, hashes: &[String]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::print_spec::pixajoy_spec;
 
     fn entry(hash: &str, bytes: u64, last_used_at: i64, pinned: bool) -> CacheEntry {
         CacheEntry {
@@ -660,6 +661,7 @@ mod tests {
         use crate::book::cull::{Override, Overrides};
         let db = Db::open_in_memory().unwrap();
         let book = crate::book::pace::Book {
+            spec: pixajoy_spec(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,

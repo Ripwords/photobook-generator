@@ -13,6 +13,7 @@ import {
   type StreamState,
 } from "~/types/features";
 import type { ReplacedProject } from "~/types/navigation";
+import type { PrintSpec } from "~/types/printSpec";
 
 /**
  * One book in the making: the folders being analysed, what the analysis has
@@ -37,6 +38,11 @@ export interface AnalysisJob {
   error: string | null;
   /** The user's include/exclude decisions about the current run's photos. */
   overrides: PhotoOverrides;
+  /**
+   * The print size the book will be generated at. `null` is the app's
+   * default, which only Rust knows -- see `default_print_spec`.
+   */
+  spec: PrintSpec | null;
 }
 
 export interface NewJob {
@@ -45,6 +51,7 @@ export interface NewJob {
   folders: string[];
   replacing?: ReplacedProject | null;
   restoreOverrides?: PhotoOverrides;
+  spec?: PrintSpec | null;
 }
 
 /**
@@ -58,6 +65,7 @@ export interface SavedDraft {
   replacing: ReplacedProject | null;
   /** The decisions to apply once the draft is analysed again. */
   overrides: PhotoOverrides;
+  spec: PrintSpec | null;
 }
 
 /**
@@ -72,6 +80,7 @@ export function savedDraft(job: AnalysisJob): SavedDraft {
     folders: [...job.folders],
     replacing: job.replacing ? { ...job.replacing } : null,
     overrides: { ...(analysed ? job.overrides : job.restoreOverrides) },
+    spec: job.spec ? { ...job.spec } : null,
   };
 }
 
@@ -79,7 +88,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Reads a saved draft back, or `null` for one this version cannot use. */
+const SPEC_KEYS = ["pageWIn", "pageHIn", "bleedIn", "gutterIn", "safeMarginIn", "minDpi", "warnDpi"] as const;
+
+/**
+ * A saved print size, or `null` for the default. Shape only: Rust validates
+ * it again when the book is generated, and refuses one that makes no sense.
+ */
+function parseSpec(value: unknown): PrintSpec | null {
+  if (!isRecord(value)) return null;
+  const spec = {} as PrintSpec;
+  for (const key of SPEC_KEYS) {
+    const n = value[key];
+    if (typeof n !== "number" || !Number.isFinite(n)) return null;
+    spec[key] = n;
+  }
+  return spec;
+}
+
+/**
+ * Reads a saved draft back, or `null` for one this version cannot use. A
+ * draft saved before print sizes existed, or with a torn one, is still a
+ * draft: it gets the default size rather than being thrown away.
+ */
 export function parseSavedDraft(json: string): SavedDraft | null {
   let value: unknown;
   try {
@@ -88,7 +118,7 @@ export function parseSavedDraft(json: string): SavedDraft | null {
     return null;
   }
   if (!isRecord(value)) return null;
-  const { id, name, folders, replacing, overrides } = value;
+  const { id, name, folders, replacing, overrides, spec } = value;
   if (typeof id !== "number" || typeof name !== "string") return null;
   if (!Array.isArray(folders) || folders.length === 0) return null;
   if (!folders.every((folder) => typeof folder === "string")) return null;
@@ -102,7 +132,7 @@ export function parseSavedDraft(json: string): SavedDraft | null {
       if (state === "include" || state === "exclude") decisions[hash] = state;
     }
   }
-  return { id, name, folders, replacing: replaced, overrides: decisions };
+  return { id, name, folders, replacing: replaced, overrides: decisions, spec: parseSpec(spec) };
 }
 
 /** The run a job's photos came from -- see `AnalysisSummary.runId`. `0` until it is done. */
@@ -206,6 +236,7 @@ export function createAnalysisJobs() {
       running: true,
       error: null,
       overrides: {},
+      spec: options.spec ?? null,
     }) as AnalysisJob;
     jobs.value.push(job);
     void run(job);
@@ -236,6 +267,11 @@ export function createAnalysisJobs() {
   function rename(id: number, name: string) {
     const job = find(id);
     if (job) job.name = name;
+  }
+
+  function setSpec(id: number, spec: PrintSpec | null) {
+    const job = find(id);
+    if (job) job.spec = spec ? { ...spec } : null;
   }
 
   /**
@@ -311,6 +347,7 @@ export function createAnalysisJobs() {
           folders: draft.folders,
           replacing: draft.replacing,
           restoreOverrides: draft.overrides,
+          spec: draft.spec,
         },
         reused ? nextId++ : draft.id,
       );
@@ -333,6 +370,7 @@ export function createAnalysisJobs() {
     retry,
     changeFolders,
     rename,
+    setSpec,
     remove,
     jobForProject,
     onSettled,

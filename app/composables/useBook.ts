@@ -19,6 +19,7 @@ import {
 } from "~/types/book";
 import type { BookEdit, BookLayout } from "~/types/preview";
 import type { AnalyzedPhoto, PhotoOverrides } from "~/types/features";
+import type { PrintSpec } from "~/types/printSpec";
 
 /**
  * Everything between "the folder is analysed" and "the files are on disk":
@@ -137,7 +138,8 @@ export function useBook(
     });
   }
 
-  async function generate(name: string, pages: number) {
+  /** `spec` is `null` for the default print size, which Rust fills in. */
+  async function generate(name: string, pages: number, spec: PrintSpec | null) {
     if (folders.value.length === 0) return;
     await guard(async () => {
       // Generation SAVES: the returned id is a row that already exists, so
@@ -148,6 +150,7 @@ export function useBook(
         name,
         sourceFolders: folders.value,
         overrides: overrides.value,
+        spec,
       });
       // Supersedes anything previously opened from disk -- see
       // `withGeneratedBook`'s doc comment.

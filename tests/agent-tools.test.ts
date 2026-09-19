@@ -121,10 +121,27 @@ describe("the tool table", () => {
     expect(new Set([...READ_TOOLS, ...WRITE_TOOLS]).size).toBe(Object.keys(AGENT_TOOLS).length);
   });
 
-  it("drives every BookEdit variant except setSlot and replacePhoto", () => {
+  /**
+   * The three exclusions are each deliberate. `setSlot` and `replacePhoto`
+   * are direct-manipulation edits with no useful chat phrasing. `setPrintSpec`
+   * is withheld on different grounds: the agent edits layouts, it does not get
+   * to change what book the user is buying, and it is the one edit Rust never
+   * refuses -- so a model that reached for it would reshape the whole book
+   * with nothing to push back.
+   *
+   * Naming them here rather than filtering by a predicate is the point: a new
+   * variant lands in `wire` and fails this test until somebody decides which
+   * side of the line it is on.
+   */
+  it("drives every BookEdit variant except setSlot, replacePhoto and setPrintSpec", () => {
+    const withheld = ["setSlot", "replacePhoto", "setPrintSpec"];
     const driven = Object.values(WRITE_INPUTS).map((w) => w.kind);
-    const wire = EDITS.map((e) => e.kind).filter((k) => k !== "setSlot" && k !== "replacePhoto");
+    const wire = EDITS.map((e) => e.kind).filter((k) => !withheld.includes(k));
     expect(driven.toSorted()).toEqual(wire.toSorted());
+    expect(wire).not.toContain("setPrintSpec");
+    for (const spec of Object.values(AGENT_TOOLS)) {
+      expect(JSON.stringify(spec)).not.toContain("setPrintSpec");
+    }
   });
 
   it("describes every tool for the model", () => {

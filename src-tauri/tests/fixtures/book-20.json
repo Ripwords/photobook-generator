@@ -542,5 +542,14 @@
     }
   ],
   "seed": 1234,
-  "dropped": 5
+  "dropped": 5,
+  "spec": {
+    "pageWIn": 11.197,
+    "pageHIn": 8.894,
+    "bleedIn": 0.197,
+    "gutterIn": 0.197,
+    "safeMarginIn": 0.125,
+    "minDpi": 200.0,
+    "warnDpi": 300.0
+  }
 }

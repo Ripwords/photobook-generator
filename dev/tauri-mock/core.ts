@@ -29,9 +29,11 @@ import type {
   BookEdit,
   BookLayout,
   PlacementRef,
+  PreviewGeometry,
   PreviewRect,
   SlotCandidate,
 } from "../../app/types/preview";
+import type { PrintSpec, SpecCheck, SpecError } from "../../app/types/printSpec";
 import type {
   BookRecommendation,
   ExportEvent,
@@ -46,6 +48,7 @@ import type {
   AnalyzedPhoto,
   PhotoOverrides,
 } from "../../app/types/features";
+import type { PreflightFinding } from "../../app/types/book";
 import { cancelModelRequest, modelRequest, type ModelRequestArgs } from "./model";
 import { mockPhotos, thumbnail } from "./photos";
 
@@ -65,6 +68,85 @@ layout.photos = layout.photos.map((photo, index) => ({
 }));
 
 const photos: AnalyzedPhoto[] = mockPhotos();
+
+// Rust wrote these numbers, so the harness's default cannot drift from
+// `PrintSpec::pixajoy()` the way a hand-typed copy would. Taken before any
+// `setPrintSpec` can change the book's own.
+const PIXAJOY: PrintSpec = structuredClone(layout.spec);
+
+/** `preview::preview_geometry`, restated for the harness only. */
+function mockGeometry(spec: PrintSpec): PreviewGeometry {
+  const tu = spec.bleedIn / spec.pageWIn;
+  const tv = spec.bleedIn / spec.pageHIn;
+  const iu = tu + spec.safeMarginIn / spec.pageWIn;
+  const iv = tv + spec.safeMarginIn / spec.pageHIn;
+  const g = spec.gutterIn / spec.pageWIn;
+  return {
+    pageWIn: spec.pageWIn,
+    pageHIn: spec.pageHIn,
+    left: {
+      trim: { x: tu, y: tv, w: 1 - tu, h: 1 - 2 * tv },
+      safe: { x: iu, y: iv, w: 1 - iu, h: 1 - 2 * iv },
+      gutter: { x: 1 - g, y: 0, w: g, h: 1 },
+    },
+    right: {
+      trim: { x: 0, y: tv, w: 1 - tu, h: 1 - 2 * tv },
+      safe: { x: 0, y: iv, w: 1 - iu, h: 1 - 2 * iv },
+      gutter: { x: 0, y: 0, w: g, h: 1 },
+    },
+  };
+}
+
+/** A few of `PrintSpec::try_from`'s refusals, enough to drive the panel's error states. */
+function mockRefusal(spec: PrintSpec): SpecError | null {
+  for (const field of ["pageWIn", "pageHIn", "minDpi"] as const) {
+    if (!(spec[field] > 0)) return { kind: "notPositive", field, value: spec[field] };
+  }
+  for (const field of ["bleedIn", "gutterIn", "safeMarginIn"] as const) {
+    if (spec[field] < 0) return { kind: "negative", field, value: spec[field] };
+  }
+  for (const field of ["pageWIn", "pageHIn"] as const) {
+    if (spec[field] > 100) return { kind: "tooLarge", field, value: spec[field], limit: 100 };
+  }
+  const across = spec.bleedIn + spec.safeMarginIn + spec.gutterIn;
+  if (across >= spec.pageWIn) return { kind: "noSafeArea", axis: "horizontal", insetsIn: across, pageIn: spec.pageWIn };
+  const down = 2 * (spec.bleedIn + spec.safeMarginIn);
+  if (down >= spec.pageHIn) return { kind: "noSafeArea", axis: "vertical", insetsIn: down, pageIn: spec.pageHIn };
+  if (spec.warnDpi <= spec.minDpi) return { kind: "warnBelowFloor", minDpi: spec.minDpi, warnDpi: spec.warnDpi };
+  return null;
+}
+
+/**
+ * A stand-in for pre-flight at a new size: a bigger page spreads the same
+ * pixels thinner. Every photo is taken as 2400 px across its slot, so a
+ * full-page photo clears 200 DPI on Pixajoy's page and fails on a 13" one.
+ */
+function mockFindings(spec: PrintSpec): PreflightFinding[] {
+  return layout.pages.flatMap((page) =>
+    page.placements.flatMap((pl) => {
+      const dpi = Math.round(2400 / (pl.slotRect.w * spec.pageWIn));
+      const photoPath = layout.photos[pl.photoIndex]?.path ?? "";
+      if (dpi < spec.minDpi) {
+        return [{ severity: "block" as const, page: page.number, photoPath, message: `would print at ${dpi} DPI, below the ${spec.minDpi} DPI minimum` }];
+      }
+      if (dpi < spec.warnDpi) {
+        return [{ severity: "warn" as const, page: page.number, photoPath, message: `prints at ${dpi} DPI, under the ${spec.warnDpi} DPI target` }];
+      }
+      return [];
+    }),
+  );
+}
+
+function mockCheck(spec: PrintSpec, withBook: boolean): SpecCheck {
+  const error = mockRefusal(spec);
+  if (error) return { kind: "refused", error };
+  return {
+    kind: "checked",
+    geometry: mockGeometry(spec),
+    findings: withBook ? mockFindings(spec) : [],
+    recrops: withBook && spec.pageWIn / spec.pageHIn !== layout.spec.pageWIn / layout.spec.pageHIn,
+  };
+}
 
 // The fixture's cover paths point at a disk this browser cannot read, and
 // one of its two books has none; give each a cover from the mock folder.
@@ -202,6 +284,17 @@ function applyEdit(edit: BookEdit): BookLayout {
       const b = placement(edit.b);
       if (!a || !b) throw new Error("there is no photo at that slot");
       [a.photoIndex, b.photoIndex] = [b.photoIndex, a.photoIndex];
+      break;
+    }
+    case "setPrintSpec": {
+      const recrop = edit.spec.pageWIn / edit.spec.pageHIn !== layout.spec.pageWIn / layout.spec.pageHIn;
+      layout.spec = { ...edit.spec };
+      layout.geometry = mockGeometry(layout.spec);
+      if (recrop) {
+        for (const page of layout.pages) {
+          for (const pl of page.placements) pl.crop = centredCrop({ page: page.number, z: pl.z }, pl.photoIndex);
+        }
+      }
       break;
     }
     case "replacePhoto": {
@@ -441,6 +534,13 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
         includedCount: Object.values(overrides).filter((state) => state === "include").length,
       } as T;
     }
+
+    case "default_print_spec":
+      return structuredClone(PIXAJOY) as T;
+
+    case "check_print_spec":
+      await sleep(150);
+      return mockCheck(args?.spec as PrintSpec, args?.projectId != null) as T;
 
     case "generate_book": {
       await sleep(400);

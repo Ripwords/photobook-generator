@@ -12,4 +12,5 @@ pub mod manifest;
 pub mod pace;
 pub mod pack;
 pub mod preflight;
+pub mod reprint;
 pub mod score;

@@ -178,6 +178,7 @@ pub fn agent_view(book: &Book, lib: &Library, photos: &[SourcePhoto]) -> AgentVi
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::print_spec::pixajoy_spec;
     use crate::book::cull::Overrides;
     use crate::book::pace::{assemble, Page, Placement, BLANK_TEMPLATE_ID};
     use crate::geometry::{Rect, Side};
@@ -259,6 +260,7 @@ pub(crate) mod tests {
     /// are out of order so a view that numbers slots positionally differs.
     pub(crate) fn small_book() -> Book {
         let mut book = Book {
+            spec: pixajoy_spec(),
             pages: vec![
                 page(
                     1,
@@ -370,6 +372,7 @@ pub(crate) mod tests {
         );
         let photos = vec![source(&secret), source(&other)];
         let book = Book {
+            spec: pixajoy_spec(),
             pages: vec![page(
                 1,
                 Side::Right,
@@ -551,7 +554,7 @@ pub(crate) mod tests {
         let lib = frozen_library();
         let photos: Vec<SourcePhoto> = (0..25).map(assembled_photo).collect();
         let engine: Vec<Photo> = photos.iter().map(|p| p.photo.clone()).collect();
-        let book = assemble(
+        let book = assemble(&pixajoy_spec(),
             &engine,
             20,
             &lib,

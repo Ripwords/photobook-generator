@@ -4,20 +4,18 @@ import {
   cropMoved,
   cropStyle,
   cropZoomed,
-  gutterRect,
   insideCover,
   pageGuides,
   pageSlots,
   rectStyle,
-  safeRect,
   samePlacement,
   slotMoved,
   slotResized,
-  trimRect,
   type BookLayout,
   type Corner,
   type PageSide,
   type PlacementRef,
+  type PreviewGeometry,
   type PreviewPage,
   type PreviewRect,
 } from "~/types/preview";
@@ -30,6 +28,7 @@ const {
   selected = null,
   editSlots = false,
   busy = false,
+  geometry = null,
 } = defineProps<{
   layout: BookLayout;
   /**
@@ -54,7 +53,15 @@ const {
   editSlots?: boolean;
   /** True while an edit is in flight; its end is when a live gesture is settled. */
   busy?: boolean;
+  /**
+   * Guides to draw INSTEAD of the book's own: the Print size panel's proposal,
+   * derived in Rust by `check_print_spec`, so the page reshapes as the user
+   * types. `null` draws the book as saved.
+   */
+  geometry?: PreviewGeometry | null;
 }>();
+
+const shown = computed(() => geometry ?? layout.geometry);
 
 const emit = defineEmits<{
   /** The user clicked a photo while swapping -- see `nextSwapStep`. */
@@ -92,7 +99,7 @@ function guidesFor(key: string) {
   const others = (page?.placements ?? [])
     .filter((p) => `p${page?.number}-z${p.z}` !== key)
     .map((p) => liveRects.value[`p${page?.number}-z${p.z}`] ?? p.slotRect);
-  return pageGuides(layout.geometry, side, others);
+  return pageGuides(shown.value, side, others);
 }
 
 function onSlotPointerDown(
@@ -303,24 +310,25 @@ function isSelected(ref: PlacementRef): boolean {
   return selected !== null && samePlacement(selected, ref);
 }
 
-// The three guides, from the constants `geometry.rs` shipped on the wire --
-// the same predicates `book::score` and `book::preflight` enforce, so what is
-// drawn is what was validated.
-const trim = computed(() => rectStyle(trimRect(layout.geometry, side)));
-const safe = computed(() => rectStyle(safeRect(layout.geometry, side)));
-const gutter = computed(() => rectStyle(gutterRect(layout.geometry, side)));
+// The three guides, as Rust derived them from the book's spec -- the same
+// rects `book::score` and `book::preflight` enforce, so what is drawn is what
+// was validated.
+const trim = computed(() => rectStyle(shown.value[side].trim));
+const safe = computed(() => rectStyle(shown.value[side].safe));
+const gutter = computed(() => rectStyle(shown.value[side].gutter));
 </script>
 
 <template>
   <!--
-    The page box carries the PRINTED page's real aspect (11.197" x 8.894"),
+    The page box carries the PRINTED page's real aspect (the book's own spec,
+    11.197" x 8.894" by default),
     so every normalised rect inside it is a straight percentage. At the
     ~700px per page this renders at, that is 1/9.6 of print resolution.
   -->
   <div
     ref="pageEl"
     class="relative overflow-hidden"
-    :style="{ aspectRatio: `${layout.geometry.pageWIn} / ${layout.geometry.pageHIn}` }"
+    :style="{ aspectRatio: `${shown.pageWIn} / ${shown.pageHIn}` }"
     :class="page ? 'bg-white' : 'bg-neutral-200 dark:bg-neutral-800'"
   >
     <template v-if="page">

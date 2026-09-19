@@ -8,7 +8,10 @@ describes where photos and text go on one spread. Background: see
 ## Coordinate system
 
 Everything is normalised to the spread canvas as `[x, y, width, height]` in `[0, 1]`,
-origin top-left. The canvas is 22.394 × 8.894 inches (a 2-page spread at 300 DPI =
+origin top-left, so a template fits whatever print size a book has. Templates are
+**authored and validated against the reference canvas**, Pixajoy's, and the numbers below
+are that canvas's; a book with another `PrintSpec` gets its own guides from Rust at run
+time. The reference canvas is 22.394 × 8.894 inches (a 2-page spread at 300 DPI =
 6718 × 2668 px), and **already includes** 5 mm of bleed on the outer, top, and bottom
 edges — the canvas boundary (`0` and `1`) is the true edge of the printed sheet, not the
 trim line.
@@ -53,7 +56,7 @@ clipped face is a *hard rejection* in the scorer, any such candidate containing 
 thrown out entirely. Six of the original 40 templates were deleted for exactly this, and
 seven more had to be recut.
 
-A **page**, though, is 11.197" × 8.894" = **1.259:1** — close to 4:3. Cells that match real
+A **page** on the reference canvas, though, is 11.197" × 8.894" = **1.259:1** — close to 4:3. Cells that match real
 photographs come from subdividing a page. Subdividing a page into `m` columns and `n` rows
 gives cells of real aspect `1.259 × n / m`:
 

@@ -24,6 +24,74 @@ deliberately-parked decision that this file is the only surviving record of.**
 
 ---
 
+## What changed on 2026-09-19: print size is per book
+
+**What shipped.** Every print measurement that was a constant in `geometry.rs` now lives on
+the book as `Book.spec`, a `PrintSpec` (`src-tauri/src/print_spec.rs`): page width and
+height including bleed, bleed, fold (gutter), safe margin, lowest DPI and target DPI.
+`PrintSpec::pixajoy()` holds the old numbers and is the default for new books and for any
+book saved before the field existed. The editor footer opens a **Print size** slideover;
+the draft screen has a **Print size → Change…** row. Both mount `PrintSizePanel.vue`, which
+shows inches or millimetres (a localStorage display preference, never written into the
+spec), dry-runs the typed size through `check_print_spec`, and applies it as
+`BookEdit::SetPrintSpec`. Applying keeps every template choice, lock and hand edit, and
+recomputes crops only when the page's real-world aspect changed (`book/reprint.rs`). It is
+never refused for breaking a photo: `export_book` still blocks on pre-flight.
+
+`PrintSpec` has no `Deserialize` derive. It deserialises through
+`try_from = "RawPrintSpec"`, so IPC, `book_json` and a hand-edited row all pass the
+validator. `gutter_in` is its own field; it used to share `BLEED_IN`, so an editable
+bleed would have silently narrowed the fold band. `Rect::aspect_in` is gone, replaced by
+`PrintSpec::page_aspect`. `PreviewGeometry` now carries the trim, safe and fold rects per
+side, and the webview no longer derives any of them. `BookEdit::SetPrintSpec` is not
+exposed to the chat agent, and `tests/fixtures/wire/book-edits.json` pins that.
+
+**Verified.**
+
+- The 20-page golden `book-20.json` gained only the `spec` object. No placement moved.
+  `pack_sweep` passes unchanged against its recorded baseline.
+- The Rust validator and engine tests, R1 to R14 in the plan, include R9
+  (`resolution_headroom_saturates_at_the_specs_warn_dpi_not_at_300`). It failed on
+  `master`, because `score.rs` had a bare `300.0`.
+- `reprint` and its two entry points took 10 mutants and all 10 were killed. The mutants
+  covered crops passed through unchanged, `page_shape_changed` pinned either way or
+  comparing width alone, a dropped spec assignment, no findings, and a dry run fed a full
+  disk or missing photos.
+- The `check_print_spec` return shape took 3 mutants (C1 to C3), all killed.
+- The step that removed the TypeScript guide derivation had its own mutants: guides rebuilt
+  from a hardcoded Pixajoy trim, and the Rust side sending Pixajoy's rects for a
+  non-Pixajoy book. Both were killed.
+- `app/types/printSpec.ts` took 8 mutants (M1 to M8), all killed. The unit round trip was
+  among them, and it is asserted with `toBe`, not `toBeCloseTo`. M4 and M8 survived the
+  first pass. They were killed only after a drifting spec and a debounce assertion were
+  added.
+- Draft persistence (`parseSavedDraft`) took 2 mutants, both killed. One dropped the spec.
+  The other binned a draft with no spec, which would have discarded every draft on disk at
+  upgrade.
+- The panel was driven in `bun run ui:mock` and rasterized in each state.
+- The panel's spread drawing (`PrintSizeDiagram.vue`) is a labelled schematic, not the
+  guides. Its geometry is `specDiagram` in `app/types/printSpec.ts`, which widens any
+  non-zero margin to at least 2.5% of the spread and falls back to true scale if the widened
+  margins would not fit. It took 5 mutants, all killed: the floor applied to a zero bleed,
+  never widening, an inset at the fold, no fallback, and `exaggerated` always true.
+
+**Deliberately not built.** A global default or preset list. A global default is a second
+authority for one number. A user who always prints elsewhere retypes the size for each new
+book. The fix is to pre-fill from the last project's spec, and it is deferred, not
+overlooked. Templates are still authored and validated against the Pixajoy reference
+canvas. Any page shape is allowed, and a portrait or square page gets a note that the
+layouts were drawn for landscape.
+
+**The trap.** This repo has no TypeScript typecheck step. `bun run lint` is oxlint, which
+does not check types, and `check:build` does not typecheck either. A `spec` argument that
+landed in the `recommend_book` call instead of `generate_book` was caught only because
+lint flagged the variable as unused in one branch. To typecheck by hand, run
+`bunx nuxi prepare` and then vue-tsc 3 with TypeScript 5.9 against
+`.nuxt/tsconfig.app.json`. Eight errors predate this change: BookChat, the
+BookPreviewPage/ReplacePhotoDialog style props, ContactSheet and GenerateBook's `USelect`.
+
+---
+
 ## What changed on 2026-09-19: the app updates itself
 
 **What shipped.** `tauri-plugin-updater` and `tauri-plugin-process`, registered in the
@@ -652,7 +720,7 @@ file per placement.
 |---|---|---|
 | Cull | `book::cull::cull` | Drops utility images, keeps one winner per near-duplicate cluster. **The single authority** — see below. |
 | Pack | `book::pack` | Chapter-aware grouping into buildable group sizes, **distributed over the available slots rather than front-loaded** and **sized against the kind of slot each group will land on** (a single page holds a page half's worth, a spread does not); selects **one photo per moment before a second from any, at most `MAX_PER_MOMENT` per moment**, down to `Capacity::target_photos` (about four per spread), then varies spread density with `DENSITY_RHYTHM`. See "Selection variety" below. |
-| Score | `book::score` | Scores each template against a group: aspect fit, saliency and face-area retention, hero match, resolution headroom, palette harmony, variety — plus `face_quality`, `spread_diversity`, `gutter_saliency` and `hero_prominence`, **all four at weight `0.0`**. Hard rejections for a face in the gutter, a face outside the safe margin, and sub-`MIN_DPI` resolution. |
+| Score | `book::score` | Scores each template against a group: aspect fit, saliency and face-area retention, hero match, resolution headroom, palette harmony, variety — plus `face_quality`, `spread_diversity`, `gutter_saliency` and `hero_prominence`, **all four at weight `0.0`**. Hard rejections for a face in the gutter, a face outside the safe margin, and resolution below the book's `min_dpi`. |
 | Crop | `book::crop::choose_crop` | Deterministic saliency- and face-aware crop window, normalised 0…1 of the photo's **oriented** frame. |
 | Pace | `book::pace::assemble` | Lays groups into pages, keeps both halves of a spread on one template, falls back to a smaller page half rather than blanking a page. |
 | Pre-flight | `book::preflight` | Blocks and warnings before anything is written. |
@@ -700,12 +768,15 @@ file in a print upload is worse than a reported failure, because it looks like i
 
 ### Pixajoy's published limits, now enforced
 
+Since 2026-09-19 these are per-book `PrintSpec` fields. The values below are
+`PrintSpec::pixajoy()`, the default.
+
 | Rule | Where | Severity |
 |---|---|---|
-| **200 DPI floor** | `book::score::MIN_DPI`, imported (not restated) by `book::preflight` | Hard rejection in scoring; **Block** in pre-flight |
-| 300 DPI target | `WARN_DPI_CEILING` | **Warn** band only — not a second floor |
-| **0.125" safe margin** | `geometry::SAFE_MARGIN_IN` / `in_safe_margin` | A face outside it rejects the template |
-| **No face in the gutter** | `geometry::clear_of_gutter`, `book::score` | Hard rejection |
+| **Lowest print resolution** (Pixajoy: 200 DPI) | `PrintSpec::min_dpi`, read by `book::score` and `book::preflight` | Hard rejection in scoring; **Block** in pre-flight |
+| Target resolution (Pixajoy: 300 DPI) | `PrintSpec::warn_dpi` | **Warn** band only, not a second floor |
+| **Safe margin** (Pixajoy: 0.125") | `PrintSpec::safe_rect` / `geometry::in_safe_margin` | A face outside it rejects the template |
+| **No face in the fold** (Pixajoy: 0.197") | `PrintSpec::gutter_band` / `geometry::clear_of_gutter` | Hard rejection |
 | Source file still exists | `book::preflight` | **Block** |
 | Free disk space | `book::preflight::available_bytes` (`statfs`) | **Block** |
 
@@ -1548,8 +1619,8 @@ pages come from one template and cannot change separately.
 | `setTemplate` | Exactly the named template (a spread id, or `"<id>:left"`/`"<id>:right"` for a single page), and forgives a rejection of it. | locked; unknown; wrong photo count; every assignment breaks a hard constraint |
 | `setLocked` | Locked openings refuse every other edit and are skipped by shuffle. | never |
 | `shuffle` | `regenerate` over every unlocked opening; openings with no alternative are left alone. | never |
-| `swapPhotos` | Exchanges two placements anywhere in the book, re-crops both, and re-runs `score::rejects` on both **before** writing either. | same slot; missing slot; either opening locked; a face clipped / in the gutter / in the margin, or below `MIN_DPI` at the new slot |
-| `replacePhoto` | Puts any analysed photo (`photo` indexes `BookLayout.photos`) into a placement, cropped with `choose_crop` for that slot and checked with `score::rejects`. A photo already placed elsewhere delegates to `swapPhotos`, so the two trade places under its rules. The UI is `ReplacePhotoDialog.vue`, opened from the swap bar; it asks the read command `slot_candidates(projectId, placement)` for every photo's crop and refusal in that slot (`edit::slot_candidates`, pure) and only filters and sorts (`replaceCandidates`). Not an agent tool yet. | the photo already there (`SamePlacement`); unknown photo (`NoSuchPhoto`); missing slot; opening locked; a face clipped / in the gutter / in the margin, or below `MIN_DPI` |
+| `swapPhotos` | Exchanges two placements anywhere in the book, re-crops both, and re-runs `score::rejects` on both **before** writing either. | same slot; missing slot; either opening locked; a face clipped / in the gutter / in the margin, or below the book's `min_dpi` at the new slot |
+| `replacePhoto` | Puts any analysed photo (`photo` indexes `BookLayout.photos`) into a placement, cropped with `choose_crop` for that slot and checked with `score::rejects`. A photo already placed elsewhere delegates to `swapPhotos`, so the two trade places under its rules. The UI is `ReplacePhotoDialog.vue`, opened from the swap bar; it asks the read command `slot_candidates(projectId, placement)` for every photo's crop and refusal in that slot (`edit::slot_candidates`, pure) and only filters and sorts (`replaceCandidates`). Not an agent tool yet. | the photo already there (`SamePlacement`); unknown photo (`NoSuchPhoto`); missing slot; opening locked; a face clipped / in the gutter / in the margin, or below the book's `min_dpi` |
 
 `Book` gained `controls: BTreeMap<usize, OpeningControls>` (`locked`, `rejected`, `rerolls`),
 omitted from the JSON when empty, so the golden and every saved project are unchanged.
@@ -1658,6 +1729,10 @@ simply not discriminate smiling from neutral at this landmark resolution.
 
 ## Print geometry (settled, and hard-won)
 
+**These are `PrintSpec::pixajoy()`, the default, and since 2026-09-19 no longer the only
+geometry.** Each book carries its own `PrintSpec`, and every normalised value below is
+derived from it per book. Templates are still authored against this reference canvas.
+
 Derived by pixel-measuring the guide lines in Pixajoy editor screenshots. The saved
 editor HTML is a Konva canvas snapshot; the layout config is fetched from their API at
 runtime and is not in the files.
@@ -1670,8 +1745,8 @@ runtime and is not in the files.
 | Fold centre | x = 11.197" (normalised 0.5) |
 | Gutter dead band | x 11.000"–11.394" (normalised 0.491203–0.508797) |
 | Safe area | x 0.008797–0.991203, y 0.022150–0.977850 (normalised) |
-| **Minimum print DPI** | **200** (Pixajoy's published minimum; 300 is their recommended target, treated as a warn band, not a second floor). `book::score::MIN_DPI`, imported (not restated) by `book::preflight`. |
-| **Safe margin** | **0.125"** (1/8") — Pixajoy's published guidance: keep anything important clear of the edge by this much, on top of the trim inset. `geometry::SAFE_MARGIN_IN` / `in_safe_margin`. **Do not confuse with the "Safe area" row above** — that row is the TRIM rectangle (the `BLEED_IN` inset alone); the safe margin is trim inset by a FURTHER 0.125" on every edge except the fold, where the gutter dead band already governs. |
+| **Minimum print DPI** | **200** (Pixajoy's published minimum; 300 is their recommended target, treated as a warn band, not a second floor). `PrintSpec::min_dpi` / `warn_dpi`. |
+| **Safe margin** | **0.125"** (1/8") — Pixajoy's published guidance: keep anything important clear of the edge by this much, on top of the trim inset. `PrintSpec::safe_margin_in` / `in_safe_margin`. **Do not confuse with the "Safe area" row above** — that row is the TRIM rectangle (the bleed inset alone); the safe margin is trim inset by a FURTHER 0.125" on every edge except the fold, where the gutter dead band already governs. |
 
 ### Page structure (confirmed by the user, 2026-08-13) — template gap now closed
 
@@ -1707,7 +1782,7 @@ normalised ratio inside it.
 target aspect from the RECT (`slot_aspect`, which applies the same inch conversion) and
 compares that to the photo. So a wrong `aspect_pref` fails `tests/templates.test.ts`; it
 cannot mis-score a layout. The unit-confusion trap is real and still worth guarding — it
-lives in `slot_aspect`, and `geometry::Rect::aspect_in` plus
+lives in `slot_aspect`, and `PrintSpec::page_aspect` plus
 `score_slot_aspect_uses_page_inches_not_the_normalised_ratio` are what pin it — but treat
 `aspect_pref` itself as a declared-intent cross-check on the rect, not as an input to
 template selection.

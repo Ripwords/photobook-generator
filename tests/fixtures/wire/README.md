@@ -45,12 +45,27 @@ expect the other language's suite to tell you what else has to move.**
   and keychain errors through `From<KeyError>`, so their real messages are
   pinned too. Its TypeScript half is `tests/model-fetch.test.ts`, which replays
   the events and errors through `modelFetch` in `app/agent/fetch.ts`.
+  **`spec-check.json`** pins `check_print_spec`'s answer: one `checked` and
+  three `refused`, one per `SpecError` shape the Print size panel words. Its
+  Rust half is in `src-tauri/src/book/reprint.rs`, which builds each case from
+  a real `RawPrintSpec` through `check`. Its TypeScript half is
+  `tests/printSpec.test.ts`, which feeds every case through `refusalText`,
+  `refusalField` and `checkSummary`. The checked case uses a 16 x 8 page with
+  quarter-inch insets so every guide rect is an exact binary fraction and
+  `to_value` compares directly, unlike `book-layout.json`.
 - **`book-layout.json` is the only fixture carrying an irrational float**
-  (`PreviewGeometry`, which is `0.197 / 11.197` and friends straight out of
-  `geometry.rs`). serde_json's *default* float parser is the fast approximate
+  (`PreviewGeometry`'s guide rects, which are `0.197 / 11.197` and friends
+  derived from the book's `PrintSpec`). serde_json's *default* float parser is the fast approximate
   one -- the `float_roundtrip` feature is not enabled -- so reading the fixture
   back lands up to one ULP from the constant that wrote it. That test
   therefore serialises to TEXT and parses BOTH sides with the same parser,
   comparing the JSON text rather than two f64s. Every other fixture holds
   integers and short decimals and compares `to_value` directly; do not copy
   the text round-trip into those.
+
+  **To regenerate it**, serialise with `serde_json::to_value(&layout)` and
+  pretty-print that `Value` -- it sorts the keys and keeps the exact f64s.
+  Never pretty-print text that has been parsed back: that moves the last digit
+  of every irrational inset, and the diff then shows every guide as changed
+  when none did. Do it from a scratch edit, not a switch left in the test; a
+  test that can write the fixture it asserts against passes by construction.

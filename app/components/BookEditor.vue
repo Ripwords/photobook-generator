@@ -8,6 +8,8 @@ import {
   summarizeExport,
 } from "~/types/book";
 import type { PhotoOverrides } from "~/types/features";
+import { sizeLabel, type PrintSpec } from "~/types/printSpec";
+import type { PreviewGeometry } from "~/types/preview";
 import { shortcutCombo, shortcutKbds } from "~/types/shortcuts";
 
 const { projectId, listedName } = defineProps<{
@@ -29,6 +31,8 @@ const emit = defineEmits<{
       name: string;
       sourceFolders: string[];
       overrides: PhotoOverrides;
+      /** Its print size, so generating it again keeps the book it was. */
+      spec: PrintSpec | null;
     },
   ];
 }>();
@@ -54,6 +58,16 @@ const {
 const chatOpen = ref(true);
 /** The export sheet: output folder, the export itself, and pre-flight's report. */
 const exportOpen = ref(false);
+/** The Print size panel. Beside the book, not over it, so the guides it proposes show live. */
+const printSizeOpen = ref(false);
+/** The guides the panel's typed numbers would draw, while it is open. */
+const proposedGeometry = ref<PreviewGeometry | null>(null);
+const unit = usePrintUnit();
+
+async function changePrintSize(spec: PrintSpec) {
+  await editBook({ kind: "setPrintSpec", spec });
+}
+
 /** Whether a drag moves photo boxes rather than crops -- see `BookPreview`. */
 const editSlots = ref(false);
 
@@ -160,6 +174,7 @@ function requestEditPhotos() {
     name: project.name,
     sourceFolders: project.sourceFolders,
     overrides: project.overrides,
+    spec: layout.value?.spec ?? null,
   });
 }
 
@@ -289,6 +304,7 @@ onMounted(() => {
             :description="error"
             :ui="{ description: 'break-words' }"
           />
+          <!-- 2.518:1 is Pixajoy's spread, a placeholder: no layout, so no spec, has loaded yet. -->
           <template v-else>
             <USkeleton v-for="n in 3" :key="n" class="aspect-[2.518] w-full" />
           </template>
@@ -311,7 +327,14 @@ onMounted(() => {
           and swapping two photos. Every control sends one `edit_book` and shows
           what came back -- `useBook.editBook`.
         -->
-        <BookPreview v-if="layout" v-model:edit-slots="editSlots" :layout :busy @edit="editBook" />
+        <BookPreview
+          v-if="layout"
+          v-model:edit-slots="editSlots"
+          :layout
+          :busy
+          :geometry="printSizeOpen ? proposedGeometry : null"
+          @edit="editBook"
+        />
       </main>
 
       <!-- What the book holds, and what a click or a drag does right now. -->
@@ -319,6 +342,14 @@ onMounted(() => {
         v-if="layout"
         class="flex h-8 shrink-0 items-center gap-4 border-t border-default bg-default px-4 text-xs whitespace-nowrap text-muted tabular-nums"
       >
+        <button
+          type="button"
+          class="-mx-1 rounded px-1 text-default hover:bg-elevated focus-visible:outline-2 focus-visible:outline-primary"
+          title="Change the print size"
+          @click="printSizeOpen = true"
+        >
+          {{ sizeLabel(layout.spec, unit) }}
+        </button>
         <span><span class="text-default">{{ layout.pageCount }}</span> pages</span>
         <span><span class="text-default">{{ layout.placedPhotos }}</span> photos placed</span>
         <span v-if="blankPages > 0">
@@ -371,7 +402,7 @@ onMounted(() => {
   <USlideover
     v-model:open="exportOpen"
     title="Export"
-    description="Print-ready files for Pixajoy, checked by pre-flight before any is written."
+    description="Print-ready files at the book's print size, checked by pre-flight before any is written."
     :ui="{ content: 'max-w-md' }"
   >
     <template #body>
@@ -477,31 +508,7 @@ onMounted(() => {
             ]"
           />
 
-          <div v-if="counts.blockingCount > 0" class="space-y-2">
-            <h4 class="flex items-center gap-2 text-sm font-medium text-highlighted">
-              <UIcon name="i-lucide-octagon-x" class="size-4 text-error" />
-              Blocking ({{ counts.blockingCount }})
-            </h4>
-            <ul class="space-y-1 text-sm text-muted">
-              <li v-for="(f, i) in exportResult.blocking" :key="`block-${i}`" class="break-words">
-                <span v-if="f.page > 0" class="tabular-nums text-default">Page {{ f.page }}:</span>
-                {{ f.message }}
-              </li>
-            </ul>
-          </div>
-
-          <div v-if="counts.warningCount > 0" class="space-y-2">
-            <h4 class="flex items-center gap-2 text-sm font-medium text-highlighted">
-              <UIcon name="i-lucide-triangle-alert" class="size-4 text-warning" />
-              Warnings ({{ counts.warningCount }})
-            </h4>
-            <ul class="space-y-1 text-sm text-muted">
-              <li v-for="(f, i) in exportResult.warnings" :key="`warn-${i}`" class="break-words">
-                <span v-if="f.page > 0" class="tabular-nums text-default">Page {{ f.page }}:</span>
-                {{ f.message }}
-              </li>
-            </ul>
-          </div>
+          <PreflightFindings :blocking="exportResult.blocking" :warnings="exportResult.warnings" />
 
           <div v-if="counts.failedCount > 0" class="space-y-2">
             <h4 class="text-sm font-medium text-highlighted">
@@ -520,6 +527,24 @@ onMounted(() => {
           </div>
         </div>
       </div>
+    </template>
+  </USlideover>
+
+  <USlideover
+    v-model:open="printSizeOpen"
+    title="Print size"
+    :overlay="false"
+    :ui="{ content: 'max-w-sm' }"
+  >
+    <template #body>
+      <PrintSizePanel
+        v-if="layout"
+        :spec="layout.spec"
+        :project-id="projectId"
+        :busy
+        @apply="changePrintSize"
+        @preview="proposedGeometry = $event"
+      />
     </template>
   </USlideover>
 </template>

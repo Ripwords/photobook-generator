@@ -14,13 +14,20 @@ import {
   type BookEdit,
   type BookLayout,
   type PlacementRef,
+  type PreviewGeometry,
   type PreviewRect,
 } from "~/types/preview";
 
-const { layout, busy = false } = defineProps<{
+const {
+  layout,
+  busy = false,
+  geometry = null,
+} = defineProps<{
   layout: BookLayout;
   /** True while a command is in flight; every control waits for it. */
   busy?: boolean;
+  /** Guides to draw instead of the book's own -- see `BookPreviewPage`. */
+  geometry?: PreviewGeometry | null;
 }>();
 
 const emit = defineEmits<{
@@ -314,6 +321,7 @@ const leftOut = computed(() =>
             <div class="w-1/2">
               <BookPreviewPage
                 :layout
+                :geometry
                 :page="spread.left"
                 :side="pageSide(spread.left, 'left')"
                 :selectable="!busy && !spread.opening.locked"
@@ -328,6 +336,7 @@ const leftOut = computed(() =>
             <div class="w-1/2">
               <BookPreviewPage
                 :layout
+                :geometry
                 :page="spread.right"
                 :side="pageSide(spread.right, 'right')"
                 :selectable="!busy && !spread.opening.locked"

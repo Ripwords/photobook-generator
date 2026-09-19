@@ -27,7 +27,7 @@ const emit = defineEmits<{
   discarded: [];
 }>();
 
-const { changeFolders, retry: retryJob, rename, remove } = useAnalysisJobs();
+const { changeFolders, retry: retryJob, rename, setSpec, remove } = useAnalysisJobs();
 
 const summary = computed(() => job.stream.summary);
 const runId = computed(() => jobRunId(job));
@@ -374,6 +374,8 @@ function onGenerated(projectId: number) {
         :replacing="job.replacing"
         :name="job.name"
         @update:name="rename(job.id, $event)"
+        :spec="job.spec"
+        @update:spec="setSpec(job.id, $event)"
         @generated="onGenerated"
       />
 

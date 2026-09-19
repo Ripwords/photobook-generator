@@ -754,6 +754,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::print_spec::pixajoy_spec;
     use crate::book::cull::Override;
     use crate::book::pace::{Book, Page, Placement};
     use crate::geometry::{Rect, Side};
@@ -778,6 +779,7 @@ mod tests {
     /// round-trip mutations this file pins.
     fn fixture_book() -> Book {
         Book {
+            spec: pixajoy_spec(),
             controls: Default::default(),
             seed: 424_242,
             dropped: 3,

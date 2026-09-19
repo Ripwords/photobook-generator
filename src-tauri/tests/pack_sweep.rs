@@ -149,6 +149,9 @@ fn measure(book: &Book) -> Outcome {
 fn pack_sweep_places_every_keeper_the_book_can_hold_and_blanks_only_when_photos_run_out() {
     let lib = real_library();
     let w = real_weights();
+    // The sweep's recorded baseline is a Pixajoy baseline. Reading it from
+    // the constructor rather than restating the numbers keeps it that way.
+    let spec = app_lib::print_spec::PrintSpec::pixajoy();
     let cap = Capacity::from_library(PAGES, &lib);
     let buildable = Buildable::from_library(&lib);
     let slots = (cap.spreads + cap.singles) as usize;
@@ -169,7 +172,7 @@ fn pack_sweep_places_every_keeper_the_book_can_hold_and_blanks_only_when_photos_
         for n in 10..=cap.max_photos + 2 {
             for seed in SEEDS {
                 let photos = shape.photos(n);
-                let book = assemble(&photos, PAGES, &lib, &w, seed, &Overrides::default())
+                let book = assemble(&spec, &photos, PAGES, &lib, &w, seed, &Overrides::default())
                     .expect("no overrides, so nothing can refuse");
                 let o = measure(&book);
                 let lost = n.saturating_sub(o.placed);

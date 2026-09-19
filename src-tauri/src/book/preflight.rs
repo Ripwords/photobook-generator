@@ -21,19 +21,11 @@
 
 use crate::book::cull::Photo;
 use crate::book::pace::Book;
-use crate::book::score::{effective_dpi, MIN_DPI};
+use crate::book::score::effective_dpi;
 use crate::geometry::{bleeds_correctly, clear_of_gutter, in_safe_margin, in_trim, BleedEdge, Rect};
 use crate::templates::{Role, Slot};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-
-/// Ceiling of the DPI warn band (spec 5.6): `[MIN_DPI, WARN_DPI_CEILING)`
-/// warns and reports the effective value; below `MIN_DPI` blocks; at or
-/// above this ceiling is silent. Matches the scorer's own
-/// `resolution_headroom`, which saturates at 300 DPI -- pre-flight must
-/// agree with the scorer about what "good enough" means, or it blocks
-/// layouts the scorer already accepted.
-const WARN_DPI_CEILING: f64 = 300.0;
 
 /// Estimated bytes written to disk per placement, used to gate export
 /// against free disk space before any file is written.
@@ -42,7 +34,7 @@ const WARN_DPI_CEILING: f64 = 300.0;
 /// source's own resolution, encoded JPEG for a lossy source and PNG for a
 /// lossless one (`Exporter.outputFormat`). Nothing is composited and nothing
 /// is scaled to a page canvas, so this figure tracks what cameras produce and
-/// how much of the frame the crop keeps -- not `PAGE_W_PX` x `PAGE_H_PX`,
+/// how much of the frame the crop keeps -- not a full page canvas in pixels,
 /// which an earlier transparent-PNG export mechanic would have written and
 /// which this comment used to claim.
 ///
@@ -179,13 +171,16 @@ fn map_into_page(inner: &Rect, crop: &Rect, slot_rect: &Rect) -> Option<Rect> {
 /// is the whole reason the core/shell split exists; it previously did one
 /// `Path::exists()` per placement and the doc comment claiming otherwise
 /// was wrong.
-fn preflight_core(
+pub(crate) fn preflight_core(
     book: &Book,
     photos: &[Photo],
     bleed: &[Vec<BleedEdge>],
     available_bytes: u64,
     missing: &std::collections::BTreeSet<String>,
 ) -> Vec<Finding> {
+    // The book's own geometry. Pre-flight exists to answer "will this book
+    // print", and the answer depends on the size it is being printed at.
+    let spec = &book.spec;
     let mut findings = Vec::new();
     let mut placement_idx = 0usize;
 
@@ -211,30 +206,40 @@ fn preflight_core(
                 });
             }
 
-            // DPI floor (BLOCK) and warn band (WARN), agreeing with the
-            // scorer's own `effective_dpi` about what MIN_DPI/300 DPI mean.
+            // DPI floor (BLOCK) and warn band (WARN): `[min_dpi, warn_dpi)`
+            // warns and reports the effective value, below `min_dpi` blocks,
+            // at or above `warn_dpi` is silent.
+            //
+            // Both ends come from the book's own spec, which is what makes
+            // pre-flight agree with the scorer about what "good enough"
+            // means. There used to be three copies of these two numbers --
+            // `score::MIN_DPI`, a bare `300.0` literal in
+            // `resolution_headroom`, and a `WARN_DPI_CEILING` here, under a
+            // doc comment asserting an agreement that nothing enforced.
             // The slot's role/bleed/aspect_pref do not affect the DPI
             // number, so a throwaway `Slot` carrying only the real
             // `slot_rect` is exact, not an approximation.
             let synthetic_slot =
                 Slot { rect: pl.slot_rect, role: Role::Support, bleed: Vec::new(), aspect_pref: (1.0, 1.0) };
-            let dpi = effective_dpi(photo, &pl.crop, &synthetic_slot);
-            if dpi < MIN_DPI {
+            let dpi = effective_dpi(spec, photo, &pl.crop, &synthetic_slot);
+            if dpi < spec.min_dpi() {
                 findings.push(Finding {
                     severity: Severity::Block,
                     page: page.number,
                     photo_path: photo.path.clone(),
                     message: format!(
-                        "Photo resolves at {dpi:.0} DPI in this slot, below the {MIN_DPI:.0} DPI floor"
+                        "Photo resolves at {dpi:.0} DPI in this slot, below the {:.0} DPI floor",
+                        spec.min_dpi()
                     ),
                 });
-            } else if dpi < WARN_DPI_CEILING {
+            } else if dpi < spec.warn_dpi() {
                 findings.push(Finding {
                     severity: Severity::Warn,
                     page: page.number,
                     photo_path: photo.path.clone(),
                     message: format!(
-                        "Photo resolves at {dpi:.0} DPI in this slot, below the {WARN_DPI_CEILING:.0} DPI target"
+                        "Photo resolves at {dpi:.0} DPI in this slot, below the {:.0} DPI target",
+                        spec.warn_dpi()
                     ),
                 });
             }
@@ -251,8 +256,8 @@ fn preflight_core(
                 });
             }
 
-            // Faces: outside the trim rectangle, inside the 0.125" safe
-            // margin beyond it, or inside the gutter dead strip -- all
+            // Faces: outside the trim rectangle, inside the safe margin
+            // beyond it, or inside the gutter dead strip -- all
             // three BLOCK. Trim and safe-margin are checked as an
             // else-if, NOT two independent `if`s: `in_safe_margin` is by
             // construction a strict subset of `in_trim` (geometry.rs), so a
@@ -278,22 +283,25 @@ fn preflight_core(
                 let Some(mapped) = map_into_page(&face.box_, &pl.crop, &pl.slot_rect) else {
                     continue;
                 };
-                if !in_trim(&mapped, page.side) {
+                if !in_trim(spec, &mapped, page.side) {
                     findings.push(Finding {
                         severity: Severity::Block,
                         page: page.number,
                         photo_path: photo.path.clone(),
                         message: "Face falls outside the trim rectangle".into(),
                     });
-                } else if !in_safe_margin(&mapped, page.side) {
+                } else if !in_safe_margin(spec, &mapped, page.side) {
                     findings.push(Finding {
                         severity: Severity::Block,
                         page: page.number,
                         photo_path: photo.path.clone(),
-                        message: "Face falls inside the 0.125\" safe margin".into(),
+                        message: format!(
+                            "Face falls inside the {:.3}\" safe margin",
+                            spec.safe_margin_in()
+                        ),
                     });
                 }
-                if !clear_of_gutter(&mapped, page.side) {
+                if !clear_of_gutter(spec, &mapped, page.side) {
                     findings.push(Finding {
                         severity: Severity::Block,
                         page: page.number,
@@ -314,7 +322,7 @@ fn preflight_core(
             // whole declared box is visible.
             if let Some(saliency) = photo.saliency_box.and_then(|s| s.intersect(&pl.crop)) {
                 if let Some(mapped) = map_into_page(&saliency, &pl.crop, &pl.slot_rect) {
-                    if !clear_of_gutter(&mapped, page.side) {
+                    if !clear_of_gutter(spec, &mapped, page.side) {
                         findings.push(Finding {
                             severity: Severity::Warn,
                             page: page.number,
@@ -376,9 +384,10 @@ fn available_bytes(output_dir: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::print_spec::{odd_spec, pixajoy_spec};
     use crate::book::cull::{Face, PaletteColor};
     use crate::book::pace::{Book, Page, Placement};
-    use crate::geometry::{Side, PAGE_W_IN};
+    use crate::geometry::Side;
 
     /// 3:2, never square -- a square hides every aspect-dependent bug.
     fn photo(w: u32, h: u32) -> Photo {
@@ -397,6 +406,7 @@ mod tests {
     /// keeps the whole frame. Callers mutate one thing at a time.
     fn book_with(slot: Rect, crop: Rect, side: Side) -> Book {
         Book {
+            spec: pixajoy_spec(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
@@ -420,11 +430,11 @@ mod tests {
     /// Pixels needed for a given DPI in `clean_slot`, so DPI tests hit the
     /// boundary exactly rather than somewhere near it.
     fn px_for_dpi(dpi: f64) -> u32 {
-        (dpi * clean_slot().w * PAGE_W_IN).round() as u32
+        (dpi * clean_slot().w * pixajoy_spec().page_w_in()).round() as u32
     }
 
-    /// A non-square photo at `path`, sized well clear of `MIN_DPI`/
-    /// `WARN_DPI_CEILING` in `clean_slot` (400 DPI, same margin the other
+    /// A non-square photo at `path`, sized well clear of the spec's DPI
+    /// floor and ceiling in `clean_slot` (400 DPI, same margin the other
     /// fixtures in this module use), so a test using it exercises only
     /// whatever it's actually testing rather than tripping the DPI checks.
     fn preflight_photo(path: &str) -> Photo {
@@ -605,7 +615,7 @@ mod tests {
     /// Pixajoy's floor moved from 150 to 200 DPI: a photo that used to sit
     /// safely in the warn band now falls below the hard floor and must
     /// BLOCK, not warn. Pins that the warn band's LOWER edge moved with
-    /// `MIN_DPI`, not just the block/no-block threshold in isolation.
+    /// the spec's floor, not just the block/no-block threshold in isolation.
     #[test]
     fn preflight_blocks_at_one_hundred_eighty_dpi_now_that_the_floor_moved_to_two_hundred() {
         let dir = tempdir();
@@ -636,31 +646,67 @@ mod tests {
         assert!(warn.message.contains("250"), "message was {:?}", warn.message);
     }
 
-    /// Pins that pre-flight's floor is the SAME symbol as the scorer's, not
-    /// a hand-copied literal that could silently drift. The fixture is built
-    /// from `crate::book::score::MIN_DPI` via its FULLY QUALIFIED path,
-    /// deliberately bypassing whatever `MIN_DPI` this module's own scope
-    /// resolves to -- so if pre-flight ever stopped importing the scorer's
-    /// constant and defined a local copy that drifted from it, a photo
-    /// placed just below the scorer's real floor would land comfortably
-    /// above pre-flight's stale one and this test would catch the silent
-    /// disagreement. (A version of this test written against the bare,
-    /// in-scope `MIN_DPI` name was tried first and did NOT catch that
-    /// mutation -- it resolved to whichever constant was locally in scope
-    /// and passed either way, which is why the fully qualified path here is
-    /// load-bearing, not decorative.)
+    /// R10. Pre-flight reads the BOOK's floor and ceiling, never a copy of
+    /// Pixajoy's.
+    ///
+    /// This supersedes an earlier test that pinned pre-flight's floor to
+    /// `score::MIN_DPI` via its FULLY QUALIFIED path. That test existed
+    /// because a version written against the bare, in-scope `MIN_DPI` name
+    /// was tried first and did NOT catch the mutation -- the name resolved
+    /// to whichever constant was locally in scope and passed either way.
+    /// The constants are gone now and there is exactly one authority, the
+    /// book's own spec, so the drift it guarded is unrepresentable. The
+    /// near-miss is recorded here because the replacement has to be at
+    /// least as strong, and it is: running under `odd_spec` kills a
+    /// hardcoded 200.0 or 300.0 ANYWHERE in this module, not merely a
+    /// shadowed name.
+    ///
+    /// Two-sided under `odd_spec` (floor 150, ceiling 220), which shares no
+    /// number with Pixajoy's 200/300:
+    ///   - 250 DPI is above 220 and must be SILENT. Under a reintroduced
+    ///     `WARN_DPI_CEILING = 300.0` it would warn.
+    ///   - 140 DPI is below 150 and must BLOCK. Under a hardcoded 200.0
+    ///     floor it would also block, which is why the silent half above is
+    ///     the half that actually kills the mutation.
+    ///   - 180 DPI sits between them and must WARN, pinning that the band
+    ///     is the spec's band and not an empty one.
     #[test]
-    fn preflight_dpi_floor_is_the_scorers_min_dpi_not_a_drifted_local_copy() {
+    fn preflight_warns_below_the_specs_warn_dpi_and_blocks_below_its_floor() {
         let dir = tempdir();
-        let just_below = crate::book::score::MIN_DPI - 1.0;
-        let px = (just_below * clean_slot().w * PAGE_W_IN).round() as u32;
-        let mut p = photo(px, px * 2 / 3);
-        p.path = "/dev/null".into();
-        let book = book_with(clean_slot(), full_crop(), Side::Left);
-        let findings = preflight(&book, &[p], dir.path());
+        let spec = odd_spec();
+        // `odd_spec` is 8.0" wide, so pixels for a DPI must be computed from
+        // it -- `px_for_dpi` is Pixajoy's page and would silently land these
+        // fixtures at 11.197/8.0 = 1.4x the DPI they are named for.
+        let px_for = |dpi: f64| (dpi * clean_slot().w * spec.page_w_in()).round() as u32;
+        let book = Book { spec, ..book_with(clean_slot(), full_crop(), Side::Left) };
+
+        let mut above = photo(px_for(250.0), px_for(250.0) * 2 / 3);
+        above.path = "/dev/null".into();
+        assert_eq!(
+            preflight(&book, &[above], dir.path()),
+            Vec::new(),
+            "250 DPI is above this book's 220 DPI ceiling and must be silent"
+        );
+
+        let mut middle = photo(px_for(180.0), px_for(180.0) * 2 / 3);
+        middle.path = "/dev/null".into();
+        let findings = preflight(&book, &[middle], dir.path());
         assert!(
-            findings.iter().any(|f| f.severity == Severity::Block),
-            "a photo just below the scorer's floor must block under pre-flight too: {findings:?}"
+            findings.iter().any(|f| f.severity == Severity::Warn),
+            "180 DPI is inside this book's 150-220 band and must warn: {findings:?}"
+        );
+        assert!(
+            findings.iter().all(|f| f.severity != Severity::Block),
+            "180 DPI is above this book's floor and must not block: {findings:?}"
+        );
+
+        let mut below = photo(px_for(140.0), px_for(140.0) * 2 / 3);
+        below.path = "/dev/null".into();
+        let findings = preflight(&book, &[below], dir.path());
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Block && f.message.contains("150")),
+            "140 DPI is below this book's 150 DPI floor and must block, \
+             naming the book's own floor: {findings:?}"
         );
     }
 
@@ -668,23 +714,23 @@ mod tests {
     /// silent, meaningfully below it warns.
     ///
     /// `clean_slot` (0.50 normalised) CANNOT construct exactly 300 DPI:
-    /// `px_for_dpi(300.0)` rounds `300 * 0.50 * PAGE_W_IN` = 1679.55 up to
+    /// `px_for_dpi(300.0)` rounds `300 * 0.50 * page_w_in()` = 1679.55 up to
     /// 1680px, which resolves at ~300.08 DPI -- silent under EITHER `<` or
     /// `<=` against the ceiling, so a fixture built on it cannot tell the two
     /// comparisons apart and the boundary could be flipped with the suite
     /// still green. This uses a slot exactly 6.0" wide instead (the same
     /// trick `score.rs`'s `six_inch_slot` uses for the 150 DPI floor):
-    /// `6.0 / PAGE_W_IN` round-trips back through `* PAGE_W_IN` to exactly
+    /// `6.0 / page_w_in()` round-trips back through `* page_w_in()` to exactly
     /// 6.0 in IEEE doubles, so 1800px / 6.0" is bit-exact 300.0 DPI --
     /// verified below via `effective_dpi` directly, not merely assumed.
     #[test]
     fn preflight_is_silent_at_exactly_three_hundred_dpi_and_warns_meaningfully_below() {
         let dir = tempdir();
-        let slot = Rect::new(0.10, 0.10, 6.0 / PAGE_W_IN, 0.40);
+        let slot = Rect::new(0.10, 0.10, 6.0 / pixajoy_spec().page_w_in(), 0.40);
 
         let mut at = photo(1800, 1200);
         at.path = "/dev/null".into();
-        let dpi = effective_dpi(
+        let dpi = effective_dpi(&pixajoy_spec(),
             &at,
             &full_crop(),
             &Slot { rect: slot, role: Role::Support, bleed: Vec::new(), aspect_pref: (1.0, 1.0) },
@@ -826,6 +872,7 @@ mod tests {
         let good_slot = Rect::new(0.10, 0.10, 0.50, 0.40); // no declared bleed needed
         let short_slot = Rect::new(0.01, 0.0, 0.5, 1.0); // declares left bleed but stops short
         let book = Book {
+            spec: pixajoy_spec(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,

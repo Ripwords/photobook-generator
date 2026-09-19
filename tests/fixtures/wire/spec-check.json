@@ -1,0 +1,83 @@
+[
+  {
+    "findings": [
+      {
+        "message": "would print at 120 DPI, below the 150 DPI minimum",
+        "page": 7,
+        "photoPath": "/p/a.jpg",
+        "severity": "block"
+      }
+    ],
+    "geometry": {
+      "left": {
+        "gutter": {
+          "h": 1.0,
+          "w": 0.03125,
+          "x": 0.96875,
+          "y": 0.0
+        },
+        "safe": {
+          "h": 0.90625,
+          "w": 0.9765625,
+          "x": 0.0234375,
+          "y": 0.046875
+        },
+        "trim": {
+          "h": 0.9375,
+          "w": 0.984375,
+          "x": 0.015625,
+          "y": 0.03125
+        }
+      },
+      "pageHIn": 8.0,
+      "pageWIn": 16.0,
+      "right": {
+        "gutter": {
+          "h": 1.0,
+          "w": 0.03125,
+          "x": 0.0,
+          "y": 0.0
+        },
+        "safe": {
+          "h": 0.90625,
+          "w": 0.9765625,
+          "x": 0.0,
+          "y": 0.046875
+        },
+        "trim": {
+          "h": 0.9375,
+          "w": 0.984375,
+          "x": 0.0,
+          "y": 0.03125
+        }
+      }
+    },
+    "kind": "checked",
+    "recrops": true
+  },
+  {
+    "error": {
+      "axis": "vertical",
+      "insetsIn": 8.5,
+      "kind": "noSafeArea",
+      "pageIn": 8.0
+    },
+    "kind": "refused"
+  },
+  {
+    "error": {
+      "kind": "warnBelowFloor",
+      "minDpi": 300.0,
+      "warnDpi": 200.0
+    },
+    "kind": "refused"
+  },
+  {
+    "error": {
+      "field": "bleedIn",
+      "kind": "negative",
+      "value": -0.5
+    },
+    "kind": "refused"
+  }
+]

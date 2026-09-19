@@ -130,6 +130,15 @@ pub enum BookEdit {
         placement: PlacementRef,
         photo: usize,
     },
+    /// Print this book at a different size. See `book::reprint`: the layout
+    /// is kept and only the crops are recut, and unlike every other arm here
+    /// it never refuses.
+    ///
+    /// Deliberately absent from `app/agent/tools.ts`. The chat agent edits
+    /// layouts; it does not get to change what book the user is buying.
+    SetPrintSpec {
+        spec: crate::print_spec::PrintSpec,
+    },
 }
 
 /// What one photo would look like in one slot: the crop it would get, and
@@ -221,7 +230,7 @@ impl std::fmt::Display for EditError {
             Self::TemplateRejects(id) => write!(
                 f,
                 "{id} cannot hold these photos without cutting a face, putting one in the \
-                 gutter or the margin, or printing below 200 DPI"
+                 gutter or the margin, or printing below the book's lowest print resolution"
             ),
             Self::NoSuchPlacement(p) => write!(f, "there is no photo at {p}"),
             Self::NoSuchPhoto(i) => write!(f, "this book has no photo {i}"),
@@ -233,7 +242,7 @@ impl std::fmt::Display for EditError {
                     Rejection::FaceClipped => "have a face cut by the slot's crop",
                     Rejection::FaceInGutter => "put a face in the gutter",
                     Rejection::FaceInSafeMargin => "put a face outside the safe margin",
-                    Rejection::TooLowResolution => "print below 200 DPI at that size",
+                    Rejection::TooLowResolution => "print below the book's lowest print resolution at that size",
                 }
             ),
             Self::CropRejected { reason, .. } => write!(
@@ -243,7 +252,7 @@ impl std::fmt::Display for EditError {
                     Rejection::FaceClipped => "cut a face",
                     Rejection::FaceInGutter => "put a face in the gutter",
                     Rejection::FaceInSafeMargin => "put a face outside the safe margin",
-                    Rejection::TooLowResolution => "print below 200 DPI",
+                    Rejection::TooLowResolution => "print below the book's lowest print resolution",
                 }
             ),
             Self::CropOutOfBounds(_) => {
@@ -265,7 +274,7 @@ impl std::fmt::Display for EditError {
                     Rejection::FaceClipped => "have a face cut by the crop",
                     Rejection::FaceInGutter => "put a face in the gutter",
                     Rejection::FaceInSafeMargin => "put a face outside the safe margin",
-                    Rejection::TooLowResolution => "print below 200 DPI",
+                    Rejection::TooLowResolution => "print below the book's lowest print resolution",
                 }
             ),
             Self::MissingLayout(id) => write!(
@@ -436,6 +445,14 @@ pub fn apply(
         BookEdit::ReplacePhoto { placement, photo } => {
             replace(book, lib, photos, *placement, *photo)
         }
+        // No `lib` and no `w`: a size change re-cuts crops, it does not
+        // re-pick a template or re-score anything. The findings `reprint`
+        // computes are dropped here on purpose -- this door returns the whole
+        // book, and the panel has already seen them from `check_print_spec`.
+        BookEdit::SetPrintSpec { spec } => {
+            *book = crate::book::reprint::reprint(book, photos, spec).book;
+            Ok(())
+        }
     }
 }
 
@@ -587,7 +604,9 @@ fn lay_out(
         let mut scored: Vec<(f64, String, &PageLayout)> = halves(lib)
             .into_iter()
             .filter(|(id, l)| l.side == side && candidates.contains(id))
-            .filter_map(|(id, l)| single_fit(l, indices, photos).map(|fit| (fit, id, l)))
+            .filter_map(|(id, l)| {
+                single_fit(&book.spec, l, indices, photos).map(|fit| (fit, id, l))
+            })
             .collect();
         if scored.is_empty() {
             return Err(rejected_all(candidates));
@@ -601,7 +620,7 @@ fn lay_out(
             number: 0,
             side,
             template_id: id,
-            placements: place(layout, indices, photos),
+            placements: place(&book.spec, layout, indices, photos),
         }]);
     }
     let eligible: Vec<&SpreadTemplate> = lib
@@ -611,9 +630,10 @@ fn lay_out(
         .collect();
     let refs: Vec<&Photo> = indices.iter().map(|&i| &photos[i]).collect();
     let previous = previous_template(book, o);
-    let (template, assignment, _) = best_spread(&eligible, &refs, previous.as_deref(), w, seed)
-        .ok_or_else(|| rejected_all(candidates))?;
-    Ok(rebuild(template, &assignment, indices, photos).to_vec())
+    let (template, assignment, _) =
+        best_spread(&book.spec, &eligible, &refs, previous.as_deref(), w, seed)
+            .ok_or_else(|| rejected_all(candidates))?;
+    Ok(rebuild(&book.spec, template, &assignment, indices, photos).to_vec())
 }
 
 fn rejected_all(candidates: &[String]) -> EditError {
@@ -677,14 +697,10 @@ fn placement_slot(
             rect,
             role,
             bleed: bleed_edges(&rect, page.side),
-            aspect_pref: (slot_aspect_of(&rect), slot_aspect_of(&rect)),
+            aspect_pref: (book.spec.page_aspect(&rect), book.spec.page_aspect(&rect)),
         },
         page.side,
     )
-}
-
-fn slot_aspect_of(rect: &Rect) -> f64 {
-    rect.aspect_in(crate::geometry::PAGE_W_IN, crate::geometry::PAGE_H_IN)
 }
 
 /// The edges of a page-normalised rect that reach the canvas boundary and so
@@ -751,8 +767,8 @@ fn swap(
     let fit = |page_index: usize, slot_index: usize, photo_index: usize, at: PlacementRef| {
         let (slot, side) = placement_slot(book, lib, page_index, slot_index);
         let photo = &photos[photo_index];
-        let crop = choose_crop(photo, slot_aspect(&slot));
-        match rejects(photo, &crop, &slot, side) {
+        let crop = choose_crop(photo, slot_aspect(&book.spec, &slot));
+        match rejects(&book.spec, photo, &crop, &slot, side) {
             Some(reason) => Err(EditError::SwapRejected {
                 placement: at,
                 reason,
@@ -799,8 +815,8 @@ fn replace(
         return Err(EditError::Locked(o));
     }
     let (slot, side) = placement_slot(book, lib, pi, si);
-    let crop = choose_crop(&photos[photo], slot_aspect(&slot));
-    if let Some(reason) = rejects(&photos[photo], &crop, &slot, side) {
+    let crop = choose_crop(&photos[photo], slot_aspect(&book.spec, &slot));
+    if let Some(reason) = rejects(&book.spec, &photos[photo], &crop, &slot, side) {
         return Err(EditError::SwapRejected {
             placement: at,
             reason,
@@ -823,13 +839,13 @@ pub fn slot_candidates(
 ) -> Result<Vec<SlotCandidate>, EditError> {
     let (pi, si) = locate(book, at)?;
     let (slot, side) = placement_slot(book, lib, pi, si);
-    let aspect = slot_aspect(&slot);
+    let aspect = slot_aspect(&book.spec, &slot);
     Ok(photos
         .iter()
         .map(|photo| {
             let crop = choose_crop(photo, aspect);
             SlotCandidate {
-                refused: rejects(photo, &crop, &slot, side),
+                refused: rejects(&book.spec, photo, &crop, &slot, side),
                 crop,
             }
         })
@@ -839,6 +855,7 @@ pub fn slot_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::print_spec::pixajoy_spec;
     use crate::book::cull::{Face, Overrides, PaletteColor};
     use crate::book::pace::assemble;
 
@@ -883,7 +900,7 @@ mod tests {
     /// cuts both 2-up and 3-up spreads, so both alternative sets are
     /// exercised. `spread_with` asserts the mix rather than assuming it.
     fn book(photos: &[Photo]) -> Book {
-        assemble(
+        assemble(&pixajoy_spec(),
             photos,
             20,
             &frozen_library(),
@@ -1523,8 +1540,8 @@ mod tests {
                     let (pi, _) = locate(&b, r).unwrap();
                     let layout = slot_for(&b, &lib, pi).unwrap();
                     let slot = &layout.slots[(r.z - 1) as usize];
-                    let crop = choose_crop(&ps[victim], slot_aspect(slot));
-                    rejects(&ps[victim], &crop, slot, layout.side) == Some(Rejection::FaceClipped)
+                    let crop = choose_crop(&ps[victim], slot_aspect(&pixajoy_spec(), slot));
+                    rejects(&pixajoy_spec(), &ps[victim], &crop, slot, layout.side) == Some(Rejection::FaceClipped)
                 }
             })
             .expect("fixture: some slot must clip a full-frame face");
@@ -1590,7 +1607,7 @@ mod tests {
         let old = placement(&b, at);
         let (pi, si) = locate(&b, at).unwrap();
         let (slot, _) = placement_slot(&b, &lib, pi, si);
-        let expected = choose_crop(&ps[extra], slot_aspect(&slot));
+        let expected = choose_crop(&ps[extra], slot_aspect(&pixajoy_spec(), &slot));
 
         apply(
             &mut b,
@@ -1729,6 +1746,55 @@ mod tests {
         assert_eq!(b, before);
     }
 
+    /// `SetPrintSpec` really goes through the one door, on a real 20-page
+    /// book rather than `reprint`'s two-placement fixture.
+    ///
+    /// The mutation is the arm returning `Ok(())` without calling `reprint`,
+    /// which every test in `book::reprint` survives because none of them
+    /// reaches `apply`. A size change that silently did nothing would leave
+    /// the panel showing the new numbers over the old book.
+    ///
+    /// It asserts the whole book moved, not just that the call succeeded: the
+    /// new spec is stored, every crop is recut, and the layout it was recut
+    /// for is untouched.
+    #[test]
+    fn edit_set_print_spec_reprints_the_whole_book_through_the_one_door() {
+        let ps = photos(25);
+        let mut b = book(&ps);
+        let before = b.clone();
+        let lib = frozen_library();
+
+        let r = apply(
+            &mut b,
+            &BookEdit::SetPrintSpec { spec: crate::print_spec::odd_spec() },
+            &lib,
+            &ps,
+            &Weights::default(),
+        );
+
+        assert_eq!(r, Ok(()), "a size change is never refused -- see book::reprint");
+        assert_eq!(b.spec, crate::print_spec::odd_spec());
+        assert_eq!(b.seed, before.seed);
+        assert_eq!(b.pages.len(), before.pages.len());
+
+        let mut recut = 0;
+        for (page, orig) in b.pages.iter().zip(&before.pages) {
+            assert_eq!(page.template_id, orig.template_id, "a resize must not re-pick a template");
+            for (pl, was) in page.placements.iter().zip(&orig.placements) {
+                assert_eq!(pl.slot_rect, was.slot_rect, "a resize must not move a slot");
+                assert_eq!(pl.photo_index, was.photo_index);
+                if pl.crop != was.crop {
+                    recut += 1;
+                }
+            }
+        }
+        // Every one of them, not merely "some": 8.0 x 10.0 is portrait where
+        // Pixajoy is landscape, so no slot in the book keeps its printed shape.
+        let total: usize = b.pages.iter().map(|p| p.placements.len()).sum();
+        assert!(total > 0);
+        assert_eq!(recut, total, "{recut} of {total} placements were recut");
+    }
+
     /// One answer per photo, in the order `photo_index` counts: the crop the
     /// slot would give it and whether a hard constraint refuses it. Landscape
     /// and portrait alternate, so an answer at the wrong index has the wrong
@@ -1748,7 +1814,7 @@ mod tests {
 
         assert_eq!(candidates.len(), ps.len());
         for (i, c) in candidates.iter().enumerate() {
-            assert_eq!(c.crop, choose_crop(&ps[i], slot_aspect(&slot)), "photo {i}");
+            assert_eq!(c.crop, choose_crop(&ps[i], slot_aspect(&pixajoy_spec(), &slot)), "photo {i}");
         }
         assert_eq!(candidates[7].refused, Some(Rejection::TooLowResolution));
         assert_eq!(candidates[8].refused, None);
@@ -1966,7 +2032,7 @@ mod tests {
         let crop_aspect =
             (moved.crop.w * photo.width as f64) / (moved.crop.h * photo.height as f64);
         assert!(
-            (crop_aspect - slot_aspect_of(&target)).abs() < 1e-9,
+            (crop_aspect - b.spec.page_aspect(&target)).abs() < 1e-9,
             "the crop has the slot's real aspect"
         );
 
@@ -2085,7 +2151,7 @@ mod tests {
         let photo = &ps[swapped.photo_index];
         let crop_aspect =
             (swapped.crop.w * photo.width as f64) / (swapped.crop.h * photo.height as f64);
-        assert!((crop_aspect - slot_aspect_of(&flush)).abs() < 1e-9);
+        assert!((crop_aspect - b.spec.page_aspect(&flush)).abs() < 1e-9);
 
         apply(
             &mut b,
@@ -2167,7 +2233,24 @@ mod tests {
                     placement: PlacementRef { page: 3, z: 1 },
                     photo: 12,
                 },
+                // `odd_spec`'s numbers, every one distinct from every other,
+                // so a transposed field in the panel's payload lands here
+                // rather than as a quietly wrong book.
+                BookEdit::SetPrintSpec { spec: crate::print_spec::odd_spec() },
             ]
+        );
+        // The panel sends a spec, and it goes through `TryFrom<RawPrintSpec>`
+        // on the way in like every other route into a `PrintSpec`. A page
+        // that leaves no safe area is refused at the wire, not inside
+        // `reprint`, which has no way to report it -- `apply`'s arm returns
+        // `Ok(())` unconditionally on purpose.
+        assert!(
+            serde_json::from_str::<BookEdit>(
+                r#"{"kind":"setPrintSpec","spec":{"pageWIn":0.5,"pageHIn":10.0,"bleedIn":0.25,
+                     "gutterIn":0.4,"safeMarginIn":0.05,"minDpi":150.0,"warnDpi":220.0}}"#
+            )
+            .is_err(),
+            "an impossible geometry must not deserialise into an edit"
         );
         assert!(serde_json::from_str::<BookEdit>(r#"{"kind":"burn"}"#).is_err());
         assert!(
@@ -2269,7 +2352,7 @@ fn set_crop(
     }
     let (slot, side) = placement_slot(book, lib, page_index, slot_index);
     let photo = &photos[book.pages[page_index].placements[slot_index].photo_index];
-    let h = w * photo.aspect() / slot_aspect(&slot);
+    let h = w * photo.aspect() / slot_aspect(&book.spec, &slot);
     let inside = |v: f64| v.is_finite() && v >= -CROP_EPS;
     if !(inside(x) && inside(y) && w.is_finite() && w >= MIN_CROP_W && h.is_finite())
         || x + w > 1.0 + CROP_EPS
@@ -2279,7 +2362,7 @@ fn set_crop(
     }
     let crop =
         crate::geometry::Rect::new(x.clamp(0.0, 1.0), y.clamp(0.0, 1.0), w.min(1.0), h.min(1.0));
-    if let Some(reason) = rejects(photo, &crop, &slot, side) {
+    if let Some(reason) = rejects(&book.spec, photo, &crop, &slot, side) {
         return Err(EditError::CropRejected {
             placement: at,
             reason,
@@ -2365,11 +2448,11 @@ fn set_slot(
         rect,
         role,
         bleed: bleed_edges(&rect, page.side),
-        aspect_pref: (slot_aspect_of(&rect), slot_aspect_of(&rect)),
+        aspect_pref: (book.spec.page_aspect(&rect), book.spec.page_aspect(&rect)),
     };
     let photo = &photos[page.placements[slot_index].photo_index];
-    let crop = choose_crop(photo, slot_aspect(&slot));
-    if let Some(reason) = rejects(photo, &crop, &slot, page.side) {
+    let crop = choose_crop(photo, slot_aspect(&book.spec, &slot));
+    if let Some(reason) = rejects(&book.spec, photo, &crop, &slot, page.side) {
         return Err(EditError::SlotRejected {
             placement: at,
             reason,
