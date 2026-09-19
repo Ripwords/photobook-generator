@@ -7,6 +7,7 @@
 
 use crate::book::cull::Photo;
 use crate::book::pace::Book;
+use crate::geometry::CoverSide;
 use crate::protocol::ExportItem;
 
 /// How many hex characters of a photo's content hash go into its output
@@ -42,6 +43,17 @@ fn hash_prefix(hash: &str) -> &str {
 /// SKU is 40 pages (see the design spec's SKU table).
 pub(crate) fn output_filename(page_number: u32, z: u32, hash: &str) -> String {
     format!("p{:02}-z{}-{}", page_number, z, hash_prefix(hash))
+}
+
+/// The output basename for one side of the cover. It cannot collide with a
+/// page's name, which always starts with `p`, and it sorts ahead of every
+/// page, where a reader of the output folder looks for the cover first.
+pub(crate) fn cover_filename(side: CoverSide, hash: &str) -> String {
+    let side = match side {
+        CoverSide::Front => "front",
+        CoverSide::Back => "back",
+    };
+    format!("cover-{side}-{}", hash_prefix(hash))
 }
 
 /// Predicts the container the sidecar's `Exporter.outputFormat` will choose
@@ -174,6 +186,17 @@ mod tests {
     fn output_filename_tolerates_a_hash_shorter_than_the_prefix_length() {
         let name = output_filename(1, 1, "ab");
         assert_eq!(name, "p01-z1-ab");
+    }
+
+    #[test]
+    fn cover_filename_names_the_side_and_sorts_ahead_of_every_page() {
+        let front = cover_filename(CoverSide::Front, "abcdef0123456789");
+        let back = cover_filename(CoverSide::Back, "0123456789abcdef");
+
+        assert_eq!(front, "cover-front-abcdef01");
+        assert_eq!(back, "cover-back-01234567");
+        assert!(front < output_filename(1, 1, "00000000"));
+        assert!(back < output_filename(1, 1, "00000000"));
     }
 
     // --- build_items: shape and ordering -----------------------------------

@@ -60,6 +60,18 @@ function shape(pages: (PreviewPage | null)[]): (number | null)[] {
 }
 
 describe("the wire fixture", () => {
+  it("carries the cover: both panels, one empty, and the spine", () => {
+    expect(layout.cover.aspect).toBe(1.175);
+    expect(layout.cover.spine).toBe("#1a2b3c");
+    expect(layout.cover.front.photo).toEqual({
+      photoIndex: 4,
+      crop: { x: 0, y: 0.125, w: 1, h: 0.567 },
+      filename: "cover-front-hash-e",
+    });
+    expect(layout.cover.back.photo).toBeNull();
+    expect(layout.cover.back.visible.x).toBeGreaterThan(layout.cover.front.visible.x);
+  });
+
   it("carries every key the preview reads, including a page that holds nothing", () => {
     expect(layout.projectId).toBe(7);
     expect(layout.pageCount).toBe(4);

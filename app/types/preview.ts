@@ -133,6 +133,36 @@ export interface BookLayout {
   pages: PreviewPage[];
   /** One entry per opening, in `toSpreads` order -- see `openingFor`. */
   openings: PreviewOpening[];
+  cover: PreviewCover;
+}
+
+/**
+ * Mirrors `preview::PreviewCover`. `aspect` and each `visible` rect come from
+ * the book's spec in Rust, like the page guides, and are never re-derived here.
+ */
+export interface PreviewCover {
+  /** Panel width over height in inches: the shape a cover crop is cut to. */
+  aspect: number;
+  /** Lowercase `#rrggbb`. */
+  spine: string;
+  front: PreviewCoverSide;
+  back: PreviewCoverSide;
+}
+
+/** Mirrors `preview::PreviewCoverSide`. */
+export interface PreviewCoverSide {
+  /** Panel-normalised: what shows on the finished board, less the safe margin. */
+  visible: PreviewRect;
+  photo: PreviewCoverPhoto | null;
+}
+
+/** Mirrors `preview::PreviewCoverPhoto`. */
+export interface PreviewCoverPhoto {
+  /** Indexes `BookLayout.photos`. */
+  photoIndex: number;
+  crop: PreviewRect;
+  /** Built by `export::cover_filename`; `null` only when the index is out of range. */
+  filename: string | null;
 }
 
 /**
