@@ -24,6 +24,71 @@ deliberately-parked decision that this file is the only surviving record of.**
 
 ---
 
+## What changed on 2026-09-19: feature prints, clipping, and analyzer v3
+
+This is groundwork for similarity-aware selection. Nothing reads the new fields yet.
+Clustering and culling are unchanged.
+
+**New analysis fields.** The sidecar's single Vision batch now also runs
+`VNGenerateImageFeaturePrintRequest`, pinned to revision 2 so an OS update cannot silently
+change the embedding space under cached rows. On macOS 15+/arm64 each print is 768
+Float32 values with L2 norm of about 1. It travels as `featurePrint`, which is base64 of
+little-endian Float32 (`FeaturePrint.encode/decode` in Swift and
+`cull::decode_feature_print` in Rust). `Photo.feature_print` holds the decoded vector. An
+absent print is accepted, but a present one that does not decode refuses the record.
+`cluster::feature_distance` is plain Euclidean. It matched Apple's `computeDistance` to
+1e-6 on real photos.
+
+`clippedLow` and `clippedHigh` are the fractions of luma below 5% and above 95% of full
+scale. Both are required by `from_features`. `contrast` is now the p5 to p95 luma spread
+instead of min to max. A test with 8x8 hot-pixel blocks shows that min/max moved by 0.647
+while the percentile spread stayed within 0.02.
+
+**`ANALYZER_VERSION` is 3.** Every cached row goes stale at once. The first scan after
+upgrading re-analyses every photo in the library, and a saved book
+will not open or export until its source folders have been re-analysed. `resolve_photos`
+says so. Without the bump, v2 rows would have been served from the cache and then
+refused by `from_features` for missing clipping fields.
+
+**Cost.** On 81 photos from `Vietnam 2026` (warm cache, interleaved runs), analysis took
+1.55 to 1.60 s before and 1.53 to 1.81 s after. The per-stage benchmark put Vision at
+27.3 ms/photo before and 27.6 after, and metrics at 11.1 and 11.7. The difference is
+within noise. Each record grows by about 4 KB of base64. Those records round-trip through
+the webview from `finalize_photos` to `generate_book`, and this has not been stripped
+because the next phase's `from_features` needs the print.
+
+**Calibration** (`Vietnam 2026`, 81 files = 41 stems, of which 40 are jpg/dng twins).
+Twins were collapsed to one photo per stem for groups (a) to (d). All pairs were used
+rather than a sample. These Insta360 files carry no EXIF date, so the app sees
+`captured_at = None` for all of them. Times here come from the `IMG_YYYYMMDD_HHMMSS`
+filenames, and a 4 h gap gives 4 events of 2, 1, 34 and 4 photos.
+
+| Pairs | n | p5 | p25 | p50 | p75 | p95 |
+|---|---|---|---|---|---|---|
+| jpg/dng twin of one shot | 40 | 0.189 | 0.273 | 0.313 | 0.408 | 0.663 |
+| (a) pHash Hamming <= 4 | 12 | 0.118 | 0.172 | 0.218 | 0.260 | 0.293 |
+| (b) within 120 s | 96 | 0.209 | 0.332 | 0.566 | 0.669 | 0.914 |
+| (c) same 4 h event | 568 | 0.422 | 0.608 | 0.751 | 0.946 | 1.060 |
+| (d) across events | 252 | 0.836 | 0.933 | 0.971 | 1.008 | 1.064 |
+
+A contact sheet of the 10 closest pairs that pHash does not already call duplicates
+(d 0.218 to 0.314, pHash Hamming 6 to 16, 2 to 38 s apart) showed only true
+near-duplicates: the same person, spot and framing with a changed smile or head tilt. That
+is the redundancy pHash misses. Pairs near (c)'s p25 (about 0.60) showed the same person
+and outfit at a different spot or framing, which are distinct pictures. One pair was 6 s
+apart but went from a close portrait to a wide street shot. So time alone would wrongly
+merge that pair, and the print keeps it apart. A near-duplicate cut somewhere around
+0.35 looks plausible here. It is not yet a decision, because this is one person in one
+town, and 81 photos cannot settle a threshold. Twins reach 0.66 at p95, because the dng
+is analysed from its embedded preview. Any similarity rule has to handle twins by stem,
+not by distance.
+
+**Trap: a fourth Vision-calling Swift test deadlocks the suite.** A standalone
+feature-print test brought back the `VNControlledCapacityTasksQueue` hang in the 300-photo
+batch test, even behind `VisionGate`. The assertions now live inside
+`visionReturnsResultForPlainImageWithoutCrashing`. Add new Vision assertions to an
+existing Vision test rather than writing a new one.
+
 ## What changed on 2026-09-19: a book's right-click menu, and favourites
 
 Sidebar books had no actions at all. They now take a right-click menu, and so do library
@@ -1621,9 +1686,9 @@ beside it. The design calls for the OS keychain, read from Rust.
   dedupes across runs.
 - `SidecarPool::analyze_all`'s respawn-on-crash path is untested — it needs a live
   `AppHandle` and a trait abstraction was judged not worth it.
-- `contrast` and the per-tile sharpness normalisation use raw min/max luma, which one hot
-  pixel or specular highlight can saturate. Real degradation on real photos, invisible to
-  synthetic fixtures. **Measure at the real-photo run before choosing a fix.**
+- The per-tile sharpness normalisation still uses raw min/max luma, which one hot pixel
+  or specular highlight can saturate. `contrast` had the same flaw and became a p5 to p95
+  spread in analyzer v3 (2026-09-19).
 - `ImageLoader` pays two full decodes for any source whose long edge is under
   `analysisMaxPixel` (no embedded thumbnail, so pass 1 decodes fully, fails the floor
   check, and pass 2 decodes again). Hits PNGs, web-sized JPEGs and scans. Performance
