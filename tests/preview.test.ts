@@ -680,6 +680,10 @@ describe("the edit wire", () => {
           coverWrapIn: 0.6,
         },
       },
+      { kind: "setCoverPhoto", side: "front", photo: 7 },
+      { kind: "setCoverPhoto", side: "back", photo: null },
+      { kind: "setCoverCrop", side: "back", x: 0.125, y: 0.0625, w: 0.5 },
+      { kind: "setSpineColour", rgb: "#1a2b3c" },
     ];
     expect(fixture).toEqual(typed);
   });

@@ -186,7 +186,16 @@ export type BookEdit =
    * Deliberately absent from `app/agent/tools.ts`: the chat agent edits
    * layouts, it does not get to change what book the user is buying.
    */
-  | { kind: "setPrintSpec"; spec: PrintSpec };
+  | { kind: "setPrintSpec"; spec: PrintSpec }
+  /** Put any analysed photo on one side of the cover, or clear it with `null`. */
+  | { kind: "setCoverPhoto"; side: CoverSide; photo: number | null }
+  /** A hand crop on the cover; Rust derives the height from the cover panel. */
+  | { kind: "setCoverCrop"; side: CoverSide; x: number; y: number; w: number }
+  /** The plain spine colour, `#rrggbb`. */
+  | { kind: "setSpineColour"; rgb: string };
+
+/** Mirrors `geometry::CoverSide`. */
+export type CoverSide = "front" | "back";
 
 /** Mirrors `score::Rejection`: the hard constraints an edit can break. */
 export type Rejection = "faceClipped" | "faceInGutter" | "faceInSafeMargin" | "tooLowResolution";

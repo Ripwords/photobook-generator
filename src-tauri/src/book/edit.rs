@@ -35,11 +35,12 @@
 //! refuses the edit with the reason. An edit cannot produce a book that
 //! pre-flight would then block.
 
+use crate::book::cover::{self, CoverPhoto, Rgb};
 use crate::book::crop::choose_crop;
 use crate::book::cull::Photo;
 use crate::book::pace::{half_id, place, rebuild, single_fit, tie_break, Book, Page};
 use crate::book::score::{best_spread, rejects, slot_aspect, Rejection};
-use crate::geometry::{BleedEdge, Rect, Side};
+use crate::geometry::{BleedEdge, CoverSide, Rect, Side};
 use crate::templates::{Library, PageLayout, Role, Slot, SpreadTemplate, Weights};
 use serde::{Deserialize, Serialize};
 
@@ -139,6 +140,23 @@ pub enum BookEdit {
     SetPrintSpec {
         spec: crate::print_spec::PrintSpec,
     },
+    /// Put photo `photo` (any analysed photo, in the book or not) on one
+    /// side of the cover with its automatic crop, or clear that side.
+    SetCoverPhoto {
+        side: CoverSide,
+        photo: Option<usize>,
+    },
+    /// `SetCrop` for a cover photo: the height is derived from the cover
+    /// panel's aspect.
+    SetCoverCrop {
+        side: CoverSide,
+        x: f64,
+        y: f64,
+        w: f64,
+    },
+    SetSpineColour {
+        rgb: Rgb,
+    },
 }
 
 /// What one photo would look like in one slot: the crop it would get, and
@@ -201,6 +219,21 @@ pub enum EditError {
     },
     /// A page names a template the library no longer has.
     MissingLayout(String),
+    /// A cover photo or its hand crop would break a hard constraint there.
+    CoverRejected {
+        side: CoverSide,
+        reason: Rejection,
+    },
+    CoverCropOutOfBounds(CoverSide),
+    /// A cover crop was asked for on a side that has no photo.
+    NoCoverPhoto(CoverSide),
+}
+
+fn cover_name(side: CoverSide) -> &'static str {
+    match side {
+        CoverSide::Front => "front cover",
+        CoverSide::Back => "back cover",
+    }
 }
 
 impl std::fmt::Display for EditError {
@@ -281,6 +314,29 @@ impl std::fmt::Display for EditError {
                 f,
                 "this page uses template {id:?}, which is no longer in the library"
             ),
+            // `FaceInSafeMargin` is the only face refusal `cover::rejects`
+            // gives for a face it can see, and on the cover that margin is
+            // mostly the wrap, so the message names the fold under the board.
+            Self::CoverRejected { side, reason } => write!(
+                f,
+                "on the {} that would {}",
+                cover_name(*side),
+                match reason {
+                    Rejection::FaceClipped => "cut a face",
+                    Rejection::FaceInGutter | Rejection::FaceInSafeMargin => {
+                        "put a face where the cover folds under the board or too near its edge"
+                    }
+                    Rejection::TooLowResolution => {
+                        "print below the book's lowest print resolution at the cover's size"
+                    }
+                }
+            ),
+            Self::CoverCropOutOfBounds(_) => {
+                write!(f, "the crop window has to stay inside the photo")
+            }
+            Self::NoCoverPhoto(side) => {
+                write!(f, "the {} has no photo to crop", cover_name(*side))
+            }
         }
     }
 }
@@ -451,6 +507,14 @@ pub fn apply(
         // book, and the panel has already seen them from `check_print_spec`.
         BookEdit::SetPrintSpec { spec } => {
             *book = crate::book::reprint::reprint(book, photos, spec).book;
+            Ok(())
+        }
+        BookEdit::SetCoverPhoto { side, photo } => set_cover_photo(book, photos, *side, *photo),
+        BookEdit::SetCoverCrop { side, x, y, w } => {
+            set_cover_crop(book, photos, *side, *x, *y, *w)
+        }
+        BookEdit::SetSpineColour { rgb } => {
+            book.cover.spine = *rgb;
             Ok(())
         }
     }
@@ -2237,6 +2301,10 @@ mod tests {
                 // so a transposed field in the panel's payload lands here
                 // rather than as a quietly wrong book.
                 BookEdit::SetPrintSpec { spec: crate::print_spec::odd_spec() },
+                BookEdit::SetCoverPhoto { side: CoverSide::Front, photo: Some(7) },
+                BookEdit::SetCoverPhoto { side: CoverSide::Back, photo: None },
+                BookEdit::SetCoverCrop { side: CoverSide::Back, x: 0.125, y: 0.0625, w: 0.5 },
+                BookEdit::SetSpineColour { rgb: Rgb { r: 0x1a, g: 0x2b, b: 0x3c } },
             ]
         );
         // The panel sends a spec, and it goes through `TryFrom<RawPrintSpec>`
@@ -2316,6 +2384,193 @@ mod tests {
             "no such opening, no alternatives"
         );
     }
+
+    // --- the cover ----------------------------------------------------------
+
+    fn edit(b: &mut Book, ps: &[Photo], e: BookEdit) -> Result<(), EditError> {
+        apply(b, &e, &frozen_library(), ps, &Weights::default())
+    }
+
+    fn cover_crop(ps: &[Photo], i: usize) -> Rect {
+        choose_crop(&ps[i], pixajoy_spec().cover_aspect())
+    }
+
+    /// Photo 2 is portrait and photo 1 landscape, so the two automatic crops
+    /// differ and a crop copied from the wrong photo shows.
+    #[test]
+    fn set_cover_photo_puts_any_photo_on_that_side_with_its_automatic_crop() {
+        let ps = photos(25);
+        let mut b = book(&ps);
+        let front = b.cover.front;
+        edit(&mut b, &ps, BookEdit::SetCoverPhoto { side: CoverSide::Back, photo: Some(2) }).unwrap();
+        assert_eq!(b.cover.back, Some(CoverPhoto { photo_index: 2, crop: cover_crop(&ps, 2) }));
+        assert_eq!(b.cover.front, front, "the other side is untouched");
+
+        edit(&mut b, &ps, BookEdit::SetCoverPhoto { side: CoverSide::Front, photo: Some(1) }).unwrap();
+        assert_eq!(b.cover.front, Some(CoverPhoto { photo_index: 1, crop: cover_crop(&ps, 1) }));
+        assert_ne!(cover_crop(&ps, 1), cover_crop(&ps, 2), "fixture: the crops must differ");
+    }
+
+    #[test]
+    fn set_cover_photo_none_clears_only_that_side() {
+        let ps = photos(25);
+        let mut b = book(&ps);
+        let front = b.cover.front;
+        assert!(front.is_some() && b.cover.back.is_some(), "fixture: both sides filled");
+        edit(&mut b, &ps, BookEdit::SetCoverPhoto { side: CoverSide::Back, photo: None }).unwrap();
+        assert_eq!(b.cover.back, None);
+        assert_eq!(b.cover.front, front);
+    }
+
+    #[test]
+    fn set_cover_photo_refuses_a_photo_the_book_does_not_have() {
+        let ps = photos(25);
+        let mut b = book(&ps);
+        let before = b.clone();
+        let err = edit(&mut b, &ps, BookEdit::SetCoverPhoto { side: CoverSide::Front, photo: Some(25) });
+        assert_eq!(err, Err(EditError::NoSuchPhoto(25)));
+        assert_eq!(b, before);
+    }
+
+    /// The face is at the top of a landscape photo, whose cover crop is the
+    /// full height, so it lands in the top wrap. Too few pixels is the other
+    /// refusal a photo can earn on the cover by itself.
+    #[test]
+    fn set_cover_photo_refuses_a_face_in_the_wrap_or_too_few_pixels() {
+        let mut ps = photos(25);
+        ps[3].faces = vec![Face { box_: Rect::new(0.45, 0.01, 0.08, 0.05), capture_quality: None }];
+        ps[4].width = 1000;
+        ps[4].height = 750;
+        let mut b = book(&ps);
+        let before = b.clone();
+        assert_eq!(
+            edit(&mut b, &ps, BookEdit::SetCoverPhoto { side: CoverSide::Back, photo: Some(3) }),
+            Err(EditError::CoverRejected { side: CoverSide::Back, reason: Rejection::FaceInSafeMargin })
+        );
+        assert_eq!(
+            edit(&mut b, &ps, BookEdit::SetCoverPhoto { side: CoverSide::Front, photo: Some(4) }),
+            Err(EditError::CoverRejected { side: CoverSide::Front, reason: Rejection::TooLowResolution })
+        );
+        assert_eq!(b, before, "a refused edit changes nothing");
+    }
+
+    /// Landscape 4:3 onto Pixajoy's 1.175 panel: `h = w * 4/3 / 1.175`.
+    #[test]
+    fn set_cover_crop_derives_the_height_from_the_panel() {
+        let ps = photos(25);
+        let mut b = book(&ps);
+        edit(&mut b, &ps, BookEdit::SetCoverPhoto { side: CoverSide::Front, photo: Some(0) }).unwrap();
+        edit(&mut b, &ps, BookEdit::SetCoverCrop { side: CoverSide::Front, x: 0.1, y: 0.05, w: 0.8 })
+            .unwrap();
+        let crop = b.cover.front.unwrap().crop;
+        let h = 0.8 * (4000.0 / 3000.0) / pixajoy_spec().cover_aspect();
+        assert_eq!((crop.x, crop.y, crop.w), (0.1, 0.05, 0.8));
+        assert!((crop.h - h).abs() < 1e-12, "h {} != {h}", crop.h);
+        assert_eq!(b.cover.front.unwrap().photo_index, 0);
+    }
+
+    #[test]
+    fn set_cover_crop_keeps_the_window_inside_the_photo() {
+        let ps = photos(25);
+        let mut b = book(&ps);
+        edit(&mut b, &ps, BookEdit::SetCoverPhoto { side: CoverSide::Back, photo: Some(0) }).unwrap();
+        let before = b.clone();
+        // w 0.8 gives h ~0.908, so y 0.1 runs off the bottom.
+        for (x, y, w) in [(0.3, 0.0, 0.8), (0.0, 0.1, 0.8), (-0.01, 0.0, 0.5), (0.0, 0.0, 0.01), (f64::NAN, 0.0, 0.5)] {
+            assert_eq!(
+                edit(&mut b, &ps, BookEdit::SetCoverCrop { side: CoverSide::Back, x, y, w }),
+                Err(EditError::CoverCropOutOfBounds(CoverSide::Back)),
+                "{x} {y} {w}"
+            );
+        }
+        assert_eq!(b, before);
+    }
+
+    #[test]
+    fn set_cover_crop_needs_a_photo_on_that_side() {
+        let ps = photos(25);
+        let mut b = book(&ps);
+        edit(&mut b, &ps, BookEdit::SetCoverPhoto { side: CoverSide::Front, photo: None }).unwrap();
+        assert_eq!(
+            edit(&mut b, &ps, BookEdit::SetCoverCrop { side: CoverSide::Front, x: 0.0, y: 0.0, w: 0.5 }),
+            Err(EditError::NoCoverPhoto(CoverSide::Front))
+        );
+    }
+
+    /// The face at 0.20-0.25 of the photo: a window starting at 0.19 puts it
+    /// 0.01 below the panel's top edge, in the wrap; one starting at 0.10
+    /// shows it. Width 0.6 is 204 DPI over the 11.75" panel; 0.3 is
+    /// 102.
+    #[test]
+    fn set_cover_crop_refuses_a_face_in_the_wrap_or_too_few_pixels() {
+        let mut ps = photos(25);
+        ps[0].faces = vec![Face { box_: Rect::new(0.40, 0.20, 0.05, 0.05), capture_quality: None }];
+        let mut b = book(&ps);
+        edit(&mut b, &ps, BookEdit::SetCoverPhoto { side: CoverSide::Front, photo: Some(0) }).unwrap();
+        let before = b.clone();
+        assert_eq!(
+            edit(&mut b, &ps, BookEdit::SetCoverCrop { side: CoverSide::Front, x: 0.2, y: 0.19, w: 0.6 }),
+            Err(EditError::CoverRejected { side: CoverSide::Front, reason: Rejection::FaceInSafeMargin })
+        );
+        assert_eq!(
+            edit(&mut b, &ps, BookEdit::SetCoverCrop { side: CoverSide::Front, x: 0.3, y: 0.1, w: 0.3 }),
+            Err(EditError::CoverRejected { side: CoverSide::Front, reason: Rejection::TooLowResolution })
+        );
+        assert_eq!(b, before);
+        edit(&mut b, &ps, BookEdit::SetCoverCrop { side: CoverSide::Front, x: 0.2, y: 0.1, w: 0.6 }).unwrap();
+        assert_eq!(b.cover.front.unwrap().crop.y, 0.1);
+    }
+
+    #[test]
+    fn set_spine_colour_sets_it() {
+        let ps = photos(25);
+        let mut b = book(&ps);
+        let rgb = Rgb::try_from("#12ab34".to_string()).unwrap();
+        edit(&mut b, &ps, BookEdit::SetSpineColour { rgb }).unwrap();
+        assert_eq!(b.cover.spine, rgb);
+    }
+
+    /// A size change recuts the cover for the new panel and keeps its
+    /// photos; one that leaves the panel's shape alone keeps a hand crop.
+    #[test]
+    fn set_print_spec_recuts_the_cover_only_when_its_shape_changes() {
+        let ps = photos(25);
+        let mut b = book(&ps);
+        edit(&mut b, &ps, BookEdit::SetCoverPhoto { side: CoverSide::Front, photo: Some(0) }).unwrap();
+        edit(&mut b, &ps, BookEdit::SetCoverCrop { side: CoverSide::Front, x: 0.1, y: 0.05, w: 0.8 })
+            .unwrap();
+        let hand = b.cover.front.unwrap().crop;
+
+        let p = pixajoy_spec();
+        let same_shape = crate::print_spec::PrintSpec::try_from(crate::print_spec::RawPrintSpec {
+            page_w_in: p.page_w_in(),
+            page_h_in: p.page_h_in(),
+            bleed_in: p.bleed_in(),
+            gutter_in: p.gutter_in(),
+            safe_margin_in: p.safe_margin_in(),
+            min_dpi: 150.0,
+            warn_dpi: 250.0,
+            cover_wrap_in: p.cover_wrap_in(),
+        })
+        .unwrap();
+        edit(&mut b, &ps, BookEdit::SetPrintSpec { spec: same_shape }).unwrap();
+        assert_eq!(b.cover.front.unwrap().crop, hand, "a DPI change keeps a hand crop");
+
+        let odd = crate::print_spec::odd_spec();
+        let back = b.cover.back.unwrap().photo_index;
+        edit(&mut b, &ps, BookEdit::SetPrintSpec { spec: odd }).unwrap();
+        assert_eq!(b.cover.front.unwrap().crop, choose_crop(&ps[0], odd.cover_aspect()));
+        assert_eq!(b.cover.back.unwrap().crop, choose_crop(&ps[back], odd.cover_aspect()));
+        assert_eq!(b.cover.back.unwrap().photo_index, back);
+    }
+
+    #[test]
+    fn a_cover_refusal_names_the_side_and_the_reason() {
+        let e = EditError::CoverRejected { side: CoverSide::Back, reason: Rejection::FaceInSafeMargin };
+        let text = e.to_string();
+        assert!(text.contains("back cover") && text.contains("fold"), "{text}");
+        assert!(EditError::NoCoverPhoto(CoverSide::Front).to_string().contains("front cover"));
+    }
 }
 
 /// The smallest crop width accepted, as a fraction of the photo. Below this
@@ -2353,15 +2608,7 @@ fn set_crop(
     let (slot, side) = placement_slot(book, lib, page_index, slot_index);
     let photo = &photos[book.pages[page_index].placements[slot_index].photo_index];
     let h = w * photo.aspect() / slot_aspect(&book.spec, &slot);
-    let inside = |v: f64| v.is_finite() && v >= -CROP_EPS;
-    if !(inside(x) && inside(y) && w.is_finite() && w >= MIN_CROP_W && h.is_finite())
-        || x + w > 1.0 + CROP_EPS
-        || y + h > 1.0 + CROP_EPS
-    {
-        return Err(EditError::CropOutOfBounds(at));
-    }
-    let crop =
-        crate::geometry::Rect::new(x.clamp(0.0, 1.0), y.clamp(0.0, 1.0), w.min(1.0), h.min(1.0));
+    let crop = hand_crop(x, y, w, h).ok_or(EditError::CropOutOfBounds(at))?;
     if let Some(reason) = rejects(&book.spec, photo, &crop, &slot, side) {
         return Err(EditError::CropRejected {
             placement: at,
@@ -2369,6 +2616,64 @@ fn set_crop(
         });
     }
     book.pages[page_index].placements[slot_index].crop = crop;
+    Ok(())
+}
+
+/// A hand-set window, or `None` when it leaves the photo or is too small.
+/// Within `CROP_EPS` of an edge is snapped onto it: a drag to the edge
+/// arrives as a float a hair past it.
+fn hand_crop(x: f64, y: f64, w: f64, h: f64) -> Option<Rect> {
+    let inside = |v: f64| v.is_finite() && v >= -CROP_EPS;
+    let ok = inside(x)
+        && inside(y)
+        && w.is_finite()
+        && w >= MIN_CROP_W
+        && h.is_finite()
+        && x + w <= 1.0 + CROP_EPS
+        && y + h <= 1.0 + CROP_EPS;
+    ok.then(|| Rect::new(x.clamp(0.0, 1.0), y.clamp(0.0, 1.0), w.min(1.0), h.min(1.0)))
+}
+
+/// A cover photo is not a placement, so it needs no slot, no lock and no
+/// swap: the panel is fixed and the photo may repeat one in the book.
+fn set_cover_photo(
+    book: &mut Book,
+    photos: &[Photo],
+    side: CoverSide,
+    photo: Option<usize>,
+) -> Result<(), EditError> {
+    let next = match photo {
+        None => None,
+        Some(i) => {
+            let p = photos.get(i).ok_or(EditError::NoSuchPhoto(i))?;
+            let crop = cover::crop_for(&book.spec, p, side)
+                .map_err(|reason| EditError::CoverRejected { side, reason })?;
+            Some(CoverPhoto { photo_index: i, crop })
+        }
+    };
+    *book.cover.side_mut(side) = next;
+    Ok(())
+}
+
+fn set_cover_crop(
+    book: &mut Book,
+    photos: &[Photo],
+    side: CoverSide,
+    x: f64,
+    y: f64,
+    w: f64,
+) -> Result<(), EditError> {
+    let current = book.cover.side(side).ok_or(EditError::NoCoverPhoto(side))?;
+    let photo =
+        photos.get(current.photo_index).ok_or(EditError::NoSuchPhoto(current.photo_index))?;
+    let h = w * photo.aspect() / book.spec.cover_aspect();
+    let crop = hand_crop(x, y, w, h).ok_or(EditError::CoverCropOutOfBounds(side))?;
+    if let Some(reason) = cover::rejects(&book.spec, photo, &crop, side) {
+        return Err(EditError::CoverRejected { side, reason });
+    }
+    if let Some(c) = book.cover.side_mut(side) {
+        c.crop = crop;
+    }
     Ok(())
 }
 
