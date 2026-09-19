@@ -124,7 +124,7 @@ const leftOut = computed(() =>
 </script>
 
 <template>
-  <section @keydown.esc="selected = null">
+  <section class="@container" @keydown.esc="selected = null">
     <!-- The book's own toolbar, pinned over the desk while the spreads scroll under it. -->
     <div
       class="sticky top-0 z-20 flex h-11 items-center gap-3 border-b border-default bg-default/95 px-6 backdrop-blur"
@@ -379,34 +379,30 @@ const leftOut = computed(() =>
     <div
       v-if="selected"
       role="status"
-      class="sticky bottom-4 z-20 mx-auto flex w-fit items-center gap-3 rounded-full bg-inverted py-1.5 pr-1.5 pl-4 text-sm text-inverted shadow-lg"
+      class="sticky bottom-4 z-20 mx-auto flex w-fit max-w-[calc(100%-3rem)] items-center gap-3 rounded-lg border border-default bg-default/95 py-1.5 pr-1.5 pl-3 text-sm shadow-lg backdrop-blur"
     >
-      <UIcon name="i-lucide-arrow-left-right" class="size-4 shrink-0" />
-      <span>
-        <span class="font-medium">Swapping the photo on page {{ selected.page }}.</span>
-        Click another photo to exchange them.
-      </span>
-      <UButton
-        icon="i-lucide-images"
-        color="neutral"
-        variant="solid"
-        size="xs"
-        class="shrink-0 rounded-full bg-default text-default hover:bg-elevated"
-        :disabled="busy"
-        @click="chooseFromAll"
-      >
-        Choose any photo…
-      </UButton>
-      <UButton
-        icon="i-lucide-x"
-        color="neutral"
-        variant="solid"
-        size="xs"
-        class="shrink-0 rounded-full bg-default text-default hover:bg-elevated"
-        @click="selected = null"
-      >
-        Cancel
-      </UButton>
+      <UIcon name="i-lucide-arrow-left-right" class="size-4 shrink-0 text-muted" />
+      <p class="min-w-0 truncate whitespace-nowrap">
+        <span class="font-medium text-highlighted">Swapping page {{ selected.page }}.</span>
+        <span class="hidden text-muted @2xl:inline"> Click another photo to swap.</span>
+      </p>
+      <span class="h-5 shrink-0 border-l border-default" aria-hidden="true" />
+      <div class="flex shrink-0 items-center gap-1">
+        <UButton
+          icon="i-lucide-images"
+          color="neutral"
+          variant="outline"
+          size="sm"
+          :disabled="busy"
+          @click="chooseFromAll"
+        >
+          Choose any photo…
+        </UButton>
+        <UButton color="neutral" variant="ghost" size="sm" @click="selected = null">
+          Cancel
+          <UKbd value="esc" size="sm" />
+        </UButton>
+      </div>
     </div>
 
     <ReplacePhotoDialog
