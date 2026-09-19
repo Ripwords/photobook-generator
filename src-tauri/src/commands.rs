@@ -205,6 +205,7 @@ impl AppState {
 /// webview reads off `photos[i]`, update `AnalyzedPhoto` in
 /// `app/types/features.ts` in the same change, and vice versa.
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct AnalysisSummary {
     /// Which analysis produced this set. Handed back with every command
     /// that answers from the cached photos -- see `AnalysedRuns`.
@@ -2390,6 +2391,21 @@ mod tests {
         let state = AppState::default();
         assert_eq!(state.next_run_id(), 1);
         assert_eq!(state.next_run_id(), 2);
+    }
+
+    /// The webview reads `summary.runId` (`AnalysisSummary` in
+    /// `app/types/features.ts`). Sent as `run_id`, it read as `undefined`,
+    /// every draft asked about run 0, and choosing a length failed with
+    /// "These photos are no longer loaded". The browser mock builds its own
+    /// summary, so only this test sees the real wire.
+    #[test]
+    fn analysis_summary_names_its_fields_as_the_webview_reads_them() {
+        let summary = AnalysisSummary { run_id: 7, total: 1, failed: 0, cached: 0, photos: vec![] };
+        let json = serde_json::to_value(&summary).unwrap();
+        let mut keys: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["cached", "failed", "photos", "runId", "total"]);
+        assert_eq!(json["runId"], 7);
     }
 
     #[test]
