@@ -366,14 +366,14 @@ onMounted(() => {
             :title="
               editSlots
                 ? 'Drag a box to move it, drag a corner to resize it; edges snap to the guides'
-                : 'Drag a photo to move its crop, scroll over it to zoom. Click a photo, then another anywhere in the book, to swap them'
+                : 'Drag a photo to move its crop, ⌘-scroll over it to zoom. Click a photo, then another anywhere in the book, to swap them'
             "
           >
             <template v-if="editSlots">
               Drag a box to move it, drag a corner to resize it; edges snap to the guides
             </template>
             <template v-else>
-              Drag a photo to move its crop, scroll over it to zoom. Click a photo, then another
+              Drag a photo to move its crop, ⌘-scroll over it to zoom. Click a photo, then another
               anywhere in the book, to swap them
             </template>
           </span>

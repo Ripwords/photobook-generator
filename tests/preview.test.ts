@@ -25,6 +25,7 @@ import {
   spreadTemplates,
   templateLabel,
   toSpreads,
+  wheelZoomFactor,
   type BookEdit,
   type BookLayout,
   type PreviewGeometry,
@@ -715,6 +716,19 @@ describe("hand cropping", () => {
     expect(wide.x).toBe(0);
     expect(wide.y).toBeGreaterThanOrEqual(0);
     expect(wide.y + wide.h).toBeLessThanOrEqual(1 + 1e-12);
+  });
+
+  it("leaves a plain scroll to the page, so scrolling past a photo never zooms it", () => {
+    expect(wheelZoomFactor({ deltaY: 40, ctrlKey: false, metaKey: false })).toBeNull();
+    expect(wheelZoomFactor({ deltaY: -40, ctrlKey: false, metaKey: false })).toBeNull();
+  });
+
+  it("zooms on a command- or control-scroll", () => {
+    const zoomIn = wheelZoomFactor({ deltaY: -40, ctrlKey: false, metaKey: true });
+    const zoomOut = wheelZoomFactor({ deltaY: 40, ctrlKey: true, metaKey: false });
+    expect(zoomIn).toBeGreaterThan(1);
+    expect(zoomOut).toBeLessThan(1);
+    expect(zoomOut).toBeGreaterThan(0);
   });
 
   it("never shrinks below two percent, and ignores a nonsense factor", () => {

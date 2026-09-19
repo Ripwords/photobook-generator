@@ -165,7 +165,8 @@ photos no page uses, each shown cropped the way that slot would print it; **In t
 with page N** and exchanges the two. A photo that would cut a face, put one in the fold or
 the trim margin, or print too small is dimmed with the reason and cannot be picked, and so
 are photos on a locked spread. To **adjust a crop**, drag the photo inside its
-slot to move the window, or scroll over it to zoom; the window keeps the slot's shape and
+slot to move the window, or hold ⌘ and scroll over it to zoom;
+a plain scroll always scrolls the book, never a photo. The window keeps the slot's shape and
 is saved when you let go. Regenerating that opening or swapping the photo away recomputes
 its crop, because the slot it was chosen for is gone.
 

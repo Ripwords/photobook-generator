@@ -18,6 +18,7 @@ import {
   type PreviewGeometry,
   type PreviewPage,
   type PreviewRect,
+  wheelZoomFactor,
 } from "~/types/preview";
 
 const {
@@ -166,7 +167,7 @@ const cornerClass: Record<Corner, string> = {
 
 /**
  * Hand-cropping, as a gesture on the slot itself: drag the photo to move the
- * window, scroll to zoom it. The window is drawn live from a local copy while
+ * window, ⌘-scroll to zoom it. The window is drawn live from a local copy while
  * the pointer is down and sent as ONE edit on release, so a drag is one save
  * and one round trip, not one per pixel. Rust re-derives the height from the
  * slot, keeps the window inside the photo and re-runs the hard constraints;
@@ -174,7 +175,6 @@ const cornerClass: Record<Corner, string> = {
  * `DRAG_THRESHOLD_PX` is a click, which selects the photo for a swap.
  */
 const DRAG_THRESHOLD_PX = 3;
-const ZOOM_PER_WHEEL_UNIT = 0.0015;
 /** Live crops for slots mid-gesture, keyed like `PreviewSlot.key`. */
 const liveCrops = ref<Record<string, PreviewRect>>({});
 interface Drag {
@@ -243,10 +243,10 @@ function onPointerCancel() {
 }
 
 function onWheel(event: WheelEvent, key: string, ref: PlacementRef, crop: PreviewRect) {
-  if (!selectable) return;
+  const factor = wheelZoomFactor(event);
+  if (!selectable || factor === null) return;
   event.preventDefault();
-  // Scrolling up (negative deltaY) zooms in, as in every image viewer.
-  const next = cropZoomed(cropOf(key, crop), Math.exp(-event.deltaY * ZOOM_PER_WHEEL_UNIT));
+  const next = cropZoomed(cropOf(key, crop), factor);
   liveCrops.value = { ...liveCrops.value, [key]: next };
   clearTimeout(wheelTimer);
   wheelTimer = setTimeout(() => emit("crop", ref, next), WHEEL_SETTLE_MS);
@@ -355,7 +355,7 @@ const gutter = computed(() => rectStyle(shown.value[side].gutter));
         ]"
         :style="box.slot"
         :title="[box.photo?.path, box.filename].filter(Boolean).join('\n')"
-        :aria-label="selectable ? `Photo on page ${page.number}, slot ${box.z}: ${editSlots ? 'drag to move the box, drag a corner to resize it' : isSelected(box.ref) ? 'selected for swap' : 'click to swap, drag to move the crop, scroll to zoom'}` : undefined"
+        :aria-label="selectable ? `Photo on page ${page.number}, slot ${box.z}: ${editSlots ? 'drag to move the box, drag a corner to resize it' : isSelected(box.ref) ? 'selected for swap' : 'click to swap, drag to move the crop, command-scroll to zoom'}` : undefined"
         :aria-pressed="selectable && !editSlots ? isSelected(box.ref) : undefined"
         @pointerdown="editSlots ? onSlotPointerDown($event, box.key, box.ref, box.savedRect, null) : onPointerDown($event, box.key, box.ref, box.saved)"
         @pointermove="editSlots ? onSlotPointerMove($event) : onPointerMove($event)"

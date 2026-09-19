@@ -540,6 +540,22 @@ export function cropZoomed(crop: PreviewRect, factor: number): PreviewRect {
   };
 }
 
+const ZOOM_PER_WHEEL_UNIT = 0.0015;
+
+/**
+ * How much a wheel event over a photo zooms its crop, or `null` when it should
+ * scroll the page instead. Zoom needs ⌘ (or Ctrl) held, because the preview is a long scroll of
+ * spreads, and a bare wheel that zoomed whichever photo drifted under the
+ * pointer turned scrolling the book into accidental crop edits.
+ */
+export function wheelZoomFactor(
+  event: Pick<WheelEvent, "deltaY" | "ctrlKey" | "metaKey">,
+): number | null {
+  if (!event.ctrlKey && !event.metaKey) return null;
+  // Scrolling up (negative deltaY) zooms in, as in every image viewer.
+  return Math.exp(-event.deltaY * ZOOM_PER_WHEEL_UNIT);
+}
+
 /** The edit that saves a crop the user dragged or zoomed into place. */
 export function setCropEdit(placement: PlacementRef, crop: PreviewRect): BookEdit {
   return { kind: "setCrop", placement, x: crop.x, y: crop.y, w: crop.w };
