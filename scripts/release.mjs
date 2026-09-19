@@ -1,8 +1,9 @@
 /**
  * Cut a release: sync the version across package.json, tauri.conf.json,
- * Cargo.toml and Cargo.lock, point the README's download button at it, write
- * CHANGELOG.md, then commit, tag, and push. Pushing the tag starts the Release
- * workflow, which builds the Apple Silicon dmg and publishes the GitHub release.
+ * Cargo.toml and Cargo.lock, write CHANGELOG.md, then commit, tag, and push.
+ * Pushing the tag starts the Release workflow, which waits for the commit's CI,
+ * builds the Apple Silicon dmg, publishes the GitHub release, and then points
+ * the README's download button at it.
  *
  *   bun run release 0.2.0      # explicit version (recommended, deterministic)
  *   bun run release            # changelogen picks the next version from commits
@@ -10,7 +11,7 @@
  */
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { applyRewrite, stampReadme, versionRewrites } from "./release-stamp.ts";
+import { applyRewrite, versionRewrites } from "./release-stamp.ts";
 
 const run = (cmd) => execSync(cmd, { stdio: "inherit" });
 const args = process.argv.slice(2);
@@ -31,7 +32,6 @@ const rewrites = versionRewrites(version).map((rewrite) => [
   rewrite.file,
   applyRewrite(readFileSync(rewrite.file, "utf8"), rewrite),
 ]);
-rewrites.push(["README.md", stampReadme(readFileSync("README.md", "utf8"), version)]);
 for (const [file, text] of rewrites) writeFileSync(file, text);
 
 run(`git add CHANGELOG.md ${rewrites.map(([file]) => file).join(" ")}`);

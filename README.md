@@ -466,21 +466,28 @@ bun run release --minor # force a patch, minor or major bump
 ```
 
 `scripts/release.mjs` writes the version into `package.json`, `src-tauri/tauri.conf.json`,
-`src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`, points the download button at the top of
-this README at the new dmg, and updates `CHANGELOG.md` with
+`src-tauri/Cargo.toml` and `src-tauri/Cargo.lock`, and updates `CHANGELOG.md` with
 [changelogen](https://github.com/unjs/changelogen). It refuses to continue if any of those
-fields or the README link is missing, rather than shipping a dead button. It then commits
-`chore(release): v<version>`, tags `v<version>`, and pushes both.
+fields is missing. It then commits `chore(release): v<version>`, tags `v<version>`, and
+pushes both.
 
 The tag starts [`.github/workflows/release.yml`](.github/workflows/release.yml). It opens a
 draft release named `PhotobookGen v<version>` with changelogen notes, builds
-`PhotobookGen_<version>_aarch64.dmg` on a macOS 15 Apple Silicon runner, uploads it with the
-updater archive and its `latest.json`, and publishes the release. It publishes only after
-the full CI suite (`ci.yml`, called from the release workflow) passes on the tagged commit.
-The dmg builds while CI runs; if CI fails, the release stays a draft that users and the
-updater cannot see, and you delete it along with the tag. Running the workflow by
-hand from the Actions tab builds the dmg and attaches it to the run as an artifact, without
-creating a release.
+`PhotobookGen_<version>_aarch64.dmg` on a macOS 15 Apple Silicon runner, and uploads it with
+the updater archive and its `latest.json`. It publishes the release only once CI has passed
+on the tagged commit. It does not run CI again. It waits for the run that pushing the release
+commit to master already started. A tag on a commit that was never pushed to master has no
+such run, so the release stops there. The dmg builds while CI runs. If CI fails, the release
+stays a draft that users and the updater cannot see, and you delete it along with the tag.
+
+After publishing, the workflow points the download button at the top of this README at the
+new dmg and pushes that as a `docs(readme)` commit from `github-actions[bot]`. Pull before
+your next commit. The button changes only once the dmg exists, so it never links to a
+release that failed. The stamp (`scripts/stamp-readme.ts`) refuses a README that does not
+hold exactly one download link, rather than shipping a dead button.
+
+Running the workflow by hand from the Actions tab builds the dmg and attaches it to the run
+as an artifact, without creating a release.
 
 ### Updater signing
 

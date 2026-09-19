@@ -30,6 +30,11 @@ describe("stampReadme", () => {
     expect(() => stampReadme(`${link("0.1.0")} ${link("0.1.0")}`, "0.2.0")).toThrow(/rewrote 2/);
   });
 
+  it("leaves a README already on that version byte-identical, so a rerun commits nothing", () => {
+    const stamped = `<a href="${link("0.2.0")}">`;
+    expect(stampReadme(stamped, "0.2.0")).toBe(stamped);
+  });
+
   it("stamps the real README", () => {
     const readme = repoFile("README.md");
     const out = stampReadme(readme, "9.9.9");

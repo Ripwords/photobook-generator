@@ -14,13 +14,37 @@ permissions:
   contents: write
 
 jobs:
-  # The tag's own CI run, not master's: a tag pushed seconds after a commit
-  # would otherwise publish while that commit's CI is still running, or after
-  # it failed. The build runs alongside this into a draft release, which users
-  # and the updater cannot see; only publish waits for it.
+  # Waits for the CI run the release commit's push to master already started,
+  # rather than running the suite a second time. The build runs alongside this
+  # into a draft release, which users and the updater cannot see; only publish
+  # waits for it. A tag on a commit that was never pushed to master has no CI
+  # run and fails here.
   ci:
     if: ${{ github.event_name == 'push' }}
-    uses: ./.github/workflows/ci.yml
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for CI on the tagged commit
+        run: |
+          # The tag and the commit are pushed a moment apart, so the run may not exist yet.
+          for _ in $(seq 1 18); do
+            RUN=$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$GITHUB_SHA" \
+              --event push --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+            [ -n "$RUN" ] && break
+            sleep 10
+          done
+          if [ -z "$RUN" ]; then
+            echo "::error::no CI run for ${GITHUB_SHA}. Push the commit to master before tagging it."
+            exit 1
+          fi
+          echo "Waiting for $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN"
+          # A later push to master cancels this run (cancel-in-progress), which
+          # fails here too: re-run that CI run, then this job.
+          gh run watch "$RUN" -R "$GITHUB_REPOSITORY" --exit-status --interval 30 > /dev/null
 
   create-release:
     if: ${{ github.event_name == 'push' }}
@@ -159,3 +183,31 @@ jobs:
               release_id: ${{ needs.create-release.outputs.release_id }},
               draft: false
             })
+
+  # Only once the release is public, so the homepage button never names a dmg
+  # that does not exist. A push with GITHUB_TOKEN starts no workflow, so this
+  # commit does not run CI again. Re-running the job is safe: an already
+  # stamped README commits nothing.
+  readme:
+    needs: publish
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: master
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Point the download button at this release
+        run: |
+          bun scripts/stamp-readme.ts "${GITHUB_REF_NAME#v}"
+          if git diff --quiet README.md; then
+            echo "README already points at ${GITHUB_REF_NAME}"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "docs(readme): point the download button at ${GITHUB_REF_NAME}" README.md
+          git push origin HEAD:master
