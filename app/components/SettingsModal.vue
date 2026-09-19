@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { SettingsTab } from "~/composables/useShell";
 import { SHORTCUTS, type ShortcutId, shortcutKbds } from "~/types/shortcuts";
+import { DEFAULT_CACHE_LIMIT, formatBytes, limitItems, storageSummary } from "~/types/storage";
 
 const { settingsOpen, settingsTab } = useShell();
 const colorMode = useColorMode();
@@ -19,13 +20,41 @@ const APPEARANCES = [
 ] as const;
 
 const shortcutIds = Object.keys(SHORTCUTS) as ShortcutId[];
+
+const { status: cache, error: cacheError, busy: cacheBusy, refresh: refreshCache, setLimit, clearUnused } =
+  useCacheStorage();
+const summary = computed(() => (cache.value ? storageSummary(cache.value) : null));
+const limits = computed(() => limitItems(cache.value?.limitBytes ?? DEFAULT_CACHE_LIMIT));
+const freed = ref<string | null>(null);
+
+watch(
+  settingsOpen,
+  (open) => {
+    freed.value = null;
+    if (open) void refreshCache();
+  },
+  { immediate: true },
+);
+
+async function clearCache() {
+  const before = cache.value?.usedBytes ?? 0;
+  await clearUnused();
+  if (!cacheError.value && cache.value) {
+    freed.value = `Freed ${formatBytes(Math.max(0, before - cache.value.usedBytes))}.`;
+  }
+}
+
+function changeLimit(limitBytes: number) {
+  freed.value = null;
+  void setLimit(limitBytes);
+}
 </script>
 
 <template>
   <UModal
     v-model:open="settingsOpen"
     title="Settings"
-    description="Appearance, keyboard shortcuts and the keys the chat uses."
+    description="Appearance, storage, keyboard shortcuts and the keys the chat uses."
     :ui="{ content: 'sm:max-w-3xl', body: 'p-0 sm:p-0' }"
   >
     <template #body>
@@ -72,6 +101,65 @@ const shortcutIds = Object.keys(SHORTCUTS) as ShortcutId[];
                   {{ option.label }}
                 </button>
               </div>
+            </section>
+
+            <section class="space-y-3" aria-labelledby="settings-storage">
+              <h3 id="settings-storage" class="text-sm font-medium text-highlighted">Storage</h3>
+              <div class="divide-y divide-default rounded-md border border-default text-sm">
+                <div class="space-y-2 px-3 py-3">
+                  <div class="flex items-baseline justify-between gap-4">
+                    <span>Analysis cache</span>
+                    <span v-if="summary" class="tabular-nums text-highlighted">
+                      {{ summary.used }} <span class="text-muted">of {{ summary.limit }}</span>
+                    </span>
+                    <span v-else class="text-muted">…</span>
+                  </div>
+                  <UProgress
+                    :model-value="Math.round((summary?.fraction ?? 0) * 100)"
+                    color="neutral"
+                    size="xs"
+                    aria-label="Share of the limit in use"
+                  />
+                  <p v-if="summary?.warning" class="text-xs text-muted">{{ summary.warning }}</p>
+                </div>
+                <div class="flex items-center justify-between gap-4 px-3 py-3">
+                  <div class="min-w-0">
+                    <label for="settings-cache-limit">Limit</label>
+                    <p class="text-xs text-muted">
+                      Past it, the photos no book or draft uses are removed, oldest first. They are
+                      analysed again if you need them.
+                    </p>
+                  </div>
+                  <USelect
+                    id="settings-cache-limit"
+                    :model-value="cache?.limitBytes"
+                    :items="limits"
+                    :disabled="!cache || cacheBusy"
+                    class="w-28 shrink-0"
+                    @update:model-value="changeLimit"
+                  />
+                </div>
+                <div class="flex items-center justify-between gap-4 px-3 py-3">
+                  <div class="min-w-0">
+                    <p>Clear unused</p>
+                    <p class="text-xs text-muted">
+                      {{ freed ?? "Removes every analysed photo that no saved book or open draft uses." }}
+                    </p>
+                  </div>
+                  <UButton
+                    color="neutral"
+                    variant="outline"
+                    size="sm"
+                    class="shrink-0"
+                    :loading="cacheBusy"
+                    :disabled="!cache"
+                    @click="clearCache"
+                  >
+                    Clear unused
+                  </UButton>
+                </div>
+              </div>
+              <p v-if="cacheError" class="text-xs text-error">{{ cacheError }}</p>
             </section>
 
             <section class="space-y-3" aria-labelledby="settings-shortcuts">
