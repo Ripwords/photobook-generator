@@ -422,12 +422,19 @@ fn cover_findings(
 /// cross-platform fallback to maintain. Returns 0 (which always blocks) on
 /// any failure: a directory that cannot be statted is not a safe place to
 /// write nineteen pages of PNGs, so failing closed is the correct default.
+///
+/// A folder that does not exist yet is measured on its nearest existing
+/// ancestor, because export creates it; statting it directly would report
+/// "0 bytes available" for a folder deleted after it was picked.
 fn available_bytes(output_dir: &Path) -> u64 {
     use std::ffi::CString;
     use std::mem::MaybeUninit;
     use std::os::unix::ffi::OsStrExt;
 
-    let Ok(c_path) = CString::new(output_dir.as_os_str().as_bytes()) else {
+    let Some(existing) = output_dir.ancestors().find(|p| p.exists()) else {
+        return 0;
+    };
+    let Ok(c_path) = CString::new(existing.as_os_str().as_bytes()) else {
         return 0;
     };
     let mut stat = MaybeUninit::<libc::statfs>::uninit();
@@ -521,6 +528,14 @@ mod tests {
 
     fn tempdir() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn preflight_measures_a_not_yet_created_output_folder_on_its_parent_volume() {
+        let dir = tempdir();
+        let missing = dir.path().join("deleted-after-picking").join("nested");
+        assert!(available_bytes(&missing) > 0);
+        assert_eq!(available_bytes(&missing), available_bytes(dir.path()));
     }
 
     #[test]
