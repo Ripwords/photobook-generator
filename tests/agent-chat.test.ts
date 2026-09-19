@@ -17,6 +17,7 @@ import { tagRanker, type Invoke, type WriteToolName } from "../app/agent/tools";
 import type { AgentView } from "../app/agent/view";
 import {
   DEEPSEEK_TEXT_REPLY,
+  DEEPSEEK_THINKING,
   deepseekStream,
   scriptedResponse,
 } from "../dev/tauri-mock/model";
@@ -72,7 +73,7 @@ describe("describeEdit", () => {
 });
 
 describe("messageBlocks", () => {
-  it("keeps text, drops reasoning and reads, and turns each write into a proposal", () => {
+  it("keeps text and reasoning, drops reads, and turns each write into a proposal", () => {
     const blocks = messageBlocks(
       assistant(
         { type: "reasoning", text: "hmm", state: "done" },
@@ -94,6 +95,7 @@ describe("messageBlocks", () => {
       label,
     );
     expect(blocks).toEqual([
+      { kind: "reasoning", key: "m-0", text: "hmm", streaming: false },
       { kind: "text", key: "m-1", text: "Let me look." },
       {
         kind: "proposal",
@@ -145,6 +147,18 @@ describe("messageBlocks", () => {
     const [block] = proposals(assistant(write("swap_photos", fields)));
     expect(block?.status).toBe(status);
     expect(block?.reason).toBe(reason);
+  });
+
+  it("marks reasoning as streaming only while it is still arriving, and drops it when empty", () => {
+    expect(
+      messageBlocks(
+        assistant(
+          { type: "reasoning", text: "", state: "done" },
+          { type: "reasoning", text: "Page 2 has two photos", state: "streaming" },
+        ),
+        label,
+      ),
+    ).toEqual([{ kind: "reasoning", key: "m-1", text: "Page 2 has two photos", streaming: true }]);
   });
 
   it("offers an approval id only while the write waits for an answer", () => {
@@ -286,6 +300,26 @@ describe("over the real agent stream", () => {
       { kind: "text", key: `${message?.id}-1`, text: DEEPSEEK_TEXT_REPLY },
     ]);
   });
+
+  it("shows DeepSeek's reasoning_content as thinking before the reply", async () => {
+    const reply = deepseekStream(
+      [
+        { role: "assistant", reasoning_content: "Spread 2 has " },
+        { reasoning_content: "the busiest layout." },
+        { content: DEEPSEEK_TEXT_REPLY },
+      ],
+      "stop",
+      12,
+    );
+    const model = createDeepSeek({ apiKey: "t", fetch: deepseekFetch(reply) })(MODEL_ID);
+    const agent = createBookAgent(1, { model, invoke, jev: jev(null) });
+    const result = await agent.stream({ messages: [{ role: "user", content: "hi" }] });
+    const message = await lastMessage(result.toUIMessageStream());
+    expect(message && messageBlocks(message, label).map(({ kind, text }) => ({ kind, text }))).toEqual([
+      { kind: "reasoning", text: "Spread 2 has the busiest layout." },
+      { kind: "text", text: DEEPSEEK_TEXT_REPLY },
+    ]);
+  });
 });
 
 /** A fetch answered by the browser harness's scripts, as `model_request` would. */
@@ -354,6 +388,19 @@ describe("the browser harness's scripts", () => {
     });
     expect(ids[0]).toBeTruthy();
     expect(ids[0]).not.toBe(ids[1]);
+  });
+
+  it("thinks before answering when asked to think", () => {
+    const scripted = scriptedResponse("deepseek", { messages: [{ role: "user", content: "think it through" }] });
+    const thought = (scripted?.body ?? "")
+      .split("\n")
+      .filter((line) => line.startsWith("data: {"))
+      .map((line) => JSON.parse(line.slice(6)).choices[0].delta.reasoning_content ?? "")
+      .join("");
+    expect(thought).toBe(DEEPSEEK_THINKING);
+    expect(streamedText("deepseek", { messages: [{ role: "user", content: "think it through" }] })).toBe(
+      DEEPSEEK_TEXT_REPLY,
+    );
   });
 
   it("answers words it has no script for with the plain reply", () => {

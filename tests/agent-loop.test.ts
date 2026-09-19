@@ -322,6 +322,42 @@ describe("an empty response", () => {
     expect(model.doGenerateCalls).toHaveLength(2);
   });
 
+  it("streams thinking live instead of holding it until the reply", async () => {
+    const { promise: replied, resolve: release } = Promise.withResolvers<void>();
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: new ReadableStream<LanguageModelV4StreamPart>({
+          async start(controller) {
+            controller.enqueue({ type: "stream-start", warnings: [] });
+            controller.enqueue({ type: "reasoning-start", id: "r" });
+            controller.enqueue({ type: "reasoning-delta", id: "r", delta: "hmm" });
+            await replied;
+            controller.enqueue({ type: "reasoning-end", id: "r" });
+            controller.enqueue({ type: "text-start", id: "t" });
+            controller.enqueue({ type: "text-delta", id: "t", delta: "hello" });
+            controller.enqueue({ type: "text-end", id: "t" });
+            controller.enqueue({ type: "finish", finishReason: { unified: "stop", raw: "stop" }, usage });
+            controller.close();
+          },
+        }),
+      }),
+    });
+    const result = await createBookAgent(1, { model, invoke: mockInvoke(), jev: quietJev() }).stream({
+      messages: [user("hi")],
+    });
+    const reader = result.fullStream.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) throw new Error("stream ended before any thinking arrived");
+      expect(value.type).not.toBe("text-delta");
+      if (value.type === "reasoning-delta") break;
+    }
+    release();
+    while (!(await reader.read()).done);
+    expect(await result.text).toBe("hello");
+    expect(model.doStreamCalls).toHaveLength(1);
+  });
+
   it("does not retry a response that has content", async () => {
     const model = streamed(text("hello"));
     const result = await createBookAgent(1, {

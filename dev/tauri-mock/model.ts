@@ -97,6 +97,10 @@ export function deepseekStream(
 export const DEEPSEEK_TEXT_REPLY =
   "I can make chapter 2 calmer — it would use quieter layouts on spreads 3 and 4.";
 
+/** What the harness's DeepSeek thinks before its plain reply, when asked to think. */
+export const DEEPSEEK_THINKING =
+  "Chapter 2 is spreads 3 and 4. Both use busy four-photo layouts, so quieter ones would calm it.";
+
 /**
  * Jev answers only the proposal check in the harness, so a card can show its
  * warning. Routing and search get this 529 and run on their no-answer paths:
@@ -116,9 +120,15 @@ const json = (status: number, body: unknown): CannedResponse => ({
   body: JSON.stringify(body),
 });
 
-const text = (reply: string) =>
+const words = (text: string) => text.split(/(?<= )/);
+
+const text = (reply: string, thinking = "") =>
   deepseekStream(
-    [{ role: "assistant", content: "" }, ...reply.split(/(?<= )/).map((content) => ({ content }))],
+    [
+      { role: "assistant", content: "" },
+      ...(thinking ? words(thinking).map((reasoning_content) => ({ reasoning_content })) : []),
+      ...words(reply).map((content) => ({ content })),
+    ],
     "stop",
     12,
   );
@@ -168,10 +178,11 @@ function deepseekReply(body: RequestBody): CannedResponse {
     if (result === "saved") return text("Done. The book on screen is updated.");
     return text(`I couldn't do that: ${result.refused}.`);
   }
-  const words = content.toLowerCase();
-  if (words.includes("swap")) return toolCall("swap_photos", HARNESS_SWAP);
-  if (words.includes("last")) return toolCall("regenerate", { opening: 2 });
-  if (words.includes("layout")) return toolCall("regenerate", { opening: 1 });
+  const asked = content.toLowerCase();
+  if (asked.includes("swap")) return toolCall("swap_photos", HARNESS_SWAP);
+  if (asked.includes("last")) return toolCall("regenerate", { opening: 2 });
+  if (asked.includes("layout")) return toolCall("regenerate", { opening: 1 });
+  if (asked.includes("think")) return text(DEEPSEEK_TEXT_REPLY, DEEPSEEK_THINKING);
   return text(DEEPSEEK_TEXT_REPLY);
 }
 

@@ -137,7 +137,7 @@ onMounted(() => {
 
       <UChatMessages
         v-else
-        :messages
+        :messages="[...messages]"
         :status
         :should-auto-scroll="true"
         :user="{ side: 'right', variant: 'soft' }"
@@ -148,6 +148,14 @@ onMounted(() => {
           <div class="space-y-2">
             <template v-for="block in blocks(message)" :key="block.key">
               <p v-if="block.kind === 'text'" class="whitespace-pre-wrap text-sm">{{ block.text }}</p>
+
+              <UChatReasoning
+                v-else-if="block.kind === 'reasoning'"
+                :text="block.text"
+                :streaming="block.streaming"
+              >
+                <p class="whitespace-pre-wrap text-xs text-muted">{{ block.text }}</p>
+              </UChatReasoning>
 
               <div
                 v-else

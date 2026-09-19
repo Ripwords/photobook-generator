@@ -140,7 +140,11 @@ async function answeredStream<P extends { type: string }>(
   });
 }
 
-/** DeepSeek documents that it occasionally answers with no content; one retry covers it. */
+/**
+ * DeepSeek documents that it occasionally answers with no content; one retry covers it.
+ * A stream counts as answered once it starts thinking, so the thinking reaches the
+ * chat as it arrives rather than after the reply.
+ */
 const retryEmpty: LanguageModelMiddleware = {
   specificationVersion: "v4",
   async wrapGenerate({ doGenerate }) {
@@ -151,7 +155,9 @@ const retryEmpty: LanguageModelMiddleware = {
     const first = await doStream();
     const stream = await answeredStream(
       first.stream,
-      (p) => (p.type === "text-delta" && p.delta !== "") || p.type === "tool-call",
+      (p) =>
+        ((p.type === "text-delta" || p.type === "reasoning-delta") && p.delta !== "") ||
+        p.type === "tool-call",
     );
     return stream ? { ...first, stream } : doStream();
   },

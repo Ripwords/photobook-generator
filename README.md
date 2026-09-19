@@ -55,7 +55,11 @@ export crops.
 - **Bounded cache.** Analysis results and previews stay under a limit you choose, without
   ever evicting a photo a saved book needs.
 - **Book chat (optional).** A chat beside the book proposes layout edits, and every write
-  waits for your approval. It needs your own DeepSeek API key.
+  waits for your approval. It needs your own DeepSeek API key. Replies stream in as they
+  arrive. If the model thinks before answering, its thinking streams first under
+  **Thinking…** and folds away to **Thought for N seconds** once the reply starts. DeepSeek's
+  thinking mode is switched off in `app/agent/agent.ts` because it bills as output, so today
+  you only see it if that is turned on.
 
 ## Status
 

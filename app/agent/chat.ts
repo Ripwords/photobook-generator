@@ -16,6 +16,14 @@ export interface TextBlock {
   text: string;
 }
 
+/** The model's thinking, when it thought. `streaming` while it is still arriving. */
+export interface ReasoningBlock {
+  kind: "reasoning";
+  key: string;
+  text: string;
+  streaming: boolean;
+}
+
 /**
  * - `preparing`: the model is still writing the edit.
  * - `pending`: waiting for the user.
@@ -49,7 +57,7 @@ export interface ProposalBlock {
   reason: string | null;
 }
 
-export type ChatBlock = TextBlock | ProposalBlock;
+export type ChatBlock = TextBlock | ReasoningBlock | ProposalBlock;
 
 export interface EditDescription {
   title: string;
@@ -138,11 +146,16 @@ function statusOf(part: ToolPart): Pick<ProposalBlock, "status" | "approvalId" |
   }
 }
 
-/** One message as the panel draws it: its text, and a card for each write. */
+/** One message as the panel draws it: its thinking, its text, and a card for each write. */
 export function messageBlocks(message: UIMessage, label: OpeningLabel): ChatBlock[] {
   return message.parts.flatMap((part, index): ChatBlock[] => {
     if (part.type === "text") {
       return part.text.trim() === "" ? [] : [{ kind: "text", key: `${message.id}-${index}`, text: part.text }];
+    }
+    if (part.type === "reasoning") {
+      if (part.text.trim() === "") return [];
+      const streaming = part.state === "streaming";
+      return [{ kind: "reasoning", key: `${message.id}-${index}`, text: part.text, streaming }];
     }
     if (!isToolUIPart(part)) return [];
     const name = getToolName(part);
