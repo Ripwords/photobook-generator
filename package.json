@@ -17,7 +17,9 @@
     "lint": "oxlint --deny-warnings",
     "lint:fix": "oxlint --fix --deny-warnings",
     "fmt": "oxfmt",
-    "postinstall": "nuxt prepare"
+    "postinstall": "nuxt prepare",
+    "changelog": "changelogen",
+    "release": "bun scripts/release.mjs"
   },
   "dependencies": {
     "@ai-sdk/deepseek": "3.0.48",
@@ -35,6 +37,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
+    "changelogen": "^0.6.2",
     "oxfmt": "^0.60.0",
     "oxlint": "^1.75.0",
     "typescript": "^5.9.0",
