@@ -30,7 +30,9 @@ you are. Right-click a book there for the same menu the library gives it (see be
 **Settings** has three tabs. **General** sets the appearance (System, Light or Dark),
 manages storage, and lists the shortcuts above. **API keys** is where the chat's keys are saved. **About**
 shows the version and what leaves this Mac: no image ever does, and the chat sends only a
-description of the book (its layouts, page numbers and photo tags). **About** also holds
+description of the book (its layouts, page numbers and photo tags). With **Split chapters
+by place** on, each chapter's centre (a latitude and longitude, never a photo) goes to Apple
+to name its town, and nothing goes with the switch off. **About** also holds
 updates. **Check for updates** asks now and answers either way, and a waiting update shows
 its version and release notes there with **Install and restart** beside **Not now**. When
 the quiet launch check is the one that found it, a dot appears on **Settings** in the
@@ -111,6 +113,13 @@ chapter. One stray location does not start a chapter: the photo after it has to 
 too. The contact sheet regroups as soon as you switch it on. It uses the location your camera
 or phone recorded in each photo. Photos with no location stay in the chapter they were taken
 in. When none of the photos has a location, the switch is disabled and says so.
+
+With the switch on, the contact sheet titles each chapter with its town, such as **Kyoto
+5 photos**. To find the town, the app sends the centre of each chapter, as a latitude and
+longitude, to Apple's map service. It never sends a photo, and it sends nothing while the
+switch is off. Names are kept on this Mac, so reopening a draft asks Apple nothing new. A
+chapter Apple cannot name, or any chapter while this Mac is offline, keeps its number, such
+as **Event 3**.
 
 The book aims for variety over density. It places about four photos per spread, so a
 40-page book places around 85 rather than the 130 its layouts could squeeze in, and it mixes

@@ -102,6 +102,7 @@ watch(
   { immediate: true },
 );
 const chapterOverride = computed(() => (job.options.places ? (placeChapters.value?.chapters ?? null) : null));
+const placeNames = usePlaceNames(runId, toRef(() => job.options.places));
 
 const eventGroups = computed(() => groupByEvent(visiblePhotos.value, chapterOverride.value));
 const burstMap = computed<Map<number, number>>(() => burstSizes(photos.value));
@@ -353,6 +354,7 @@ function onGenerated(projectId: number) {
           <ContactSheet
             v-else
             :groups="eventGroups"
+            :names="placeNames"
             :tile-size
             :scroll-element="scroller"
             :sticky-top="44"

@@ -6,6 +6,7 @@ enum RequestKind: String, Codable {
     case benchmark
     case calibrate
     case export
+    case geocode
 }
 
 /// One photo to crop and write, as decided by the Rust layout engine.
@@ -96,6 +97,8 @@ struct Request: Codable {
     /// `.export` request without it is answered with an error rather than an
     /// empty result, so a caller that forgets it hears about it.
     var export: ExportRequest?
+    /// `[lat, lon]` pairs for `.geocode` requests. Nil for every other kind.
+    var coordinates: [[Double]]?
 }
 
 struct PongResult: Codable { let version: String }
@@ -108,6 +111,9 @@ enum ResponseResult: Codable {
     case benchmarked([BenchmarkRecord])
     case calibrated([CalibrationRecord])
     case exported([ExportRecord])
+    /// One place name per requested coordinate, in order; null where the
+    /// lookup failed.
+    case geocoded([String?])
 
     private enum CodingKeys: String, CodingKey { case type, data }
 
@@ -132,6 +138,9 @@ enum ResponseResult: Codable {
         case .exported(let v):
             try c.encode("exported", forKey: .type)
             try c.encode(v, forKey: .data)
+        case .geocoded(let v):
+            try c.encode("geocoded", forKey: .type)
+            try c.encode(v, forKey: .data)
         }
     }
 
@@ -143,6 +152,7 @@ enum ResponseResult: Codable {
         case "benchmarked": self = .benchmarked(try c.decode([BenchmarkRecord].self, forKey: .data))
         case "calibrated": self = .calibrated(try c.decode([CalibrationRecord].self, forKey: .data))
         case "exported": self = .exported(try c.decode([ExportRecord].self, forKey: .data))
+        case "geocoded": self = .geocoded(try c.decode([String?].self, forKey: .data))
         default: self = .error(try c.decode(ErrorResult.self, forKey: .data))
         }
     }

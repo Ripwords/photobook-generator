@@ -1,3 +1,5 @@
+import type { PlaceNames } from "~/types/book";
+
 /**
  * The contact sheet as a list of rows, so it can be virtualized: only the
  * rows on screen are rendered. A folder of thousands of photos otherwise
@@ -8,8 +10,8 @@
 export interface SheetEventRow {
   kind: "event";
   key: string;
-  /** 1-based position among the sheet's events, which is how they are labelled. */
-  ordinal: number;
+  /** The chapter's town, or "Event N" by its 1-based position among the sheet's events. */
+  title: string;
   count: number;
 }
 
@@ -45,16 +47,17 @@ export function tileRows<T>(photos: T[], columns: number, keyPrefix = "row"): Sh
   return rows;
 }
 
-/** Each event's header followed by its photos' rows. */
+/** Each event's header followed by its photos' rows. `names` titles chapters by `eventCluster`. */
 export function sheetRows<T>(
   groups: { eventCluster: number; photos: T[] }[],
   columns: number,
+  names: PlaceNames = {},
 ): SheetRow<T>[] {
   return groups.flatMap((group, index) => [
     {
       kind: "event" as const,
       key: `event-${group.eventCluster}`,
-      ordinal: index + 1,
+      title: names[group.eventCluster] ?? `Event ${index + 1}`,
       count: group.photos.length,
     },
     ...tileRows(group.photos, columns, `event-${group.eventCluster}`),

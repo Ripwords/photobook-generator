@@ -54,6 +54,7 @@ fn sidecar_binary_responds_to_ping_with_matching_id_and_version() {
         paths: None,
         thumbnail_dir: None,
         export: None,
+        coordinates: None,
     };
     let mut line = serde_json::to_string(&req).expect("serialize request");
     line.push('\n');

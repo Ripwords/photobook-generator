@@ -1,5 +1,6 @@
 use crate::book::cull::{Override, Overrides};
 use crate::book::pace::Book;
+use crate::place_names::PlaceKey;
 use crate::project::{self, ExportRecord, Project, ProjectSummary};
 use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
@@ -140,6 +141,12 @@ impl Db {
              CREATE TABLE IF NOT EXISTS settings (
                  key   TEXT PRIMARY KEY,
                  value TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS place_names (
+                 lat_e2 INTEGER NOT NULL,
+                 lon_e2 INTEGER NOT NULL,
+                 name   TEXT NOT NULL,
+                 PRIMARY KEY (lat_e2, lon_e2)
              );",
         )?;
         let has_deleted_at: bool = self
@@ -226,6 +233,27 @@ impl Db {
             "INSERT INTO settings (key, value) VALUES ('cache_limit_bytes', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             [limit_bytes.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Apple's name for a place, if it has named it before. See
+    /// `place_names::name_chapters`.
+    pub fn place_name(&self, key: PlaceKey) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT name FROM place_names WHERE lat_e2 = ?1 AND lon_e2 = ?2",
+                rusqlite::params![key.lat_e2, key.lon_e2],
+                |r| r.get(0),
+            )
+            .optional()
+    }
+
+    pub fn put_place_name(&self, key: PlaceKey, name: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO place_names (lat_e2, lon_e2, name) VALUES (?1, ?2, ?3)
+             ON CONFLICT(lat_e2, lon_e2) DO UPDATE SET name = excluded.name",
+            rusqlite::params![key.lat_e2, key.lon_e2, name],
         )?;
         Ok(())
     }
@@ -598,6 +626,22 @@ impl Db {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_place_name_is_kept_by_its_cell_and_a_later_name_replaces_it() {
+        let db = Db::open_in_memory().unwrap();
+        let kyoto = PlaceKey { lat_e2: 3501, lon_e2: 13577 };
+        let beside = PlaceKey { lat_e2: 3501, lon_e2: 13578 };
+        assert_eq!(db.place_name(kyoto).unwrap(), None);
+
+        db.put_place_name(kyoto, "Kyoto").unwrap();
+        db.put_place_name(beside, "Higashiyama").unwrap();
+        assert_eq!(db.place_name(kyoto).unwrap().as_deref(), Some("Kyoto"));
+
+        db.put_place_name(kyoto, "Kyōto").unwrap();
+        assert_eq!(db.place_name(kyoto).unwrap().as_deref(), Some("Kyōto"));
+        assert_eq!(db.place_name(beside).unwrap().as_deref(), Some("Higashiyama"));
+    }
+
     #[test]
     fn a_deleted_project_is_neither_listed_nor_loadable() {
         let db = Db::open_in_memory().unwrap();

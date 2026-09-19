@@ -1667,10 +1667,22 @@ Also explicitly deferred:
 - **Palette harmony scoring** (Matsuda hue templates). A `palette_harmony` term now exists
   in the Phase 2 scorer, but it is **not** the Matsuda-template scoring this line meant and
   it is effectively inert — see Phase 2 open item 2.
-- **GPS location clustering.** Only time-gap event clustering exists.
-- **Same-person face clustering.** Blocked on licensing: InsightFace/ArcFace is
-  non-commercial research-only including its auto-downloaded weights. Face *detection* is
-  unaffected. Do not reach for InsightFace.
+- ~~**GPS location clustering.**~~ **Built.** **Split chapters by place** (`BookOptions.places`,
+  off by default) also ends a chapter at a move of more than 25 km. With it on, each chapter
+  is titled with its town on the contact sheet. The chapter centre, rounded to 2 decimal
+  places, goes to Apple's reverse geocoder through the sidecar `geocode` request. Names are
+  cached in the `place_names` table by that rounded cell, and a failed lookup is not cached.
+  `usePlaceNames` never calls `place_names` with the switch off, and
+  `tests/place-names.test.ts` proves it. Names never reach the chat, and the agent view
+  privacy test seeds a town to prove it. See spec
+  `docs/superpowers/specs/2026-09-20-cover-places-people-design.md` §3.
+- **Same-person face clustering.** **Blocked**, measured, per spec
+  `docs/superpowers/specs/2026-09-20-cover-places-people-design.md` §4.1. Vision's image
+  feature print on aligned face crops does not separate people: AUC 0.705 over 555 labelled
+  faces, and two people in one photo are closer than one person on two trips. No
+  permissively licensed face embedder was found, and InsightFace/ArcFace is non-commercial
+  research-only, including its auto-downloaded weights. Face *detection* is unaffected. Do
+  not reach for InsightFace. `BookOptions` has no `people` field.
 - **The cover.** Different geometry from the interior (~0.75" wrap band plus a spine whose
   width depends on page count and paper stock). Own spec.
 
