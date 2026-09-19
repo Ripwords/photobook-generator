@@ -8,7 +8,7 @@
 use crate::book::cull::{from_cached_features, Photo};
 use crate::book::edit::{alternatives, opening_count, opening_pages};
 use crate::book::pace::Book;
-use crate::cluster::{event_clusters, EVENT_GAP_SECONDS};
+use crate::book::chapter::{split_chapters, PLACE_SPLIT_KM};
 use crate::ranking::percentiles;
 use crate::templates::Library;
 use serde::Serialize;
@@ -141,7 +141,9 @@ pub fn agent_view(book: &Book, lib: &Library, photos: &[SourcePhoto]) -> AgentVi
         .collect();
     let times: Vec<Option<i64>> = photos.iter().map(|p| p.photo.captured_at).collect();
     let earliest = times.iter().flatten().min().copied();
-    let events = event_clusters(&times, EVENT_GAP_SECONDS);
+    let locations: Vec<_> = photos.iter().map(|p| p.photo.location).collect();
+    let split_km = book.options.places.then_some(PLACE_SPLIT_KM);
+    let events = split_chapters(&times, &locations, split_km);
     let aesthetic = percentiles(&photos.iter().map(|p| p.aesthetic_score).collect::<Vec<_>>());
     let sharpness = percentiles(&photos.iter().map(|p| p.sharpness).collect::<Vec<_>>());
 
@@ -156,7 +158,7 @@ pub fn agent_view(book: &Book, lib: &Library, photos: &[SourcePhoto]) -> AgentVi
                 .captured_at
                 .zip(earliest)
                 .map(|(t, first)| ((t - first) / 86_400) as u64),
-            event: events[id],
+            event: events[id] as usize,
             faces: source.photo.faces.len(),
             face_area: source.photo.face_area_fraction,
             tags: Tags::top(&source.photo.scene_tags),
@@ -516,6 +518,30 @@ pub(crate) mod tests {
         assert_eq!(photo_by_id(&view, 0).face_area, 0.0427);
         assert_eq!(photo_by_id(&view, 2).faces, 0);
         assert_eq!(photo_by_id(&view, 2).face_area, 0.0);
+    }
+
+    /// A book laid out by place tells the agent the chapters it was laid out
+    /// by. Four photos an hour apart are one time run; the last two are in
+    /// Osaka, 43 km from Kyoto. Time alone is the guard.
+    #[test]
+    fn agent_view_events_follow_the_books_place_chapters() {
+        let kyoto = crate::book::chapter::LatLon::new(35.0116, 135.7681);
+        let osaka = crate::book::chapter::LatLon::new(34.6937, 135.5023);
+        let photos: Vec<SourcePhoto> = (0..4)
+            .map(|i| {
+                let mut p = assembled_photo(i);
+                p.photo.location = if i < 2 { kyoto } else { osaka };
+                p
+            })
+            .collect();
+        let events = |places: bool| {
+            let mut book = small_book();
+            book.options.places = places;
+            agent_view(&book, &frozen_library(), &photos).photos.iter().map(|p| p.event).collect::<Vec<_>>()
+        };
+
+        assert_eq!(events(false), vec![0, 0, 0, 0]);
+        assert_eq!(events(true), vec![0, 0, 1, 1]);
     }
 
     // --- openings ---------------------------------------------------------------
