@@ -32,7 +32,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "app",
+    "targets": ["app", "dmg"],
     "macOS": { "minimumSystemVersion": "15.0" },
     "externalBin": ["binaries/photobook-engine"],
     "resources": { "../templates": "templates" }
