@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Project status
+    url: https://github.com/Ripwords/photobook-generator/blob/HEAD/docs/PROJECT-STATUS.md
+    about: What is built, what is verified, and what is still open.
+  - name: Using the app
+    url: https://github.com/Ripwords/photobook-generator#using-the-app
+    about: The manual, including settings and the analysis cache.

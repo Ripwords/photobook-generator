@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest something the app should be able to do.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describing what you want the book to look like, or what you want to get
+        done, is more useful than naming a control. One constraint is fixed:
+        photos never leave the Mac, so anything that needs a hosted vision
+        model is out of scope.
+  - type: textarea
+    id: goal
+    attributes:
+      label: What do you want to do?
+      description: The outcome you're after, not the UI you imagine.
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: How do you do it today?
+      description: In the app, in Pixajoy's own editor, by hand, or not at all.
+  - type: checkboxes
+    id: checked-status
+    attributes:
+      label: Status
+      options:
+        - label: >
+            I checked the Status section of the README and this is not already
+            listed as built or planned.
+          required: true

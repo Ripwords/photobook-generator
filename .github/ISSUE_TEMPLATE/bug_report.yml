@@ -1,0 +1,65 @@
+name: Bug report
+description: Something in the app behaves incorrectly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not attach your photos. A description of them (format, camera,
+        roughly how many) is enough, and the app is built so they never have to
+        leave your Mac.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what occurred instead.
+    validations:
+      required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      placeholder: "0.1.0, shown under Settings > About"
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version and Mac
+      placeholder: "macOS 15.6, MacBook Air M2"
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where it happened
+      options:
+        - Analysing photos (contact sheet, drafts)
+        - Choosing photos or generating the book
+        - Editing the book (spreads, swaps, crops, boxes)
+        - Export or pre-flight
+        - Library, sidebar or settings
+        - Book chat
+        - Install or first launch
+        - Somewhere else
+    validations:
+      required: true
+  - type: textarea
+    id: photos
+    attributes:
+      label: The photos
+      description: >
+        How many photos, in how many folders, and which formats (JPEG, HEIC,
+        which RAW). If analysis was involved, did it fail for every photo or
+        only some, and did those have anything in common?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log excerpt
+      description: >
+        Optional. The app log is ~/Library/Logs/com.jiajingteoh.photobook/PhotobookGen.log.
+        Lines mentioning the sidecar or photobook-engine are the most useful for
+        analysis problems. Check it for folder names you would rather not share.
+      render: text
