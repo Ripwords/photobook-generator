@@ -273,8 +273,8 @@ export function applyAnalysisEvent(state: StreamState, event: AnalysisEvent): St
  *
  * This is a FILTER, not a rule. `book::cull::cull` in Rust decides which
  * photo survives -- dropping utility images, then keeping one winner per
- * near-duplicate cluster ranked exposure -> feature-print density ->
- * sharpness -> face capture quality -> aesthetic -- and
+ * near-duplicate cluster ranked exposure -> sharpness -> face capture
+ * quality -> aesthetic -- and
  * `commands::stamp_kept` writes that verdict onto each
  * record as `kept`. Reading the flag is the whole implementation.
  *

@@ -33,8 +33,18 @@ no print links by pHash alone. Clusters grow by **complete linkage**: two cluste
 only when every cross pair is linked. No pair more than `SIMILAR_SPAN_SECONDS = 120`
 apart is linked, so no cluster spans more than 120 s of dated photos. `cull` then ranks
 each cluster by exposure (a frame more than 90% clipped low or high loses to any that is
-not), then density (other contestants within 0.35), then the old sharpness, capture
-quality and aesthetic order. Overrides are unchanged.
+not), then the old sharpness, capture quality and aesthetic order. Overrides are
+unchanged.
+
+**A density term was built and removed.** Ranking by "other members within 0.35" is inert
+under complete linkage, because every print-linked member is already within 0.35 of every
+other. Measured on the real sets, density separated members in 2 of 56 multi-photo
+clusters on Bali, 3 of 64 on the Iceland slice and 5 of 162 on full Iceland. It changed
+the winner in 1, 3 and 4 clusters. Its test passed only because the fixture put photos 0.5
+apart in one cluster, which `similar_clusters` cannot produce. A medoid was not tried: on
+the Iceland sheet the most typical frame is not the best expression. This follows Xerox US
+8,571,331 step 4 anyway. The clustering finds the peak, and inside it poor frames are
+filtered and the rest ranked.
 
 **Calibration** (all pairs, 4 h events). Bali 2025 is 283 photos in 8 events. The
 Iceland 2025 a6400 slice is the first 300 photos, 38.8 h, in 3 events.
@@ -95,7 +105,11 @@ by this change. Twins need handling by file stem.
 
 **Cost.** Candidate pairs are all i < j, and the O(n^2) loop skips dated pairs past the
 cap before computing a distance. A library with no capture dates computes every
-distance (768 floats each).
+distance (768 floats each). `finalize_photos` on the full Iceland set (1525 photos,
+release build) took 43 ms dated and 530 ms with every capture date stripped, so no
+windowing was added. The undated case grows with n^2, so it passes 2 s at about 3000
+undated photos. If that becomes real, compare undated photos only within a window of
+their filename order.
 
 ## What changed on 2026-09-19: feature prints, clipping, and analyzer v3
 
@@ -1680,9 +1694,9 @@ tests did not catch them and a fresh reader would repeat them.
   so time alone is not a substitute either.
 - **pHash says nothing reliable about sky, mist or snow.** Iceland's pHash-matching pairs have
   a median print distance of 0.52. Trust the print when both photos have one.
-- **Density is the count of OTHER photos within 0.35.** Counting the photo itself hands a
-  pHash-joined printed photo the win over a sharper print-less one
-  (`cull_does_not_count_a_photo_as_its_own_neighbour`).
+- **Do not rank a cluster's members by their print distance to each other.** Complete
+  linkage already makes them all mutually within 0.35, so any neighbour count ties. A test
+  that shows otherwise has a cluster the pipeline cannot build.
 
 **Apple Vision**
 - `VNFaceLandmarkRegion2D.normalizedPoints` are normalised to the **face's bounding box**,

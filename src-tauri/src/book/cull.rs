@@ -381,13 +381,12 @@ impl FromIterator<(String, Override)> for Overrides {
 ///
 /// 1. exposure: a frame with more than `CLIPPED_LIMIT` of its pixels crushed
 ///    to black or blown to white loses to any frame that is not;
-/// 2. density: how many other photos in the cluster lie within
-///    `cluster::SIMILAR_DISTANCE` of its feature print. The photo most like
-///    the rest is the one the burst was aiming at, where the sharpest frame
-///    is often a stray one taken mid-turn;
-/// 3. sharpness percentile -> face capture quality -> aesthetic percentile.
+/// 2. sharpness percentile -> face capture quality -> aesthetic percentile.
 ///
-/// A photo with no feature print has density 0.
+/// There is no "most typical frame" term. `cluster::similar_clusters` is
+/// complete linkage, so every member is already within
+/// `SIMILAR_DISTANCE` of every other and a neighbour count ties: on Bali and
+/// Iceland it separated 10 of 282 clusters.
 ///
 /// **Cull proposes; the user disposes.** `overrides` is applied on top of
 /// that verdict, and it wins:
@@ -461,29 +460,14 @@ const CLIPPED_LIMIT: f64 = 0.9;
 
 fn winner<'a>(contestants: &[&'a Photo]) -> Option<&'a Photo> {
     let exposed = |p: &Photo| p.clipped_low <= CLIPPED_LIMIT && p.clipped_high <= CLIPPED_LIMIT;
-    let density = |p: &Photo| {
-        let Some(print) = &p.feature_print else { return 0 };
-        contestants
-            .iter()
-            .filter(|other| !std::ptr::eq(**other, p))
-            .filter_map(|other| other.feature_print.as_deref())
-            .filter_map(|other| crate::cluster::feature_distance(print, other))
-            .filter(|&d| d <= crate::cluster::SIMILAR_DISTANCE)
-            .count()
-    };
-    contestants
-        .iter()
-        .map(|&p| (exposed(p), density(p), p))
-        .reduce(|incumbent, challenger| {
-            let (ie, id, ip) = incumbent;
-            let (ce, cd, cp) = challenger;
-            if (ce, cd) > (ie, id) || ((ce, cd) == (ie, id) && beats(cp, ip)) {
-                challenger
-            } else {
-                incumbent
-            }
-        })
-        .map(|(_, _, p)| p)
+    contestants.iter().copied().reduce(|incumbent, challenger| {
+        let (ce, ie) = (exposed(challenger), exposed(incumbent));
+        if ce > ie || (ce == ie && beats(challenger, incumbent)) {
+            challenger
+        } else {
+            incumbent
+        }
+    })
 }
 
 fn beats(challenger: &Photo, incumbent: &Photo) -> bool {
@@ -528,9 +512,6 @@ mod tests {
         }
     }
 
-    fn printed(path: &str, sharp: u8, x: f32) -> Photo {
-        Photo { feature_print: Some(vec![x, 0.0]), ..photo(path, 7, sharp, 50) }
-    }
 
     fn winner(photos: &[Photo]) -> String {
         let kept = cull(photos, &Overrides::new());
@@ -538,40 +519,18 @@ mod tests {
         kept[0].path.clone()
     }
 
-    /// Densities at r = 0.35 are 2, 2, 3 and 1. The winner is the least sharp
-    /// photo, so a ranking that still led with sharpness would pick /d.jpg.
-    #[test]
-    fn cull_keeps_the_photo_most_like_the_rest_of_its_cluster() {
-        let photos = [
-            printed("/a.jpg", 50, 0.0),
-            printed("/b.jpg", 60, 0.1),
-            printed("/c.jpg", 40, 0.2),
-            printed("/d.jpg", 90, 0.5),
-        ];
-        assert_eq!(winner(&photos), "/c.jpg");
-    }
-
-    /// Equal density everywhere, so the sharpness ranking would pick the
-    /// clipped frame; the exposure screen must stop it.
+    /// The clipped frame is the sharper one, so without the screen it wins.
     #[test]
     fn cull_never_picks_a_clipped_frame_over_one_that_is_exposed() {
-        let dark = Photo { clipped_low: 0.95, ..printed("/a.jpg", 90, 0.0) };
-        assert_eq!(winner(&[dark, printed("/b.jpg", 10, 0.1)]), "/b.jpg");
-        let blown = Photo { clipped_high: 0.95, ..printed("/a.jpg", 90, 0.0) };
-        assert_eq!(winner(&[blown, printed("/b.jpg", 10, 0.1)]), "/b.jpg");
-    }
-
-    /// A pHash can join a photo with no print to one that has one. A print
-    /// with no neighbours is density 0, the same as no print, so sharpness
-    /// decides; counting the photo as its own neighbour would hand it the win.
-    #[test]
-    fn cull_does_not_count_a_photo_as_its_own_neighbour() {
-        assert_eq!(winner(&[printed("/a.jpg", 10, 0.0), photo("/b.jpg", 7, 90, 50)]), "/b.jpg");
+        let dark = Photo { clipped_low: 0.95, ..photo("/a.jpg", 7, 90, 50) };
+        assert_eq!(winner(&[dark, photo("/b.jpg", 7, 10, 50)]), "/b.jpg");
+        let blown = Photo { clipped_high: 0.95, ..photo("/a.jpg", 7, 90, 50) };
+        assert_eq!(winner(&[blown, photo("/b.jpg", 7, 10, 50)]), "/b.jpg");
     }
 
     #[test]
     fn cull_still_keeps_one_photo_when_every_frame_is_clipped() {
-        let dark = |path, sharp| Photo { clipped_low: 0.95, ..printed(path, sharp, 0.0) };
+        let dark = |path, sharp| Photo { clipped_low: 0.95, ..photo(path, 7, sharp, 50) };
         assert_eq!(winner(&[dark("/a.jpg", 10), dark("/b.jpg", 90)]), "/b.jpg");
     }
 
