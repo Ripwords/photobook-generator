@@ -218,6 +218,7 @@ mod tests {
             safe_margin_in: spec.safe_margin_in(),
             min_dpi: spec.min_dpi(),
             warn_dpi: spec.warn_dpi(),
+            cover_wrap_in: spec.cover_wrap_in(),
         }
     }
 
@@ -282,6 +283,7 @@ mod tests {
             safe_margin_in: 0.125,
             min_dpi: 150.0,
             warn_dpi: 250.0,
+            cover_wrap_in: 0.75,
         })
         .unwrap();
         let cases = vec![
@@ -323,6 +325,7 @@ mod tests {
             safe_margin_in: 0.125,
             min_dpi: 200.0,
             warn_dpi: 300.0,
+            cover_wrap_in: 0.75,
         })
         .expect("fixture spec must be valid")
     }
@@ -460,6 +463,7 @@ mod tests {
             safe_margin_in: 0.0625,
             min_dpi: 180.0,
             warn_dpi: 240.0,
+            cover_wrap_in: 0.75,
         })
         .unwrap();
 

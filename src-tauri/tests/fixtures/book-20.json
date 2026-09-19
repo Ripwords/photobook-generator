@@ -550,6 +550,7 @@
     "gutterIn": 0.197,
     "safeMarginIn": 0.125,
     "minDpi": 200.0,
-    "warnDpi": 300.0
+    "warnDpi": 300.0,
+    "coverWrapIn": 0.75
   }
 }

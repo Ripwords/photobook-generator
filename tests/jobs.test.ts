@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { effectScope, nextTick, toRef } from "vue";
 import type { AnalysisEvent, AnalysisSummary, AnalyzedPhoto } from "../app/types/features";
@@ -12,6 +14,7 @@ const SQUARE: PrintSpec = {
   safeMarginIn: 0.2,
   minDpi: 180,
   warnDpi: 260,
+  coverWrapIn: 0.5,
 };
 
 /**
@@ -414,6 +417,23 @@ describe("analysis jobs", () => {
         ["Old", null],
         ["Torn", null],
       ]);
+    });
+
+    /**
+     * A spec saved before the cover wrap existed has seven keys. Rust loads
+     * it with Pixajoy's wrap; the draft reader must agree, and the shared
+     * fixture is what keeps the two defaults the same number.
+     */
+    it("reads a print size saved before the cover wrap existed with the engine's default wrap", async () => {
+      const fixture = JSON.parse(
+        readFileSync(fileURLToPath(new URL("./fixtures/wire/legacy-print-spec.json", import.meta.url)), "utf8"),
+      ) as { legacy: unknown; loadsAs: PrintSpec };
+      savedDrafts.set(5, JSON.stringify({ id: 5, name: "Before covers", folders: ["/f"], replacing: null, overrides: {}, spec: fixture.legacy }));
+
+      const store = createAnalysisJobs();
+      await store.restoreDrafts();
+
+      expect(store.jobs.value[0]!.spec).toStrictEqual(fixture.loadsAs);
     });
 
     it("skips a saved draft it cannot read", async () => {

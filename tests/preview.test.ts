@@ -93,6 +93,7 @@ describe("the wire fixture", () => {
       safeMarginIn: 0.125,
       minDpi: 200,
       warnDpi: 300,
+      coverWrapIn: 0.75,
     });
 
     const { pageWIn, bleedIn, gutterIn, safeMarginIn } = layout.spec;
@@ -676,6 +677,7 @@ describe("the edit wire", () => {
           safeMarginIn: 0.05,
           minDpi: 150,
           warnDpi: 220,
+          coverWrapIn: 0.6,
         },
       },
     ];

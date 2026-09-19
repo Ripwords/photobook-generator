@@ -34,6 +34,7 @@ const pixajoy: PrintSpec = {
   safeMarginIn: 0.125,
   minDpi: 200,
   warnDpi: 300,
+  coverWrapIn: 0.75,
 };
 
 function accepted(p: Proposal): PrintSpec {
@@ -109,6 +110,7 @@ describe("proposeSpec", () => {
     expect(fields.safeMargin).toBe("0.125");
     expect(fields.minDpi).toBe("200");
     expect(fields.warnDpi).toBe("300");
+    expect(fields.coverWrap).toBe("0.750");
   });
 
   it("puts the bleed back on: once on the width, twice on the height", () => {
@@ -120,6 +122,19 @@ describe("proposeSpec", () => {
     // Untouched fields keep their exact canonical value.
     expect(spec.gutterIn).toBe(0.197);
     expect(spec.safeMarginIn).toBe(0.125);
+  });
+
+  it("carries the cover wrap as a length in the unit on screen", () => {
+    const spec = accepted(proposeSpec({ ...fieldsFromSpec(pixajoy, "mm"), coverWrap: "15" }, pixajoy, "mm"));
+    expect(spec.coverWrapIn).toBe(15 / 25.4);
+    expect(spec.pageWIn).toBe(pixajoy.pageWIn);
+    const untouched = accepted(proposeSpec(fieldsFromSpec(pixajoy, "mm"), pixajoy, "mm"));
+    expect(untouched.coverWrapIn).toBe(0.75);
+  });
+
+  it("names the cover wrap in a refusal without calling it a page", () => {
+    const error = { kind: "tooLarge", field: "coverWrapIn", value: 4, limit: 3 } as const;
+    expect(refusalText(error, "in")).toBe("Cover wrap can be at most 3.000 in.");
   });
 
   it("keeps the book size when only the bleed changes", () => {
