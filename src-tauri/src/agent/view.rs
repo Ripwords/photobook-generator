@@ -285,6 +285,7 @@ pub(crate) mod tests {
             seed: 99,
             dropped: 1,
             controls: Default::default(),
+            options: Default::default(),
         };
         book.controls.entry(0).or_default().locked = true;
         book
@@ -382,6 +383,7 @@ pub(crate) mod tests {
             seed: 1,
             dropped: 1,
             controls: Default::default(),
+            options: Default::default(),
         };
 
         let text = serde_json::to_string(&agent_view(&book, &frozen_library(), &photos)).unwrap();

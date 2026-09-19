@@ -417,6 +417,7 @@ mod tests {
                 template_id: "fx".into(),
                 placements: vec![Placement { photo_index: 0, slot_rect: slot, crop, z: 1 }],
             }],
+            options: Default::default(),
         }
     }
 
@@ -901,6 +902,7 @@ mod tests {
                     }],
                 },
             ],
+            options: Default::default(),
         };
         let bleed = vec![Vec::new(), vec![crate::geometry::BleedEdge::Left]];
         let findings = preflight_with_bleed(&book, &[p], dir.path(), &bleed);

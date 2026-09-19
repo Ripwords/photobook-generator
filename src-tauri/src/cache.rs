@@ -666,6 +666,7 @@ mod tests {
             seed: 1,
             dropped: 0,
             pages: vec![],
+            options: Default::default(),
         };
         let mut overrides = Overrides::new();
         overrides.set("book-override", Override::Exclude);

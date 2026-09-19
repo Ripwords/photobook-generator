@@ -201,6 +201,7 @@ mod tests {
                     })
                     .collect(),
             }],
+            options: Default::default(),
         }
     }
 

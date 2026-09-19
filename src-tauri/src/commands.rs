@@ -5,7 +5,7 @@ use crate::agent::edit::AgentError;
 use crate::agent::view::{AgentView, SourcePhoto};
 use crate::book::cull::{Overrides, Photo};
 use crate::book::manifest::{manifest, Manifest};
-use crate::book::pace::Book;
+use crate::book::pace::{Book, BookOptions};
 use crate::book::pack::{recommend_pages, Capacity};
 use crate::book::preflight::{Finding, Severity};
 use crate::export::build_items;
@@ -1447,6 +1447,8 @@ pub(crate) struct NewProject<'a> {
     /// a NEW book's geometry is the command boundary, where the user's
     /// choice actually arrives.
     pub spec: PrintSpec,
+    /// What the user switched on for this book; see `Book::options`.
+    pub options: BookOptions,
 }
 
 /// Assembles a book and PERSISTS it, returning the new project's id.
@@ -1466,7 +1468,19 @@ pub(crate) fn generate_and_save(
     // `assemble` refuses rather than returning a book that lost a photo the
     // user explicitly asked for. Surfaced as a command error, with the
     // numbers they need to fix it -- see `book::pack::IncludeOverflow`.
-    let book = crate::book::pace::assemble(
+    // Places off keeps the chapters `finalize_photos` stamped, untouched.
+    let by_place: Vec<Photo>;
+    let photos = if meta.options.places {
+        by_place = photos
+            .iter()
+            .zip(crate::book::chapter::chapters(photos, true))
+            .map(|(p, event_cluster)| Photo { event_cluster, ..p.clone() })
+            .collect();
+        &by_place
+    } else {
+        photos
+    };
+    let mut book = crate::book::pace::assemble(
         &meta.spec,
         photos,
         meta.pages,
@@ -1476,6 +1490,7 @@ pub(crate) fn generate_and_save(
         overrides,
     )
     .map_err(|e| e.to_string())?;
+    book.options = meta.options;
     // The hash of EVERY photo the book was assembled against, in that
     // slice's order -- `Placement::photo_index` indexes it positionally.
     // This is what makes the project exportable after a restart; see
@@ -1833,6 +1848,9 @@ pub async fn generate_book(
     // deserialisation runs `TryFrom<RawPrintSpec>`, so an impossible geometry
     // is refused here and can never reach `assemble`.
     spec: Option<PrintSpec>,
+    // The draft screen's switches. `None` from a caller that has none is
+    // every option off, the book this command always built.
+    options: Option<BookOptions>,
 ) -> Result<GeneratedBook, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let lib = load_library(&app)?;
@@ -1855,7 +1873,7 @@ pub async fn generate_book(
         // One of the three audited `pixajoy()` call sites: a caller that names
         // no geometry gets the printer this app was built against.
         let spec = spec.unwrap_or_else(PrintSpec::pixajoy);
-        let meta = NewProject { name: &name, source_folders, pages, seed, spec };
+        let meta = NewProject { name: &name, source_folders, pages, seed, spec, options: options.unwrap_or_default() };
         generate_and_save(&db, &meta, &parsed, &lib, &weights, &overrides)
     })
     .await
@@ -2512,6 +2530,7 @@ mod tests {
             seed: 0,
             dropped: 0,
             pages: vec![],
+            options: Default::default(),
         };
         let save = |name: &str| db.save_project(name, "/tmp/x", &book, &[], &Overrides::new()).unwrap();
         let (stale, fresh, now_deleted) = (save("Stale"), save("Fresh"), save("Now"));
@@ -2543,6 +2562,7 @@ mod tests {
             pages,
             seed,
             spec: pixajoy_spec(),
+            options: BookOptions::default(),
         }
     }
 
@@ -4374,6 +4394,7 @@ mod tests {
                     placements: vec![placement(2, 1)],
                 },
             ],
+            options: Default::default(),
         };
         (book, photos)
     }
@@ -4622,6 +4643,50 @@ mod tests {
     }
 
     // --- `generate_and_save`: generation the user cannot lose -------------
+
+    /// Which town each spread's photos were taken in, for the Places tests.
+    fn towns_per_spread(book: &Book, towns: &[&'static str]) -> Vec<BTreeSet<&'static str>> {
+        let mut spreads: BTreeMap<u32, BTreeSet<&'static str>> = BTreeMap::new();
+        for page in &book.pages {
+            let spread = spreads.entry(page.number / 2).or_default();
+            spread.extend(page.placements.iter().map(|p| towns[p.photo_index]));
+        }
+        spreads.into_values().filter(|t| !t.is_empty()).collect()
+    }
+
+    /// One time run, twelve in Kyoto then twelve in Osaka, stamped as `finalize_photos` stamps
+    /// it: a single time-only chapter. With Places on no spread may mix the
+    /// two towns. The places-off book is the guard: it must mix them, or
+    /// this fixture cannot tell the option from a coincidence of group sizes.
+    #[test]
+    fn places_keeps_two_towns_off_each_others_spreads() {
+        let db = Db::open_in_memory().unwrap();
+        let lib = fixture_library();
+        let towns: Vec<&'static str> = (0..24).map(|i| if i < 12 { "kyoto" } else { "osaka" }).collect();
+        let records: Vec<serde_json::Value> = (0..24)
+            .map(|i| {
+                let mut record = photo_record(i, false, i as u32, 0);
+                let (lat, lon) = if towns[i] == "kyoto" { (35.0116, 135.7681) } else { (34.6937, 135.5023) };
+                record["exif"] = serde_json::json!({ "captureDate": 1_700_000_000 + 600 * i, "latitude": lat, "longitude": lon });
+                record
+            })
+            .collect();
+        let photos = photos_from_records(&records).unwrap();
+        let generate = |places: bool| {
+            let meta = NewProject { options: BookOptions { places }, ..new_project("Kansai", 20, 7) };
+            let id = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap().project_id;
+            db.load_project(id).unwrap().expect("saved")
+        };
+
+        let off = generate(false);
+        assert!(towns_per_spread(&off.book, &towns).iter().any(|t| t.len() == 2), "the guard: time alone must mix the towns");
+        assert!(!off.book.options.places);
+
+        let on = generate(true);
+        let spreads = towns_per_spread(&on.book, &towns);
+        assert!(spreads.iter().all(|t| t.len() == 1), "a spread mixes Kyoto and Osaka: {spreads:?}");
+        assert!(on.book.options.places, "the book must remember it was laid out by place");
+    }
 
     /// The geometry the draft screen was showing must be the geometry the
     /// book is laid out under AND the one persisted with it.
@@ -5378,6 +5443,7 @@ mod tests {
                 template_id: "t".into(),
                 placements: (0..7).map(placement).collect(),
             }],
+            options: Default::default(),
         };
 
         assert_eq!(

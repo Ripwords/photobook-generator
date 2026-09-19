@@ -188,6 +188,7 @@ mod tests {
             seed: 1,
             dropped: 0,
             pages: vec![page_with_placements(1, Side::Right, &[0, 1])],
+            options: Default::default(),
         };
         let items = build_items(&book, &photos);
         assert_eq!(items.len(), 2);
@@ -212,6 +213,7 @@ mod tests {
                 template_id: "t".into(),
                 placements: vec![placement(0, 1, crop)],
             }],
+            options: Default::default(),
         };
         let items = build_items(&book, &photos);
         assert_eq!(items[0].crop_x, crop.x);
@@ -232,6 +234,7 @@ mod tests {
                 Page { number: 1, side: Side::Right, template_id: "blank".into(), placements: Vec::new() },
                 page_with_placements(2, Side::Left, &[0]),
             ],
+            options: Default::default(),
         };
         let items = build_items(&book, &photos);
         assert_eq!(items.len(), 1);
@@ -277,7 +280,7 @@ mod tests {
                 &indices,
             ));
         }
-        let book = Book { spec: pixajoy_spec(), controls: Default::default(), seed: 1, dropped: 0, pages };
+        let book = Book { spec: pixajoy_spec(), controls: Default::default(), seed: 1, dropped: 0, pages, options: Default::default() };
 
         let items = build_items(&book, &photos);
         assert!(items.len() > 40, "fixture must actually exercise many placements: {}", items.len());
@@ -313,7 +316,7 @@ mod tests {
             }
             pages.push(page_with_placements(page_number, Side::Right, &indices));
         }
-        let book = Book { spec: pixajoy_spec(), controls: Default::default(), seed: 1, dropped: 0, pages };
+        let book = Book { spec: pixajoy_spec(), controls: Default::default(), seed: 1, dropped: 0, pages, options: Default::default() };
 
         let items = build_items(&book, &photos);
         let traversal_order: Vec<&str> = items.iter().map(|i| i.filename.as_str()).collect();

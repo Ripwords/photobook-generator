@@ -393,6 +393,7 @@ mod tests {
                     placements: Vec::new(),
                 },
             ],
+            options: Default::default(),
         }
     }
 
