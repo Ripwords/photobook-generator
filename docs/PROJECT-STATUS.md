@@ -24,6 +24,42 @@ deliberately-parked decision that this file is the only surviving record of.**
 
 ---
 
+## What changed on 2026-09-19: the app updates itself
+
+**What shipped.** `tauri-plugin-updater` and `tauri-plugin-process`, registered in the
+shared `builder()` so the integration tests that build a live `AppHandle` exercise them.
+`app.vue` fires one silent check on mount; **Settings → About** holds the explicit check,
+the offer with its release notes, the progress bar and the restart. A dot on **Settings**
+in the sidebar is the only trace a silent check leaves, because a launch check that finds
+nothing, or that cannot reach GitHub, must say nothing at all.
+
+All phase logic is `updaterReducer` in `app/types/updater.ts`, a pure function over a
+discriminated union. `useUpdater` decides nothing; it translates plugin events into reducer
+events and holds the `Update` handle at module scope, so the startup check and the install
+button share one. That module scope is only safe because the app is `ssr: false`.
+
+**Verified.** 19 mutations of the reducer, each killed by a named test, with two no-op
+control mutations that survived to prove the harness could report a survivor at all. The
+four UI branches were driven in the mock app (`bun run ui:mock`, then `window.pbgUpdate` set
+to `none`, `fail` or `unsized` from the console) and rasterized: the offer with notes, the
+bar at 67%, the restart notice, and the error line with its icon. `cargo test` passes with
+both plugins in the chain, which is what proves `plugins.updater` in `tauri.conf.json`
+parses in situ rather than merely being valid base64.
+
+**NOT verified, and not fakeable here.** No real update has ever been installed. The first
+tagged release after this change is the first one to publish a `latest.json`, so nothing
+can update until a second release exists after that. Until two releases have shipped, the
+endpoint 404s and every check lands on "could not reach the update server".
+
+**The trap.** `plugins.updater.pubkey` is the whole trust anchor. Every installed copy
+accepts updates from that key alone, so replacing it strands every copy already out there:
+those users have to download the dmg by hand, and nothing in the app will tell them to. The
+private half is in the repo secrets `TAURI_SIGNING_PRIVATE_KEY` and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, generated 2026-09-19 and kept outside the repo. Losing
+it has the same effect as rotating it. Build it once without the secret and the release
+still succeeds, with no `.sig` and a `latest.json` no installed app will accept, which is
+the failure mode worth watching for.
+
 ## What changed on 2026-09-19: the cache never holds a record the engine cannot read
 
 **The bug.** Choosing a book length said "These photos are no longer loaded -- analyse the

@@ -109,12 +109,23 @@ jobs:
         run: bun run sidecar
 
       # With no releaseId (the manual run) tauri-action only builds.
+      #
+      # The signing key is the updater's whole trust anchor: the app ships
+      # with the matching public key and refuses an update whose signature
+      # does not verify. Without the secret the build still succeeds, but it
+      # produces no `.sig`, and `includeUpdaterJson` then publishes a
+      # `latest.json` no installed app will accept. The key is a minisign
+      # keypair from `tauri signer generate`, unrelated to Apple's Developer
+      # ID; the bundle itself is still unsigned and un-notarized.
       - name: Build the dmg and upload it to the release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          includeUpdaterJson: true
           args: --target aarch64-apple-darwin
 
       - name: Attach the dmg to the run

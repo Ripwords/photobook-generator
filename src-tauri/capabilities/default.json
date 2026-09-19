@@ -9,6 +9,8 @@
     "dialog:default",
     "log:default",
     "notification:default",
+    "updater:default",
+    "process:default",
     {
       "identifier": "shell:allow-execute",
       "allow": [{ "name": "binaries/photobook-engine", "sidecar": true }]

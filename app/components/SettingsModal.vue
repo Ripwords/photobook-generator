@@ -2,6 +2,7 @@
 import type { SettingsTab } from "~/composables/useShell";
 import { SHORTCUTS, type ShortcutId, shortcutKbds } from "~/types/shortcuts";
 import { DEFAULT_CACHE_LIMIT, formatBytes, limitItems, storageSummary } from "~/types/storage";
+import type { UpdaterState } from "~/types/updater";
 
 const { settingsOpen, settingsTab } = useShell();
 const colorMode = useColorMode();
@@ -48,6 +49,17 @@ function changeLimit(limitBytes: number) {
   freed.value = null;
   void setLimit(limitBytes);
 }
+
+const { state: updater, check, install, dismiss } = useUpdater();
+const availableUpdate = computed(() => (updater.value.phase === "available" ? updater.value.update : null));
+const downloadPercent = computed(() => (updater.value.phase === "downloading" ? updater.value.percent : null));
+const updateError = computed(() => (updater.value.phase === "error" ? updater.value.message : null));
+
+const CHECK_LABELS: Partial<Record<UpdaterState["phase"], string>> = {
+  checking: "Checking…",
+  error: "Try again",
+};
+const checkLabel = computed(() => CHECK_LABELS[updater.value.phase] ?? "Check for updates");
 </script>
 
 <template>
@@ -188,6 +200,71 @@ function changeLimit(limitBytes: number) {
                 <p class="text-muted">Version {{ version }}</p>
               </div>
             </div>
+
+            <section class="space-y-2" aria-label="Updates">
+              <div v-if="availableUpdate" class="space-y-3 rounded-md border border-default p-3">
+                <p class="text-highlighted">Version {{ availableUpdate.version }} is available.</p>
+                <p
+                  v-if="availableUpdate.notes"
+                  class="max-h-32 overflow-y-auto whitespace-pre-line text-xs text-toned"
+                >{{ availableUpdate.notes }}</p>
+                <div class="flex items-center gap-2">
+                  <UButton
+                    color="neutral"
+                    variant="outline"
+                    size="sm"
+                    icon="i-lucide-download"
+                    @click="install"
+                  >
+                    Install and restart
+                  </UButton>
+                  <UButton color="neutral" variant="ghost" size="sm" @click="dismiss">Not now</UButton>
+                </div>
+              </div>
+
+              <div v-else-if="updater.phase === 'downloading'" class="space-y-2">
+                <div class="flex items-baseline justify-between gap-4">
+                  <span class="text-toned">Downloading the update</span>
+                  <span v-if="downloadPercent !== null" class="tabular-nums text-highlighted">
+                    {{ downloadPercent }}%
+                  </span>
+                </div>
+                <UProgress
+                  :model-value="downloadPercent"
+                  color="neutral"
+                  size="xs"
+                  aria-label="Update download progress"
+                />
+              </div>
+
+              <p v-else-if="updater.phase === 'installing'" class="text-toned">
+                Installing. PhotobookGen will restart.
+              </p>
+
+              <template v-else>
+                <div class="flex items-center gap-3">
+                  <UButton
+                    color="neutral"
+                    variant="outline"
+                    size="sm"
+                    icon="i-lucide-rotate-cw"
+                    :loading="updater.phase === 'checking'"
+                    :disabled="updater.phase === 'checking'"
+                    @click="check(false)"
+                  >
+                    {{ checkLabel }}
+                  </UButton>
+                  <span v-if="updater.phase === 'uptodate'" class="text-xs text-muted">
+                    You're up to date.
+                  </span>
+                </div>
+                <p v-if="updateError" class="flex items-start gap-1.5 text-xs text-error">
+                  <UIcon name="i-lucide-triangle-alert" class="mt-0.5 size-3.5 shrink-0" />
+                  {{ updateError }}
+                </p>
+              </template>
+            </section>
+
             <p class="max-w-prose text-toned">
               Turns folders of photos into a print-ready photobook. Every photo is analysed on this
               Mac, and no image is ever uploaded. The chat sends only a description of the book:

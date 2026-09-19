@@ -102,6 +102,12 @@ xattr -dr com.apple.quarantine /Applications/PhotobookGen.app
 
 After that it opens normally.
 
+PhotobookGen keeps itself current from there. It asks GitHub for a newer release once at
+launch, and again whenever you press **Check for updates** in **About** (see below), then
+downloads the one it finds and restarts into it. An update whose signature does not match
+this project's key is refused, so a tampered download cannot install itself. The launch
+check is quiet: offline, or with nothing newer out, it says nothing at all.
+
 ## Using the app
 
 The window is a sidebar and one screen beside it. The sidebar is always there (⌘B hides
@@ -122,7 +128,11 @@ you are. Right-click a book there for the same menu the library gives it (see be
 **Settings** has three tabs. **General** sets the appearance (System, Light or Dark),
 manages storage, and lists the shortcuts above. **API keys** is where the chat's keys are saved. **About**
 shows the version and what leaves this Mac: no image ever does, and the chat sends only a
-description of the book (its layouts, page numbers and photo tags).
+description of the book (its layouts, page numbers and photo tags). **About** also holds
+updates. **Check for updates** asks now and answers either way, and a waiting update shows
+its version and release notes there with **Install and restart** beside **Not now**. When
+the quiet launch check is the one that found it, a dot appears on **Settings** in the
+sidebar and clicking through opens this tab.
 
 **Storage** (in **General**) shows how much disk the analysis cache uses against its
 limit. The cache is every analysed photo's results plus the small preview image the contact
@@ -424,9 +434,22 @@ fields or the README link is missing, rather than shipping a dead button. It the
 
 The tag starts [`.github/workflows/release.yml`](.github/workflows/release.yml). It opens a
 draft release named `PhotobookGen v<version>` with changelogen notes, builds
-`PhotobookGen_<version>_aarch64.dmg` on a macOS 15 Apple Silicon runner, uploads it, and
-publishes the release. Running the workflow by hand from the Actions tab builds the dmg and
-attaches it to the run as an artifact, without creating a release.
+`PhotobookGen_<version>_aarch64.dmg` on a macOS 15 Apple Silicon runner, uploads it with the
+updater archive and its `latest.json`, and publishes the release. Running the workflow by
+hand from the Actions tab builds the dmg and attaches it to the run as an artifact, without
+creating a release.
 
-The build is not signed with a Developer ID or notarized, and the app has no auto-updater:
-users download each new version from the releases page.
+### Updater signing
+
+The updater trusts one minisign keypair. The public half sits in
+`src-tauri/tauri.conf.json` under `plugins.updater.pubkey`, and the app refuses any update
+whose signature it cannot verify. The private half lives only in the repository secrets,
+`TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, and the release
+workflow reads them when it builds. A new keypair comes from `bunx tauri signer generate -w
+<path outside the repo>`; replacing the public key in the config means every already
+installed copy stops accepting updates and has to be reinstalled by hand, so rotate it only
+when the private key is compromised.
+
+This is Tauri's own signing, not Apple's. The bundle still has no Developer ID and is not
+notarized, which is why the first launch needs the Gatekeeper step under
+[Installing](#installing).

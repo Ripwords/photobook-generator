@@ -33,6 +33,11 @@ const emit = defineEmits<{
 
 const { toggleSidebar, openSettings } = useShell();
 
+// The startup check is silent by design, so the offer it finds lives in
+// Settings and nothing else would ever point at it.
+const { state: updater } = useUpdater();
+const updateReady = computed(() => updater.value.phase === "available");
+
 /** The book open in the editor. */
 const activeId = computed(() => (screen.kind === "editor" ? screen.projectId : null));
 /** The draft whose contact sheet is on screen. */
@@ -208,9 +213,13 @@ const itemClass = (active: boolean) => [
 
     <div class="border-t border-default p-2">
       <UTooltip text="Settings" :kbds="shortcutKbds('settings')">
-        <button type="button" :class="itemClass(false)" @click="openSettings()">
+        <button type="button" :class="itemClass(false)" @click="openSettings(updateReady ? 'about' : 'general')">
           <UIcon name="i-lucide-settings" class="size-4 shrink-0" />
           Settings
+          <template v-if="updateReady">
+            <span class="ml-auto size-1.5 shrink-0 rounded-full bg-inverted" aria-hidden="true" />
+            <span class="sr-only">Update available</span>
+          </template>
         </button>
       </UTooltip>
     </div>
