@@ -264,6 +264,38 @@ export function stepLabel(step: HistoryStep, status: HistoryStatus): string {
   return named ? `${step === "undo" ? "Undo" : "Redo"} ${named}` : `Nothing to ${step}`;
 }
 
+/**
+ * What releasing the pointer on a photo does.
+ *
+ * "save" commits the window on screen as the slot's crop and keeps drawing it
+ * until the saved book answers. "select" throws the window away and picks the
+ * photo for a swap. Never both: `BookPreview.onCrop` drops the selection on
+ * any crop, so a release that saves cannot also leave a photo selected.
+ */
+export type Release = "save" | "select";
+
+/**
+ * Decide it from the three things that differ between one release and another.
+ *
+ * `moved` is whether the press travelled `DRAG_THRESHOLD_PX` and so counts as
+ * a drag. `live` is whether a window is being drawn that the saved book does
+ * not have. `owed` is whether a wheel zoom put that window there and has not
+ * been saved yet -- the wheel waits out `WHEEL_SETTLE_MS` of quiet so that a
+ * roll is one edit, and a press inside that wait takes the pending save over.
+ *
+ * `owed` is the whole reason this is a function. A click inside the settle
+ * window is not a drag, so it fell to the branch that throws the live window
+ * away, and the zoom the user had just watched happen snapped back to the old
+ * crop -- for over three seconds in a traced run -- before the pending save
+ * landed and jumped it forward again. The same handoff keeps zoom-then-drag to
+ * one entry in the timeline: the drag starts from the zoomed window, so its
+ * crop already carries the zoom and the wheel's own save would be a stale
+ * second edit for the same slot.
+ */
+export function releaseAction(moved: boolean, live: boolean, owed: boolean): Release {
+  return live && (moved || owed) ? "save" : "select";
+}
+
 /** Mirrors `score::Rejection`: the hard constraints an edit can break. */
 export type Rejection = "faceClipped" | "faceInGutter" | "faceInSafeMargin" | "tooLowResolution";
 

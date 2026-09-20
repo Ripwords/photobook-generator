@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   canRelayout,
+  releaseAction,
   cropMoved,
   cropStyle,
   cropZoomed,
@@ -1159,5 +1160,69 @@ describe("a photo imported from disk", () => {
   it("does not disturb the photos the book already held", () => {
     expect(shown.photos.slice(0, index)).toEqual(layout.photos);
     expect(layout.photos).toHaveLength(index);
+  });
+});
+
+describe("releaseAction", () => {
+  it("saves what a drag left on screen", () => {
+    expect(releaseAction(true, true, false)).toBe("save");
+  });
+
+  it("selects for a swap when a click found nothing live", () => {
+    expect(releaseAction(false, false, false)).toBe("select");
+  });
+
+  it("saves a wheel zoom a click interrupted rather than dropping it", () => {
+    // The measured bug. A click inside the wheel's settle window is not a
+    // drag, so it used to take the branch that throws the live window away --
+    // and the zoom the user had just watched happen snapped back to the old
+    // crop, staying there for over three seconds in a traced run before the
+    // pending save finally arrived and jumped it forward again.
+    expect(releaseAction(false, true, true)).toBe("save");
+  });
+
+  it("still saves a drag only once when a wheel zoom started it", () => {
+    // Zoom then drag is one gesture and has to be one entry in the timeline.
+    // The drag already begins from the zoomed window, so the crop it emits
+    // carries the zoom; the wheel's own pending save would be a second, stale
+    // edit for the same slot.
+    expect(releaseAction(true, true, true)).toBe("save");
+  });
+
+  it("drops a live window nothing owes a save for", () => {
+    // A click after a drag was abandoned below the threshold: the window on
+    // screen is stale, and the saved crop is the truth.
+    expect(releaseAction(false, true, false)).toBe("select");
+  });
+
+  it("never saves a window that is not there", () => {
+    for (const moved of [true, false]) {
+      for (const owed of [true, false]) {
+        expect(releaseAction(moved, false, owed)).toBe("select");
+      }
+    }
+  });
+});
+
+describe("a press on a photo takes over the wheel's pending save", () => {
+  const text = readFileSync(new URL("../app/components/BookPreviewPage.vue", import.meta.url), "utf8");
+
+  it("routes the settle timer through a function anything can flush", () => {
+    // Not `setTimeout(() => emit("crop", ref, next))`. That closure could only
+    // be cancelled, never run early, so a press had no way to claim the zoom
+    // it interrupted -- which is how the click branch came to throw the live
+    // window away while the timer put it back a beat later.
+    expect(text).toContain("wheelTimer = setTimeout(saveWheel, WHEEL_SETTLE_MS);");
+    expect([...text.matchAll(/emit\("crop"/g)].length).toBe(2);
+  });
+
+  it("holds a zoom on the pressed slot and flushes one on any other", () => {
+    expect(text).toContain("if (wheelPending?.key === key) clearTimeout(wheelTimer);");
+    expect(text).toContain("else saveWheel();");
+  });
+
+  it("asks releaseAction what the release meant", () => {
+    expect(text).toMatch(/releaseAction\(finished\.moved, true, owed\) === "save"/);
+    expect(text).toContain("const owed = wheelPending?.key === finished.key;");
   });
 });

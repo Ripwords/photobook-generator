@@ -9,6 +9,7 @@ import {
   pageSlots,
   pressIsDrag,
   rectStyle,
+  releaseAction,
   samePlacement,
   slotMoved,
   slotResized,
@@ -219,6 +220,11 @@ function onPointerDown(event: PointerEvent, key: string, ref: PlacementRef, crop
     slotH: box.height || 1,
     moved: false,
   };
+  // This press takes over any zoom still waiting to be saved. On this slot it
+  // is held for release to decide; on any other slot that gesture is over, so
+  // it is saved now rather than firing part way through this one.
+  if (wheelPending?.key === key) clearTimeout(wheelTimer);
+  else saveWheel();
   el.setPointerCapture(event.pointerId);
 }
 
@@ -240,7 +246,9 @@ function onPointerUp(event: PointerEvent) {
   drag = null;
   (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
   const crop = liveCrops.value[finished.key];
-  if (finished.moved && crop) {
+  const owed = wheelPending?.key === finished.key;
+  wheelPending = null;
+  if (crop && releaseAction(finished.moved, true, owed) === "save") {
     emit("crop", finished.ref, crop);
     return;
   }
@@ -251,9 +259,16 @@ function onPointerUp(event: PointerEvent) {
 
 function onPointerCancel() {
   if (!drag) return;
-  const { [drag.key]: _dropped, ...rest } = liveCrops.value;
-  liveCrops.value = rest;
+  const cancelled = drag;
   drag = null;
+  // A zoom this press took over is not the cancelled thing -- the wheel
+  // gesture finished before the press began -- so it is saved, not dropped.
+  if (wheelPending?.key === cancelled.key) {
+    saveWheel();
+    return;
+  }
+  const { [cancelled.key]: _dropped, ...rest } = liveCrops.value;
+  liveCrops.value = rest;
 }
 
 function onWheel(event: WheelEvent, key: string, ref: PlacementRef, crop: PreviewRect) {
@@ -262,11 +277,28 @@ function onWheel(event: WheelEvent, key: string, ref: PlacementRef, crop: Previe
   event.preventDefault();
   const next = cropZoomed(cropOf(key, crop), factor);
   liveCrops.value = { ...liveCrops.value, [key]: next };
+  wheelPending = { key, ref, crop: next };
   clearTimeout(wheelTimer);
-  wheelTimer = setTimeout(() => emit("crop", ref, next), WHEEL_SETTLE_MS);
+  wheelTimer = setTimeout(saveWheel, WHEEL_SETTLE_MS);
+}
+
+/**
+ * Save the zoom the wheel has been building, whoever asks for it.
+ *
+ * A roll of the wheel is one edit, not one per notch, so the save waits for
+ * `WHEEL_SETTLE_MS` of quiet. Anything that ends the gesture early -- a press
+ * on this slot or on another one -- comes here instead of leaving the timer
+ * armed to fire in the middle of whatever happens next.
+ */
+function saveWheel() {
+  clearTimeout(wheelTimer);
+  const pending = wheelPending;
+  wheelPending = null;
+  if (pending) emit("crop", pending.ref, pending.crop);
 }
 const WHEEL_SETTLE_MS = 250;
 let wheelTimer: ReturnType<typeof setTimeout> | undefined;
+let wheelPending: { key: string; ref: PlacementRef; crop: PreviewRect } | null = null;
 
 // The saved book is the truth. Once the edit a gesture produced has been
 // answered -- a new layout arrived, or `busy` fell back to false because the

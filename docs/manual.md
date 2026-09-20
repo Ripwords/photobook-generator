@@ -229,7 +229,10 @@ slot to move the window, or hold ⌘ and scroll over it to zoom;
 a plain scroll always scrolls the book, never a photo. A press only counts as a drag once it
 has travelled about 10px, so an ordinary click still selects the photo however much the
 trackpad wobbles, and a press that wanders and comes back to where it started is a click too. The window keeps the slot's shape and
-is saved when you let go. Regenerating that opening or swapping the photo away recomputes
+is saved when you let go. A zoom is saved a moment after the wheel stops, so that a roll of
+the wheel is one change rather than one per notch. Touching the photo again saves it at
+once: that click counts as keeping the zoom rather than as selecting the photo, so click
+once more if a swap was what you wanted. Zooming and then dragging is one change, not two. Regenerating that opening or swapping the photo away recomputes
 its crop, because the slot it was chosen for is gone.
 
 To **move or resize the boxes themselves**, switch the bar above the book from **Crop and
