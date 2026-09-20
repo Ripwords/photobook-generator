@@ -224,7 +224,10 @@ export interface ImportedPhoto {
  */
 export interface FolderCheck {
   newPhotos: number;
-  /** A folder could not be read, so `newPhotos` covers only the ones that could. */
+  /**
+   * A folder could not be read -- a root, or one nested below it -- so
+   * `newPhotos` covers only what the walk reached.
+   */
   unreadable: boolean;
 }
 

@@ -48,8 +48,21 @@ pub fn is_apple_double(name: &str) -> bool {
     name.starts_with("._")
 }
 
-/// Every supported image under any of `folders`, recursively, sorted by
-/// path and listed once even when one folder lies inside another.
+/// What one walk of a book's folders found.
+pub(crate) struct PhotoScan {
+    /// Every supported image under the roots, sorted by path and listed once
+    /// even when one folder lies inside another.
+    pub paths: Vec<String>,
+    /// Something under the roots could not be listed, so `paths` is a floor.
+    ///
+    /// Reported, not just logged. `folder_check` turns it into the "could not
+    /// be read" half of its notice, and while it was swallowed a book whose
+    /// `2019/` subfolder sat on an unplugged drive was handed a count that had
+    /// silently left those photos out, with no sign that it had.
+    pub skipped: bool,
+}
+
+/// Every supported image under any of `folders`, recursively.
 ///
 /// Recursive because real photo exports are nested -- a camera import is a
 /// tree of dated folders, and a scan that stopped at the top level analysed
@@ -64,14 +77,16 @@ pub fn is_apple_double(name: &str) -> bool {
 /// following them can loop forever; a symlinked file still counts, as it
 /// always did. An unreadable entry inside a folder is logged and skipped
 /// rather than failing the whole scan; a root that cannot be read at all is
-/// an error, because a missing folder must not read as an empty one.
-pub(crate) fn collect_photo_paths(folders: &[String]) -> std::io::Result<Vec<String>> {
-    fn walk(dir: &Path, out: &mut BTreeSet<String>) -> std::io::Result<()> {
+/// an error, because a missing folder must not read as an empty one. Either
+/// skip sets `PhotoScan::skipped`.
+pub(crate) fn collect_photo_paths(folders: &[String]) -> std::io::Result<PhotoScan> {
+    fn walk(dir: &Path, out: &mut BTreeSet<String>, skipped: &mut bool) -> std::io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let entry = match entry {
                 Ok(e) => e,
                 Err(err) => {
                     log::warn!("skipping unreadable directory entry in {}: {err}", dir.display());
+                    *skipped = true;
                     continue;
                 }
             };
@@ -83,8 +98,9 @@ pub(crate) fn collect_photo_paths(folders: &[String]) -> std::io::Result<Vec<Str
             let is_real_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
             if is_real_dir {
                 if !name.starts_with('.') {
-                    if let Err(err) = walk(&path, out) {
+                    if let Err(err) = walk(&path, out, skipped) {
                         log::warn!("skipping unreadable directory {}: {err}", path.display());
+                        *skipped = true;
                     }
                 }
             } else if path.is_file() && !is_apple_double(name) && supported_extension(name) {
@@ -94,10 +110,11 @@ pub(crate) fn collect_photo_paths(folders: &[String]) -> std::io::Result<Vec<Str
         Ok(())
     }
     let mut paths = BTreeSet::new();
+    let mut skipped = false;
     for folder in folders {
-        walk(Path::new(folder), &mut paths)?;
+        walk(Path::new(folder), &mut paths, &mut skipped)?;
     }
-    Ok(paths.into_iter().collect())
+    Ok(PhotoScan { paths: paths.into_iter().collect(), skipped })
 }
 
 /// Trims a user-supplied project name and rejects an effectively-empty one.
@@ -820,7 +837,7 @@ async fn analyze_folders_gated(
     }
     let run_id = app.state::<AppState>().next_run_id();
 
-    let paths = collect_photo_paths(&folders).map_err(|e| e.to_string())?;
+    let paths = collect_photo_paths(&folders).map_err(|e| e.to_string())?.paths;
 
     // A send failure (e.g. the webview navigated away mid-run) must not fail
     // an analysis that would otherwise succeed -- logged and swallowed, same
@@ -2142,8 +2159,9 @@ pub struct FolderCheck {
     /// built from.
     pub new_photos: usize,
     /// At least one folder could not be read -- an unplugged drive, a folder
-    /// the user moved. The count then covers only the folders that could be,
-    /// so it is a floor rather than a total, and the UI says so.
+    /// the user moved, or one nested below the roots that will not open. The
+    /// count then covers only what the walk reached, so it is a floor rather
+    /// than a total, and the UI says so.
     pub unreadable: bool,
 }
 
@@ -2170,6 +2188,33 @@ pub(crate) fn photo_is_new(
     }
 }
 
+/// Every photo under a saved book's folders, and whether the walk was complete.
+///
+/// One folder at a time, so one unplugged drive costs its own photos and not
+/// the whole answer. Anything that could not be read -- a root, or a folder
+/// anywhere below it -- makes the second half true, because a count that
+/// silently left photos out must not reach the user as a total.
+///
+/// Extracted from `folder_check`, which needs an `AppHandle` to open the
+/// database; deciding what the walk found does not.
+pub(crate) fn scan_book_folders(folders: &[String]) -> (BTreeSet<String>, bool) {
+    let mut paths = BTreeSet::new();
+    let mut unreadable = false;
+    for folder in folders {
+        match collect_photo_paths(std::slice::from_ref(folder)) {
+            Ok(found) => {
+                paths.extend(found.paths);
+                unreadable |= found.skipped;
+            }
+            Err(err) => {
+                log::warn!("folder_check: cannot read {folder}: {err}");
+                unreadable = true;
+            }
+        }
+    }
+    (paths, unreadable)
+}
+
 /// How many photos sit in a saved book's folders that the book does not have.
 ///
 /// Opening a book never touches the filesystem -- its photos are resolved from
@@ -2190,19 +2235,7 @@ pub async fn folder_check(app: AppHandle, project_id: i64) -> Result<FolderCheck
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("project {project_id} no longer exists"))?;
         let known: HashSet<String> = project.photo_hashes.into_iter().collect();
-        // One folder at a time, so one unplugged drive costs its own photos
-        // and not the whole answer.
-        let mut paths = BTreeSet::new();
-        let mut unreadable = false;
-        for folder in &project.source_folders {
-            match collect_photo_paths(std::slice::from_ref(folder)) {
-                Ok(found) => paths.extend(found),
-                Err(err) => {
-                    log::warn!("folder_check: cannot read {folder}: {err}");
-                    unreadable = true;
-                }
-            }
-        }
+        let (paths, unreadable) = scan_book_folders(&project.source_folders);
         let mut new_photos = 0;
         for path in &paths {
             let stamped = db.get_stamp(path).map_err(|e| e.to_string())?;
@@ -3087,10 +3120,12 @@ mod tests {
         let found = collect_photo_paths(&[root.to_string_lossy().into_owned()]).unwrap();
 
         let rel: Vec<String> = found
+            .paths
             .iter()
             .map(|p| p.strip_prefix(&root.to_string_lossy().into_owned()).unwrap().trim_start_matches('/').to_string())
             .collect();
         assert_eq!(rel, vec!["2024-05-01/a.HEIC", "2024-05-01/raw/b.arw", "top.jpg"]);
+        assert!(!found.skipped, "nothing here was unreadable");
     }
 
     /// A directory symlink is not followed: a link back to an ancestor would
@@ -3107,8 +3142,62 @@ mod tests {
 
         let found = collect_photo_paths(&[root.to_string_lossy().into_owned()]).unwrap();
 
-        assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].ends_with("real/one.jpg"), "{found:?}");
+        assert_eq!(found.paths.len(), 1, "{:?}", found.paths);
+        assert!(found.paths[0].ends_with("real/one.jpg"), "{:?}", found.paths);
+    }
+
+    /// A subfolder the scan cannot list is reported, not just logged. It used
+    /// to be swallowed, so `folder_check` answered "3 new photos" for a book
+    /// whose other folder it had never managed to open, with the "some folders
+    /// could not be read" notice off.
+    #[test]
+    fn collect_photo_paths_reports_a_subfolder_it_could_not_list() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("locked")).unwrap();
+        std::fs::write(root.join("locked/hidden.jpg"), b"x").unwrap();
+        std::fs::write(root.join("seen.jpg"), b"x").unwrap();
+        std::fs::set_permissions(root.join("locked"), std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let found = collect_photo_paths(&[root.to_string_lossy().into_owned()]).unwrap();
+
+        std::fs::set_permissions(root.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(found.paths.len(), 1, "{:?}", found.paths);
+        assert!(found.paths[0].ends_with("seen.jpg"), "{:?}", found.paths);
+        assert!(found.skipped, "the locked subfolder must be reported, not swallowed");
+    }
+
+    /// The two ways a book's walk comes back short, both of which must raise
+    /// the flag `folder_check` turns into the "some folders could not be read"
+    /// notice: a whole root gone, and a folder below one that will not open.
+    /// The photos it COULD reach still come back either way -- a book on an
+    /// unplugged drive must still tell the user what it managed to see.
+    #[test]
+    fn scan_book_folders_flags_a_root_it_lost_and_a_subfolder_it_could_not_list() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("a/locked")).unwrap();
+        std::fs::create_dir_all(root.join("b")).unwrap();
+        std::fs::write(root.join("a/one.jpg"), b"x").unwrap();
+        std::fs::write(root.join("a/locked/two.jpg"), b"x").unwrap();
+        std::fs::write(root.join("b/three.jpg"), b"x").unwrap();
+        let folder = |rel: &str| root.join(rel).to_string_lossy().into_owned();
+
+        let (whole, complete) = scan_book_folders(&[folder("a"), folder("b")]);
+        assert_eq!(whole.len(), 3, "{whole:?}");
+        assert!(!complete, "everything was readable");
+
+        let (kept, lost_a_root) = scan_book_folders(&[folder("a"), folder("gone")]);
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert!(lost_a_root, "a root that is not there must raise the flag");
+
+        std::fs::set_permissions(root.join("a/locked"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let (seen, lost_a_subfolder) = scan_book_folders(&[folder("a"), folder("b")]);
+        std::fs::set_permissions(root.join("a/locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert!(lost_a_subfolder, "a subfolder that will not open must raise it too");
     }
 
     /// A folder that does not exist is an error the user sees, not an empty
@@ -3136,6 +3225,7 @@ mod tests {
         let found = collect_photo_paths(&[folder("b"), folder("a"), folder("a/inner")]).unwrap();
 
         let rel: Vec<String> = found
+            .paths
             .iter()
             .map(|p| p.strip_prefix(&root.to_string_lossy().into_owned()).unwrap().trim_start_matches('/').to_string())
             .collect();
