@@ -39,8 +39,15 @@ bun run test        # vitest
 bun run test:rust   # cargo test
 bun run test:swift
 bun run lint        # oxlint --deny-warnings
+bun run typecheck   # nuxt prepare + vue-tsc -- the only step that type checks TEMPLATE expressions
 bun run check:build # nuxt generate -- the only step that actually compiles .vue files, see above
 ```
+
+`typecheck` catches what the other two cannot: a prop, event handler, `v-model` or
+`{{ expression }}` in a `.vue` template whose type is wrong. oxlint does not parse templates
+at all, and `nuxt generate` compiles them without checking a single type, so a component
+handed a `string` where it declared a `number` builds and lints clean. It needs `.nuxt` for
+Nuxt's generated types, which is why the script runs `nuxt prepare` first.
 
 ## Conventions
 

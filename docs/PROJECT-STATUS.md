@@ -24,6 +24,58 @@ deliberately-parked decision that this file is the only surviving record of.**
 
 ---
 
+## What changed on 2026-09-20: a real type check over the templates
+
+**What shipped.** `bun run typecheck` is `nuxt prepare && vue-tsc --noEmit -p
+.nuxt/tsconfig.app.json`, with `vue-tsc` a devDependency so it resolves the repo's own
+`typescript@5.9`. Run `bunx vue-tsc` instead and it picks an incompatible TypeScript and
+dies on `ERR_PACKAGE_PATH_NOT_EXPORTED: ./lib/tsc`. The `nuxt prepare` step is not
+optional: without `.nuxt`, every auto-import and `#build/*` specifier is unresolved. It
+type checks `app/**/*` under the same `strict` plus `noUncheckedIndexedAccess` that Nuxt
+generates, **template expressions included**, which is the gap this closes. It is not a
+build: `check:build` still owns "does the SFC compile", and `typecheck` will not notice a
+Vue file it cannot parse.
+
+**The twelve errors it found, in four classes.**
+
+- **Not one `:style` in the preview was ever checked** (9, and every one of them a real
+  hole rather than a nuisance: `BookPreviewCover.vue` 208, 220, 238, 242,
+  `BookPreviewPage.vue` 374, 419-421, `ReplacePhotoDialog.vue` 258). `BoxStyle` and
+  `CropStyle` in `app/types/preview.ts` were `interface`s. Vue's `CSSProperties` carries a
+  `` `--${string}` `` index signature, and TypeScript grants an implicit index signature to
+  an object **type alias** but never to an interface, so neither type was assignable to
+  `:style` in any form and every binding fed by `rectStyle` or `cropStyle` was rejected
+  wholesale. They are type aliases now, which is the whole fix for all nine. Nothing about
+  the values changed; the comment on `BoxStyle` says why the alias is load-bearing so
+  nobody "tidies" it back to an interface.
+- **`BookChat.vue` 230** passed the ai-sdk `regenerate` straight to `@reload`, which emits
+  the click's `MouseEvent`. `regenerate` reads its first argument as request options. It
+  was harmless only because a `MouseEvent`'s properties are all prototype accessors, so the
+  rest element came out `{}`. Now `@reload="() => regenerate()"`, which is what the "Try
+  again" action three lines up already did.
+- **`ContactSheet.vue` 123** keyed the `v-for` on `item.key`, whose TanStack type is
+  `number | string | bigint`; a Vue `:key` cannot take a `bigint`. It keys on `row.key`
+  instead, which is the very value `getItemKey` handed the virtualizer for that index.
+- **`GenerateBook.vue` 217**: `chosenPages` is `number | null`, and `USelect` types its
+  model as `number | undefined`. `v-model.nullable` widens it to admit the `null`.
+  `.nullable` only reaches `onUpdate`'s `value ??= null`, and this control only ever emits
+  an option's `pages`, so nothing changes at runtime. Switching the ref to `undefined`
+  instead would have: reka-ui's `SelectRoot` decides `passive: props.modelValue === void 0`
+  at setup, so an `undefined` initial value flips the select from controlled to
+  uncontrolled.
+
+**Verified.** Three mutants, each caught and each turning exactly the expected errors red:
+a bad property in a cover `:style` expression (`layout.cover.spineNope`), a `string` passed
+to `ContactSheet`'s `stickyTop: number` prop, and `BoxStyle` alone reverted to an
+`interface`, which brought back its six errors across both `BookPreviewCover` and
+`BookPreviewPage` and no others. `typecheck`, `lint`, `check:build` and the TypeScript
+suite are green. The two edits that touch a rendered control were also driven in
+`bun run ui:mock`: the length select still opens with its current value ticked, and
+choosing 40 pages still rewrites the "29 go in 40 pages, nothing left out" line beneath
+it; the sheet still recycles rows and pins the right chapter header on scroll.
+
+---
+
 ## What changed on 2026-09-19: print size is per book
 
 **What shipped.** Every print measurement that was a constant in `geometry.rs` now lives on
@@ -82,13 +134,13 @@ overlooked. Templates are still authored and validated against the Pixajoy refer
 canvas. Any page shape is allowed, and a portrait or square page gets a note that the
 layouts were drawn for landscape.
 
-**The trap.** This repo has no TypeScript typecheck step. `bun run lint` is oxlint, which
-does not check types, and `check:build` does not typecheck either. A `spec` argument that
-landed in the `recommend_book` call instead of `generate_book` was caught only because
-lint flagged the variable as unused in one branch. To typecheck by hand, run
-`bunx nuxi prepare` and then vue-tsc 3 with TypeScript 5.9 against
-`.nuxt/tsconfig.app.json`. Eight errors predate this change: BookChat, the
-BookPreviewPage/ReplacePhotoDialog style props, ContactSheet and GenerateBook's `USelect`.
+**The trap, now closed.** This repo had no TypeScript typecheck step. `bun run lint` is
+oxlint, which does not check types, and `check:build` does not typecheck either. A `spec`
+argument that landed in the `recommend_book` call instead of `generate_book` was caught
+only because lint flagged the variable as unused in one branch. **`bun run typecheck` now
+exists** (`nuxt prepare && vue-tsc --noEmit -p .nuxt/tsconfig.app.json`, vue-tsc 3 against
+the repo's TypeScript 5.9) and the twelve errors it found are fixed. See "A real type check
+over the templates" above for what each one was.
 
 ---
 
@@ -2046,7 +2098,10 @@ beside it. The design calls for the OS keychain, read from Rust.
   `AnalyzedPhoto.kept`. See "One culling authority" above, and
   "User-controlled selection" for the include/exclude states layered on top of it.
 - ~~`.oxlintrc.json` leaves `no-explicit-any` off.~~ **Enabled 2026-09-16** as an error.
-- No `typecheck` script; `nuxi typecheck` and `vue-tsc` both fail on environment issues.
+- ~~No `typecheck` script; `nuxi typecheck` and `vue-tsc` both fail on environment issues.~~
+  **Fixed 2026-09-20** — `bun run typecheck` is `nuxt prepare && vue-tsc --noEmit -p
+  .nuxt/tsconfig.app.json`, with `vue-tsc` pinned as a devDependency so it resolves the
+  repo's own TypeScript rather than whatever `bunx` picks.
 - Nothing pins the build to `aarch64-apple-darwin`. No universal config exists, so the
   constraint is not violated, but it is not enforced either.
 - macOS AppleDouble files (`._IMG_1234.JPG`) pass the extension check and surface as

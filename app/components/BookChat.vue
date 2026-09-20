@@ -227,7 +227,11 @@ onMounted(() => {
         variant="subtle"
         @submit="send(input)"
       >
-        <UChatPromptSubmit :status color="primary" @stop="stop" @reload="regenerate" />
+        <!--
+          `@reload` hands its handler the click's MouseEvent, which `regenerate`
+          would read as request options. Called bare, as "Try again" above does.
+        -->
+        <UChatPromptSubmit :status color="primary" @stop="stop" @reload="() => regenerate()" />
       </UChatPrompt>
     </div>
   </div>

@@ -120,7 +120,12 @@ watch([tileWidth, rows], () => virtualizer.value.measure());
 
 <template>
   <div ref="root" class="relative" :style="{ height: `${virtualizer.getTotalSize()}px` }">
-    <template v-for="{ item, row, offset } in visible" :key="item.key">
+    <!--
+      `row.key` is the value `getItemKey` handed the virtualizer for this index.
+      It is read from the row because `item.key`'s type also admits a `bigint`,
+      which a `:key` cannot take.
+    -->
+    <template v-for="{ item, row, offset } in visible" :key="row.key">
       <div
         v-if="row.kind === 'event'"
         :style="
