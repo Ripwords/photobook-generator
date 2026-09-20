@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/editor.png" alt="The book editor with the chat open" width="900" />
+  <img src="docs/screenshots/editor.png" alt="The book editor showing the cover and page 1, with the chat open" width="900" />
 </p>
 
 Pick your photo folders. PhotobookGen ranks every photo with Apple Vision, drops look-alikes
