@@ -625,8 +625,33 @@ pub(crate) fn lookup_cache(db: &Db, paths: &[String]) -> Result<CacheLookup, Str
         log::warn!("failed to record file stamps: {err}");
     }
 
+    // Usually empty, and read once so the clears below cost nothing at all
+    // on a run where nothing has ever failed.
+    let mut marked = db.failed_hashes().map_err(|e| e.to_string())?;
+
     let mut used = Vec::new();
-    for (path, hash) in paths.iter().zip(hashes.into_iter().flatten()) {
+    for ((path, stamp), hash) in paths.iter().zip(&stamps).zip(hashes.into_iter().flatten()) {
+        // A file that would not open is remembered by its stamp, because it
+        // has no hash. Reading it now takes that mark off -- and putting one
+        // on is what stops `folder_check` counting it as a photo the book has
+        // never seen, on every open, with no run able to clear it.
+        if let Some(stamp) = stamp {
+            let key = stamp.failure_key();
+            match (&hash, marked.contains(&key)) {
+                (Ok(_), true) => {
+                    if let Err(err) = db.clear_analysis_failure(&key) {
+                        log::warn!("failed to clear the failure mark on {path}: {err}");
+                    }
+                    marked.remove(&key);
+                }
+                (Err(err), false) => {
+                    if let Err(err) = db.put_analysis_failure(&key, path, &err.to_string()) {
+                        log::warn!("failed to mark {path} unreadable: {err}");
+                    }
+                }
+                _ => {}
+            }
+        }
         match hash {
             Ok(hash) => match db.get_features(&hash).map_err(|e| e.to_string())? {
                 Some(json) => match serde_json::from_str::<serde_json::Value>(&json) {
@@ -779,22 +804,42 @@ pub(crate) fn gather_chunked(
         // which records counted as ok.
         let mut fresh = Vec::with_capacity(records.len());
         for record in &records {
-            if record["status"] == "ok" {
-                let features = record["features"].clone();
-                if let (Some(hash), Some(path)) =
-                    (features["hash"].as_str(), features["path"].as_str())
-                {
-                    // A failed cache write must not discard a photo the
-                    // sidecar already spent potentially multi-minute
-                    // analysis producing -- it just means this photo won't
-                    // be a cache hit next run. Logged and swallowed, same
-                    // pattern as `analyze_folder`'s notification failure.
-                    if let Err(err) = db.put_features(hash, path, &features.to_string()) {
-                        log::warn!("failed to write cache entry for {path}: {err}");
+            if record["status"] != "ok" {
+                // Remember that this one did not work, so that `folder_check`
+                // stops offering it as a photo the book has never seen. The
+                // hash is whatever `lookup_cache` just stamped this path
+                // with; without it there is nothing to key the mark on and
+                // the photo goes back to being counted new on every open.
+                let path = record["path"].as_str().unwrap_or_default();
+                let message = record["message"].as_str().unwrap_or("analysis failed");
+                match db.get_stamp(path) {
+                    Ok(Some((_, hash))) => {
+                        if let Err(err) = db.put_analysis_failure(&hash, path, message) {
+                            log::warn!("failed to mark {path} unanalysable: {err}");
+                        }
                     }
+                    Ok(None) => log::warn!("no stamp for {path}; cannot mark it unanalysable"),
+                    Err(err) => log::warn!("cannot read the stamp for {path}: {err}"),
                 }
-                fresh.push(features);
+                continue;
             }
+            let features = record["features"].clone();
+            if let (Some(hash), Some(path)) = (features["hash"].as_str(), features["path"].as_str())
+            {
+                // It reads now, whatever happened last time.
+                if let Err(err) = db.clear_analysis_failure(hash) {
+                    log::warn!("failed to clear the failure mark on {path}: {err}");
+                }
+                // A failed cache write must not discard a photo the sidecar
+                // already spent potentially multi-minute analysis producing
+                // -- it just means this photo won't be a cache hit next run.
+                // Logged and swallowed, same pattern as `analyze_folder`'s
+                // notification failure.
+                if let Err(err) = db.put_features(hash, path, &features.to_string()) {
+                    log::warn!("failed to write cache entry for {path}: {err}");
+                }
+            }
+            fresh.push(features);
         }
 
         let (photos, batch_failed) = batch_progress(&records);
@@ -2158,6 +2203,11 @@ pub struct FolderCheck {
     /// Files under the book's folders that are not among the photos it was
     /// built from.
     pub new_photos: usize,
+    /// Files that hash but that analysis has already given up on. Kept out of
+    /// `new_photos` because the "Edit photos" run that count invites fails on
+    /// them again, so counting them as new left a number no amount of
+    /// re-analysing could clear.
+    pub unanalysable: usize,
     /// At least one folder could not be read -- an unplugged drive, a folder
     /// the user moved, or one nested below the roots that will not open. The
     /// count then covers only what the walk reached, so it is a floor rather
@@ -2182,17 +2232,49 @@ pub struct FolderCheck {
 /// Pure, and stat-only by construction: the caller passes what it already
 /// read, nothing here opens or decodes a file. That is what makes it cheap
 /// enough to run every time a book is opened, and testable without a disk.
-pub(crate) fn photo_is_new(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PhotoState {
+    /// The book was assembled against it, or it is not readable as a file at
+    /// all. Either way there is nothing to tell the user.
+    Known,
+    /// It hashes, but analysing it has been tried and failed. Counting it as
+    /// new would promise an "Edit photos" run that fails on it again and
+    /// leaves the number exactly where it was.
+    Unanalysable,
+    /// Nothing has ever seen these bytes. Analysing brings it into the book.
+    New,
+}
+
+pub(crate) fn photo_state(
     now: Option<FileStamp>,
     stamped: Option<(FileStamp, String)>,
     same_stamp: &[String],
     known: &HashSet<String>,
-) -> bool {
-    let Some(now) = now else { return false };
-    match stamped {
-        Some((seen, hash)) if seen == now => !known.contains(&hash),
-        _ => !same_stamp.iter().any(|hash| known.contains(hash)),
+    failed: &HashSet<String>,
+) -> PhotoState {
+    let Some(now) = now else { return PhotoState::Known };
+    // A file that would not open has no hash to be remembered by, so the
+    // mark against it is keyed by the stamp instead.
+    if failed.contains(&now.failure_key()) {
+        return PhotoState::Unanalysable;
     }
+    // The path's own row when it still describes the file, and otherwise
+    // every hash ever recorded at this size and time -- the moved-file
+    // fallback, which is what a rename leaves behind.
+    let hashes: &[String] = match &stamped {
+        Some((seen, hash)) if *seen == now => std::slice::from_ref(hash),
+        _ => same_stamp,
+    };
+    // The book holding the photo outranks a failure row, which can outlive
+    // the photo that caused it if the run that finally read it could not
+    // clear the mark. A photo on a page is not unanalysable.
+    if hashes.iter().any(|hash| known.contains(hash)) {
+        return PhotoState::Known;
+    }
+    if hashes.iter().any(|hash| failed.contains(hash)) {
+        return PhotoState::Unanalysable;
+    }
+    PhotoState::New
 }
 
 /// Every photo under a saved book's folders, and whether the walk was complete.
@@ -2222,21 +2304,31 @@ pub(crate) fn scan_book_folders(folders: &[String]) -> (BTreeSet<String>, bool) 
     (paths, unreadable)
 }
 
-/// How many of `paths` are photos `known` does not already cover.
+/// How each of `paths` stands against a book, counted up.
 ///
 /// One stat and two point queries per file, no hashing and no decoding, which
 /// is what makes this cheap enough to run every time a book is opened. The
-/// second query is the moved-file fallback -- see `photo_is_new`.
+/// second query is the moved-file fallback -- see `photo_state`.
 ///
 /// Extracted from `folder_check` so the wiring between the two queries and
 /// the decision is reachable from a test: `folder_check` needs an `AppHandle`
 /// to find the database, counting does not.
-pub(crate) fn count_new_photos(
+/// What one walk of a book's folders is worth telling the user about.
+pub(crate) struct PhotoCounts {
+    /// Photos the book has never seen, which analysing would bring in.
+    pub new: usize,
+    /// Photos analysis has already given up on. Analysing again would not
+    /// move this number, which is exactly why it is not part of `new`.
+    pub unanalysable: usize,
+}
+
+pub(crate) fn count_photos(
     db: &Db,
     paths: &BTreeSet<String>,
     known: &HashSet<String>,
-) -> Result<usize, String> {
-    let mut new_photos = 0;
+    failed: &HashSet<String>,
+) -> Result<PhotoCounts, String> {
+    let mut counts = PhotoCounts { new: 0, unanalysable: 0 };
     for path in paths {
         let now = FileStamp::of(Path::new(path));
         let stamped = db.get_stamp(path).map_err(|e| e.to_string())?;
@@ -2244,11 +2336,13 @@ pub(crate) fn count_new_photos(
             Some(now) => db.hashes_for_stamp(now).map_err(|e| e.to_string())?,
             None => Vec::new(),
         };
-        if photo_is_new(now, stamped, &same_stamp, known) {
-            new_photos += 1;
+        match photo_state(now, stamped, &same_stamp, known, failed) {
+            PhotoState::New => counts.new += 1,
+            PhotoState::Unanalysable => counts.unanalysable += 1,
+            PhotoState::Known => {}
         }
     }
-    Ok(new_photos)
+    Ok(counts)
 }
 
 /// How many photos sit in a saved book's folders that the book does not have.
@@ -2272,8 +2366,13 @@ pub async fn folder_check(app: AppHandle, project_id: i64) -> Result<FolderCheck
             .ok_or_else(|| format!("project {project_id} no longer exists"))?;
         let known: HashSet<String> = project.photo_hashes.into_iter().collect();
         let (paths, unreadable) = scan_book_folders(&project.source_folders);
-        let new_photos = count_new_photos(&db, &paths, &known)?;
-        Ok(FolderCheck { new_photos, unreadable })
+        let failed = db.failed_hashes().map_err(|e| e.to_string())?;
+        let counts = count_photos(&db, &paths, &known, &failed)?;
+        Ok(FolderCheck {
+            new_photos: counts.new,
+            unanalysable: counts.unanalysable,
+            unreadable,
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -3047,17 +3146,102 @@ mod tests {
         FileStamp { size, modified_ns }
     }
 
+    /// The four existing cases are all about new-versus-known, so they read
+    /// better as a predicate than as a match on three states.
+    fn is_new(
+        now: Option<FileStamp>,
+        stamped: Option<(FileStamp, String)>,
+        same_stamp: &[String],
+        known: &HashSet<String>,
+    ) -> bool {
+        photo_state(now, stamped, same_stamp, known, &HashSet::new()) == PhotoState::New
+    }
+
+    /// A photo Vision could not read is not news, because the "Edit photos"
+    /// run the news invites would fail on it again and leave the number
+    /// exactly where it was. It is its own state so the user can be told
+    /// that rather than told nothing.
     #[test]
-    fn photo_is_new_only_when_the_book_cannot_already_have_it() {
+    fn photo_state_separates_a_photo_analysis_gave_up_on_from_one_never_seen() {
+        let known: HashSet<String> = ["aaa".to_string()].into_iter().collect();
+        let failed: HashSet<String> = ["bbb".to_string()].into_iter().collect();
+        let now = stamp(10, 20);
+        let seen = |hash: &str| Some((now, hash.to_string()));
+
+        assert_eq!(photo_state(Some(now), seen("aaa"), &[], &known, &failed), PhotoState::Known);
+        assert_eq!(
+            photo_state(Some(now), seen("bbb"), &[], &known, &failed),
+            PhotoState::Unanalysable
+        );
+        assert_eq!(photo_state(Some(now), seen("ccc"), &[], &known, &failed), PhotoState::New);
+    }
+
+    /// A failure row outlives the photo that caused it if the run which
+    /// finally read the photo could not clear it. The book holding the photo
+    /// is the stronger fact: it is on a page.
+    #[test]
+    fn photo_state_trusts_the_book_over_a_stale_failure() {
+        let known: HashSet<String> = ["aaa".to_string()].into_iter().collect();
+        let failed: HashSet<String> = ["aaa".to_string()].into_iter().collect();
+        let now = stamp(10, 20);
+        let seen = Some((now, "aaa".to_string()));
+        assert_eq!(photo_state(Some(now), seen, &[], &known, &failed), PhotoState::Known);
+    }
+
+    /// The moved-file fallback has to reach the same verdict: renaming a
+    /// photo that would not analyse does not turn it into news.
+    #[test]
+    fn photo_state_recognizes_a_renamed_photo_analysis_gave_up_on() {
+        let known = HashSet::new();
+        let failed: HashSet<String> = ["bbb".to_string()].into_iter().collect();
+        let now = stamp(10, 20);
+        assert_eq!(
+            photo_state(Some(now), None, &["bbb".to_string()], &known, &failed),
+            PhotoState::Unanalysable
+        );
+    }
+
+    /// A file that stats but will not open never gets a hash, so it was not
+    /// covered by the mark that is keyed by one: it counted as new on every
+    /// open, and no amount of re-analysing could clear it either.
+    #[test]
+    fn photo_state_remembers_a_file_that_would_not_even_open() {
+        let now = stamp(10, 20);
+        let failed: HashSet<String> = [now.failure_key()].into_iter().collect();
+        assert_eq!(
+            photo_state(Some(now), None, &[], &HashSet::new(), &failed),
+            PhotoState::Unanalysable
+        );
+        // Fix the file and the modified time moves, so the mark stops
+        // applying without anyone having to delete it.
+        assert_eq!(
+            photo_state(Some(stamp(10, 21)), None, &[], &HashSet::new(), &failed),
+            PhotoState::New
+        );
+    }
+
+    /// A file that cannot be stat'd is not news whatever else is true of it,
+    /// and must not be mistaken for one analysis gave up on either.
+    #[test]
+    fn photo_state_says_known_for_a_file_it_cannot_stat() {
+        let failed: HashSet<String> = ["aaa".to_string()].into_iter().collect();
+        assert_eq!(
+            photo_state(None, Some((stamp(10, 20), "aaa".to_string())), &[], &HashSet::new(), &failed),
+            PhotoState::Known
+        );
+    }
+
+    #[test]
+    fn photo_state_is_new_only_when_the_book_cannot_already_have_it() {
         let known: HashSet<String> = ["aaa".to_string()].into_iter().collect();
         let now = stamp(10, 20);
 
         // Hashed, unchanged, and the book has it: not new.
-        assert!(!photo_is_new(Some(now), Some((now, "aaa".to_string())), &[], &known));
+        assert!(!is_new(Some(now), Some((now, "aaa".to_string())), &[], &known));
         // Hashed, unchanged, but a hash the book never took: new.
-        assert!(photo_is_new(Some(now), Some((now, "bbb".to_string())), &[], &known));
+        assert!(is_new(Some(now), Some((now, "bbb".to_string())), &[], &known));
         // Never hashed, and nothing of this size and age ever was: new.
-        assert!(photo_is_new(Some(now), None, &[], &known));
+        assert!(is_new(Some(now), None, &[], &known));
     }
 
     /// The count `folder_check` shows, end to end over a real database and
@@ -3066,7 +3250,7 @@ mod tests {
     /// keyed by its path, and re-analysing could never clear it because the
     /// book already had that photo.
     #[test]
-    fn count_new_photos_forgets_a_photo_that_was_only_renamed() {
+    fn count_photos_forgets_a_photo_that_was_only_renamed() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open_in_memory().unwrap();
         let at = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
@@ -3105,20 +3289,61 @@ mod tests {
 
         // News: the renamed photo from somewhere else, the edited one, and
         // the one nothing has ever hashed. Not the book's own two.
-        assert_eq!(count_new_photos(&db, &all, &known).unwrap(), 3);
+        assert_eq!(count_photos(&db, &all, &known, &HashSet::new()).unwrap().new, 3);
 
         let renamed: BTreeSet<String> = [at("Trip-001.jpg")].into_iter().collect();
         assert_eq!(
-            count_new_photos(&db, &renamed, &known).unwrap(),
+            count_photos(&db, &renamed, &known, &HashSet::new()).unwrap().new,
             0,
             "a photo the book has, under a new name, is not news"
         );
         let renamed_stranger: BTreeSet<String> = [at("Trip-002.jpg")].into_iter().collect();
         assert_eq!(
-            count_new_photos(&db, &renamed_stranger, &known).unwrap(),
+            count_photos(&db, &renamed_stranger, &known, &HashSet::new()).unwrap().new,
             1,
             "a renamed photo the book never took is still news"
         );
+    }
+
+    /// End to end over a real database and real files: a photo that hashes
+    /// but that analysis gave up on is counted apart from one the book has
+    /// never seen. It used to be counted as new on every open, and the "Edit
+    /// photos" run the count invites fails on it again, so the number could
+    /// never be cleared however many times the user tried.
+    #[test]
+    fn count_photos_keeps_what_analysis_gave_up_on_out_of_the_news() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_in_memory().unwrap();
+        let at = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
+        let write = |name: &str, len: usize| {
+            std::fs::write(dir.path().join(name), vec![b'x'; len]).unwrap();
+            at(name)
+        };
+        let stamp_of = |path: &str| FileStamp::of(Path::new(path)).unwrap();
+
+        let held = write("held.jpg", 4);
+        let broken = write("broken.jpg", 8);
+        let fresh = write("fresh.jpg", 12);
+        db.put_stamps(&[
+            (held.as_str(), stamp_of(&held), "aaa"),
+            (broken.as_str(), stamp_of(&broken), "bbb"),
+        ])
+        .unwrap();
+        db.put_analysis_failure("bbb", &broken, "sidecar failed twice").unwrap();
+
+        let known: HashSet<String> = ["aaa".to_string()].into_iter().collect();
+        let failed = db.failed_hashes().unwrap();
+        let all: BTreeSet<String> =
+            [held, broken.clone(), fresh].into_iter().collect();
+
+        let counts = count_photos(&db, &all, &known, &failed).unwrap();
+        assert_eq!(counts.new, 1, "only the photo nothing has ever hashed is news");
+        assert_eq!(counts.unanalysable, 1);
+
+        // And once a later run finally reads it, it stops being either.
+        db.clear_analysis_failure("bbb").unwrap();
+        let cleared = count_photos(&db, &all, &known, &db.failed_hashes().unwrap()).unwrap();
+        assert_eq!((cleared.new, cleared.unanalysable), (2, 0));
     }
 
     /// Renaming or re-copying a photo gives it a path nothing has hashed,
@@ -3126,39 +3351,39 @@ mod tests {
     /// file used to count as new, so a batch rename after building a book
     /// left a "new photos" notice that re-analysing could never clear.
     #[test]
-    fn photo_is_new_recognizes_a_photo_that_only_moved() {
+    fn photo_state_forgives_a_photo_that_only_moved() {
         let known: HashSet<String> = ["aaa".to_string()].into_iter().collect();
         let now = stamp(10, 20);
 
         // No row for this path, but this size and modified time were hashed
         // under another one, and that hash is the book's: not new.
-        assert!(!photo_is_new(Some(now), None, &["aaa".to_string()], &known));
+        assert!(!is_new(Some(now), None, &["aaa".to_string()], &known));
         // Same, for a hash the book never took -- a photo from another book's
         // folder, copied in: new.
-        assert!(photo_is_new(Some(now), None, &["bbb".to_string()], &known));
+        assert!(is_new(Some(now), None, &["bbb".to_string()], &known));
         // The path's OWN row wins when it is current, even against a match
         // that would say otherwise: it is the exact answer for this file.
-        assert!(photo_is_new(Some(now), Some((now, "bbb".to_string())), &["aaa".to_string()], &known));
+        assert!(is_new(Some(now), Some((now, "bbb".to_string())), &["aaa".to_string()], &known));
     }
 
     #[test]
-    fn photo_is_new_when_the_file_changed_under_a_hash_the_book_has() {
+    fn photo_state_is_new_when_the_file_changed_under_a_hash_the_book_has() {
         let known: HashSet<String> = ["aaa".to_string()].into_iter().collect();
         // Same path, same recorded hash, but the file is a different size
         // now -- the hash on record no longer describes it, so what is on
         // disk is something the book has not seen.
-        assert!(photo_is_new(Some(stamp(11, 20)), Some((stamp(10, 20), "aaa".to_string())), &[], &known));
+        assert!(is_new(Some(stamp(11, 20)), Some((stamp(10, 20), "aaa".to_string())), &[], &known));
         // A touch that only moved the modified time counts the same way.
-        assert!(photo_is_new(Some(stamp(10, 99)), Some((stamp(10, 20), "aaa".to_string())), &[], &known));
+        assert!(is_new(Some(stamp(10, 99)), Some((stamp(10, 20), "aaa".to_string())), &[], &known));
     }
 
     #[test]
-    fn photo_is_new_says_no_for_a_file_it_cannot_stat() {
+    fn photo_state_is_not_new_for_a_file_it_cannot_stat() {
         // An unreadable file is not an invitation to re-analyse anything.
         let known = HashSet::new();
-        assert!(!photo_is_new(None, None, &[], &known));
-        assert!(!photo_is_new(None, Some((stamp(10, 20), "aaa".to_string())), &[], &known));
-        assert!(!photo_is_new(None, None, &["aaa".to_string()], &known));
+        assert!(!is_new(None, None, &[], &known));
+        assert!(!is_new(None, Some((stamp(10, 20), "aaa".to_string())), &[], &known));
+        assert!(!is_new(None, None, &["aaa".to_string()], &known));
     }
 
     #[test]
@@ -3655,6 +3880,47 @@ mod tests {
         assert_eq!(result.hash_failures, 1);
     }
 
+    /// The only other hash-failure test uses a path that cannot even be
+    /// stat'd, so it never reaches the mark. A file that stats but will not
+    /// open is the case that matters: `folder_check` can see it, counts it,
+    /// and without a mark counts it forever.
+    #[test]
+    fn a_file_that_stats_but_will_not_open_is_marked_and_unmarked_by_reading_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let db = Db::open_in_memory().unwrap();
+        // A run that fails between the two chmods leaves this file unwritable,
+        // which would make the NEXT run panic in `write_temp_file` instead of
+        // testing anything. Clear it first so the test owns its own state.
+        let stale = std::env::temp_dir().join("pbg-cache-test").join("locked-shut.jpg");
+        if stale.exists() {
+            std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let path = write_temp_file("locked-shut.jpg", b"bytes behind a closed door");
+        let key = FileStamp::of(Path::new(&path)).unwrap().failure_key();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let shut = lookup_cache(&db, std::slice::from_ref(&path)).unwrap();
+
+        assert_eq!(shut.hash_failures, 1);
+        assert!(
+            db.failed_hashes().unwrap().contains(&key),
+            "a file that would not open was not marked, so folder_check counts it new on every open"
+        );
+
+        // chmod moves ctime, not mtime, so the stamp -- and therefore the key
+        // -- is the same one the mark went on under.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let open = lookup_cache(&db, std::slice::from_ref(&path)).unwrap();
+
+        assert_eq!(open.hash_failures, 0);
+        assert_eq!(open.misses, vec![path]);
+        assert!(
+            !db.failed_hashes().unwrap().contains(&key),
+            "reading the file at last must take the mark off, or it is permanent"
+        );
+    }
+
     /// Regression test for C2: the cache is keyed by content hash, but the
     /// JSON blob stored under that hash carries whatever `path` the file had
     /// when it was FIRST analysed. `path_a` here simulates that original
@@ -3881,6 +4147,60 @@ mod tests {
         assert!(result.ok.is_empty(), "kept a record the engine cannot read");
         assert_eq!(result.failed, 1);
         assert_eq!(db.get_features(&hash).unwrap(), None, "cached a record the engine cannot read");
+    }
+
+    /// The whole loop that stops a photo Vision cannot read being counted as
+    /// news forever: the failed record leaves a mark keyed by the photo's
+    /// hash, `folder_check` reads that mark and counts the photo apart from
+    /// the ones it has never seen, and a later run that finally reads the
+    /// photo takes the mark off again.
+    #[test]
+    fn gather_chunked_marks_a_photo_the_sidecar_gave_up_on_and_unmarks_it_when_it_works() {
+        let db = Db::open_in_memory().unwrap();
+        let path = write_temp_file("gather-vision-failure.jpg", b"gather vision failure bytes");
+        let hash = hash_file(Path::new(&path)).unwrap();
+        let only: BTreeSet<String> = [path.clone()].into_iter().collect();
+        let nothing_known = HashSet::new();
+
+        let failed_run = gather_chunked(
+            &db,
+            std::slice::from_ref(&path),
+            |misses| {
+                misses.iter().map(|p| crate::sidecar::failure_record(p, "sidecar failed twice")).collect()
+            },
+            |_photos, _analysed, _cached, _failed| {},
+        )
+        .unwrap();
+        assert_eq!(failed_run.failed, 1);
+        assert!(
+            db.failed_hashes().unwrap().contains(&hash),
+            "a record the sidecar gave up on left no mark"
+        );
+
+        let after_failure =
+            count_photos(&db, &only, &nothing_known, &db.failed_hashes().unwrap()).unwrap();
+        assert_eq!(
+            (after_failure.new, after_failure.unanalysable),
+            (0, 1),
+            "a photo analysis gave up on was offered as one the book has never seen"
+        );
+
+        // The same photo, on a run where the sidecar manages to read it.
+        let good_run = gather_chunked(
+            &db,
+            std::slice::from_ref(&path),
+            |misses| misses.iter().map(|p| gather_ok_record(p, &hash, 0.5, 0.0)).collect(),
+            |_photos, _analysed, _cached, _failed| {},
+        )
+        .unwrap();
+        assert_eq!(good_run.failed, 0);
+        assert!(
+            db.failed_hashes().unwrap().is_empty(),
+            "the mark outlived the run that finally read the photo"
+        );
+        let after_success =
+            count_photos(&db, &only, &nothing_known, &db.failed_hashes().unwrap()).unwrap();
+        assert_eq!((after_success.new, after_success.unanalysable), (1, 0));
     }
 
     /// A chunk that resolves to zero misses (every path in it is a cache

@@ -4,6 +4,7 @@ use crate::book::pace::Book;
 use crate::place_names::PlaceKey;
 use crate::project::{self, ExportRecord, Project, ProjectSummary};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
+use std::collections::HashSet;
 use std::path::Path;
 
 /// Bump this whenever the Swift analyzer's output changes shape or semantics.
@@ -47,6 +48,20 @@ pub struct FileStamp {
 }
 
 impl FileStamp {
+    /// How a file that would not even open is remembered in
+    /// `analysis_failures`, which is otherwise keyed by content hash.
+    ///
+    /// There is no hash for a file whose bytes could not be read, and the
+    /// size and modified time are the only identity left. They are also the
+    /// right one: fix the file and its modified time moves, so the mark comes
+    /// off by itself and the photo is news again.
+    ///
+    /// The prefix keeps this out of the hash namespace it shares the column
+    /// with -- a content hash is hex and never contains a colon.
+    pub fn failure_key(self) -> String {
+        format!("stamp:{}:{}", self.size, self.modified_ns)
+    }
+
     pub fn of(path: &Path) -> Option<Self> {
         let meta = std::fs::metadata(path).ok()?;
         let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
@@ -151,6 +166,11 @@ impl Db {
              );
              CREATE INDEX IF NOT EXISTS idx_file_stamps_by_stamp
                  ON file_stamps (size, modified_ns);
+             CREATE TABLE IF NOT EXISTS analysis_failures (
+                 hash    TEXT PRIMARY KEY,
+                 path    TEXT NOT NULL,
+                 message TEXT NOT NULL
+             );
              CREATE TABLE IF NOT EXISTS drafts (
                  id         INTEGER PRIMARY KEY,
                  json       TEXT NOT NULL,
@@ -305,6 +325,45 @@ impl Db {
                 Ok((FileStamp { size: row.get(0)?, modified_ns: row.get(1)? }, row.get(2)?))
             })
             .optional()
+    }
+
+    /// Remember that analysing this photo was tried and did not work.
+    ///
+    /// Keyed by content hash, like the feature cache, so the same bytes under
+    /// two names are one failure. `path` and `message` are for whoever reads
+    /// the log next; nothing branches on them.
+    pub fn put_analysis_failure(&self, hash: &str, path: &str, message: &str) -> rusqlite::Result<()> {
+        self.conn
+            .prepare_cached(
+                "INSERT INTO analysis_failures (hash, path, message) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(hash) DO UPDATE SET path = excluded.path, message = excluded.message",
+            )?
+            .execute((hash, path, message))?;
+        Ok(())
+    }
+
+    /// Take the mark off a photo that analysed after all.
+    ///
+    /// Called on every successful record, not just the retried ones, so it
+    /// has to be cheap and silent about a hash that was never marked.
+    pub fn clear_analysis_failure(&self, hash: &str) -> rusqlite::Result<()> {
+        self.conn
+            .prepare_cached("DELETE FROM analysis_failures WHERE hash = ?1")?
+            .execute([hash])?;
+        Ok(())
+    }
+
+    /// Every photo analysis has given up on.
+    ///
+    /// `folder_check` subtracts these from its count of photos the book has
+    /// never seen. Without it a photo Vision could not read was counted new
+    /// on every open, and the "Edit photos" run the count invites would fail
+    /// on it again and leave the number exactly where it was.
+    pub fn failed_hashes(&self) -> rusqlite::Result<HashSet<String>> {
+        self.conn
+            .prepare_cached("SELECT hash FROM analysis_failures")?
+            .query_map([], |row| row.get(0))?
+            .collect()
     }
 
     /// Every hash recorded for a file of this exact size and modified time,
@@ -912,6 +971,52 @@ mod tests {
         assert_eq!(db.hashes_for_stamp(edited).unwrap(), vec!["bbb".to_string()]);
         let never_seen = FileStamp { size: 4_200, modified_ns: 1 };
         assert!(db.hashes_for_stamp(never_seen).unwrap().is_empty(), "a different mtime is a different file");
+    }
+
+    /// The record that stops a photo Vision could not read being counted as
+    /// one the book has never seen, run after run, by a re-analysis that can
+    /// never clear it.
+    #[test]
+    fn failed_hashes_lists_what_analysis_gave_up_on() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(db.failed_hashes().unwrap().is_empty(), "nothing has failed yet");
+
+        db.put_analysis_failure("aaa", "/photos/broken.jpg", "sidecar failed twice").unwrap();
+        db.put_analysis_failure("bbb", "/photos/truncated.heic", "record count mismatch").unwrap();
+        let found = db.failed_hashes().unwrap();
+        assert_eq!(found.len(), 2);
+        assert!(found.contains("aaa") && found.contains("bbb"));
+    }
+
+    /// Retrying is the whole point of not hiding these photos: a run that
+    /// finally reads one has to take the mark off, or the book would count it
+    /// as unanalysable while it sits on a page.
+    #[test]
+    fn a_photo_that_analyses_on_a_later_run_stops_counting_as_failed() {
+        let db = Db::open_in_memory().unwrap();
+        db.put_analysis_failure("aaa", "/photos/broken.jpg", "sidecar failed twice").unwrap();
+        db.clear_analysis_failure("aaa").unwrap();
+        assert!(db.failed_hashes().unwrap().is_empty());
+        // Clearing one nothing ever recorded is not an error: every success
+        // clears, and almost none of them had failed.
+        db.clear_analysis_failure("never-seen").unwrap();
+    }
+
+    /// Two files with the same bytes fail for the same reason, and the second
+    /// attempt must not collide with the first.
+    #[test]
+    fn put_analysis_failure_replaces_the_row_for_a_hash_it_already_has() {
+        let db = Db::open_in_memory().unwrap();
+        db.put_analysis_failure("aaa", "/photos/one.jpg", "sidecar failed twice").unwrap();
+        db.put_analysis_failure("aaa", "/photos/two.jpg", "record count mismatch").unwrap();
+        assert_eq!(db.failed_hashes().unwrap().len(), 1);
+        let (path, message): (String, String) = db
+            .conn
+            .query_row("SELECT path, message FROM analysis_failures WHERE hash = 'aaa'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((path.as_str(), message.as_str()), ("/photos/two.jpg", "record count mismatch"));
     }
 
     #[test]

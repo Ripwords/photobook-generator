@@ -657,10 +657,11 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
 
     // The real command stats every file in the book's folders. There are no
     // folders here, so the harness just reports a plausible answer; set
-    // `localStorage.PBG_MOCK_NEW_PHOTOS` to drive the notice.
+    // `localStorage.PBG_MOCK_NEW_PHOTOS` or `PBG_MOCK_UNANALYSABLE` to drive the notice.
     case "folder_check":
       return {
         newPhotos: Number(localStorage.getItem("PBG_MOCK_NEW_PHOTOS") ?? 0),
+        unanalysable: Number(localStorage.getItem("PBG_MOCK_UNANALYSABLE") ?? 0),
         unreadable: localStorage.getItem("PBG_MOCK_FOLDER_UNREADABLE") === "1",
       } as T;
 

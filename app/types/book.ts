@@ -225,8 +225,17 @@ export interface ImportedPhoto {
 export interface FolderCheck {
   newPhotos: number;
   /**
-   * A folder could not be read -- a root, or one nested below it -- so
-   * `newPhotos` covers only what the walk reached.
+   * Photos in the folders that analysis has already tried and given up on,
+   * counted apart from `newPhotos` rather than inside it. Re-running analysis
+   * reaches the same verdict, so counting them as new made the notice
+   * permanent: Edit photos ran and the identical count came straight back.
+   * The mark is keyed by content, so editing or replacing the file clears it
+   * and the photo is new again.
+   */
+  unanalysable: number;
+  /**
+   * A folder could not be read -- a root, or one nested below it -- so both
+   * counts cover only what the walk reached.
    */
   unreadable: boolean;
 }
@@ -239,14 +248,29 @@ export interface FolderCheck {
 export function folderNotice(
   check: FolderCheck | null,
 ): { title: string; description: string } | null {
-  if (!check || check.newPhotos === 0) return null;
-  const photos = check.newPhotos === 1 ? "1 new photo" : `${check.newPhotos} new photos`;
+  if (!check) return null;
   const floor = check.unreadable
     ? "At least that many: one of the folders could not be read. "
     : "";
+  if (check.newPhotos === 0) {
+    if (check.unanalysable === 0) return null;
+    const them = check.unanalysable === 1 ? "it" : "them";
+    const photos = check.unanalysable === 1 ? "1 photo" : `${check.unanalysable} photos`;
+    return {
+      title: `${photos} in this book's folders could not be analysed`,
+      description: `${floor}Whatever stopped analysis will stop it again, so Edit photos leaves ${them} out rather than counting ${them} as new on every open. Repair or replace the file and it counts as new again.`,
+    };
+  }
+  const photos = check.newPhotos === 1 ? "1 new photo" : `${check.newPhotos} new photos`;
+  const gaveUp =
+    check.unanalysable === 0
+      ? ""
+      : check.unanalysable === 1
+        ? " Another photo could not be analysed at all, and Edit photos leaves it out."
+        : ` Another ${check.unanalysable} could not be analysed at all, and Edit photos leaves them out.`;
   return {
     title: `${photos} in this book's folders`,
-    description: `${floor}Edit photos analyses them and brings them into the book. A photo the book has never seen is new Vision work, so that run is not instant.`,
+    description: `${floor}Edit photos analyses them and brings them into the book. A photo the book has never seen is new Vision work, so that run is not instant.${gaveUp}`,
   };
 }
 

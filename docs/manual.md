@@ -179,8 +179,12 @@ count what the folders have gained, though, and if photos have been added since 
 made a notice above the first spread says how many and offers **Edit photos**, which is the
 way to bring them in. Dismissing the notice hides it until the next time the book is opened.
 A photo you only renamed or moved within the folders is not counted: the book already has
-it, so re-analysing could never clear it. If a folder cannot be read -- one you chose, or
-one inside it -- the count says "at least this many".
+it, so re-analysing could never clear it. Nor is one analysis has already given up on --
+a file that will not open, or that Vision could not read. Those are counted separately and
+the notice names them, because **Edit photos** leaves them out: it would reach the same
+verdict and the same count would come straight back. Editing or replacing the file clears
+the mark, and the photo counts as new again on the next open. If a folder cannot be read --
+one you chose, or one inside it -- the count says "at least this many".
 
 The toolbar at the top holds the title, with a pencil to rename the book; **Edit photos**,
 which takes its photo selection back to the contact sheet and re-analyses the book's own

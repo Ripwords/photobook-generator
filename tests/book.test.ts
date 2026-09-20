@@ -32,6 +32,7 @@ import {
   type BookState,
   type ExportEvent,
   type ExportResult,
+  type FolderCheck,
   type GeneratedBook,
   type ProjectDetail,
   type ProjectListItem,
@@ -628,9 +629,16 @@ describe("lastExportedOn", () => {
   });
 });
 
+const check = (over: Partial<FolderCheck> = {}): FolderCheck => ({
+  newPhotos: 0,
+  unanalysable: 0,
+  unreadable: false,
+  ...over,
+});
+
 describe("folderNotice", () => {
   it("says nothing when the folders hold nothing the book does not", () => {
-    expect(folderNotice({ newPhotos: 0, unreadable: false })).toBeNull();
+    expect(folderNotice(check())).toBeNull();
   });
 
   it("says nothing when the check never answered", () => {
@@ -638,13 +646,13 @@ describe("folderNotice", () => {
   });
 
   it("counts one photo in the singular", () => {
-    expect(folderNotice({ newPhotos: 1, unreadable: false })?.title).toBe(
+    expect(folderNotice(check({ newPhotos: 1 }))?.title).toBe(
       "1 new photo in this book's folders",
     );
   });
 
   it("counts several in the plural", () => {
-    expect(folderNotice({ newPhotos: 12, unreadable: false })?.title).toBe(
+    expect(folderNotice(check({ newPhotos: 12 }))?.title).toBe(
       "12 new photos in this book's folders",
     );
   });
@@ -652,14 +660,12 @@ describe("folderNotice", () => {
   it("warns that new photos are real Vision work, not a cache hit", () => {
     // The toolbar used to claim Edit photos was every photo a cache hit. It
     // is not, the moment the folder has gained one.
-    expect(folderNotice({ newPhotos: 3, unreadable: false })?.description).toContain(
-      "not instant",
-    );
+    expect(folderNotice(check({ newPhotos: 3 }))?.description).toContain("not instant");
   });
 
   it("marks the count as a floor when a folder could not be read", () => {
-    const readable = folderNotice({ newPhotos: 3, unreadable: false })!;
-    const partial = folderNotice({ newPhotos: 3, unreadable: true })!;
+    const readable = folderNotice(check({ newPhotos: 3 }))!;
+    const partial = folderNotice(check({ newPhotos: 3, unreadable: true }))!;
 
     expect(partial.title).toBe(readable.title);
     expect(partial.description).toContain("At least that many");
@@ -669,7 +675,48 @@ describe("folderNotice", () => {
   // A folder that cannot be read is not, on its own, news: the book still
   // opens and still exports. Only photos the book is missing are.
   it("stays quiet about an unreadable folder that yielded no new photos", () => {
-    expect(folderNotice({ newPhotos: 0, unreadable: true })).toBeNull();
+    expect(folderNotice(check({ unreadable: true }))).toBeNull();
+  });
+
+  // These used to be counted as new, which made the notice unclearable:
+  // Edit photos ran, failed on them again, and the same count came back.
+  it("speaks up for photos analysis gave up on even when nothing is new", () => {
+    const notice = folderNotice(check({ unanalysable: 2 }))!;
+
+    expect(notice.title).toBe("2 photos in this book's folders could not be analysed");
+    expect(notice.description).toContain("leaves them out");
+  });
+
+  it("counts one such photo in the singular", () => {
+    const notice = folderNotice(check({ unanalysable: 1 }))!;
+
+    expect(notice.title).toBe("1 photo in this book's folders could not be analysed");
+    expect(notice.description).toContain("leaves it out");
+  });
+
+  it("keeps them out of the new count and mentions them alongside it", () => {
+    const notice = folderNotice(check({ newPhotos: 3, unanalysable: 2 }))!;
+
+    expect(notice.title).toBe("3 new photos in this book's folders");
+    expect(notice.description).toContain("Another 2 could not be analysed");
+  });
+
+  it("mentions a single one alongside the new count in the singular", () => {
+    expect(folderNotice(check({ newPhotos: 3, unanalysable: 1 }))?.description).toContain(
+      "Another photo could not be analysed",
+    );
+  });
+
+  it("says how the mark comes off, so the notice is not a dead end", () => {
+    // The whole point of the fix: re-running analysis cannot clear this, but
+    // changing the file can, and the user has to be told which.
+    expect(folderNotice(check({ unanalysable: 1 }))?.description).toContain("Repair or replace");
+  });
+
+  it("marks the unanalysable count as a floor too when a folder could not be read", () => {
+    expect(folderNotice(check({ unanalysable: 2, unreadable: true }))?.description).toContain(
+      "At least that many",
+    );
   });
 });
 
