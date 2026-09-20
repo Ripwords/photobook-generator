@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Ripwords/photobook-generator/releases/download/v0.1.2/PhotobookGen_0.1.2_aarch64.dmg"><img src="https://img.shields.io/badge/Apple%20Silicon-3F454D?style=for-the-badge&logo=apple&logoColor=white" alt="Download for Mac (Apple Silicon)" /></a>
+  <a href="https://github.com/Ripwords/photobook-generator/releases/download/v0.2.0/PhotobookGen_0.2.0_aarch64.dmg"><img src="https://img.shields.io/badge/Apple%20Silicon-3F454D?style=for-the-badge&logo=apple&logoColor=white" alt="Download for Mac (Apple Silicon)" /></a>
   <br /><br />
   <a href="https://github.com/Ripwords/photobook-generator/releases/latest"><img src="https://img.shields.io/github/v/release/Ripwords/photobook-generator?style=flat-square&label=latest&labelColor=24292F&color=3F454D" alt="Latest release" /></a>
 </p>
