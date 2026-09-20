@@ -4,6 +4,7 @@ import {
   cropMoved,
   cropStyle,
   cropZoomed,
+  pressIsDrag,
   rectStyle,
   wheelZoomFactor,
   type BookLayout,
@@ -28,11 +29,13 @@ const emit = defineEmits<{
 
 /**
  * The same gesture as a page photo: drag moves the window, ⌘-scroll zooms,
- * one edit on release. A press that never moves is a click, which opens the
- * picker for that side instead of selecting for a swap -- the cover holds a
- * copy of a photo, so there is nothing to swap it with.
+ * one edit on release. A press that never travels `DRAG_THRESHOLD_PX` is a
+ * click, which opens the picker for that side instead of selecting for a swap
+ * -- the cover holds a copy of a photo, so there is nothing to swap it with.
+ *
+ * Release decides, on where the pointer ENDED. A press that drifts out past
+ * the threshold and comes back is a click, not a one-pixel crop nudge.
  */
-const DRAG_THRESHOLD_PX = 3;
 const WHEEL_SETTLE_MS = 250;
 const live = ref<Partial<Record<CoverSide, PreviewRect>>>({});
 interface Drag {
@@ -67,7 +70,7 @@ function onPointerMove(event: PointerEvent) {
   if (!drag) return;
   const dx = event.clientX - drag.startX;
   const dy = event.clientY - drag.startY;
-  if (!drag.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
+  if (!drag.moved && !pressIsDrag(dx, dy)) return;
   drag.moved = true;
   live.value = { ...live.value, [drag.side]: cropMoved(drag.origin, { dx: dx / drag.w, dy: dy / drag.h }) };
 }
@@ -78,8 +81,14 @@ function onPointerUp(event: PointerEvent) {
   drag = null;
   (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
   const crop = live.value[finished.side];
-  if (finished.moved && crop) emit("crop", finished.side, crop);
-  else emit("choose", finished.side);
+  const dragged = pressIsDrag(event.clientX - finished.startX, event.clientY - finished.startY);
+  if (dragged && crop) {
+    emit("crop", finished.side, crop);
+    return;
+  }
+  const { [finished.side]: _abandoned, ...rest } = live.value;
+  live.value = rest;
+  emit("choose", finished.side);
 }
 
 function onPointerCancel() {

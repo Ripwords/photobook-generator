@@ -17,6 +17,7 @@ import {
   refusalText,
   replaceCandidates,
   pageGuides,
+  pressIsDrag,
   pickAspect,
   pickEdit,
   setCoverCropEdit,
@@ -819,6 +820,51 @@ describe("slot editing", () => {
     expect(snapped.x + snapped.w).toBeCloseTo(0.5, 12);
   });
 
+  it("locks the aspect ratio when asked, driving from the axis that moved more", () => {
+    // 0.3 x 0.4, so a locked resize keeps w/h at 0.75 whatever the pointer does.
+    const wide = slotResized(rect, "se", { dx: 0.15, dy: 0.01 }, guides, 0, 0.05, true);
+    expect(wide.w / wide.h).toBeCloseTo(0.75, 12);
+    expect(wide.w).toBeCloseTo(0.45, 12);
+    expect(wide.h).toBeCloseTo(0.6, 12);
+    const tall = slotResized(rect, "se", { dx: 0.01, dy: 0.2 }, guides, 0, 0.05, true);
+    expect(tall.w / tall.h).toBeCloseTo(0.75, 12);
+    expect(tall.h).toBeCloseTo(0.6, 12);
+  });
+
+  it("keeps the opposite corner fixed under a locked resize", () => {
+    const nw = slotResized(rect, "nw", { dx: -0.15, dy: -0.01 }, guides, 0, 0.05, true);
+    expect(nw.x + nw.w).toBeCloseTo(0.5, 12);
+    expect(nw.y + nw.h).toBeCloseTo(0.6, 12);
+    expect(nw.w / nw.h).toBeCloseTo(0.75, 12);
+    const ne = slotResized(rect, "ne", { dx: 0.15, dy: -0.01 }, guides, 0, 0.05, true);
+    expect(ne.x).toBeCloseTo(0.2, 12);
+    expect(ne.y + ne.h).toBeCloseTo(0.6, 12);
+    expect(ne.w / ne.h).toBeCloseTo(0.75, 12);
+  });
+
+  it("holds the ratio at both limits: the minimum size and the page edge", () => {
+    const tiny = slotResized(rect, "se", { dx: -5, dy: -5 }, guides, 0, 0.05, true);
+    expect(tiny.w / tiny.h).toBeCloseTo(0.75, 12);
+    expect(Math.min(tiny.w, tiny.h)).toBeCloseTo(0.05, 12);
+    const huge = slotResized(rect, "se", { dx: 5, dy: 5 }, guides, 0, 0.05, true);
+    expect(huge.w / huge.h).toBeCloseTo(0.75, 12);
+    expect(huge.x + huge.w).toBeLessThanOrEqual(1 + 1e-12);
+    expect(huge.y + huge.h).toBeLessThanOrEqual(1 + 1e-12);
+    // It fills the page in whichever direction runs out first, and no further.
+    expect(Math.max(huge.x + huge.w, huge.y + huge.h)).toBeCloseTo(1, 12);
+  });
+
+  it("ignores snapping while the ratio is locked, because a snapped edge breaks it", () => {
+    // dx alone would pull the right edge onto the 0.5 guide and leave h at 0.4.
+    const locked = slotResized(rect, "se", { dx: -0.01, dy: 0 }, guides, 0.02, 0.05, true);
+    expect(locked.w).toBeCloseTo(0.29, 12);
+    expect(locked.x + locked.w).toBeCloseTo(0.49, 12);
+    expect(locked.h).toBeCloseTo(0.29 / 0.75, 12);
+    const free = slotResized(rect, "se", { dx: -0.01, dy: 0 }, guides, 0.02, 0.05);
+    expect(free.x + free.w).toBeCloseTo(0.5, 12);
+    expect(free.h).toBeCloseTo(0.4, 12);
+  });
+
   it("builds page guides from the engine's own geometry plus the other slots", () => {
     const g = pageGuides(geometry, "left", [{ x: 0.1, y: 0.3, w: 0.2, h: 0.2 }]);
     expect(g.xs).toContain(0);
@@ -941,5 +987,23 @@ describe("choosing a photo for the cover", () => {
       y: 0.2,
       w: 0.5,
     });
+  });
+});
+
+describe("click versus drag", () => {
+  it("calls a press a click until it has travelled the threshold", () => {
+    expect(pressIsDrag(0, 0)).toBe(false);
+    expect(pressIsDrag(3, 0)).toBe(false);
+    expect(pressIsDrag(6, 6)).toBe(false);
+    expect(pressIsDrag(10, 0)).toBe(true);
+    expect(pressIsDrag(-10, 0)).toBe(true);
+    expect(pressIsDrag(0, 40)).toBe(true);
+  });
+
+  it("measures where the press ended, not how far it wandered", () => {
+    // A trackpad click that wobbles out and comes back is still a click. The
+    // components re-test the NET offset on pointerup for exactly this case.
+    expect(pressIsDrag(1, 0)).toBe(false);
+    expect(pressIsDrag(20, 0)).toBe(true);
   });
 });

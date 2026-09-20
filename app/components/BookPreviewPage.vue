@@ -7,6 +7,7 @@ import {
   insideCover,
   pageGuides,
   pageSlots,
+  pressIsDrag,
   rectStyle,
   samePlacement,
   slotMoved,
@@ -131,12 +132,15 @@ function onSlotPointerMove(event: PointerEvent) {
   if (!slotDrag) return;
   const dxPx = event.clientX - slotDrag.startX;
   const dyPx = event.clientY - slotDrag.startY;
-  if (!slotDrag.moved && Math.hypot(dxPx, dyPx) < DRAG_THRESHOLD_PX) return;
+  if (!slotDrag.moved && !pressIsDrag(dxPx, dyPx)) return;
   slotDrag.moved = true;
   const delta = { dx: dxPx / slotDrag.pageW, dy: dyPx / slotDrag.pageH };
   const guides = guidesFor(slotDrag.key);
+  // Shift is read live, so the lock can be taken or dropped mid-drag. Shift
+  // and not control: control-press is the secondary click on macOS, and the
+  // context menu it opens would eat the gesture.
   const next = slotDrag.corner
-    ? slotResized(slotDrag.origin, slotDrag.corner, delta, guides, SNAP_THRESHOLD, MIN_SLOT_SIZE)
+    ? slotResized(slotDrag.origin, slotDrag.corner, delta, guides, SNAP_THRESHOLD, MIN_SLOT_SIZE, event.shiftKey)
     : slotMoved(slotDrag.origin, delta, guides, SNAP_THRESHOLD);
   liveRects.value = { ...liveRects.value, [slotDrag.key]: next };
 }
@@ -147,7 +151,12 @@ function onSlotPointerUp(event: PointerEvent) {
   slotDrag = null;
   (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
   const rect = liveRects.value[finished.key];
-  if (finished.moved && rect) emit("slot", finished.ref, rect);
+  if (pressIsDrag(event.clientX - finished.startX, event.clientY - finished.startY) && rect) {
+    emit("slot", finished.ref, rect);
+    return;
+  }
+  const { [finished.key]: _abandoned, ...rest } = liveRects.value;
+  liveRects.value = rest;
 }
 
 function onSlotPointerCancel() {
@@ -171,11 +180,13 @@ const cornerClass: Record<Corner, string> = {
  * the pointer is down and sent as ONE edit on release, so a drag is one save
  * and one round trip, not one per pixel. Rust re-derives the height from the
  * slot, keeps the window inside the photo and re-runs the hard constraints;
- * whatever it returns is what stays on screen. A press that never moved past
- * `DRAG_THRESHOLD_PX` is a click, which selects the photo for a swap.
+ * whatever it returns is what stays on screen. A press that never travels
+ * `DRAG_THRESHOLD_PX` is a click, which selects the photo for a swap; release
+ * decides, on where the pointer ENDED, so a click that drifts out and back is
+ * still a click and not a one-pixel crop nudge.
+ *
+ * `liveCrops` holds the windows mid-gesture, keyed like `PreviewSlot.key`.
  */
-const DRAG_THRESHOLD_PX = 3;
-/** Live crops for slots mid-gesture, keyed like `PreviewSlot.key`. */
 const liveCrops = ref<Record<string, PreviewRect>>({});
 interface Drag {
   key: string;
@@ -214,7 +225,7 @@ function onPointerMove(event: PointerEvent) {
   if (!drag) return;
   const dxPx = event.clientX - drag.startX;
   const dyPx = event.clientY - drag.startY;
-  if (!drag.moved && Math.hypot(dxPx, dyPx) < DRAG_THRESHOLD_PX) return;
+  if (!drag.moved && !pressIsDrag(dxPx, dyPx)) return;
   drag.moved = true;
   liveCrops.value = {
     ...liveCrops.value,
@@ -227,12 +238,14 @@ function onPointerUp(event: PointerEvent) {
   const finished = drag;
   drag = null;
   (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
-  if (finished.moved) {
-    const crop = liveCrops.value[finished.key];
-    if (crop) emit("crop", finished.ref, crop);
-  } else {
-    emit("select", finished.ref);
+  const crop = liveCrops.value[finished.key];
+  if (pressIsDrag(event.clientX - finished.startX, event.clientY - finished.startY) && crop) {
+    emit("crop", finished.ref, crop);
+    return;
   }
+  const { [finished.key]: _abandoned, ...rest } = liveCrops.value;
+  liveCrops.value = rest;
+  emit("select", finished.ref);
 }
 
 function onPointerCancel() {
@@ -355,7 +368,7 @@ const gutter = computed(() => rectStyle(shown.value[side].gutter));
         ]"
         :style="box.slot"
         :title="[box.photo?.path, box.filename].filter(Boolean).join('\n')"
-        :aria-label="selectable ? `Photo on page ${page.number}, slot ${box.z}: ${editSlots ? 'drag to move the box, drag a corner to resize it' : isSelected(box.ref) ? 'selected for swap' : 'click to swap, drag to move the crop, command-scroll to zoom'}` : undefined"
+        :aria-label="selectable ? `Photo on page ${page.number}, slot ${box.z}: ${editSlots ? 'drag to move the box, drag a corner to resize it, hold shift to keep its shape' : isSelected(box.ref) ? 'selected for swap' : 'click to swap, drag to move the crop, command-scroll to zoom'}` : undefined"
         :aria-pressed="selectable && !editSlots ? isSelected(box.ref) : undefined"
         @pointerdown="editSlots ? onSlotPointerDown($event, box.key, box.ref, box.savedRect, null) : onPointerDown($event, box.key, box.ref, box.saved)"
         @pointermove="editSlots ? onSlotPointerMove($event) : onPointerMove($event)"

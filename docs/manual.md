@@ -188,13 +188,19 @@ with page N** and exchanges the two. A photo that would cut a face, put one in t
 the trim margin, or print too small is dimmed with the reason and cannot be picked, and so
 are photos on a locked spread. To **adjust a crop**, drag the photo inside its
 slot to move the window, or hold ⌘ and scroll over it to zoom;
-a plain scroll always scrolls the book, never a photo. The window keeps the slot's shape and
+a plain scroll always scrolls the book, never a photo. A press only counts as a drag once it
+has travelled about 10px, so an ordinary click still selects the photo however much the
+trackpad wobbles, and a press that wanders and comes back to where it started is a click too. The window keeps the slot's shape and
 is saved when you let go. Regenerating that opening or swapping the photo away recomputes
 its crop, because the slot it was chosen for is gone.
 
 To **move or resize the boxes themselves**, switch the bar above the book from **Crop and
 swap** to **Move and resize boxes**. Drag a box to move it, drag a corner to resize it; edges snap to the trim, safe and
-gutter guides, the page edge (which prints as bleed) and the other boxes on the page. A box
+gutter guides, the page edge (which prints as bleed) and the other boxes on the page. Hold
+**shift** while dragging a corner to resize the box without changing its shape: it scales
+about the opposite corner and keeps the proportions it started with. Snapping is off while
+shift is held, because pulling one edge onto a guide is exactly what would change the shape.
+Shift is read as you drag, so you can take or drop the lock part-way through. A box
 cannot leave the page, shrink below 5% of it, or overlap another box, and the photo is
 re-cropped for the new shape under the same rules as everything else. Switch back to **Crop
 and swap** to go back to swapping and cropping. A change that would cut a face, put one in the

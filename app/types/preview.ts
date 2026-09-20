@@ -723,7 +723,9 @@ export function slotResized(
   guides: SnapGuides,
   threshold: number,
   minSize: number,
+  lockAspect = false,
 ): PreviewRect {
+  if (lockAspect) return slotScaled(rect, corner, delta, minSize);
   let left = rect.x;
   let right = rect.x + rect.w;
   let top = rect.y;
@@ -739,6 +741,56 @@ export function slotResized(
     bottom = clamp(snapValue(clamp(bottom + delta.dy, 0, 1), guides.ys, threshold), top + minSize, 1);
   }
   return { x: left, y: top, w: right - left, h: bottom - top };
+}
+
+/**
+ * The locked half of `slotResized`: the slot keeps its shape and only changes
+ * size. Guides are ignored, because snapping one edge onto a line is exactly
+ * what would break the ratio -- the lock is the constraint the user asked for,
+ * so it wins.
+ *
+ * The ratio is held in NORMALISED space, which is also the printed one: both
+ * `w` and `h` are scaled by the page's own inches, so `w/h` constant there is
+ * `(w * pageWIn)/(h * pageHIn)` constant on paper.
+ */
+function slotScaled(rect: PreviewRect, corner: Corner, delta: SlotDelta, minSize: number): PreviewRect {
+  const aspect = rect.w / rect.h;
+  const growsRight = corner === "ne" || corner === "se";
+  const growsDown = corner === "se" || corner === "sw";
+  const dw = growsRight ? delta.dx : -delta.dx;
+  const dh = growsDown ? delta.dy : -delta.dy;
+  // Whichever axis the pointer pushed harder drives; the other follows it.
+  const w = Math.abs(dw) >= Math.abs(dh * aspect) ? rect.w + dw : (rect.h + dh) * aspect;
+  // Room from the fixed corner to the page edge, in each direction, as a width.
+  const roomW = growsRight ? 1 - rect.x : rect.x + rect.w;
+  const roomH = (growsDown ? 1 - rect.y : rect.y + rect.h) * aspect;
+  const sized = clamp(w, Math.max(minSize, minSize * aspect), Math.max(roomW, roomH) === 0 ? 1 : Math.min(roomW, roomH));
+  const h = sized / aspect;
+  return {
+    x: growsRight ? rect.x : rect.x + rect.w - sized,
+    y: growsDown ? rect.y : rect.y + rect.h - h,
+    w: sized,
+    h,
+  };
+}
+
+/**
+ * How far a pointer must travel before a press counts as a drag and not a
+ * click. Deliberately generous: a real trackpad click carries several pixels
+ * of tremor, and at 3px an ordinary click on a cover photo registered as a
+ * tiny crop drag, so the picker never opened and the user clicked again. That
+ * is the "I had to set the cover several times" bug. Synthetic clicks are
+ * pixel-exact, which is why no test caught it.
+ */
+export const DRAG_THRESHOLD_PX = 10;
+
+/**
+ * Whether a press that ended `dx`,`dy` from where it began was a drag. Callers
+ * test this again on release, against the NET offset, so a press that wanders
+ * out past the threshold and comes back still counts as a click.
+ */
+export function pressIsDrag(dx: number, dy: number): boolean {
+  return Math.hypot(dx, dy) >= DRAG_THRESHOLD_PX;
 }
 
 /** Undated photos sort after every dated one. */

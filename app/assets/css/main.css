@@ -30,6 +30,21 @@
   --ui-text-dimmed: var(--ui-color-neutral-400);
 }
 
+/*
+  The app is a fixed-height shell: `index.vue` is `h-screen` and every scroller
+  inside it is its own `overflow-y-auto`. The document itself must therefore
+  never scroll or bounce. Without this, WKWebView's elastic overscroll let the
+  whole window -- sidebar, header and all -- be rubber-banded down the screen,
+  leaving a band of empty black above the app that looked like a broken layout.
+  `overscroll-behavior: none` turns off the bounce; `overflow: hidden` makes
+  sure nothing can genuinely scroll the root even if a child overflows.
+*/
+html,
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 body {
   -webkit-font-smoothing: antialiased;
 }
