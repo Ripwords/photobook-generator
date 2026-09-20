@@ -173,7 +173,9 @@ what was analysed, so it opens instantly and works with the source drive unplugg
 count what the folders have gained, though, and if photos have been added since the book was
 made a notice above the first spread says how many and offers **Edit photos**, which is the
 way to bring them in. Dismissing the notice hides it until the next time the book is opened.
-If a folder cannot be read at all, the count says "at least this many".
+A photo you only renamed or moved within the folders is not counted: the book already has
+it, so re-analysing could never clear it. If a folder cannot be read -- one you chose, or
+one inside it -- the count says "at least this many".
 
 The toolbar at the top holds the title, with a pencil to rename the book; **Edit photos**,
 which takes its photo selection back to the contact sheet and re-analyses the book's own

@@ -149,6 +149,8 @@ impl Db {
                  modified_ns INTEGER NOT NULL,
                  hash        TEXT NOT NULL
              );
+             CREATE INDEX IF NOT EXISTS idx_file_stamps_by_stamp
+                 ON file_stamps (size, modified_ns);
              CREATE TABLE IF NOT EXISTS drafts (
                  id         INTEGER PRIMARY KEY,
                  json       TEXT NOT NULL,
@@ -303,6 +305,25 @@ impl Db {
                 Ok((FileStamp { size: row.get(0)?, modified_ns: row.get(1)? }, row.get(2)?))
             })
             .optional()
+    }
+
+    /// Every hash recorded for a file of this exact size and modified time,
+    /// whatever it was called at the time.
+    ///
+    /// For recognising a file that MOVED. A rename or a re-copy gives a photo
+    /// a path nothing has ever hashed, and without this `folder_check` calls
+    /// every one of them new -- so a batch rename after building a book left
+    /// "412 new photos" on screen that re-analysing could never clear.
+    ///
+    /// Size and modified time together, because that is what a rename keeps
+    /// and an edit changes. Two genuinely different photos would have to
+    /// agree on their byte count AND on the nanosecond they were written to
+    /// be confused, and the cost of that is one uncounted new photo.
+    pub fn hashes_for_stamp(&self, stamp: FileStamp) -> rusqlite::Result<Vec<String>> {
+        self.conn
+            .prepare_cached("SELECT hash FROM file_stamps WHERE size = ?1 AND modified_ns = ?2")?
+            .query_map([stamp.size, stamp.modified_ns], |row| row.get(0))?
+            .collect()
     }
 
     /// Records the hash computed for each file, in one transaction.
@@ -866,6 +887,31 @@ mod tests {
 
     fn book_of(db: &Db, id: i64) -> Book {
         db.load_project(id).unwrap().unwrap().book
+    }
+
+    /// The lookup that recognises a photo which was renamed or re-copied:
+    /// keyed by what a move KEEPS (the byte count and the modified time),
+    /// never by the path, which is the only thing a move changes.
+    #[test]
+    fn hashes_for_stamp_finds_a_photo_under_whatever_it_is_called_now() {
+        let db = Db::open_in_memory().unwrap();
+        let stamp = FileStamp { size: 4_200, modified_ns: 1_700_000_000_000_000_000 };
+        let edited = FileStamp { size: 4_300, modified_ns: stamp.modified_ns };
+        db.put_stamps(&[
+            ("/photos/IMG_0001.jpg", stamp, "aaa"),
+            ("/photos/copy of IMG_0001.jpg", stamp, "aaa"),
+            ("/photos/IMG_0002.jpg", edited, "bbb"),
+        ])
+        .unwrap();
+
+        let mut found = db.hashes_for_stamp(stamp).unwrap();
+        found.sort();
+        found.dedup();
+        assert_eq!(found, vec!["aaa".to_string()], "a different size is a different file");
+
+        assert_eq!(db.hashes_for_stamp(edited).unwrap(), vec!["bbb".to_string()]);
+        let never_seen = FileStamp { size: 4_200, modified_ns: 1 };
+        assert!(db.hashes_for_stamp(never_seen).unwrap().is_empty(), "a different mtime is a different file");
     }
 
     #[test]

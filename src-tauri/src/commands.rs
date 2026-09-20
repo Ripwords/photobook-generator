@@ -2167,11 +2167,17 @@ pub struct FolderCheck {
 
 /// Whether one file on disk is a photo the book has never seen.
 ///
-/// Three ways to be new. Nothing has ever hashed this path. Something has,
-/// but the size or modified time has changed since, so the hash on record no
-/// longer describes the file. Or the hash is current and simply is not one of
-/// the book's. A file that cannot be stat'd at all does NOT count: it is
-/// unreadable, not new, and offering to re-analyse it would not help.
+/// `stamped` is what was last hashed at this exact path; `same_stamp` is every
+/// hash recorded for a file of this size and modified time, at any path. The
+/// path is asked first because it is exact, and `same_stamp` is the fallback
+/// that recognises a photo which simply MOVED. Renaming the files under a
+/// finished book used to make every one of them new, and no amount of
+/// re-analysing could clear the notice, because the book already had them.
+///
+/// So: new when nothing that has ever been hashed matches this file, or when
+/// what does match is not one of the book's photos. A file that cannot be
+/// stat'd at all does NOT count -- it is unreadable, not new, and offering to
+/// re-analyse it would not help.
 ///
 /// Pure, and stat-only by construction: the caller passes what it already
 /// read, nothing here opens or decodes a file. That is what makes it cheap
@@ -2179,12 +2185,13 @@ pub struct FolderCheck {
 pub(crate) fn photo_is_new(
     now: Option<FileStamp>,
     stamped: Option<(FileStamp, String)>,
+    same_stamp: &[String],
     known: &HashSet<String>,
 ) -> bool {
-    match (now, stamped) {
-        (None, _) => false,
-        (Some(now), Some((seen, hash))) if now == seen => !known.contains(&hash),
-        _ => true,
+    let Some(now) = now else { return false };
+    match stamped {
+        Some((seen, hash)) if seen == now => !known.contains(&hash),
+        _ => !same_stamp.iter().any(|hash| known.contains(hash)),
     }
 }
 
@@ -2215,6 +2222,35 @@ pub(crate) fn scan_book_folders(folders: &[String]) -> (BTreeSet<String>, bool) 
     (paths, unreadable)
 }
 
+/// How many of `paths` are photos `known` does not already cover.
+///
+/// One stat and two point queries per file, no hashing and no decoding, which
+/// is what makes this cheap enough to run every time a book is opened. The
+/// second query is the moved-file fallback -- see `photo_is_new`.
+///
+/// Extracted from `folder_check` so the wiring between the two queries and
+/// the decision is reachable from a test: `folder_check` needs an `AppHandle`
+/// to find the database, counting does not.
+pub(crate) fn count_new_photos(
+    db: &Db,
+    paths: &BTreeSet<String>,
+    known: &HashSet<String>,
+) -> Result<usize, String> {
+    let mut new_photos = 0;
+    for path in paths {
+        let now = FileStamp::of(Path::new(path));
+        let stamped = db.get_stamp(path).map_err(|e| e.to_string())?;
+        let same_stamp = match now {
+            Some(now) => db.hashes_for_stamp(now).map_err(|e| e.to_string())?,
+            None => Vec::new(),
+        };
+        if photo_is_new(now, stamped, &same_stamp, known) {
+            new_photos += 1;
+        }
+    }
+    Ok(new_photos)
+}
+
 /// How many photos sit in a saved book's folders that the book does not have.
 ///
 /// Opening a book never touches the filesystem -- its photos are resolved from
@@ -2236,13 +2272,7 @@ pub async fn folder_check(app: AppHandle, project_id: i64) -> Result<FolderCheck
             .ok_or_else(|| format!("project {project_id} no longer exists"))?;
         let known: HashSet<String> = project.photo_hashes.into_iter().collect();
         let (paths, unreadable) = scan_book_folders(&project.source_folders);
-        let mut new_photos = 0;
-        for path in &paths {
-            let stamped = db.get_stamp(path).map_err(|e| e.to_string())?;
-            if photo_is_new(FileStamp::of(Path::new(path)), stamped, &known) {
-                new_photos += 1;
-            }
-        }
+        let new_photos = count_new_photos(&db, &paths, &known)?;
         Ok(FolderCheck { new_photos, unreadable })
     })
     .await
@@ -3013,11 +3043,6 @@ mod tests {
         }
     }
 
-    /// The scan walks nested folders, skips hidden directories and AppleDouble
-    /// files, ignores non-images, and returns a sorted list -- asserted on a
-    /// real temporary tree rather than a mock, so the recursion, the hidden-
-    /// directory rule and the file filter are all exercised on disk.
-
     fn stamp(size: i64, modified_ns: i64) -> FileStamp {
         FileStamp { size, modified_ns }
     }
@@ -3028,11 +3053,92 @@ mod tests {
         let now = stamp(10, 20);
 
         // Hashed, unchanged, and the book has it: not new.
-        assert!(!photo_is_new(Some(now), Some((now, "aaa".to_string())), &known));
+        assert!(!photo_is_new(Some(now), Some((now, "aaa".to_string())), &[], &known));
         // Hashed, unchanged, but a hash the book never took: new.
-        assert!(photo_is_new(Some(now), Some((now, "bbb".to_string())), &known));
-        // Never hashed: new.
-        assert!(photo_is_new(Some(now), None, &known));
+        assert!(photo_is_new(Some(now), Some((now, "bbb".to_string())), &[], &known));
+        // Never hashed, and nothing of this size and age ever was: new.
+        assert!(photo_is_new(Some(now), None, &[], &known));
+    }
+
+    /// The count `folder_check` shows, end to end over a real database and
+    /// real files, including the rename that used to nag forever: the file
+    /// keeps its bytes and its modified time and loses only the row that was
+    /// keyed by its path, and re-analysing could never clear it because the
+    /// book already had that photo.
+    #[test]
+    fn count_new_photos_forgets_a_photo_that_was_only_renamed() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open_in_memory().unwrap();
+        let at = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
+        let write = |name: &str, len: usize| {
+            std::fs::write(dir.path().join(name), vec![b'x'; len]).unwrap();
+            at(name)
+        };
+        let stamp = |path: &str| FileStamp::of(Path::new(path)).unwrap();
+
+        let kept = write("kept.jpg", 5);
+        let mine = write("IMG_0001.jpg", 6);
+        let theirs = write("IMG_0002.jpg", 7);
+        let edited = write("edited.jpg", 9);
+        db.put_stamps(&[
+            (kept.as_str(), stamp(&kept), "aaa"),
+            (mine.as_str(), stamp(&mine), "bbb"),
+            (theirs.as_str(), stamp(&theirs), "zzz"),
+            (edited.as_str(), stamp(&edited), "ccc"),
+        ])
+        .unwrap();
+
+        // A rename keeps the bytes and the modified time and loses the row,
+        // which is the whole difficulty: nothing has ever hashed this path.
+        std::fs::rename(&mine, dir.path().join("Trip-001.jpg")).unwrap();
+        std::fs::rename(&theirs, dir.path().join("Trip-002.jpg")).unwrap();
+        assert!(db.get_stamp(&at("Trip-001.jpg")).unwrap().is_none());
+        // An edit changes the size, so the hash on record no longer describes
+        // the file and nothing else was hashed at this size and time either.
+        std::fs::write(&edited, vec![b'y'; 12]).unwrap();
+        let fresh = write("fresh.jpg", 8);
+
+        let known: HashSet<String> =
+            ["aaa".to_string(), "bbb".to_string(), "ccc".to_string()].into_iter().collect();
+        let all: BTreeSet<String> =
+            [kept, at("Trip-001.jpg"), at("Trip-002.jpg"), edited.clone(), fresh.clone()].into_iter().collect();
+
+        // News: the renamed photo from somewhere else, the edited one, and
+        // the one nothing has ever hashed. Not the book's own two.
+        assert_eq!(count_new_photos(&db, &all, &known).unwrap(), 3);
+
+        let renamed: BTreeSet<String> = [at("Trip-001.jpg")].into_iter().collect();
+        assert_eq!(
+            count_new_photos(&db, &renamed, &known).unwrap(),
+            0,
+            "a photo the book has, under a new name, is not news"
+        );
+        let renamed_stranger: BTreeSet<String> = [at("Trip-002.jpg")].into_iter().collect();
+        assert_eq!(
+            count_new_photos(&db, &renamed_stranger, &known).unwrap(),
+            1,
+            "a renamed photo the book never took is still news"
+        );
+    }
+
+    /// Renaming or re-copying a photo gives it a path nothing has hashed,
+    /// but the file is the same one and the book already has it. Every such
+    /// file used to count as new, so a batch rename after building a book
+    /// left a "new photos" notice that re-analysing could never clear.
+    #[test]
+    fn photo_is_new_recognizes_a_photo_that_only_moved() {
+        let known: HashSet<String> = ["aaa".to_string()].into_iter().collect();
+        let now = stamp(10, 20);
+
+        // No row for this path, but this size and modified time were hashed
+        // under another one, and that hash is the book's: not new.
+        assert!(!photo_is_new(Some(now), None, &["aaa".to_string()], &known));
+        // Same, for a hash the book never took -- a photo from another book's
+        // folder, copied in: new.
+        assert!(photo_is_new(Some(now), None, &["bbb".to_string()], &known));
+        // The path's OWN row wins when it is current, even against a match
+        // that would say otherwise: it is the exact answer for this file.
+        assert!(photo_is_new(Some(now), Some((now, "bbb".to_string())), &["aaa".to_string()], &known));
     }
 
     #[test]
@@ -3041,17 +3147,18 @@ mod tests {
         // Same path, same recorded hash, but the file is a different size
         // now -- the hash on record no longer describes it, so what is on
         // disk is something the book has not seen.
-        assert!(photo_is_new(Some(stamp(11, 20)), Some((stamp(10, 20), "aaa".to_string())), &known));
+        assert!(photo_is_new(Some(stamp(11, 20)), Some((stamp(10, 20), "aaa".to_string())), &[], &known));
         // A touch that only moved the modified time counts the same way.
-        assert!(photo_is_new(Some(stamp(10, 99)), Some((stamp(10, 20), "aaa".to_string())), &known));
+        assert!(photo_is_new(Some(stamp(10, 99)), Some((stamp(10, 20), "aaa".to_string())), &[], &known));
     }
 
     #[test]
     fn photo_is_new_says_no_for_a_file_it_cannot_stat() {
         // An unreadable file is not an invitation to re-analyse anything.
         let known = HashSet::new();
-        assert!(!photo_is_new(None, None, &known));
-        assert!(!photo_is_new(None, Some((stamp(10, 20), "aaa".to_string())), &known));
+        assert!(!photo_is_new(None, None, &[], &known));
+        assert!(!photo_is_new(None, Some((stamp(10, 20), "aaa".to_string())), &[], &known));
+        assert!(!photo_is_new(None, None, &["aaa".to_string()], &known));
     }
 
     #[test]
@@ -3100,6 +3207,10 @@ mod tests {
         assert_eq!(import_index(&known, "zzz"), None);
     }
 
+    /// The scan walks nested folders, skips hidden directories and AppleDouble
+    /// files, ignores non-images, and returns a sorted list -- asserted on a
+    /// real temporary tree rather than a mock, so the recursion, the hidden-
+    /// directory rule and the file filter are all exercised on disk.
     #[test]
     fn collect_photo_paths_walks_nested_folders_and_skips_hidden_and_apple_double() {
         let dir = tempfile::tempdir().unwrap();
