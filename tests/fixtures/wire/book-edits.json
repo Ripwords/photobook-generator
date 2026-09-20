@@ -71,7 +71,29 @@
       "gutterIn": 0.4,
       "safeMarginIn": 0.05,
       "minDpi": 150.0,
-      "warnDpi": 220.0
+      "warnDpi": 220.0,
+      "coverWrapIn": 0.6
     }
+  },
+  {
+    "kind": "setCoverPhoto",
+    "side": "front",
+    "photo": 7
+  },
+  {
+    "kind": "setCoverPhoto",
+    "side": "back",
+    "photo": null
+  },
+  {
+    "kind": "setCoverCrop",
+    "side": "back",
+    "x": 0.125,
+    "y": 0.0625,
+    "w": 0.5
+  },
+  {
+    "kind": "setSpineColour",
+    "rgb": "#1a2b3c"
   }
 ]

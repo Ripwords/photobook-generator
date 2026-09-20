@@ -6,6 +6,7 @@ pub mod commands;
 pub mod db;
 pub mod export;
 pub mod geometry;
+pub mod place_names;
 pub mod preview;
 pub mod print_spec;
 pub mod project;
@@ -49,6 +50,8 @@ pub fn run() {
             commands::delete_draft,
             commands::apply_photo_overrides,
             commands::recommend_book,
+            commands::place_chapters,
+            commands::place_names,
             commands::generate_book,
             commands::default_print_spec,
             commands::check_print_spec,
@@ -65,6 +68,7 @@ pub fn run() {
             commands::cancel_model_request,
             commands::edit_book,
             commands::slot_candidates,
+            commands::cover_candidates,
             commands::delete_project,
             commands::restore_project,
             commands::rename_project,

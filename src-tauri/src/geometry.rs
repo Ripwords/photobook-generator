@@ -90,6 +90,18 @@ pub enum Side {
     Right,
 }
 
+/// Which face of the case-bound cover a photo prints on.
+///
+/// Not a `Side`: the front panel's spine is on its LEFT, like a right-hand
+/// page's fold, and reusing `Side::Right` for "front" would make every call
+/// site read backwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CoverSide {
+    Front,
+    Back,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BleedEdge {

@@ -1,3 +1,4 @@
+use crate::book::chapter::LatLon;
 use crate::geometry::Rect;
 use serde::{Deserialize, Serialize};
 
@@ -59,6 +60,8 @@ pub struct Photo {
     /// Vision's image feature print, compared with
     /// `cluster::feature_distance`. `None` when Vision produced none.
     pub feature_print: Option<Vec<f32>>,
+    /// EXIF GPS fix. `None` when the photo has none, which is ordinary.
+    pub location: Option<LatLon>,
 }
 
 impl Photo {
@@ -243,6 +246,10 @@ fn parse_features(v: &serde_json::Value, derived: Derived) -> Option<Photo> {
         clipped_low: v["clippedLow"].as_f64()?,
         clipped_high: v["clippedHigh"].as_f64()?,
         feature_print,
+        location: v["exif"]["latitude"]
+            .as_f64()
+            .zip(v["exif"]["longitude"].as_f64())
+            .and_then(|(lat, lon)| LatLon::new(lat, lon)),
     })
 }
 
@@ -509,6 +516,7 @@ mod tests {
             scene_tags: Vec::new(),
             captured_at: None,
             clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
+            location: None,
         }
     }
 
@@ -898,6 +906,24 @@ mod tests {
         let p = from_features(&v).expect("well-formed record");
         assert!(p.saliency_box.is_none());
         assert_eq!(p.capture_quality, None);
+    }
+
+    #[test]
+    fn cull_from_features_reads_a_gps_fix_and_tolerates_none() {
+        let with = |exif: serde_json::Value| {
+            let mut v = full_record();
+            v["exif"] = exif;
+            from_features(&v).expect("GPS is optional, never a refusal").location
+        };
+        let fix = with(serde_json::json!({"latitude": 35.0116, "longitude": 135.7681})).unwrap();
+        assert_eq!((fix.lat(), fix.lon()), (35.0116, 135.7681));
+        assert_eq!(with(serde_json::json!({"latitude": -33.86, "longitude": 151.2})).map(|p| p.lat()), Some(-33.86));
+        assert_eq!(with(serde_json::json!({})), None);
+        assert_eq!(with(serde_json::json!({"latitude": 35.0})), None, "half a fix is no fix");
+        assert_eq!(with(serde_json::json!({"latitude": -0.0, "longitude": -0.0})), None, "DJI's no-lock value");
+        let mut no_exif = full_record();
+        no_exif.as_object_mut().unwrap().remove("exif");
+        assert_eq!(from_features(&no_exif).unwrap().location, None);
     }
 
     /// A complete finalized record, as the only fixture the strictness tests

@@ -30,7 +30,9 @@ you are. Right-click a book there for the same menu the library gives it (see be
 **Settings** has three tabs. **General** sets the appearance (System, Light or Dark),
 manages storage, and lists the shortcuts above. **API keys** is where the chat's keys are saved. **About**
 shows the version and what leaves this Mac: no image ever does, and the chat sends only a
-description of the book (its layouts, page numbers and photo tags). **About** also holds
+description of the book (its layouts, page numbers and photo tags). With **Split chapters
+by place** on, each chapter's centre (a latitude and longitude, never a photo) goes to Apple
+to name its town, and nothing goes with the switch off. **About** also holds
 updates. **Check for updates** asks now and answers either way, and a waiting update shows
 its version and release notes there with **Install and restart** beside **Not now**. When
 the quiet launch check is the one that found it, a dot appears on **Settings** in the
@@ -101,6 +103,24 @@ counts and a key to the marks on the tiles. **Choose different folders** at the 
 again from other folders. The app recommends the shortest Pixajoy length that fits the keepers and says
 how many each length would leave out.
 
+**Split chapters by place**, under **Print size**, is off for a new book. The book is laid
+out in chapters, one per event, and with the switch off a chapter ends only at a break of more
+than four hours. With it on, a chapter also ends when you move to another town, so a day in
+Kyoto and an evening in Osaka are separate chapters on separate spreads. A chapter too small to
+fill a spread of its own, such as one photo taken from a train, still joins its neighbour. Two places count
+as different towns when they are more than 25 km apart, which keeps a whole city as one
+chapter. One stray location does not start a chapter: the photo after it has to be far away
+too. The contact sheet regroups as soon as you switch it on. It uses the location your camera
+or phone recorded in each photo. Photos with no location stay in the chapter they were taken
+in. When none of the photos has a location, the switch is disabled and says so.
+
+With the switch on, the contact sheet titles each chapter with its town, such as **Kyoto
+5 photos**. To find the town, the app sends the centre of each chapter, as a latitude and
+longitude, to Apple's map service. It never sends a photo, and it sends nothing while the
+switch is off. Names are kept on this Mac, so reopening a draft asks Apple nothing new. A
+chapter Apple cannot name, or any chapter while this Mac is offline, keeps its number, such
+as **Event 3**.
+
 The book aims for variety over density. It places about four photos per spread, so a
 40-page book places around 85 rather than the 130 its layouts could squeeze in, and it mixes
 sparse spreads with the occasional six-up. Photos taken within two minutes of each other
@@ -119,12 +139,14 @@ analyse at once, taking turns. When one finishes while you are elsewhere, a noti
 ready, with **Open** to go to it. The trash button at the top right of the draft,
 **Discard draft**, throws it away after asking.
 
-Drafts are saved as you go, with their names, folders and your choices, and come back when
+Drafts are saved as you go, with their names, folders, print size, **Split chapters by
+place** and your choices, and come back when
 the app is reopened. A draft that was still analysing when you quit starts again; the
 analysis is cached, so photos it already reached are quick.
 
 Arriving here from **Edit photos** on a saved book is the same screen, as a draft named after
-that book, with its decisions restored once the analysis is done (**Edit photos** again
+that book, with its decisions, print size and **Split chapters by place** restored once the
+analysis is done (**Edit photos** again
 reopens the same draft), and the generate control becomes two: **Update "<name>"** replaces the
 saved book (its export history goes with it), **Save as a new photobook** keeps both.
 Choosing different folders makes it a new book again, since a book built from a different
@@ -179,12 +201,46 @@ and swap** to go back to swapping and cropping. A change that would cut a face, 
 gutter or the safe margin, or print below the book's lowest print resolution is refused with
 the reason, and the book stays as it was.
 
+**The cover** sits above page 1, laid flat the way it prints: the back cover on the left, the
+spine in the middle and the front cover on the right. Each side is drawn at the real shape
+of one cover panel, which is the finished board plus the **wrap**, the band of photo that
+runs past the trim on the top, bottom and outer edge and folds under the board (see **Cover
+wrap** under **Print size** below). The wrap is shaded: it prints but never shows on the
+finished book, so nothing that matters should sit in it. The red dashed line is where the
+board ends and the blue one is the safe margin inside it, as on the pages. There is no wrap
+at the spine edge, because that edge does not fold. The spine is drawn at a nominal width in
+its colour, because Pixajoy publishes no formula for how wide it prints.
+
+Generating a book fills the cover for you: the front gets the best-looking photo the book
+keeps that fits the panel, the back gets the next best, from a different part of the trip
+when there is one, and the spine takes the front photo's main colour. Both cover photos are
+optional. A book saved before the cover existed opens with none and a white spine, and either side can be
+emptied. An empty side reads **Choose a front
+cover photo** (or back); click it to open the same photo dialog as a page, titled **Choose
+the front cover photo**, with every analysed photo shown cropped to the cover's shape.
+Any photo can go on the cover, including one already on a page: the cover uses a copy and
+the pages are left alone. Pick one and press **Use on the front cover**, or double-click it.
+A photo that would put a face in the wrap or too near the board's edge, cut a face, or print
+too small for the panel is dimmed with the reason and cannot be picked. Click a cover photo
+to change it, or to take it off with **Remove** at the bottom of the dialog. Drag a cover
+photo to move its crop and hold ⌘ and scroll over it to zoom, exactly as on a page; a crop
+that would cut a face, push one into the wrap or too near the board's edge, or zoom in below
+the lowest print resolution is refused with the reason, and the cover stays as it was.
+
+**Spine colour**, above the cover on the right, opens the system colour picker; the chosen
+colour is shown beside it as a hex value (for example `#8a5a2b`) and fills the spine in the
+drawing. It is one plain colour. The app offers no suggested swatches.
+
 **Print size.** Click the size at the left of the bottom bar to open the **Print size** panel
 beside the book. It holds what a printer publishes: the **Book size** (width and height of
 the finished page after trimming), the **Bleed** on the three outer edges, the **Safe margin**
 inside the trim and the **Fold** strip measured in from the binding, and the **Lowest** and
 **Target** print resolution in DPI. Below the lowest, export stops; below the target, it
-warns. **in** and **mm** at the top switch every length between inches and millimetres; that
+warns. Under **Cover**, **Cover wrap** is how far the front and back cover photos run past
+the trim to fold around the board, on the top, bottom and outer edge but not at the spine
+(Pixajoy: 0.75 in, at most 3 in). It sets the shape the cover photos are cropped to, and
+faces are kept out of the part that folds under. A book or draft saved before this field
+existed opens with 0.75 in. **in** and **mm** at the top switch every length between inches and millimetres; that
 is a display choice only and never changes the book. At the top of the panel, a drawing of
 one spread labels the trimmed width and height and shades the bleed (red), safe margin (blue)
 and fold (amber) in the same colours as the editor's guides, with each value in the legend.
@@ -199,7 +255,10 @@ leaves no room for photos, a target resolution at or under the lowest) is refuse
 reason and **Change print size** stays disabled. When the dry run finds problems the button
 reads **Change print size anyway**: the change is always allowed, and export will block
 until they are fixed. Applying keeps every layout, lock, swap and moved box; only the crops
-are recomputed when the page's shape changed, including crops you adjusted by hand.
+are recomputed when the page's shape changed, including crops you adjusted by hand. The
+cover photos are kept too, and re-cropped the same way when the cover panel's shape changed
+(a new book size or cover wrap); the panel says which crops a change will recompute before
+you apply it.
 **Shuffle** or **Regenerate** re-lay openings against the new size if you want that.
 **Reset to Pixajoy 11 x 8.5** appears once the numbers differ from the default.
 
@@ -211,6 +270,23 @@ from the last book's size is a possible later change, not an oversight.
 
 **Export** opens a sheet from the right. Choose an output folder and export. Pre-flight
 runs first, at the book's print size; anything that would print badly blocks the export and
-is listed in the sheet. The output is one cropped file per photo placement plus a
-`manifest.json` saying what went where, ready to upload to the printer.
+is listed in the sheet. It checks each cover photo too, and its findings name the side
+instead of a page: a cover photo whose source file has moved, or whose face would fall in
+the wrap or be cut, blocks the export, and one that resolves below the lowest print
+resolution across the whole panel blocks it, while one below the target only warns. The
+output is one cropped file per photo placement plus a `manifest.json` saying what went where,
+ready to upload to the printer. Each cover photo is written as its own file, cropped to the
+full panel including the wrap, named `cover-front-` or `cover-back-` followed by the start of
+the photo's hash (for example `cover-front-3fa9c21b.jpg`), so both sort ahead of the pages.
+A JPEG or HEIC source is written as `.jpg` and any other source, a RAW file included, as
+`.png`, the same as the page files.
+The manifest's `cover` entry records the panel size in inches (`panel_w_in`, `panel_h_in`),
+each side's file, source and crop (`null` for a side with no photo), and the spine colour as
+`spine_hex`.
+
+**Pixajoy.** Pixajoy's cover is set up in its own cover editor, not uploaded with the pages.
+Upload the `cover-front-` and `cover-back-` files there and place each on its side, then set
+the spine colour to the `spine_hex` value from the manifest. Pixajoy publishes no formula for
+the spine's width, so the app does not produce a spine image or a single wrap-around file;
+the spine is Pixajoy's to size.
 

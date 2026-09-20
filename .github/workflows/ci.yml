@@ -30,6 +30,11 @@ jobs:
       - name: Lint
         if: ${{ !cancelled() }}
         run: bun run lint
+      # The only step that checks TYPES inside a Vue template; neither lint nor
+      # the build check reads one.
+      - name: Type check
+        if: ${{ !cancelled() }}
+        run: bun run typecheck
       # The only step that compiles .vue files; lint and vitest never parse a
       # Vue template.
       - name: Build check (nuxt generate)

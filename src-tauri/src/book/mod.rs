@@ -5,6 +5,8 @@
 //! follows in `finalize_photos`, `analyze_batches`, `lookup_cache`,
 //! `percentiles` and `imageNormalizedTopLeft`.
 
+pub mod chapter;
+pub mod cover;
 pub mod crop;
 pub mod cull;
 pub mod edit;

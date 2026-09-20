@@ -28,6 +28,7 @@
  * `tests/fixtures/wire/book-layout.json` that Rust asserts itself against.
  */
 
+import type { BookOptions } from "./book";
 import type { PrintSpec } from "./printSpec";
 
 /** Mirrors `geometry::Rect`, which serialises its fields unrenamed. */
@@ -127,12 +128,46 @@ export interface BookLayout {
    * below is what the preview draws, derived from it in Rust.
    */
   spec: PrintSpec;
+  /** The book's own options, carried into its draft by "Edit photos" like `spec`. */
+  options: BookOptions;
   geometry: PreviewGeometry;
   /** Every analysed photo, in the order `photoIndex` indexes. */
   photos: PreviewPhoto[];
   pages: PreviewPage[];
   /** One entry per opening, in `toSpreads` order -- see `openingFor`. */
   openings: PreviewOpening[];
+  cover: PreviewCover;
+}
+
+/**
+ * Mirrors `preview::PreviewCover`. `aspect` and each `visible` rect come from
+ * the book's spec in Rust, like the page guides, and are never re-derived here.
+ */
+export interface PreviewCover {
+  /** Panel width over height in inches: the shape a cover crop is cut to. */
+  aspect: number;
+  /** Lowercase `#rrggbb`. */
+  spine: string;
+  front: PreviewCoverSide;
+  back: PreviewCoverSide;
+}
+
+/** Mirrors `preview::PreviewCoverSide`. */
+export interface PreviewCoverSide {
+  /** Panel-normalised: the finished board. The rest of the panel is wrap, which folds under. */
+  board: PreviewRect;
+  /** Panel-normalised: what shows on the finished board, less the safe margin. */
+  visible: PreviewRect;
+  photo: PreviewCoverPhoto | null;
+}
+
+/** Mirrors `preview::PreviewCoverPhoto`. */
+export interface PreviewCoverPhoto {
+  /** Indexes `BookLayout.photos`. */
+  photoIndex: number;
+  crop: PreviewRect;
+  /** Built by `export::cover_filename`; `null` only when the index is out of range. */
+  filename: string | null;
 }
 
 /**
@@ -186,7 +221,16 @@ export type BookEdit =
    * Deliberately absent from `app/agent/tools.ts`: the chat agent edits
    * layouts, it does not get to change what book the user is buying.
    */
-  | { kind: "setPrintSpec"; spec: PrintSpec };
+  | { kind: "setPrintSpec"; spec: PrintSpec }
+  /** Put any analysed photo on one side of the cover, or clear it with `null`. */
+  | { kind: "setCoverPhoto"; side: CoverSide; photo: number | null }
+  /** A hand crop on the cover; Rust derives the height from the cover panel. */
+  | { kind: "setCoverCrop"; side: CoverSide; x: number; y: number; w: number }
+  /** The plain spine colour, `#rrggbb`. */
+  | { kind: "setSpineColour"; rgb: string };
+
+/** Mirrors `geometry::CoverSide`. */
+export type CoverSide = "front" | "back";
 
 /** Mirrors `score::Rejection`: the hard constraints an edit can break. */
 export type Rejection = "faceClipped" | "faceInGutter" | "faceInSafeMargin" | "tooLowResolution";
@@ -213,16 +257,25 @@ export interface PreviewSpread {
   label: string;
 }
 
-/** CSS for an absolutely positioned box inside the page. */
-export interface BoxStyle {
+/**
+ * CSS for an absolutely positioned box inside the page.
+ *
+ * A type alias, not an interface, and that is load-bearing. Vue's
+ * `CSSProperties` carries a `` `--${string}` `` index signature for custom
+ * properties, and TypeScript grants an implicit index signature to an object
+ * type alias but never to an interface. As an interface this is not assignable
+ * to `:style` at all, which is how it went unchecked until `bun run typecheck`
+ * existed.
+ */
+export type BoxStyle = {
   left: string;
   top: string;
   width: string;
   height: string;
-}
+};
 
-/** CSS for the `<img>` inside a slot. */
-export interface CropStyle {
+/** CSS for the `<img>` inside a slot. A type alias for the reason `BoxStyle` is. */
+export type CropStyle = {
   width: string;
   height: string;
   /**
@@ -234,7 +287,7 @@ export interface CropStyle {
    */
   maxWidth: string;
   transform: string;
-}
+};
 
 /** One drawable slot: which photo, where on the page, and which part of it. */
 export interface PreviewSlot {
@@ -561,6 +614,11 @@ export function setCropEdit(placement: PlacementRef, crop: PreviewRect): BookEdi
   return { kind: "setCrop", placement, x: crop.x, y: crop.y, w: crop.w };
 }
 
+/** `setCropEdit` for a cover photo. */
+export function setCoverCropEdit(side: CoverSide, crop: PreviewRect): BookEdit {
+  return { kind: "setCoverCrop", side, x: crop.x, y: crop.y, w: crop.w };
+}
+
 function clamp(value: number, lo: number, hi: number): number {
   return Math.min(Math.max(value, lo), Math.max(lo, hi));
 }
@@ -688,6 +746,13 @@ function takenAt(row: CandidateRow): number {
   return row.photo.capturedAt ?? Number.POSITIVE_INFINITY;
 }
 
+/**
+ * What the photo picker fills: a slot on a page, which trades places with a
+ * photo already in the book, or one side of the cover, which takes a copy and
+ * leaves the pages alone.
+ */
+export type PickTarget = { kind: "slot"; placement: PlacementRef } | { kind: "cover"; side: CoverSide };
+
 export type CandidateFilter = "leftOut" | "inBook" | "all";
 export type CandidateSort = "best" | "taken";
 
@@ -701,9 +766,9 @@ export interface CandidateRow {
   refused: Rejection | null;
   /** Where the photo already is, or `null` when it was left out. */
   placedAt: PlacementRef | null;
-  /** The photo the slot holds now. */
+  /** The photo the target holds now. */
   current: boolean;
-  /** Placed on a locked opening, so a swap with it would be refused. */
+  /** Placed on a locked opening, so a swap with it would be refused. Never set for the cover. */
   locked: boolean;
 }
 
@@ -716,10 +781,11 @@ export interface CandidateRow {
 export function replaceCandidates(
   layout: BookLayout,
   candidates: readonly SlotCandidate[],
-  target: PlacementRef,
+  target: PickTarget,
   filter: CandidateFilter,
   sort: CandidateSort,
 ): CandidateRow[] {
+  const coverPhoto = target.kind === "cover" ? layout.cover[target.side].photo?.photoIndex : undefined;
   const placed = new Map<number, { at: PlacementRef; locked: boolean }>();
   toSpreads(layout.pages).forEach((opening, index) => {
     const locked = openingFor(layout, index).locked;
@@ -744,8 +810,11 @@ export function replaceCandidates(
       crop: candidate.crop,
       refused: candidate.refused,
       placedAt: where?.at ?? null,
-      current: where !== undefined && samePlacement(where.at, target),
-      locked: where?.locked ?? false,
+      current:
+        target.kind === "cover"
+          ? index === coverPhoto
+          : where !== undefined && samePlacement(where.at, target.placement),
+      locked: target.kind === "slot" && (where?.locked ?? false),
     });
   });
 
@@ -756,6 +825,22 @@ export function replaceCandidates(
   );
 }
 
+/** The target's printed shape, so every tile is framed the way the book frames it. */
+export function pickAspect(layout: BookLayout, target: PickTarget): number {
+  if (target.kind === "cover") return layout.cover.aspect;
+  const page = layout.pages.find((p) => p.number === target.placement.page);
+  const rect = page?.placements.find((p) => p.z === target.placement.z)?.slotRect;
+  if (!rect) return 1;
+  return (rect.w * layout.geometry.pageWIn) / (rect.h * layout.geometry.pageHIn);
+}
+
+/** The edit that puts photo `photo` on the target. */
+export function pickEdit(target: PickTarget, photo: number): BookEdit {
+  return target.kind === "cover"
+    ? { kind: "setCoverPhoto", side: target.side, photo }
+    : { kind: "replacePhoto", placement: target.placement, photo };
+}
+
 const REFUSALS: Record<Rejection, string> = {
   faceClipped: "A face would be cut off",
   faceInGutter: "A face would fall in the fold",
@@ -763,6 +848,9 @@ const REFUSALS: Record<Rejection, string> = {
   tooLowResolution: "Too low resolution to print this size",
 };
 
-export function refusalText(reason: Rejection): string {
+export function refusalText(reason: Rejection, on: PickTarget["kind"]): string {
+  if (on === "cover" && (reason === "faceInSafeMargin" || reason === "faceInGutter")) {
+    return "A face would fold under the board or sit too near its edge";
+  }
   return REFUSALS[reason];
 }

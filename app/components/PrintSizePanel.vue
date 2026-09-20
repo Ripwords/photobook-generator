@@ -247,6 +247,20 @@ function onApply() {
       </div>
     </section>
 
+    <section class="space-y-3" aria-labelledby="print-size-cover">
+      <h3 id="print-size-cover" class="text-sm font-medium text-highlighted">Cover</h3>
+      <UFormField
+        label="Cover wrap"
+        help="How far the cover photo folds around the board, on every edge but the spine."
+        :error="fieldError('coverWrap')"
+        size="sm"
+      >
+        <UInput v-model="fields.coverWrap" inputmode="decimal" :disabled="busy" class="w-full" @focus="active = 'coverWrap'" @blur="onBlur('coverWrap')">
+          <template #trailing><span class="text-xs text-muted">{{ unit }}</span></template>
+        </UInput>
+      </UFormField>
+    </section>
+
     <ul v-if="notes.length > 0" class="space-y-1 text-xs text-muted">
       <li v-for="note in notes" :key="note" class="flex gap-1.5">
         <UIcon name="i-lucide-info" class="mt-0.5 size-3.5 shrink-0" />
@@ -257,9 +271,7 @@ function onApply() {
     <!-- What applying would do to this book, from Rust's dry run. -->
     <div v-if="projectId !== null && summary" class="space-y-3 border-t border-default pt-4" :class="{ 'opacity-60': state.status === 'checking' }">
       <p class="text-sm text-default">{{ summary.text }}</p>
-      <p v-if="summary.recrops" class="text-xs text-muted">
-        Crops you adjusted by hand are recomputed for the new page shape.
-      </p>
+      <p v-if="summary.recropNote" class="text-xs text-muted">{{ summary.recropNote }}</p>
       <PreflightFindings :blocking="summary.blocking" :warnings="summary.warnings" />
     </div>
 

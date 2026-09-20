@@ -51,6 +51,7 @@ fn photo(i: usize, event: u32) -> Photo {
         sharpness_pct: ((i * 53) % 100) as u8,
         near_dup_cluster: i as u32,
         event_cluster: event,
+        location: None,
         faces: Vec::new(),
         face_area_fraction: 0.0,
         saliency_box: None,

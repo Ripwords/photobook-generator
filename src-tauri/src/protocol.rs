@@ -14,6 +14,10 @@ pub enum RequestKind {
     /// `Request.export` for the payload and `export::build_items` for how
     /// Rust builds it from a `Book`.
     Export,
+    /// Names places: one name or null per `Request.coordinates` entry. The
+    /// only request whose data leaves the Mac, as coordinates sent to
+    /// Apple's geocoder, so only `commands::place_names` sends it.
+    Geocode,
 }
 
 /// One photo to crop and write, as decided by the Rust layout engine.
@@ -76,6 +80,9 @@ pub struct Request {
     /// matching every other field on this struct.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub export: Option<ExportRequest>,
+    /// Payload for `.geocode` requests, as `[lat, lon]` pairs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coordinates: Option<Vec<crate::book::chapter::LatLon>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +98,8 @@ pub enum ResponseResult {
     /// early would just be a second place the `type` tag could drift from
     /// Swift's.
     Exported(Vec<serde_json::Value>),
+    /// One town name or `None` per coordinate, in request order.
+    Geocoded(Vec<Option<String>>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,7 +114,7 @@ mod tests {
 
     #[test]
     fn serializes_ping_request_as_single_line() {
-        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None, export: None };
+        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None, export: None, coordinates: None };
         let line = serde_json::to_string(&req).unwrap();
         assert!(!line.contains('\n'));
         assert!(line.contains("\"kind\":\"ping\""));
@@ -122,6 +131,7 @@ mod tests {
             paths: Some(vec!["/p.jpg".into()]),
             thumbnail_dir: Some("/cache/thumbnails".into()),
             export: None,
+            coordinates: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(line.contains(r#""thumbnailDir":"/cache/thumbnails""#));
@@ -132,7 +142,7 @@ mod tests {
     /// matching how `paths` is already omitted for ping requests.
     #[test]
     fn omits_thumbnail_dir_when_absent() {
-        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None, export: None };
+        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None, export: None, coordinates: None };
         let line = serde_json::to_string(&req).unwrap();
         assert!(!line.contains("thumbnailDir"));
     }
@@ -145,6 +155,7 @@ mod tests {
             paths: Some(vec!["/p.arw".into()]),
             thumbnail_dir: None,
             export: None,
+            coordinates: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(line.contains("\"kind\":\"benchmark\""));
@@ -248,6 +259,7 @@ mod tests {
             paths: None,
             thumbnail_dir: None,
             export: None,
+            coordinates: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(line.contains("\"kind\":\"export\""));
@@ -302,6 +314,7 @@ mod tests {
             paths: None,
             thumbnail_dir: None,
             export: None,
+            coordinates: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(!line.contains("\"export\""));
@@ -329,6 +342,7 @@ mod tests {
                     crop_h: 1.0,
                 }],
             }),
+            coordinates: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(line.contains(r#""outputDir":"/tmp/out""#), "{line}");
@@ -361,6 +375,43 @@ mod tests {
                 assert_eq!(records[1]["filename"], "p04-z2-ef567890");
             }
             other => panic!("expected exported, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn serializes_a_geocode_request_as_lat_lon_pairs() {
+        use crate::book::chapter::LatLon;
+        let req = Request {
+            id: "g".into(),
+            kind: RequestKind::Geocode,
+            paths: None,
+            thumbnail_dir: None,
+            export: None,
+            coordinates: Some(vec![LatLon::new(35.01, 135.77).unwrap(), LatLon::new(64.15, -21.94).unwrap()]),
+        };
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(line.contains(r#""kind":"geocode""#), "{line}");
+        assert!(line.contains(r#""coordinates":[[35.01,135.77],[64.15,-21.94]]"#), "{line}");
+    }
+
+    #[test]
+    fn omits_coordinates_when_absent() {
+        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None, export: None, coordinates: None };
+        assert!(!serde_json::to_string(&req).unwrap().contains("coordinates"));
+    }
+
+    /// Swift answers a failed lookup with a null in that position. A reader
+    /// that dropped nulls would slide every later name onto the wrong chapter.
+    #[test]
+    fn deserializes_geocoded_names_keeping_each_null_in_place() {
+        let line = r#"{"id":"g","result":{"type":"geocoded","data":[null,"Kyoto",null,"Reykjavík"]}}"#;
+        let res: Response = serde_json::from_str(line).unwrap();
+        match res.result {
+            ResponseResult::Geocoded(names) => assert_eq!(
+                names,
+                vec![None, Some("Kyoto".to_string()), None, Some("Reykjavík".to_string())]
+            ),
+            other => panic!("expected geocoded, got {other:?}"),
         }
     }
 }

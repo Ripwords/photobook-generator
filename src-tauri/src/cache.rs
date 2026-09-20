@@ -662,10 +662,12 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let book = crate::book::pace::Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
             pages: vec![],
+            options: Default::default(),
         };
         let mut overrides = Overrides::new();
         overrides.set("book-override", Override::Exclude);

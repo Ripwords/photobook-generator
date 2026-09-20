@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { effectScope, nextTick, toRef } from "vue";
 import type { AnalysisEvent, AnalysisSummary, AnalyzedPhoto } from "../app/types/features";
@@ -12,6 +14,7 @@ const SQUARE: PrintSpec = {
   safeMarginIn: 0.2,
   minDpi: 180,
   warnDpi: 260,
+  coverWrapIn: 0.5,
 };
 
 /**
@@ -414,6 +417,61 @@ describe("analysis jobs", () => {
         ["Old", null],
         ["Torn", null],
       ]);
+    });
+
+    it("brings a draft's Places option back after a restart", async () => {
+      const before = createAnalysisJobs();
+      await before.restoreDrafts();
+      const id = before.startJob({ name: "Kansai", folders: ["/k"] });
+      before.setOptions(id, { places: true });
+      await settle();
+
+      const after = createAnalysisJobs();
+      await after.restoreDrafts();
+      expect(after.jobs.value[0]!.options).toStrictEqual({ places: true });
+    });
+
+    it("keeps a re-edited book's options on its draft", () => {
+      const store = createAnalysisJobs();
+      const id = store.startJob({
+        name: "Kansai",
+        folders: ["/k"],
+        replacing: { id: 4, name: "Kansai" },
+        options: { places: true },
+      });
+      expect(store.find(id)!.options).toStrictEqual({ places: true });
+    });
+
+    it("reads a draft saved before options existed, or with torn ones, as every option off", async () => {
+      savedDrafts.set(3, JSON.stringify({ id: 3, name: "Old", folders: ["/f"], replacing: null, overrides: {} }));
+      savedDrafts.set(4, JSON.stringify({ id: 4, name: "Torn", folders: ["/f"], replacing: null, overrides: {}, options: { places: "yes" } }));
+      savedDrafts.set(5, JSON.stringify({ id: 5, name: "On", folders: ["/f"], replacing: null, overrides: {}, options: { places: true } }));
+
+      const store = createAnalysisJobs();
+      await store.restoreDrafts();
+
+      expect(store.jobs.value.map((job) => [job.name, job.options])).toEqual([
+        ["Old", { places: false }],
+        ["Torn", { places: false }],
+        ["On", { places: true }],
+      ]);
+    });
+
+    /**
+     * A spec saved before the cover wrap existed has seven keys. Rust loads
+     * it with Pixajoy's wrap; the draft reader must agree, and the shared
+     * fixture is what keeps the two defaults the same number.
+     */
+    it("reads a print size saved before the cover wrap existed with the engine's default wrap", async () => {
+      const fixture = JSON.parse(
+        readFileSync(fileURLToPath(new URL("./fixtures/wire/legacy-print-spec.json", import.meta.url)), "utf8"),
+      ) as { legacy: unknown; loadsAs: PrintSpec };
+      savedDrafts.set(5, JSON.stringify({ id: 5, name: "Before covers", folders: ["/f"], replacing: null, overrides: {}, spec: fixture.legacy }));
+
+      const store = createAnalysisJobs();
+      await store.restoreDrafts();
+
+      expect(store.jobs.value[0]!.spec).toStrictEqual(fixture.loadsAs);
     });
 
     it("skips a saved draft it cannot read", async () => {

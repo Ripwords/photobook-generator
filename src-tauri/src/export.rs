@@ -7,6 +7,7 @@
 
 use crate::book::cull::Photo;
 use crate::book::pace::Book;
+use crate::geometry::{CoverSide, Rect};
 use crate::protocol::ExportItem;
 
 /// How many hex characters of a photo's content hash go into its output
@@ -44,6 +45,17 @@ pub(crate) fn output_filename(page_number: u32, z: u32, hash: &str) -> String {
     format!("p{:02}-z{}-{}", page_number, z, hash_prefix(hash))
 }
 
+/// The output basename for one side of the cover. It cannot collide with a
+/// page's name, which always starts with `p`, and it sorts ahead of every
+/// page, where a reader of the output folder looks for the cover first.
+pub(crate) fn cover_filename(side: CoverSide, hash: &str) -> String {
+    let side = match side {
+        CoverSide::Front => "front",
+        CoverSide::Back => "back",
+    };
+    format!("cover-{side}-{}", hash_prefix(hash))
+}
+
 /// Predicts the container the sidecar's `Exporter.outputFormat` will choose
 /// for a source file, from its extension alone.
 ///
@@ -78,23 +90,31 @@ pub(crate) fn predicted_format(source_path: &str) -> &'static str {
 /// lays placements in, so no separate sort is needed here. `photos` is the
 /// ORIGINAL slice `Placement::photo_index` indexes into (see `pace.rs`'s doc
 /// comment on `photo_index`), not the culled subset.
+///
+/// Each side of the cover follows the pages as one more item. The sidecar
+/// only crops, so a cover file is its crop at the source's resolution, the
+/// same as a page's; the spine is a colour and has no file.
 pub fn build_items(book: &Book, photos: &[Photo]) -> Vec<ExportItem> {
-    book.pages
-        .iter()
-        .flat_map(|page| {
-            page.placements.iter().map(move |placement| {
-                let photo = &photos[placement.photo_index];
-                ExportItem {
-                    source_path: photo.path.clone(),
-                    filename: output_filename(page.number, placement.z, &photo.hash),
-                    crop_x: placement.crop.x,
-                    crop_y: placement.crop.y,
-                    crop_w: placement.crop.w,
-                    crop_h: placement.crop.h,
-                }
-            })
+    let item = |photo: &Photo, crop: &Rect, filename: String| ExportItem {
+        source_path: photo.path.clone(),
+        filename,
+        crop_x: crop.x,
+        crop_y: crop.y,
+        crop_w: crop.w,
+        crop_h: crop.h,
+    };
+    let pages = book.pages.iter().flat_map(|page| {
+        page.placements.iter().map(move |pl| {
+            let photo = &photos[pl.photo_index];
+            item(photo, &pl.crop, output_filename(page.number, pl.z, &photo.hash))
         })
-        .collect()
+    });
+    let cover = [CoverSide::Front, CoverSide::Back].into_iter().filter_map(|side| {
+        let c = book.cover.side(side)?;
+        let photo = &photos[c.photo_index];
+        Some(item(photo, &c.crop, cover_filename(side, &photo.hash)))
+    });
+    pages.chain(cover).collect()
 }
 
 #[cfg(test)]
@@ -102,6 +122,7 @@ mod tests {
     use super::*;
     use crate::print_spec::pixajoy_spec;
     use crate::book::pace::{Page, Placement};
+    use crate::book::cover::{Cover, CoverPhoto};
     use crate::geometry::{Rect, Side};
     use std::collections::HashSet;
 
@@ -124,6 +145,7 @@ mod tests {
             scene_tags: Vec::new(),
             captured_at: None,
             clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
+            location: None,
         }
     }
 
@@ -176,17 +198,90 @@ mod tests {
         assert_eq!(name, "p01-z1-ab");
     }
 
+    #[test]
+    fn cover_filename_names_the_side_and_sorts_ahead_of_every_page() {
+        let front = cover_filename(CoverSide::Front, "abcdef0123456789");
+        let back = cover_filename(CoverSide::Back, "0123456789abcdef");
+
+        assert_eq!(front, "cover-front-abcdef01");
+        assert_eq!(back, "cover-back-01234567");
+        assert!(front < output_filename(1, 1, "00000000"));
+        assert!(back < output_filename(1, 1, "00000000"));
+    }
+
     // --- build_items: shape and ordering -----------------------------------
+
+    /// Three distinct photos and crops, so a side that reads the other's photo
+    /// or crop names the wrong file.
+    #[test]
+    fn build_items_appends_each_cover_side_after_the_pages() {
+        let photos =
+            vec![photo("/a.jpg", "haaa1111"), photo("/b.jpg", "hbbb2222"), photo("/c.png", "hccc3333")];
+        let (front, back) = (Rect::new(0.1, 0.0, 0.7, 0.9), Rect::new(0.0, 0.05, 0.6, 0.8));
+        let book = Book {
+            spec: pixajoy_spec(),
+            options: Default::default(),
+            cover: Cover {
+                front: Some(CoverPhoto { photo_index: 1, crop: front }),
+                back: Some(CoverPhoto { photo_index: 2, crop: back }),
+                spine: Default::default(),
+            },
+            controls: Default::default(),
+            seed: 1,
+            dropped: 0,
+            pages: vec![page_with_placements(1, Side::Right, &[0])],
+        };
+
+        let items = build_items(&book, &photos);
+        let got: Vec<(&str, &str, Rect)> = items
+            .iter()
+            .map(|i| (i.source_path.as_str(), i.filename.as_str(), Rect::new(i.crop_x, i.crop_y, i.crop_w, i.crop_h)))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("/a.jpg", "p01-z1-haaa1111", Rect::new(0.1, 0.1, 0.5, 0.5)),
+                ("/b.jpg", "cover-front-hbbb2222", front),
+                ("/c.png", "cover-back-hccc3333", back),
+            ]
+        );
+    }
+
+    /// Either side may be left empty, so a one-sided cover must write ONE
+    /// cover file and not fall back to the other side's photo.
+    #[test]
+    fn build_items_writes_only_the_side_that_has_a_photo() {
+        let photos = vec![photo("/a.jpg", "haaa1111"), photo("/b.jpg", "hbbb2222")];
+        let book = Book {
+            spec: pixajoy_spec(),
+            options: Default::default(),
+            cover: Cover {
+                front: None,
+                back: Some(CoverPhoto { photo_index: 1, crop: Rect::new(0.0, 0.0, 1.0, 1.0) }),
+                spine: Default::default(),
+            },
+            controls: Default::default(),
+            seed: 1,
+            dropped: 0,
+            pages: vec![page_with_placements(1, Side::Right, &[0])],
+        };
+
+        let items = build_items(&book, &photos);
+        let names: Vec<&str> = items.iter().map(|i| i.filename.as_str()).collect();
+        assert_eq!(names, vec!["p01-z1-haaa1111", "cover-back-hbbb2222"]);
+    }
 
     #[test]
     fn build_items_produces_one_item_per_placement_in_book_order() {
         let photos = vec![photo("/a.jpg", "haaa1111"), photo("/b.jpg", "hbbb2222")];
         let book = Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
             pages: vec![page_with_placements(1, Side::Right, &[0, 1])],
+            options: Default::default(),
         };
         let items = build_items(&book, &photos);
         assert_eq!(items.len(), 2);
@@ -202,6 +297,7 @@ mod tests {
         let crop = Rect::new(0.05, 0.1, 0.6, 0.7);
         let book = Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
@@ -211,6 +307,7 @@ mod tests {
                 template_id: "t".into(),
                 placements: vec![placement(0, 1, crop)],
             }],
+            options: Default::default(),
         };
         let items = build_items(&book, &photos);
         assert_eq!(items[0].crop_x, crop.x);
@@ -224,6 +321,7 @@ mod tests {
         let photos = vec![photo("/a.jpg", "haaa1111")];
         let book = Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
@@ -231,6 +329,7 @@ mod tests {
                 Page { number: 1, side: Side::Right, template_id: "blank".into(), placements: Vec::new() },
                 page_with_placements(2, Side::Left, &[0]),
             ],
+            options: Default::default(),
         };
         let items = build_items(&book, &photos);
         assert_eq!(items.len(), 1);
@@ -276,7 +375,7 @@ mod tests {
                 &indices,
             ));
         }
-        let book = Book { spec: pixajoy_spec(), controls: Default::default(), seed: 1, dropped: 0, pages };
+        let book = Book { spec: pixajoy_spec(), cover: Default::default(), controls: Default::default(), seed: 1, dropped: 0, pages, options: Default::default() };
 
         let items = build_items(&book, &photos);
         assert!(items.len() > 40, "fixture must actually exercise many placements: {}", items.len());
@@ -312,7 +411,7 @@ mod tests {
             }
             pages.push(page_with_placements(page_number, Side::Right, &indices));
         }
-        let book = Book { spec: pixajoy_spec(), controls: Default::default(), seed: 1, dropped: 0, pages };
+        let book = Book { spec: pixajoy_spec(), cover: Default::default(), controls: Default::default(), seed: 1, dropped: 0, pages, options: Default::default() };
 
         let items = build_items(&book, &photos);
         let traversal_order: Vec<&str> = items.iter().map(|i| i.filename.as_str()).collect();

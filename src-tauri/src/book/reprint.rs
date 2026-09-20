@@ -42,6 +42,7 @@
 //! which is why a bleed, margin, fold or resolution edit leaves every crop
 //! byte-identical.
 
+use crate::book::cover;
 use crate::book::crop::choose_crop;
 use crate::book::cull::Photo;
 use crate::book::pace::Book;
@@ -82,6 +83,11 @@ pub fn reprint(book: &Book, photos: &[Photo], to: &PrintSpec) -> Reprint {
             }
         }
     }
+    // The cover panel is trim plus wrap, so a bleed or wrap edit reshapes it
+    // even when every page keeps its shape.
+    if cover_shape_changed(&book.spec, to) {
+        cover::recut(&mut next.cover, photos, to);
+    }
 
     // `u64::MAX` and an empty missing set: this is a question about geometry,
     // asked without a filesystem. A real export re-runs the full `preflight`,
@@ -101,13 +107,15 @@ pub fn reprint(book: &Book, photos: &[Photo], to: &PrintSpec) -> Reprint {
 /// someone typing millimetres. Structured, the panel renders it in the unit
 /// on screen.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum SpecCheck {
     Refused { error: SpecError },
     /// `geometry` is the guides the preview draws while the panel is open,
     /// so the page reshapes as the user types without TypeScript deriving a
-    /// single rect. `recrops` says whether applying re-cuts every crop.
-    Checked { geometry: PreviewGeometry, findings: Vec<Finding>, recrops: bool },
+    /// single rect. `recrops` says whether applying re-cuts every page crop,
+    /// `recrops_cover` whether it re-cuts the cover photos. A bleed or wrap
+    /// edit moves the second without the first.
+    Checked { geometry: PreviewGeometry, findings: Vec<Finding>, recrops: bool, recrops_cover: bool },
 }
 
 /// Validates `raw` through the one door, then -- when there is a laid-out
@@ -122,13 +130,16 @@ pub fn check(raw: RawPrintSpec, book: Option<(&Book, &[Photo])>) -> SpecCheck {
         Ok(spec) => spec,
         Err(error) => return SpecCheck::Refused { error },
     };
-    let (findings, recrops) = match book {
-        Some((book, photos)) => {
-            (reprint(book, photos, &spec).findings, page_shape_changed(&book.spec, &spec))
-        }
-        None => (Vec::new(), false),
+    let (findings, recrops, recrops_cover) = match book {
+        Some((book, photos)) => (
+            reprint(book, photos, &spec).findings,
+            page_shape_changed(&book.spec, &spec),
+            cover_shape_changed(&book.spec, &spec)
+                && (book.cover.front.is_some() || book.cover.back.is_some()),
+        ),
+        None => (Vec::new(), false, false),
     };
-    SpecCheck::Checked { geometry: preview_geometry(&spec), findings, recrops }
+    SpecCheck::Checked { geometry: preview_geometry(&spec), findings, recrops, recrops_cover }
 }
 
 /// Whether a slot's printed shape moves between two specs.
@@ -137,6 +148,10 @@ pub fn check(raw: RawPrintSpec, book: Option<(&Book, &[Photo])>) -> SpecCheck {
 /// so the rect cancels and one comparison answers for the whole book.
 fn page_shape_changed(from: &PrintSpec, to: &PrintSpec) -> bool {
     from.page_w_in() / from.page_h_in() != to.page_w_in() / to.page_h_in()
+}
+
+fn cover_shape_changed(from: &PrintSpec, to: &PrintSpec) -> bool {
+    from.cover_aspect() != to.cover_aspect()
 }
 
 /// A placement's rect as the scorer wants it. Role, bleed and `aspect_pref`
@@ -150,6 +165,7 @@ fn slot_for(rect: crate::geometry::Rect) -> Slot {
 mod tests {
     use super::*;
     use crate::book::cull::PaletteColor;
+    use crate::book::cover::CoverPhoto;
     use crate::book::pace::{Page, Placement};
     use crate::geometry::{Rect, Side};
     use crate::print_spec::{odd_spec, pixajoy_spec, RawPrintSpec};
@@ -166,6 +182,7 @@ mod tests {
             palette: Vec::<PaletteColor>::new(), capture_quality: None,
             scene_tags: Vec::new(), captured_at: None,
             clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
+            location: None,
         }
     }
 
@@ -182,6 +199,7 @@ mod tests {
         let ps = photos();
         Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: BTreeMap::new(),
             seed: 99,
             dropped: 3,
@@ -200,6 +218,7 @@ mod tests {
                     })
                     .collect(),
             }],
+            options: Default::default(),
         }
     }
 
@@ -218,6 +237,7 @@ mod tests {
             safe_margin_in: spec.safe_margin_in(),
             min_dpi: spec.min_dpi(),
             warn_dpi: spec.warn_dpi(),
+            cover_wrap_in: spec.cover_wrap_in(),
         }
     }
 
@@ -244,7 +264,12 @@ mod tests {
     fn check_without_a_book_returns_that_specs_guides_and_nothing_else() {
         assert_eq!(
             check(raw(&odd_spec()), None),
-            SpecCheck::Checked { geometry: preview_geometry(&odd_spec()), findings: vec![], recrops: false }
+            SpecCheck::Checked {
+                geometry: preview_geometry(&odd_spec()),
+                findings: vec![],
+                recrops: false,
+                recrops_cover: false,
+            }
         );
     }
 
@@ -254,7 +279,7 @@ mod tests {
     fn check_reports_what_applying_would_and_whether_crops_move() {
         let (b, ps) = (book(), photos());
         let big = spec_with(30.0, 24.0);
-        let SpecCheck::Checked { geometry, findings, recrops } = check(raw(&big), Some((&b, &ps))) else {
+        let SpecCheck::Checked { geometry, findings, recrops, .. } = check(raw(&big), Some((&b, &ps))) else {
             panic!("a valid spec was refused");
         };
         assert_eq!(geometry, preview_geometry(&big));
@@ -267,6 +292,35 @@ mod tests {
             panic!("a valid spec was refused");
         };
         assert!(!recrops);
+    }
+
+    /// A bleed edit leaves every page its shape but reshapes the cover panel,
+    /// which is trim plus wrap. The dry run has to say so exactly when
+    /// applying would really move a cover crop: not for a margin edit, and not
+    /// for a book with no cover photo to move.
+    #[test]
+    fn check_says_whether_the_cover_crops_move_separately_from_the_pages() {
+        let ps = photos();
+        let mut b = book();
+        b.cover.front = Some(CoverPhoto { photo_index: 0, crop: choose_crop(&ps[0], pixajoy_spec().cover_aspect()) });
+        let bleed_only = RawPrintSpec { bleed_in: 0.3, ..raw(&pixajoy_spec()) };
+        let margin_only = RawPrintSpec { safe_margin_in: 0.3, ..raw(&pixajoy_spec()) };
+
+        let recrops = |raw: RawPrintSpec, b: &Book| match check(raw, Some((b, &ps))) {
+            SpecCheck::Checked { recrops, recrops_cover, .. } => (recrops, recrops_cover),
+            SpecCheck::Refused { error } => panic!("a valid spec was refused: {error}"),
+        };
+        let applied = |raw: RawPrintSpec, b: &Book| {
+            reprint(b, &ps, &PrintSpec::try_from(raw).unwrap()).book.cover != b.cover
+        };
+
+        assert!(applied(bleed_only, &b), "the fixture must really recut the cover");
+        assert_eq!(recrops(bleed_only, &b), (false, true));
+        assert!(!applied(margin_only, &b));
+        assert_eq!(recrops(margin_only, &b), (false, false));
+
+        b.cover.front = None;
+        assert_eq!(recrops(bleed_only, &b), (false, false), "no cover photo, nothing to recut");
     }
 
     /// Pins `SpecCheck` from both sides with `tests/printSpec.test.ts`. The
@@ -282,6 +336,7 @@ mod tests {
             safe_margin_in: 0.125,
             min_dpi: 150.0,
             warn_dpi: 250.0,
+            cover_wrap_in: 0.75,
         })
         .unwrap();
         let cases = vec![
@@ -294,6 +349,7 @@ mod tests {
                     message: "would print at 120 DPI, below the 150 DPI minimum".into(),
                 }],
                 recrops: true,
+                recrops_cover: true,
             },
             SpecCheck::Refused {
                 error: SpecError::NoSafeArea {
@@ -323,6 +379,7 @@ mod tests {
             safe_margin_in: 0.125,
             min_dpi: 200.0,
             warn_dpi: 300.0,
+            cover_wrap_in: 0.75,
         })
         .expect("fixture spec must be valid")
     }
@@ -460,6 +517,7 @@ mod tests {
             safe_margin_in: 0.0625,
             min_dpi: 180.0,
             warn_dpi: 240.0,
+            cover_wrap_in: 0.75,
         })
         .unwrap();
 

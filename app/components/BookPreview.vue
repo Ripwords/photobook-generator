@@ -6,6 +6,7 @@ import {
   nextSwapStep,
   openingFor,
   pageSide,
+  setCoverCropEdit,
   setCropEdit,
   setSlotEdit,
   spreadTemplates,
@@ -13,6 +14,8 @@ import {
   toSpreads,
   type BookEdit,
   type BookLayout,
+  type CoverSide,
+  type PickTarget,
   type PlacementRef,
   type PreviewGeometry,
   type PreviewRect,
@@ -93,17 +96,32 @@ watch(
  * `selected`: the new layout that follows the edit clears the selection while
  * the dialog is still closing.
  */
-const replaceTarget = ref<PlacementRef | null>(null);
+const replaceTarget = ref<PickTarget | null>(null);
 const replaceOpen = ref(false);
 
 function chooseFromAll() {
-  replaceTarget.value = selected.value;
+  if (!selected.value) return;
+  replaceTarget.value = { kind: "slot", placement: selected.value };
+  replaceOpen.value = true;
+}
+
+function chooseCover(side: CoverSide) {
+  selected.value = null;
+  replaceTarget.value = { kind: "cover", side };
   replaceOpen.value = true;
 }
 
 function onCrop(placement: PlacementRef, crop: PreviewRect) {
   selected.value = null;
   emit("edit", setCropEdit(placement, crop));
+}
+
+function onCoverCrop(side: CoverSide, crop: PreviewRect) {
+  emit("edit", setCoverCropEdit(side, crop));
+}
+
+function onSpine(rgb: string) {
+  emit("edit", { kind: "setSpineColour", rgb });
 }
 
 function onSlot(placement: PlacementRef, rect: PreviewRect) {
@@ -182,6 +200,10 @@ const leftOut = computed(() =>
                 <span class="h-2.5 w-4 shrink-0 bg-amber-500/20" />
                 Gutter — curls into the binding
               </li>
+              <li class="flex items-center gap-2">
+                <span class="h-2.5 w-4 shrink-0 bg-black/35" />
+                Cover wrap — folds under the board, never shows
+              </li>
               <!--
                 Said on screen, not only in a doc. These are the 400px contact-sheet
                 thumbnails, roughly 4x under-sampled against the 300 DPI export, so the
@@ -216,6 +238,13 @@ const leftOut = computed(() =>
     </div>
 
     <div class="mx-auto max-w-[1400px] space-y-10 p-6">
+      <BookPreviewCover
+        :layout
+        :busy
+        @choose="chooseCover"
+        @crop="onCoverCrop"
+        @spine="onSpine"
+      />
       <ol class="space-y-10">
         <li v-for="spread in spreads" :key="spread.key" class="space-y-2.5">
           <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">

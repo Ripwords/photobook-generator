@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { folderListLabel } from "~/types/book";
+import { invoke } from "@tauri-apps/api/core";
+import { folderListLabel, type PlaceChapters } from "~/types/book";
 import {
   burstSizes,
   groupByEvent,
@@ -27,7 +28,7 @@ const emit = defineEmits<{
   discarded: [];
 }>();
 
-const { changeFolders, retry: retryJob, rename, setSpec, remove } = useAnalysisJobs();
+const { changeFolders, retry: retryJob, rename, setSpec, setOptions, remove } = useAnalysisJobs();
 
 const summary = computed(() => job.stream.summary);
 const runId = computed(() => jobRunId(job));
@@ -83,7 +84,27 @@ watch(photoSetId, () => {
   showLeftOut.value = true;
 });
 const visiblePhotos = computed(() => (showLeftOut.value ? photos.value : kept.value));
-const eventGroups = computed(() => groupByEvent(visiblePhotos.value));
+
+/** The analysed run's place chapters, fetched once per run whatever the switch says, so the switch knows whether it can do anything. */
+const placeChapters = ref<PlaceChapters | null>(null);
+watch(
+  runId,
+  async (run) => {
+    placeChapters.value = null;
+    if (run === 0) return;
+    try {
+      const next = await invoke<PlaceChapters>("place_chapters", { runId: run });
+      if (runId.value === run) placeChapters.value = next;
+    } catch (e) {
+      console.warn("could not read the place chapters", e);
+    }
+  },
+  { immediate: true },
+);
+const chapterOverride = computed(() => (job.options.places ? (placeChapters.value?.chapters ?? null) : null));
+const placeNames = usePlaceNames(runId, toRef(() => job.options.places));
+
+const eventGroups = computed(() => groupByEvent(visiblePhotos.value, chapterOverride.value));
 const burstMap = computed<Map<number, number>>(() => burstSizes(photos.value));
 // One hero per event group - the outline and star mark exactly this
 // photo, so it stays meaningful instead of becoming decoration. Chosen from
@@ -91,7 +112,7 @@ const burstMap = computed<Map<number, number>>(() => burstSizes(photos.value));
 const heroPaths = computed<Set<string>>(
   () =>
     new Set(
-      groupByEvent(kept.value)
+      groupByEvent(kept.value, chapterOverride.value)
         .map((group) => pickHero(group.photos)?.path)
         .filter((path): path is string => path !== undefined),
     ),
@@ -264,9 +285,9 @@ function onGenerated(projectId: number) {
       <template v-else-if="stage === 'ready' && summary">
         <!-- The sheet's own toolbar, pinned while the photos scroll under it. -->
         <div
-          class="sticky top-0 z-20 flex h-11 items-center gap-4 border-b border-default bg-default/95 px-6 backdrop-blur"
+          class="@container sticky top-0 z-20 flex h-11 items-center gap-3 border-b border-default bg-default/95 px-6 backdrop-blur"
         >
-          <UFieldGroup v-if="leftOutCount > 0 || !showLeftOut" size="xs">
+          <UFieldGroup v-if="leftOutCount > 0 || !showLeftOut" size="xs" class="shrink-0">
             <UButton
               color="neutral"
               :variant="showLeftOut ? 'solid' : 'outline'"
@@ -284,11 +305,20 @@ function onGenerated(projectId: number) {
               Keepers only
             </UButton>
           </UFieldGroup>
-          <p class="text-xs text-muted tabular-nums">
+          <p class="min-w-0 truncate text-xs text-muted tabular-nums">
             <span class="font-medium text-highlighted">{{ kept.length }}</span> keepers,
             {{ leftOutCount }} left out
           </p>
-          <div class="ml-auto flex items-center gap-2">
+          <!--
+            Measured, not guessed: the toggle is 164px, the slider group 162px
+            and the two gaps 24px, so everything fits once the row's content box
+            reaches ~26rem, with the counts giving way first. Below that the
+            slider stands down rather than being clipped. The narrowest real
+            surface is this sheet inside the editor's Edit photos panel, which
+            is 477px at the window's own minWidth of 1100, so the slider is
+            there at every size the app can reach.
+          -->
+          <div class="ml-auto hidden shrink-0 items-center gap-2 @min-[26rem]:flex">
             <UIcon name="i-lucide-image" class="size-3.5 text-muted" />
             <USlider
               v-model="tileSize"
@@ -333,6 +363,7 @@ function onGenerated(projectId: number) {
           <ContactSheet
             v-else
             :groups="eventGroups"
+            :names="placeNames"
             :tile-size
             :scroll-element="scroller"
             :sticky-top="44"
@@ -376,6 +407,9 @@ function onGenerated(projectId: number) {
         @update:name="rename(job.id, $event)"
         :spec="job.spec"
         @update:spec="setSpec(job.id, $event)"
+        :options="job.options"
+        @update:options="setOptions(job.id, $event)"
+        :located="placeChapters?.located ?? null"
         @generated="onGenerated"
       />
 

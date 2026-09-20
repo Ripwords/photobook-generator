@@ -46,6 +46,11 @@ export interface PrintSpec {
   minDpi: number;
   /** At or above this, resolution stops counting against a placement. */
   warnDpi: number;
+  /**
+   * How far a cover photo runs past the trim to fold around the board, on
+   * the top, bottom and outer edge.
+   */
+  coverWrapIn: number;
 }
 
 /** The panel's one display unit. A preference, never part of the spec. */
@@ -87,6 +92,7 @@ export interface PrintSizeFields {
   fold: string;
   minDpi: string;
   warnDpi: string;
+  coverWrap: string;
 }
 
 export type PrintSizeField = keyof PrintSizeFields;
@@ -99,6 +105,7 @@ const LABELS: Record<PrintSizeField, string> = {
   fold: "Fold",
   minDpi: "Lowest print resolution",
   warnDpi: "Target resolution",
+  coverWrap: "Cover wrap",
 };
 
 /** The trim is the page minus the bleed: once across, top and bottom down. */
@@ -116,6 +123,7 @@ export function fieldsFromSpec(spec: PrintSpec, unit: LengthUnit): PrintSizeFiel
     fold: formatLength(spec.gutterIn, unit),
     minDpi: String(spec.minDpi),
     warnDpi: String(spec.warnDpi),
+    coverWrap: formatLength(spec.coverWrapIn, unit),
   };
 }
 
@@ -161,6 +169,7 @@ export function proposeSpec(fields: PrintSizeFields, base: PrintSpec, unit: Leng
       safeMarginIn: length("safeMargin", base.safeMarginIn),
       minDpi: typed.minDpi,
       warnDpi: typed.warnDpi,
+      coverWrapIn: length("coverWrap", base.coverWrapIn),
     },
   };
 }
@@ -266,7 +275,13 @@ export type SpecError =
 /** Mirrors `reprint::SpecCheck`. */
 export type SpecCheck =
   | { kind: "refused"; error: SpecError }
-  | { kind: "checked"; geometry: PreviewGeometry; findings: PreflightFinding[]; recrops: boolean };
+  | {
+      kind: "checked";
+      geometry: PreviewGeometry;
+      findings: PreflightFinding[];
+      recrops: boolean;
+      recropsCover: boolean;
+    };
 
 const FIELD_OF: Record<SpecField, PrintSizeField> = {
   pageWIn: "trimW",
@@ -276,6 +291,7 @@ const FIELD_OF: Record<SpecField, PrintSizeField> = {
   safeMarginIn: "safeMargin",
   minDpi: "minDpi",
   warnDpi: "warnDpi",
+  coverWrapIn: "coverWrap",
 };
 
 /** The input a refusal points at, or `null` when it is about several. */
@@ -296,7 +312,9 @@ export function refusalText(error: SpecError, unit: LengthUnit): string {
     case "negative":
       return `${LABELS[FIELD_OF[error.field]]} cannot be negative.`;
     case "tooLarge":
-      return `${LABELS[FIELD_OF[error.field]]} with its bleed can be at most ${len(error.limit)}.`;
+      return error.field === "coverWrapIn"
+        ? `${LABELS.coverWrap} can be at most ${len(error.limit)}.`
+        : `${LABELS[FIELD_OF[error.field]]} with its bleed can be at most ${len(error.limit)}.`;
     case "noSafeArea":
       return error.axis === "horizontal"
         ? `Bleed, safe margin and fold add up to ${len(error.insetsIn)} across a ${len(error.pageIn)} page, which leaves no room for photos.`
@@ -308,14 +326,23 @@ export function refusalText(error: SpecError, unit: LengthUnit): string {
 
 export interface CheckSummary {
   text: string;
-  /** Applying re-cuts every crop, including ones adjusted by hand. */
-  recrops: boolean;
+  /** Which crops applying re-cuts, hand-adjusted ones included, or `null` when none move. */
+  recropNote: string | null;
   blocking: PreflightFinding[];
   warnings: PreflightFinding[];
 }
 
 function count(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
+}
+
+function recropNote(pages: boolean, cover: boolean): string | null {
+  if (pages && cover) {
+    return "Every crop, on the pages and the cover, is recomputed for the new shape, including ones you adjusted by hand.";
+  }
+  if (pages) return "Crops you adjusted by hand are recomputed for the new page shape.";
+  if (cover) return "The cover photos are re-cropped for the new cover shape, including a crop you adjusted by hand.";
+  return null;
 }
 
 /** What the dry run found, split the way the export sheet splits it. */
@@ -328,7 +355,7 @@ export function checkSummary(check: Extract<SpecCheck, { kind: "checked" }>): Ch
   ].filter((p): p is string => p !== null);
   return {
     text: parts.length === 0 ? "Nothing in the book fails at this size." : `At this size, ${parts.join(" and ")}.`,
-    recrops: check.recrops,
+    recropNote: recropNote(check.recrops, check.recropsCover),
     blocking,
     warnings,
   };

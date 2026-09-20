@@ -28,7 +28,9 @@ import type { AgentPhoto, AgentView } from "../../app/agent/view";
 import type {
   BookEdit,
   BookLayout,
+  CoverSide,
   PlacementRef,
+  PreviewCoverSide,
   PreviewGeometry,
   PreviewRect,
   SlotCandidate,
@@ -50,7 +52,7 @@ import type {
 } from "../../app/types/features";
 import type { PreflightFinding } from "../../app/types/book";
 import { cancelModelRequest, modelRequest, type ModelRequestArgs } from "./model";
-import { mockPhotos, thumbnail } from "./photos";
+import { mockPhotos, mockPlaceChapters, mockPlaceNames, thumbnail } from "./photos";
 
 const layout: BookLayout = structuredClone(layoutFixture) as BookLayout;
 // The fixture is pinned against an EMPTY library, so it offers no alternative
@@ -94,6 +96,28 @@ function mockGeometry(spec: PrintSpec): PreviewGeometry {
       safe: { x: 0, y: iv, w: 1 - iu, h: 1 - 2 * iv },
       gutter: { x: 0, y: 0, w: g, h: 1 },
     },
+  };
+}
+
+/** `PrintSpec::cover_aspect`, restated for the harness only. */
+function coverAspect(spec: PrintSpec): number {
+  return (
+    (spec.pageWIn - spec.bleedIn + spec.coverWrapIn) / (spec.pageHIn - 2 * spec.bleedIn + 2 * spec.coverWrapIn)
+  );
+}
+
+/** `PrintSpec::cover_board_rect` and `cover_visible_rect`, restated for the harness only. */
+function coverRects(spec: PrintSpec, side: CoverSide): Pick<PreviewCoverSide, "board" | "visible"> {
+  const trimW = spec.pageWIn - spec.bleedIn;
+  const trimH = spec.pageHIn - 2 * spec.bleedIn;
+  const pw = trimW + spec.coverWrapIn;
+  const ph = trimH + 2 * spec.coverWrapIn;
+  const wrap = spec.coverWrapIn;
+  const safe = spec.safeMarginIn;
+  const x = side === "front" ? 0 : wrap;
+  return {
+    board: { x: x / pw, y: wrap / ph, w: trimW / pw, h: trimH / ph },
+    visible: { x: (x + safe) / pw, y: (wrap + safe) / ph, w: (trimW - 2 * safe) / pw, h: (trimH - 2 * safe) / ph },
   };
 }
 
@@ -145,6 +169,10 @@ function mockCheck(spec: PrintSpec, withBook: boolean): SpecCheck {
     geometry: mockGeometry(spec),
     findings: withBook ? mockFindings(spec) : [],
     recrops: withBook && spec.pageWIn / spec.pageHIn !== layout.spec.pageWIn / layout.spec.pageHIn,
+    recropsCover:
+      withBook &&
+      (layout.cover.front.photo !== null || layout.cover.back.photo !== null) &&
+      coverAspect(spec) !== coverAspect(layout.spec),
   };
 }
 
@@ -202,16 +230,40 @@ function placement(ref: PlacementRef) {
  */
 const REFUSED_PHOTO = 4;
 
-/** A centred crop of the slot's printed shape, as `choose_crop` makes with no faces. */
-function centredCrop(ref: PlacementRef, photo: number): PreviewRect {
-  const slot = placement(ref)?.slotRect;
+/** A centred crop at `want`, as `choose_crop` makes with no faces. */
+function centred(photo: number, want: number): PreviewRect {
   const shot = layout.photos[photo];
-  if (!slot || !shot) throw new Error("there is no photo at that slot");
-  const want = (slot.w * layout.geometry.pageWIn) / (slot.h * layout.geometry.pageHIn);
+  if (!shot) throw new Error(`this book has no photo ${photo}`);
   const have = shot.width / shot.height;
   const w = want < have ? want / have : 1;
   const h = want < have ? 1 : have / want;
   return { x: (1 - w) / 2, y: (1 - h) / 2, w, h };
+}
+
+/** A centred crop of the slot's printed shape. */
+function centredCrop(ref: PlacementRef, photo: number): PreviewRect {
+  const slot = placement(ref)?.slotRect;
+  if (!slot) throw new Error("there is no photo at that slot");
+  return centred(photo, (slot.w * layout.geometry.pageWIn) / (slot.h * layout.geometry.pageHIn));
+}
+
+/**
+ * The one photo the harness refuses for the cover, so the picker's dimmed
+ * state and the editor's refusal can be looked at. Not the front cover's own
+ * photo, which is `REFUSED_PHOTO`.
+ */
+const REFUSED_COVER_PHOTO = 1;
+
+function coverCandidates(): SlotCandidate[] {
+  return layout.photos.map((_, index) => ({
+    crop: centred(index, layout.cover.aspect),
+    refused: index === REFUSED_COVER_PHOTO ? "faceInSafeMargin" : null,
+  }));
+}
+
+function coverPhoto(side: CoverSide, photo: number) {
+  const hash = layout.photos[photo]?.hash ?? "";
+  return { photoIndex: photo, crop: centred(photo, layout.cover.aspect), filename: `cover-${side}-${hash.slice(0, 8)}` };
 }
 
 function slotCandidates(ref: PlacementRef): SlotCandidate[] {
@@ -288,8 +340,17 @@ function applyEdit(edit: BookEdit): BookLayout {
     }
     case "setPrintSpec": {
       const recrop = edit.spec.pageWIn / edit.spec.pageHIn !== layout.spec.pageWIn / layout.spec.pageHIn;
+      const recutCover = coverAspect(edit.spec) !== coverAspect(layout.spec);
       layout.spec = { ...edit.spec };
       layout.geometry = mockGeometry(layout.spec);
+      layout.cover.aspect = coverAspect(layout.spec);
+      for (const side of ["front", "back"] as const) {
+        const current = layout.cover[side].photo;
+        layout.cover[side] = {
+          ...coverRects(layout.spec, side),
+          photo: current && recutCover ? coverPhoto(side, current.photoIndex) : current,
+        };
+      }
       if (recrop) {
         for (const page of layout.pages) {
           for (const pl of page.placements) pl.crop = centredCrop({ page: page.number, z: pl.z }, pl.photoIndex);
@@ -312,6 +373,30 @@ function applyEdit(edit: BookEdit): BookLayout {
       }
       target.photoIndex = edit.photo;
       target.crop = centredCrop(edit.placement, edit.photo);
+      break;
+    }
+    case "setCoverPhoto": {
+      if (edit.photo === REFUSED_COVER_PHOTO) {
+        throw new Error(
+          `on the ${edit.side} cover that would put a face where the cover folds under the board or too near its edge`,
+        );
+      }
+      layout.cover[edit.side].photo = edit.photo === null ? null : coverPhoto(edit.side, edit.photo);
+      break;
+    }
+    case "setCoverCrop": {
+      const current = layout.cover[edit.side].photo;
+      if (!current) throw new Error(`the ${edit.side} cover has no photo to crop`);
+      const shape = current.crop.h / current.crop.w;
+      if (edit.x < 0 || edit.y < 0 || edit.x + edit.w > 1 || edit.y + edit.w * shape > 1) {
+        throw new Error("the crop window has to stay inside the photo");
+      }
+      current.crop = { x: edit.x, y: edit.y, w: edit.w, h: edit.w * shape };
+      break;
+    }
+    case "setSpineColour": {
+      if (!/^#[0-9a-f]{6}$/i.test(edit.rgb)) throw new Error(`${edit.rgb} is not a #rrggbb colour`);
+      layout.cover.spine = edit.rgb.toLowerCase();
       break;
     }
   }
@@ -430,6 +515,8 @@ function coverFrom(start: number): string[] {
 type Args = Record<string, unknown> | undefined;
 
 const DRAFTS_KEY = "pbg-mock-drafts";
+/** Set to any value to analyse a folder whose photos carry no location. */
+const NO_GPS_KEY = "pbg-mock-no-gps";
 
 const MiB = 1024 * 1024;
 const cache = { usedBytes: 1450 * MiB, pinnedBytes: 610 * MiB, limitBytes: 2048 * MiB };
@@ -471,6 +558,10 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
     case "slot_candidates":
       await sleep(250);
       return slotCandidates(args?.placement as PlacementRef) as T;
+
+    case "cover_candidates":
+      await sleep(250);
+      return coverCandidates() as T;
 
     case "rename_project": {
       const project = projects.find((p) => p.id === (args?.id as number));
@@ -534,6 +625,13 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
         includedCount: Object.values(overrides).filter((state) => state === "include").length,
       } as T;
     }
+
+    case "place_chapters":
+      return mockPlaceChapters(localStorage.getItem(NO_GPS_KEY) !== null) as T;
+
+    case "place_names":
+      await sleep(300);
+      return mockPlaceNames(localStorage.getItem(NO_GPS_KEY) !== null) as T;
 
     case "default_print_spec":
       return structuredClone(PIXAJOY) as T;

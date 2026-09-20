@@ -122,19 +122,31 @@ describe("the tool table", () => {
   });
 
   /**
-   * The three exclusions are each deliberate. `setSlot` and `replacePhoto`
+   * Each exclusion is deliberate. `setSlot` and `replacePhoto`
    * are direct-manipulation edits with no useful chat phrasing. `setPrintSpec`
    * is withheld on different grounds: the agent edits layouts, it does not get
    * to change what book the user is buying, and it is the one edit Rust never
    * refuses -- so a model that reached for it would reshape the whole book
    * with nothing to push back.
    *
+   * The three cover edits are withheld because the cover is not yet a thing
+   * the chat can see: `get_book` describes pages, so a model asked to change
+   * the cover would be choosing a photo and a crop for a panel it has never
+   * been shown. They join the tools when the book view describes the cover.
+   *
    * Naming them here rather than filtering by a predicate is the point: a new
    * variant lands in `wire` and fails this test until somebody decides which
    * side of the line it is on.
    */
-  it("drives every BookEdit variant except setSlot, replacePhoto and setPrintSpec", () => {
-    const withheld = ["setSlot", "replacePhoto", "setPrintSpec"];
+  it("drives every BookEdit variant except the withheld ones", () => {
+    const withheld = [
+      "setSlot",
+      "replacePhoto",
+      "setPrintSpec",
+      "setCoverPhoto",
+      "setCoverCrop",
+      "setSpineColour",
+    ];
     const driven = Object.values(WRITE_INPUTS).map((w) => w.kind);
     const wire = EDITS.map((e) => e.kind).filter((k) => !withheld.includes(k));
     expect(driven.toSorted()).toEqual(wire.toSorted());

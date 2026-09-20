@@ -10,12 +10,22 @@
 //! `preflight`, `manifest` -- may therefore assume a spec is sane without
 //! re-checking it. See `PrintSpec::try_from` for exactly what it may assume.
 
-use crate::geometry::{Rect, Side};
+use crate::geometry::{CoverSide, Rect, Side};
 use serde::{Deserialize, Serialize};
 
 /// Sanity rail, not a Pixajoy fact. A page beyond this is not a book, and
 /// the DPI arithmetic downstream stops meaning anything.
 const MAX_PAGE_IN: f64 = 100.0;
+
+/// Sanity rail. Real case-bound wraps are well under an inch; past this the
+/// number is a typo for the page size, not a board.
+const MAX_WRAP_IN: f64 = 3.0;
+
+/// Pixajoy's hardcover board wrap. Also what a spec saved before the cover
+/// existed loads with, which is why it is a named function for serde.
+fn pixajoy_cover_wrap_in() -> f64 {
+    0.75
+}
 
 /// Which measurement a `SpecError` is about, so the UI can point at the
 /// field and render the number in whatever unit is on screen.
@@ -29,6 +39,7 @@ pub enum SpecField {
     SafeMarginIn,
     MinDpi,
     WarnDpi,
+    CoverWrapIn,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -83,10 +94,15 @@ impl std::fmt::Display for SpecError {
 
 impl std::error::Error for SpecError {}
 
-/// The wire and storage form. Every field is required: a defaulted field
-/// means a truncated or misspelled row silently gets a Pixajoy value that
-/// looks identical to a correctly written one, which is the reasoning
+/// The wire and storage form. Every field but one is required: a defaulted
+/// field means a truncated or misspelled row silently gets a Pixajoy value
+/// that looks identical to a correctly written one, which is the reasoning
 /// already recorded on the template loader.
+///
+/// `cover_wrap_in` is the exception, and it is the lesser evil. Every book
+/// row and saved draft written before the cover existed carries a seven-key
+/// spec; requiring the eighth would make all of them fail to open. A missing
+/// wrap only moves the cover, never an interior page.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RawPrintSpec {
@@ -97,6 +113,8 @@ pub struct RawPrintSpec {
     pub safe_margin_in: f64,
     pub min_dpi: f64,
     pub warn_dpi: f64,
+    #[serde(default = "pixajoy_cover_wrap_in")]
+    pub cover_wrap_in: f64,
 }
 
 /// A validated print geometry.
@@ -114,6 +132,9 @@ pub struct PrintSpec {
     safe_margin_in: f64,
     min_dpi: f64,
     warn_dpi: f64,
+    /// How far the cover photo runs past the trim to fold around the board,
+    /// on the top, bottom and outer edge. There is none at the spine.
+    cover_wrap_in: f64,
 }
 
 impl TryFrom<RawPrintSpec> for PrintSpec {
@@ -133,6 +154,7 @@ impl TryFrom<RawPrintSpec> for PrintSpec {
             (SpecField::SafeMarginIn, r.safe_margin_in),
             (SpecField::MinDpi, r.min_dpi),
             (SpecField::WarnDpi, r.warn_dpi),
+            (SpecField::CoverWrapIn, r.cover_wrap_in),
         ] {
             if !value.is_finite() {
                 return Err(SpecError::NotFinite { field });
@@ -154,10 +176,18 @@ impl TryFrom<RawPrintSpec> for PrintSpec {
             (SpecField::BleedIn, r.bleed_in),
             (SpecField::GutterIn, r.gutter_in),
             (SpecField::SafeMarginIn, r.safe_margin_in),
+            (SpecField::CoverWrapIn, r.cover_wrap_in),
         ] {
             if value < 0.0 {
                 return Err(SpecError::Negative { field, value });
             }
+        }
+        if r.cover_wrap_in > MAX_WRAP_IN {
+            return Err(SpecError::TooLarge {
+                field: SpecField::CoverWrapIn,
+                value: r.cover_wrap_in,
+                limit: MAX_WRAP_IN,
+            });
         }
 
         if r.min_dpi <= 0.0 {
@@ -179,7 +209,10 @@ impl TryFrom<RawPrintSpec> for PrintSpec {
         // The region both inside the safe margin and clear of the gutter is
         // [trim + safe, 1 - gutter]. Empty, and every face-bearing photo is
         // rejected on every template with no way out from inside the app.
-        let across = r.bleed_in + r.safe_margin_in + r.gutter_in;
+        // The cover has no gutter but insets the safe margin at the spine
+        // too, so its visible width is empty at trim <= 2 * safe; the larger
+        // of the two inner insets covers both.
+        let across = r.bleed_in + r.safe_margin_in + r.gutter_in.max(r.safe_margin_in);
         if across >= r.page_w_in {
             return Err(SpecError::NoSafeArea {
                 axis: Axis::Horizontal,
@@ -204,6 +237,7 @@ impl TryFrom<RawPrintSpec> for PrintSpec {
             safe_margin_in: r.safe_margin_in,
             min_dpi: r.min_dpi,
             warn_dpi: r.warn_dpi,
+            cover_wrap_in: r.cover_wrap_in,
         })
     }
 }
@@ -230,6 +264,7 @@ impl PrintSpec {
             safe_margin_in: 0.125,
             min_dpi: 200.0,
             warn_dpi: 300.0,
+            cover_wrap_in: pixajoy_cover_wrap_in(),
         }
     }
 
@@ -335,6 +370,63 @@ impl PrintSpec {
     pub fn page_aspect(&self, rect: &Rect) -> f64 {
         (rect.w * self.page_w_in) / (rect.h * self.page_h_in)
     }
+
+    pub fn cover_wrap_in(&self) -> f64 {
+        self.cover_wrap_in
+    }
+
+    fn trim_w_in(&self) -> f64 {
+        self.page_w_in - self.bleed_in
+    }
+    fn trim_h_in(&self) -> f64 {
+        self.page_h_in - 2.0 * self.bleed_in
+    }
+
+    /// One cover panel, front or back: the trim plus the wrap on its outer
+    /// edge. The wrap replaces the bleed rather than adding to it.
+    pub fn cover_panel_w_in(&self) -> f64 {
+        self.trim_w_in() + self.cover_wrap_in
+    }
+    /// The trim plus the wrap at the top and bottom.
+    pub fn cover_panel_h_in(&self) -> f64 {
+        self.trim_h_in() + 2.0 * self.cover_wrap_in
+    }
+    /// The panel's inch ratio: the aspect a cover crop is cut to.
+    pub fn cover_aspect(&self) -> f64 {
+        self.cover_panel_w_in() / self.cover_panel_h_in()
+    }
+
+    /// The finished board on a cover panel, panel-normalised: the trim,
+    /// against the spine edge. The rest of the panel is the wrap.
+    pub fn cover_board_rect(&self, side: CoverSide) -> Rect {
+        let (pw, ph) = (self.cover_panel_w_in(), self.cover_panel_h_in());
+        let x = match side {
+            CoverSide::Front => 0.0,
+            CoverSide::Back => self.cover_wrap_in,
+        };
+        Rect::new(x / pw, self.cover_wrap_in / ph, self.trim_w_in() / pw, self.trim_h_in() / ph)
+    }
+
+    /// The part of a cover panel that shows on the finished board, less the
+    /// safe margin, panel-normalised.
+    ///
+    /// The wrap folds under the board on the three outer edges. The spine
+    /// edge has no wrap, but it does sit on the hinge, so the safe margin is
+    /// inset there too; the cover has no gutter band to govern it instead.
+    pub fn cover_visible_rect(&self, side: CoverSide) -> Rect {
+        let (pw, ph) = (self.cover_panel_w_in(), self.cover_panel_h_in());
+        let (wrap, safe) = (self.cover_wrap_in, self.safe_margin_in);
+        let x = match side {
+            CoverSide::Front => safe,
+            CoverSide::Back => wrap + safe,
+        };
+        Rect::new(
+            x / pw,
+            (wrap + safe) / ph,
+            (self.trim_w_in() - 2.0 * safe) / pw,
+            (self.trim_h_in() - 2.0 * safe) / ph,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -351,6 +443,7 @@ mod tests {
             safe_margin_in: 0.125,
             min_dpi: 200.0,
             warn_dpi: 300.0,
+            cover_wrap_in: 0.75,
         }
     }
 
@@ -586,6 +679,137 @@ mod tests {
         );
     }
 
+    /// The one defaulted field. Every book and draft saved before the cover
+    /// existed has a seven-key spec, and must load with Pixajoy's wrap
+    /// rather than fail to open.
+    #[test]
+    fn a_spec_saved_before_the_cover_loads_with_pixajoys_wrap() {
+        let legacy = r#"{"pageWIn":8.0,"pageHIn":10.0,"bleedIn":0.25,"gutterIn":0.4,
+                         "safeMarginIn":0.05,"minDpi":150.0,"warnDpi":220.0}"#;
+        let spec: PrintSpec = serde_json::from_str(legacy).expect("a legacy spec must load");
+        assert_eq!(spec.cover_wrap_in(), 0.75);
+        assert_eq!(spec.page_w_in(), 8.0, "the other fields are read, not defaulted");
+        assert_eq!(PrintSpec::pixajoy().cover_wrap_in(), 0.75);
+    }
+
+    /// The shared fixture pins the legacy default for the webview's draft
+    /// reader too, so the TS copy of 0.75 cannot drift from this one.
+    #[test]
+    fn the_legacy_print_spec_fixture_loads_as_it_says() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/wire/legacy-print-spec.json"
+        ))
+        .unwrap();
+        let spec: PrintSpec = serde_json::from_value(fixture["legacy"].clone()).unwrap();
+        assert_eq!(serde_json::to_value(spec).unwrap(), fixture["loadsAs"]);
+    }
+
+    #[test]
+    fn print_spec_rejects_a_bad_cover_wrap() {
+        let mut negative = raw();
+        negative.cover_wrap_in = -0.01;
+        assert!(matches!(
+            PrintSpec::try_from(negative),
+            Err(SpecError::Negative { field: SpecField::CoverWrapIn, .. })
+        ));
+
+        let mut nan = raw();
+        nan.cover_wrap_in = f64::NAN;
+        assert!(matches!(
+            PrintSpec::try_from(nan),
+            Err(SpecError::NotFinite { field: SpecField::CoverWrapIn })
+        ));
+
+        let mut at = raw();
+        at.cover_wrap_in = MAX_WRAP_IN;
+        assert!(PrintSpec::try_from(at).is_ok(), "the limit itself is allowed");
+        let mut over = raw();
+        over.cover_wrap_in = MAX_WRAP_IN + 1e-6;
+        assert!(matches!(
+            PrintSpec::try_from(over),
+            Err(SpecError::TooLarge { field: SpecField::CoverWrapIn, .. })
+        ));
+
+        let mut zero = raw();
+        zero.cover_wrap_in = 0.0;
+        assert!(PrintSpec::try_from(zero).is_ok(), "a soft cover has no wrap");
+    }
+
+    /// The cover's visible rect insets the safe margin on the spine edge as
+    /// well, so a margin wider than the fold must still leave cover width.
+    #[test]
+    fn print_spec_refuses_a_safe_margin_that_leaves_no_cover_width() {
+        let mut r = raw();
+        r.gutter_in = 0.0;
+        r.page_w_in = r.bleed_in + 2.0 * r.safe_margin_in;
+        assert!(matches!(
+            PrintSpec::try_from(r),
+            Err(SpecError::NoSafeArea { axis: Axis::Horizontal, .. })
+        ));
+        r.page_w_in += 1e-6;
+        assert!(PrintSpec::try_from(r).is_ok());
+    }
+
+    /// Pixajoy: an 11 x 8.5 trim plus 0.75" of wrap on three edges.
+    #[test]
+    fn the_cover_panel_is_the_trim_plus_wrap_on_three_edges() {
+        let p = PrintSpec::pixajoy();
+        assert!((p.cover_panel_w_in() - 11.75).abs() < 1e-9, "{}", p.cover_panel_w_in());
+        assert!((p.cover_panel_h_in() - 10.0).abs() < 1e-9, "{}", p.cover_panel_h_in());
+        assert!((p.cover_aspect() - 1.175).abs() < 1e-9);
+
+        // Portrait, and every number distinct, so a swapped axis shows.
+        let o = odd_spec();
+        let (tw, th, wrap) = (8.0 - 0.25, 10.0 - 0.5, o.cover_wrap_in());
+        assert!((o.cover_panel_w_in() - (tw + wrap)).abs() < 1e-12);
+        assert!((o.cover_panel_h_in() - (th + 2.0 * wrap)).abs() < 1e-12);
+        assert!((o.cover_aspect() - (tw + wrap) / (th + 2.0 * wrap)).abs() < 1e-12);
+    }
+
+    /// The front's spine is its left edge, so its wrap is on the right; the
+    /// back mirrors it. The safe margin applies on all four edges.
+    #[test]
+    fn the_cover_visible_rect_drops_the_wrap_on_the_outer_edges_only() {
+        let o = odd_spec();
+        let (pw, ph) = (o.cover_panel_w_in(), o.cover_panel_h_in());
+        let (tw, th, wrap, safe) = (7.75, 9.5, o.cover_wrap_in(), 0.05);
+
+        let front = o.cover_visible_rect(CoverSide::Front);
+        assert!((front.x - safe / pw).abs() < 1e-12, "front x {}", front.x);
+        assert!((front.right() - (tw - safe) / pw).abs() < 1e-12, "front right {}", front.right());
+        assert!((front.y - (wrap + safe) / ph).abs() < 1e-12, "front y {}", front.y);
+        assert!((front.bottom() - (wrap + th - safe) / ph).abs() < 1e-12);
+
+        let back = o.cover_visible_rect(CoverSide::Back);
+        assert!((back.x - (wrap + safe) / pw).abs() < 1e-12, "back x {}", back.x);
+        assert!((back.right() - (1.0 - safe / pw)).abs() < 1e-12, "back right {}", back.right());
+        assert_eq!((back.y, back.h), (front.y, front.h));
+        assert!((back.w - front.w).abs() < 1e-12);
+    }
+
+    /// The board is the trim on the panel: flush with the spine edge, the
+    /// wrap outside it on the other three. Everything outside it folds under.
+    #[test]
+    fn the_cover_board_rect_is_the_trim_with_the_wrap_outside_it() {
+        let o = odd_spec();
+        let (pw, ph) = (o.cover_panel_w_in(), o.cover_panel_h_in());
+        let (tw, th, wrap) = (7.75, 9.5, o.cover_wrap_in());
+
+        let front = o.cover_board_rect(CoverSide::Front);
+        assert!(front.x.abs() < 1e-12, "front x {}", front.x);
+        assert!((front.right() - tw / pw).abs() < 1e-12, "front right {}", front.right());
+        assert!((front.y - wrap / ph).abs() < 1e-12, "front y {}", front.y);
+        assert!((front.bottom() - (wrap + th) / ph).abs() < 1e-12, "front bottom {}", front.bottom());
+
+        let back = o.cover_board_rect(CoverSide::Back);
+        assert!((back.x - wrap / pw).abs() < 1e-12, "back x {}", back.x);
+        assert!((back.right() - 1.0).abs() < 1e-12, "back right {}", back.right());
+        assert_eq!((back.y, back.h), (front.y, front.h));
+
+        for side in [CoverSide::Front, CoverSide::Back] {
+            assert!(o.cover_board_rect(side).contains(&o.cover_visible_rect(side)), "{side:?}");
+        }
+    }
 }
 
 /// Today's default, abbreviated. Named for brevity at ~150 test call sites
@@ -618,6 +842,7 @@ pub(crate) fn odd_spec() -> PrintSpec {
         safe_margin_in: 0.05,
         min_dpi: 150.0,
         warn_dpi: 220.0,
+        cover_wrap_in: 0.6,
     })
     .expect("odd_spec must be a valid spec")
 }
@@ -638,6 +863,7 @@ pub(crate) fn spec_with_dpi(min_dpi: f64, warn_dpi: f64) -> PrintSpec {
         safe_margin_in: p.safe_margin_in(),
         min_dpi,
         warn_dpi,
+        cover_wrap_in: p.cover_wrap_in(),
     })
     .expect("spec_with_dpi must be called with a valid band")
 }

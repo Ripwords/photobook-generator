@@ -5,7 +5,7 @@ use crate::agent::edit::AgentError;
 use crate::agent::view::{AgentView, SourcePhoto};
 use crate::book::cull::{Overrides, Photo};
 use crate::book::manifest::{manifest, Manifest};
-use crate::book::pace::Book;
+use crate::book::pace::{Book, BookOptions};
 use crate::book::pack::{recommend_pages, Capacity};
 use crate::book::preflight::{Finding, Severity};
 use crate::export::build_items;
@@ -1447,6 +1447,8 @@ pub(crate) struct NewProject<'a> {
     /// a NEW book's geometry is the command boundary, where the user's
     /// choice actually arrives.
     pub spec: PrintSpec,
+    /// What the user switched on for this book; see `Book::options`.
+    pub options: BookOptions,
 }
 
 /// Assembles a book and PERSISTS it, returning the new project's id.
@@ -1466,7 +1468,19 @@ pub(crate) fn generate_and_save(
     // `assemble` refuses rather than returning a book that lost a photo the
     // user explicitly asked for. Surfaced as a command error, with the
     // numbers they need to fix it -- see `book::pack::IncludeOverflow`.
-    let book = crate::book::pace::assemble(
+    // Places off keeps the chapters `finalize_photos` stamped, untouched.
+    let by_place: Vec<Photo>;
+    let photos = if meta.options.places {
+        by_place = photos
+            .iter()
+            .zip(crate::book::chapter::chapters(photos, true))
+            .map(|(p, event_cluster)| Photo { event_cluster, ..p.clone() })
+            .collect();
+        &by_place
+    } else {
+        photos
+    };
+    let mut book = crate::book::pace::assemble(
         &meta.spec,
         photos,
         meta.pages,
@@ -1476,6 +1490,7 @@ pub(crate) fn generate_and_save(
         overrides,
     )
     .map_err(|e| e.to_string())?;
+    book.options = meta.options;
     // The hash of EVERY photo the book was assembled against, in that
     // slice's order -- `Placement::photo_index` indexes it positionally.
     // This is what makes the project exportable after a restart; see
@@ -1553,8 +1568,8 @@ fn export_failures(records: &[serde_json::Value]) -> Vec<ExportFailure> {
 /// An entry with no successful record is REMOVED: it names no file, so
 /// listing it (with any format at all) would be a claim about a file nobody
 /// wrote. Pages themselves are never removed, preserving `manifest`'s own
-/// rule that `page_count` always reconciles against the SKU. Returns how many
-/// entries were dropped.
+/// rule that `page_count` always reconciles against the SKU. A cover side
+/// is reconciled the same way. Returns how many entries were dropped.
 pub(crate) fn reconcile_manifest(m: &mut Manifest, records: &[serde_json::Value]) -> usize {
     let written = written_extensions(records);
     let mut dropped = 0usize;
@@ -1569,6 +1584,16 @@ pub(crate) fn reconcile_manifest(m: &mut Manifest, records: &[serde_json::Value]
                 false
             }
         });
+    }
+    for side in [&mut m.cover.front, &mut m.cover.back] {
+        let Some(photo) = side else { continue };
+        match written.get(&photo.filename) {
+            Some(extension) => photo.format.clone_from(extension),
+            None => {
+                *side = None;
+                dropped += 1;
+            }
+        }
     }
     dropped
 }
@@ -1802,6 +1827,37 @@ pub async fn recommend_book(
     .map_err(|e| e.to_string())?
 }
 
+/// The chapters "Split chapters by place" would give run `run_id`, so the
+/// draft screen can regroup before the book is generated.
+#[tauri::command]
+pub async fn place_chapters(app: AppHandle, run_id: u64) -> Result<crate::book::chapter::PlaceChapters, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(crate::book::chapter::PlaceChapters::of(&cached_photos(&app, run_id)?))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// A town name for each of run `run_id`'s place chapters that has one, by
+/// the ids `place_chapters` gives. Chapter centres not already cached go to
+/// Apple's geocoder, so the webview calls this only while Places is on. A
+/// sidecar that cannot answer leaves chapters unnamed rather than failing.
+#[tauri::command]
+pub async fn place_names(app: AppHandle, run_id: u64) -> Result<std::collections::HashMap<u32, String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let photos = cached_photos(&app, run_id)?;
+        let locations: Vec<_> = photos.iter().map(|p| p.location).collect();
+        let centres = crate::book::chapter::centroids(&locations, &crate::book::chapter::chapters(&photos, true));
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        let state = app.state::<AppState>();
+        Ok(crate::place_names::name_chapters(&db, &centres, |points| {
+            with_sidecar(&state, |pool| pool.geocode(&app, points))
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// The geometry a new book starts at.
 ///
 /// A command rather than a constant retyped in TypeScript, for the reason
@@ -1833,6 +1889,9 @@ pub async fn generate_book(
     // deserialisation runs `TryFrom<RawPrintSpec>`, so an impossible geometry
     // is refused here and can never reach `assemble`.
     spec: Option<PrintSpec>,
+    // The draft screen's switches. `None` from a caller that has none is
+    // every option off, the book this command always built.
+    options: Option<BookOptions>,
 ) -> Result<GeneratedBook, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let lib = load_library(&app)?;
@@ -1855,7 +1914,7 @@ pub async fn generate_book(
         // One of the three audited `pixajoy()` call sites: a caller that names
         // no geometry gets the printer this app was built against.
         let spec = spec.unwrap_or_else(PrintSpec::pixajoy);
-        let meta = NewProject { name: &name, source_folders, pages, seed, spec };
+        let meta = NewProject { name: &name, source_folders, pages, seed, spec, options: options.unwrap_or_default() };
         generate_and_save(&db, &meta, &parsed, &lib, &weights, &overrides)
     })
     .await
@@ -1908,7 +1967,6 @@ pub async fn export_book(
         // anyway.
         let findings = crate::book::preflight::preflight(&project.book, &parsed, &output);
 
-        let total = placement_total(&project.book);
         let mut completed = 0usize;
 
         let result = run_export(
@@ -1918,6 +1976,7 @@ pub async fn export_book(
             &output_dir,
             findings,
             |items| {
+                let total = items.len();
                 if let Err(err) = on_event.send(ExportEvent::Started { total }) {
                     log::warn!("failed to send export Started event: {err}");
                 }
@@ -2322,6 +2381,27 @@ pub async fn slot_candidates(
     .map_err(|e| e.to_string())?
 }
 
+/// `slot_candidates` for one side of the cover. The picker then sends
+/// `SetCoverPhoto` to `edit_book`.
+#[tauri::command]
+pub async fn cover_candidates(
+    app: AppHandle,
+    project_id: i64,
+    side: crate::geometry::CoverSide,
+) -> Result<Vec<crate::book::edit::SlotCandidate>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        let project = db
+            .load_project(project_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("project {project_id} no longer exists"))?;
+        let parsed = resolve_photos(&db, &project.photo_hashes)?;
+        Ok(crate::book::edit::cover_candidates(&project.book, &parsed, side))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Photos in any open contact sheet. A poisoned lock still holds a usable
 /// map, and ignoring it would unpin every photo on screen.
 fn live_hashes(state: &AppState) -> Vec<String> {
@@ -2508,10 +2588,12 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let book = crate::book::pace::Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 0,
             dropped: 0,
             pages: vec![],
+            options: Default::default(),
         };
         let save = |name: &str| db.save_project(name, "/tmp/x", &book, &[], &Overrides::new()).unwrap();
         let (stale, fresh, now_deleted) = (save("Stale"), save("Fresh"), save("Now"));
@@ -2543,6 +2625,7 @@ mod tests {
             pages,
             seed,
             spec: pixajoy_spec(),
+            options: BookOptions::default(),
         }
     }
 
@@ -2714,6 +2797,7 @@ mod tests {
             scene_tags: Vec::new(),
             captured_at: None,
             clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
+            location: None,
         }
     }
 
@@ -4252,11 +4336,11 @@ mod tests {
     // ================================================================
 
     use crate::book::cull::Photo;
+    use crate::book::cover::CoverPhoto;
     use crate::book::manifest::Manifest;
     use crate::book::pace::{Book, Page, Placement};
     use crate::book::preflight::{Finding, Severity};
     use crate::geometry::{Rect, Side};
-    use crate::protocol::ExportItem;
     use crate::templates::Library;
 
     /// The frozen five-template library `book::pace`'s goldens already use.
@@ -4335,6 +4419,7 @@ mod tests {
             scene_tags: Vec::new(),
             captured_at: None,
             clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
+            location: None,
         }
     }
 
@@ -4355,6 +4440,7 @@ mod tests {
         };
         let book = Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 99,
             dropped: 0,
@@ -4372,6 +4458,7 @@ mod tests {
                     placements: vec![placement(2, 1)],
                 },
             ],
+            options: Default::default(),
         };
         (book, photos)
     }
@@ -4620,6 +4707,80 @@ mod tests {
     }
 
     // --- `generate_and_save`: generation the user cannot lose -------------
+
+    /// Which town each spread's photos were taken in, for the Places tests.
+    fn towns_per_spread(book: &Book, towns: &[&'static str]) -> Vec<BTreeSet<&'static str>> {
+        let mut spreads: BTreeMap<u32, BTreeSet<&'static str>> = BTreeMap::new();
+        for page in &book.pages {
+            let spread = spreads.entry(page.number / 2).or_default();
+            spread.extend(page.placements.iter().map(|p| towns[p.photo_index]));
+        }
+        spreads.into_values().filter(|t| !t.is_empty()).collect()
+    }
+
+    /// One time run, twelve in Kyoto then twelve in Osaka, stamped as `finalize_photos` stamps
+    /// it: a single time-only chapter. With Places on no spread may mix the
+    /// two towns. The places-off book is the guard: it must mix them, or
+    /// this fixture cannot tell the option from a coincidence of group sizes.
+    #[test]
+    fn places_keeps_two_towns_off_each_others_spreads() {
+        let db = Db::open_in_memory().unwrap();
+        let lib = fixture_library();
+        let towns: Vec<&'static str> = (0..24).map(|i| if i < 12 { "kyoto" } else { "osaka" }).collect();
+        let records: Vec<serde_json::Value> = (0..24)
+            .map(|i| {
+                let mut record = photo_record(i, false, i as u32, 0);
+                let (lat, lon) = if towns[i] == "kyoto" { (35.0116, 135.7681) } else { (34.6937, 135.5023) };
+                record["exif"] = serde_json::json!({ "captureDate": 1_700_000_000 + 600 * i, "latitude": lat, "longitude": lon });
+                record
+            })
+            .collect();
+        let photos = photos_from_records(&records).unwrap();
+        let generate = |places: bool| {
+            let meta = NewProject { options: BookOptions { places }, ..new_project("Kansai", 20, 7) };
+            let id = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap().project_id;
+            db.load_project(id).unwrap().expect("saved")
+        };
+
+        let off = generate(false);
+        assert!(towns_per_spread(&off.book, &towns).iter().any(|t| t.len() == 2), "the guard: time alone must mix the towns");
+        assert!(!off.book.options.places);
+
+        let on = generate(true);
+        let spreads = towns_per_spread(&on.book, &towns);
+        assert!(spreads.iter().all(|t| t.len() == 1), "a spread mixes Kyoto and Osaka: {spreads:?}");
+        assert!(on.book.options.places, "the book must remember it was laid out by place");
+    }
+
+    /// The contact sheet regroups by these, so each photo must get its own
+    /// town's chapter by path, whatever order the analysis returned them in.
+    #[test]
+    fn place_chapters_gives_each_path_its_towns_chapter() {
+        const KYOTO: (f64, f64) = (35.0116, 135.7681);
+        const OSAKA: (f64, f64) = (34.6937, 135.5023);
+        let stops = [(3, Some(OSAKA)), (0, Some(KYOTO)), (2, None), (1, Some(KYOTO)), (4, Some(OSAKA))];
+        let records: Vec<serde_json::Value> = stops
+            .iter()
+            .enumerate()
+            .map(|(i, (minute, place))| {
+                let mut record = photo_record(i, false, i as u32, 0);
+                record["exif"] = match place {
+                    Some((lat, lon)) => serde_json::json!({ "captureDate": 1_700_000_000 + 600 * minute, "latitude": lat, "longitude": lon }),
+                    None => serde_json::json!({ "captureDate": 1_700_000_000 + 600 * minute }),
+                };
+                record
+            })
+            .collect();
+        let sheet = crate::book::chapter::PlaceChapters::of(&photos_from_records(&records).unwrap());
+        let chapter = |i: usize| sheet.chapters[&format!("/photos/p{i:03}.jpg")];
+
+        assert_eq!(sheet.located, 4);
+        assert_eq!(sheet.chapters.len(), 5);
+        assert_eq!(chapter(1), chapter(3), "both Kyoto photos");
+        assert_eq!(chapter(0), chapter(4), "both Osaka photos");
+        assert_ne!(chapter(1), chapter(0), "Kyoto and Osaka");
+        assert_eq!(chapter(2), chapter(1), "the unlocated photo was taken in Kyoto's hour");
+    }
 
     /// The geometry the draft screen was showing must be the geometry the
     /// book is laid out under AND the one persisted with it.
@@ -5367,6 +5528,7 @@ mod tests {
         };
         let book = Book {
             spec: pixajoy_spec(),
+            cover: Default::default(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
@@ -5376,6 +5538,7 @@ mod tests {
                 template_id: "t".into(),
                 placements: (0..7).map(placement).collect(),
             }],
+            options: Default::default(),
         };
 
         assert_eq!(
@@ -5738,14 +5901,43 @@ mod tests {
         );
     }
 
-    /// A `Vec<ExportItem>` is built from the book and handed straight to the
-    /// sidecar, so the count the UI is told to expect must be the count that
-    /// is actually sent -- otherwise the progress bar's denominator is a
-    /// different number from its numerator's source.
+    /// The cover goes through the same reconcile as a page: its format is read
+    /// off the written path, and a side the sidecar failed on is left out of
+    /// the manifest and counted with the other unwritten files.
     #[test]
-    fn the_progress_total_is_the_number_of_items_actually_sent() {
-        let (book, photos) = two_page_book();
-        let items: Vec<ExportItem> = crate::export::build_items(&book, &photos);
-        assert_eq!(items.len(), placement_total(&book));
+    fn a_cover_side_the_sidecar_failed_on_is_left_out_of_the_manifest() {
+        let (mut book, photos) = two_page_book();
+        book.cover.front = Some(CoverPhoto { photo_index: 1, crop: Rect::new(0.0, 0.1, 1.0, 0.6) });
+        book.cover.back = Some(CoverPhoto { photo_index: 2, crop: Rect::new(0.1, 0.0, 0.8, 1.0) });
+        let dir = tempfile::tempdir().unwrap();
+
+        let result = run_export(
+            &book,
+            &photos,
+            42,
+            &dir.path().to_string_lossy(),
+            Vec::new(),
+            |items| {
+                items
+                    .iter()
+                    .map(|i| match i.filename.as_str() {
+                        "cover-front-hbbb2222" => ok_record(&i.filename, "png"),
+                        "cover-back-hccc3333" => failed_record(&i.filename, "disk full"),
+                        _ => ok_record(&i.filename, "jpg"),
+                    })
+                    .collect()
+            },
+            manifest_writer(dir.path()),
+        )
+        .unwrap();
+
+        assert_eq!(result.written.len(), 4, "three page files and the front cover");
+        let written: Manifest = serde_json::from_str(
+            &std::fs::read_to_string(result.manifest_path.unwrap()).unwrap(),
+        )
+        .unwrap();
+        let front = written.cover.front.expect("the front cover was written");
+        assert_eq!((front.filename.as_str(), front.format.as_str()), ("cover-front-hbbb2222", "png"));
+        assert_eq!(written.cover.back, None, "the back cover was not written");
     }
 }

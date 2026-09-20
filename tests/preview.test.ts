@@ -17,6 +17,9 @@ import {
   refusalText,
   replaceCandidates,
   pageGuides,
+  pickAspect,
+  pickEdit,
+  setCoverCropEdit,
   setCropEdit,
   setSlotEdit,
   slotMoved,
@@ -29,6 +32,7 @@ import {
   type BookEdit,
   type BookLayout,
   type PreviewGeometry,
+  type PickTarget,
   type PreviewPage,
   type Rejection,
   type SlotCandidate,
@@ -60,11 +64,24 @@ function shape(pages: (PreviewPage | null)[]): (number | null)[] {
 }
 
 describe("the wire fixture", () => {
+  it("carries the cover: both panels, one empty, and the spine", () => {
+    expect(layout.cover.aspect).toBe(1.175);
+    expect(layout.cover.spine).toBe("#1a2b3c");
+    expect(layout.cover.front.photo).toEqual({
+      photoIndex: 4,
+      crop: { x: 0, y: 0.125, w: 1, h: 0.567 },
+      filename: "cover-front-hash-e",
+    });
+    expect(layout.cover.back.photo).toBeNull();
+    expect(layout.cover.back.visible.x).toBeGreaterThan(layout.cover.front.visible.x);
+  });
+
   it("carries every key the preview reads, including a page that holds nothing", () => {
     expect(layout.projectId).toBe(7);
     expect(layout.pageCount).toBe(4);
     expect(layout.placedPhotos).toBe(3);
     expect(layout.droppedPhotos).toBe(2);
+    expect(layout.options).toStrictEqual({ places: true });
     expect(layout.pages).toHaveLength(4);
     expect(layout.photos).toHaveLength(5);
     // A real template id on a page that still prints white -- the text-zone
@@ -93,6 +110,7 @@ describe("the wire fixture", () => {
       safeMarginIn: 0.125,
       minDpi: 200,
       warnDpi: 300,
+      coverWrapIn: 0.75,
     });
 
     const { pageWIn, bleedIn, gutterIn, safeMarginIn } = layout.spec;
@@ -676,8 +694,13 @@ describe("the edit wire", () => {
           safeMarginIn: 0.05,
           minDpi: 150,
           warnDpi: 220,
+          coverWrapIn: 0.6,
         },
       },
+      { kind: "setCoverPhoto", side: "front", photo: 7 },
+      { kind: "setCoverPhoto", side: "back", photo: null },
+      { kind: "setCoverCrop", side: "back", x: 0.125, y: 0.0625, w: 0.5 },
+      { kind: "setSpineColour", rgb: "#1a2b3c" },
     ];
     expect(fixture).toEqual(typed);
   });
@@ -821,7 +844,7 @@ function indices(rows: { index: number }[]): number[] {
 describe("choosing a photo for a slot", () => {
   // The fixture places photos 3 (page 1), 1 and 0 (page 2); 2 and 4 are left
   // out. Scores 62, 18, 91, 40, 77; photo 2 has no capture time.
-  const target = { page: 2, z: 1 };
+  const target: PickTarget = { kind: "slot", placement: { page: 2, z: 1 } };
   const candidates: SlotCandidate[] = layout.photos.map((_, i) => ({
     crop: { x: i / 10, y: 0, w: 0.5, h: 1 },
     refused: i === 4 ? "faceInGutter" : null,
@@ -860,10 +883,63 @@ describe("choosing a photo for a slot", () => {
     expect(rows.filter((r) => r.locked).map((r) => r.index)).toEqual([3]);
   });
 
+  it("frames each tile at the slot's printed shape and replaces the photo there", () => {
+    expect(pickAspect(layout, target)).toBeCloseTo((0.5 * 11.197) / (0.62 * 8.894), 12);
+    expect(pickEdit(target, 2)).toEqual({ kind: "replacePhoto", placement: { page: 2, z: 1 }, photo: 2 });
+  });
+
   it("puts every refusal into words", () => {
     const reasons: Rejection[] = ["faceClipped", "faceInGutter", "faceInSafeMargin", "tooLowResolution"];
-    const texts = reasons.map(refusalText);
+    const texts = reasons.map((r) => refusalText(r, "slot"));
     expect(new Set(texts).size).toBe(reasons.length);
     for (const text of texts) expect(text.length).toBeGreaterThan(10);
+  });
+});
+
+describe("choosing a photo for the cover", () => {
+  // The fixture's front cover is photo 4, which no page places; the back is empty.
+  const front: PickTarget = { kind: "cover", side: "front" };
+  const back: PickTarget = { kind: "cover", side: "back" };
+  const candidates: SlotCandidate[] = layout.photos.map((_, i) => ({
+    crop: { x: 0, y: i / 20, w: 1, h: 0.6 },
+    refused: i === 2 ? "faceInSafeMargin" : null,
+  }));
+
+  it("marks the photo on that side as current, and nothing on an empty side", () => {
+    expect(replaceCandidates(layout, candidates, front, "all", "best").filter((r) => r.current).map((r) => r.index)).toEqual([4]);
+    expect(replaceCandidates(layout, candidates, back, "all", "best").filter((r) => r.current)).toEqual([]);
+  });
+
+  /** A cover photo may also be on a page, so a lock on that page does not stand in the way. */
+  it("never marks a photo locked, since the cover takes a copy rather than a swap", () => {
+    const locked: BookLayout = {
+      ...layout,
+      openings: layout.openings.map((o) => (o.index === 0 ? { ...o, locked: true } : o)),
+    };
+    const rows = replaceCandidates(locked, candidates, front, "all", "best");
+    expect(rows.find((r) => r.index === 3)?.placedAt).toEqual({ page: 1, z: 1 });
+    expect(rows.filter((r) => r.locked)).toEqual([]);
+  });
+
+  it("frames each tile at the cover panel's shape and sets that side's photo", () => {
+    expect(pickAspect(layout, front)).toBe(layout.cover.aspect);
+    expect(pickEdit(back, 2)).toEqual({ kind: "setCoverPhoto", side: "back", photo: 2 });
+  });
+
+  /** On the cover the margin a face strays into is mostly the wrap, as Rust's own refusal says. */
+  it("words a face refusal as the fold under the board", () => {
+    expect(refusalText("faceInSafeMargin", "cover")).toBe("A face would fold under the board or sit too near its edge");
+    expect(refusalText("faceInSafeMargin", "slot")).toBe("A face would sit in the trim margin");
+    expect(refusalText("tooLowResolution", "cover")).toBe(refusalText("tooLowResolution", "slot"));
+  });
+
+  it("saves a dragged cover crop as that side's crop", () => {
+    expect(setCoverCropEdit("back", { x: 0.1, y: 0.2, w: 0.5, h: 0.4 })).toEqual({
+      kind: "setCoverCrop",
+      side: "back",
+      x: 0.1,
+      y: 0.2,
+      w: 0.5,
+    });
   });
 });

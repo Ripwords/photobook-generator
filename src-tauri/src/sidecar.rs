@@ -1,3 +1,4 @@
+use crate::book::chapter::LatLon;
 use crate::protocol::{ExportItem, ExportRequest, Request, RequestKind, Response, ResponseResult};
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
@@ -91,14 +92,19 @@ impl Sidecar {
         export: Option<ExportRequest>,
         timeout: Duration,
     ) -> Result<ResponseResult, SidecarError> {
-        let id = self.next_id();
         let req = Request {
-            id: id.clone(),
+            id: self.next_id(),
             kind,
             paths,
             thumbnail_dir,
             export,
+            coordinates: None,
         };
+        self.exchange(req, timeout)
+    }
+
+    fn exchange(&mut self, req: Request, timeout: Duration) -> Result<ResponseResult, SidecarError> {
+        let id = req.id.clone();
         let mut line =
             serde_json::to_string(&req).map_err(|e| SidecarError::Malformed(e.to_string()))?;
         line.push('\n');
@@ -140,7 +146,8 @@ impl Sidecar {
             ResponseResult::Error { message } => Err(SidecarError::Engine(message)),
             ResponseResult::Pong { .. }
             | ResponseResult::Benchmarked(_)
-            | ResponseResult::Exported(_) => Err(SidecarError::Malformed("expected analyzed".into())),
+            | ResponseResult::Exported(_)
+            | ResponseResult::Geocoded(_) => Err(SidecarError::Malformed("expected analyzed".into())),
         }
     }
 
@@ -160,9 +167,37 @@ impl Sidecar {
             ResponseResult::Error { message } => Err(SidecarError::Engine(message)),
             ResponseResult::Pong { .. }
             | ResponseResult::Analyzed(_)
-            | ResponseResult::Benchmarked(_) => {
+            | ResponseResult::Benchmarked(_)
+            | ResponseResult::Geocoded(_) => {
                 Err(SidecarError::Malformed("expected exported".into()))
             }
+        }
+    }
+
+    /// One name or `None` per coordinate, in order. Each lookup is a network
+    /// round-trip the sidecar bounds at `GEOCODE_TIMEOUT`, so the wait
+    /// scales with the count.
+    pub fn geocode(&mut self, coordinates: Vec<LatLon>) -> Result<Vec<Option<String>>, SidecarError> {
+        let count = coordinates.len();
+        let req = Request {
+            id: self.next_id(),
+            kind: RequestKind::Geocode,
+            paths: None,
+            thumbnail_dir: None,
+            export: None,
+            coordinates: Some(coordinates),
+        };
+        match self.exchange(req, GEOCODE_TIMEOUT * count as u32 + timeout_for(0))? {
+            ResponseResult::Geocoded(names) if names.len() == count => Ok(names),
+            ResponseResult::Geocoded(names) => Err(SidecarError::Malformed(format!(
+                "asked for {count} names, got {}",
+                names.len()
+            ))),
+            ResponseResult::Error { message } => Err(SidecarError::Engine(message)),
+            ResponseResult::Pong { .. }
+            | ResponseResult::Analyzed(_)
+            | ResponseResult::Benchmarked(_)
+            | ResponseResult::Exported(_) => Err(SidecarError::Malformed("expected geocoded".into())),
         }
     }
 }
@@ -239,6 +274,10 @@ pub(crate) fn chunk_paths_ramped(paths: &[String]) -> Vec<Vec<String>> {
 pub fn timeout_for(batch_len: usize) -> Duration {
     Duration::from_secs(10) + Duration::from_secs(3) * batch_len as u32
 }
+
+/// Longer than `Geocoder.timeout` on the Swift side (10 s), so a lookup the
+/// sidecar gives up on still answers as a null rather than timing out here.
+pub const GEOCODE_TIMEOUT: Duration = Duration::from_secs(12);
 
 pub fn failure_record(path: &str, message: &str) -> serde_json::Value {
     serde_json::json!({ "status": "failed", "path": path, "message": message })
@@ -496,6 +535,18 @@ impl SidecarPool {
             },
             on_batch,
         )
+    }
+
+    pub fn geocode(
+        &mut self,
+        app: &AppHandle,
+        coordinates: Vec<LatLon>,
+    ) -> Result<Vec<Option<String>>, SidecarError> {
+        let result = self.ensure(app).and_then(|sidecar| sidecar.geocode(coordinates));
+        if result.is_err() {
+            self.inner = None;
+        }
+        result
     }
 }
 

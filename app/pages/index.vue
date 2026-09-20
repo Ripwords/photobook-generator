@@ -2,6 +2,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { PhotoOverrides } from "~/types/features";
 import type { Screen } from "~/types/navigation";
+import type { BookOptions } from "~/types/book";
 import type { PrintSpec } from "~/types/printSpec";
 import { shortcutCombo } from "~/types/shortcuts";
 import type { AnalysisJob } from "~/composables/useAnalysisJobs";
@@ -116,6 +117,7 @@ function onEditPhotos(payload: {
   sourceFolders: string[];
   overrides: PhotoOverrides;
   spec: PrintSpec | null;
+  options: BookOptions | null;
 }) {
   const existing = jobForProject(payload.projectId);
   if (existing) {
@@ -129,6 +131,7 @@ function onEditPhotos(payload: {
       replacing: { id: payload.projectId, name: payload.name },
       restoreOverrides: payload.overrides,
       spec: payload.spec,
+      options: payload.options ?? undefined,
     }),
   );
 }

@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 // Imported explicitly rather than left to Nuxt's auto-imports so this file
 // runs under plain vitest -- see `tests/jobs.test.ts`.
 import { reactive, ref, watch } from "vue";
-import { defaultProjectName } from "~/types/book";
+import { DEFAULT_BOOK_OPTIONS, defaultProjectName, type BookOptions } from "~/types/book";
 import {
   applyAnalysisEvent,
   initialStreamState,
@@ -43,6 +43,8 @@ export interface AnalysisJob {
    * default, which only Rust knows -- see `default_print_spec`.
    */
   spec: PrintSpec | null;
+  /** The book's switches, such as splitting chapters by place. */
+  options: BookOptions;
 }
 
 export interface NewJob {
@@ -52,6 +54,7 @@ export interface NewJob {
   replacing?: ReplacedProject | null;
   restoreOverrides?: PhotoOverrides;
   spec?: PrintSpec | null;
+  options?: BookOptions;
 }
 
 /**
@@ -66,6 +69,7 @@ export interface SavedDraft {
   /** The decisions to apply once the draft is analysed again. */
   overrides: PhotoOverrides;
   spec: PrintSpec | null;
+  options: BookOptions;
 }
 
 /**
@@ -81,6 +85,7 @@ export function savedDraft(job: AnalysisJob): SavedDraft {
     replacing: job.replacing ? { ...job.replacing } : null,
     overrides: { ...(analysed ? job.overrides : job.restoreOverrides) },
     spec: job.spec ? { ...job.spec } : null,
+    options: { ...job.options },
   };
 }
 
@@ -89,6 +94,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const SPEC_KEYS = ["pageWIn", "pageHIn", "bleedIn", "gutterIn", "safeMarginIn", "minDpi", "warnDpi"] as const;
+
+/**
+ * The wrap a spec saved before covers existed is read with: Rust's own
+ * serde default for `coverWrapIn`. Pinned to it from both sides by
+ * `tests/fixtures/wire/legacy-print-spec.json`.
+ */
+const LEGACY_COVER_WRAP_IN = 0.75;
 
 /**
  * A saved print size, or `null` for the default. Shape only: Rust validates
@@ -102,13 +114,22 @@ function parseSpec(value: unknown): PrintSpec | null {
     if (typeof n !== "number" || !Number.isFinite(n)) return null;
     spec[key] = n;
   }
+  const wrap = value.coverWrapIn ?? LEGACY_COVER_WRAP_IN;
+  if (typeof wrap !== "number" || !Number.isFinite(wrap)) return null;
+  spec.coverWrapIn = wrap;
   return spec;
+}
+
+/** Saved options, with anything missing or torn read as off. */
+function parseOptions(value: unknown): BookOptions {
+  return { places: isRecord(value) && value.places === true };
 }
 
 /**
  * Reads a saved draft back, or `null` for one this version cannot use. A
  * draft saved before print sizes existed, or with a torn one, is still a
- * draft: it gets the default size rather than being thrown away.
+ * draft: it gets the default size rather than being thrown away. The same
+ * goes for options, which read as off.
  */
 export function parseSavedDraft(json: string): SavedDraft | null {
   let value: unknown;
@@ -118,7 +139,7 @@ export function parseSavedDraft(json: string): SavedDraft | null {
     return null;
   }
   if (!isRecord(value)) return null;
-  const { id, name, folders, replacing, overrides, spec } = value;
+  const { id, name, folders, replacing, overrides, spec, options } = value;
   if (typeof id !== "number" || typeof name !== "string") return null;
   if (!Array.isArray(folders) || folders.length === 0) return null;
   if (!folders.every((folder) => typeof folder === "string")) return null;
@@ -132,7 +153,15 @@ export function parseSavedDraft(json: string): SavedDraft | null {
       if (state === "include" || state === "exclude") decisions[hash] = state;
     }
   }
-  return { id, name, folders, replacing: replaced, overrides: decisions, spec: parseSpec(spec) };
+  return {
+    id,
+    name,
+    folders,
+    replacing: replaced,
+    overrides: decisions,
+    spec: parseSpec(spec),
+    options: parseOptions(options),
+  };
 }
 
 /** The run a job's photos came from -- see `AnalysisSummary.runId`. `0` until it is done. */
@@ -237,6 +266,7 @@ export function createAnalysisJobs() {
       error: null,
       overrides: {},
       spec: options.spec ?? null,
+      options: { ...(options.options ?? DEFAULT_BOOK_OPTIONS) },
     }) as AnalysisJob;
     jobs.value.push(job);
     void run(job);
@@ -272,6 +302,11 @@ export function createAnalysisJobs() {
   function setSpec(id: number, spec: PrintSpec | null) {
     const job = find(id);
     if (job) job.spec = spec ? { ...spec } : null;
+  }
+
+  function setOptions(id: number, options: BookOptions) {
+    const job = find(id);
+    if (job) job.options = { ...options };
   }
 
   /**
@@ -348,6 +383,7 @@ export function createAnalysisJobs() {
           replacing: draft.replacing,
           restoreOverrides: draft.overrides,
           spec: draft.spec,
+          options: draft.options,
         },
         reused ? nextId++ : draft.id,
       );
@@ -371,6 +407,7 @@ export function createAnalysisJobs() {
     changeFolders,
     rename,
     setSpec,
+    setOptions,
     remove,
     jobForProject,
     onSettled,

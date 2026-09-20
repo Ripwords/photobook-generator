@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/editor.png" alt="The book editor with the chat open" width="900" />
+  <img src="docs/screenshots/editor.png" alt="The book editor showing the cover and page 1, with the chat open" width="900" />
 </p>
 
 Pick your photo folders. PhotobookGen ranks every photo with Apple Vision, drops look-alikes
@@ -31,6 +31,11 @@ one cropped file per photo plus a `manifest.json`, ready to upload to your print
 - **Full control.** Include or exclude any photo. Regenerate, lock or shuffle spreads, swap
   photos, crop, and move or resize boxes. Edits that would cut a face or print blurry are
   refused with the reason.
+- **Front and back cover.** Generating a book picks both, cropped to the panel including the
+  wrap that folds under the board, with a plain spine colour taken from the front photo.
+  Swap, re-crop or clear either side.
+- **Chapters by place.** Optional, off by default. A move of more than 25 km ends a chapter,
+  and each one is titled with its town.
 - **Any printer.** Page size, bleed, margins and DPI are set per book. Pixajoy's 11 × 8.5" is
   the default.
 - **Pre-flight export.** Anything that would print badly blocks the export.
@@ -61,10 +66,16 @@ It updates itself after that.
 description of the book (layouts, page numbers, photo tags) to the provider you add a key
 for. Keys live in the macOS keychain. Your originals are never modified.
 
+Chapters by place, if you turn it on, asks Apple for a town name. It sends one point per
+chapter, rounded to about a kilometre, and never a photo. With the switch off nothing is
+sent. Town names stay on your Mac and are never included in what the chat sees.
+
 ## Status
 
-Usable end to end, but not yet proven against a printed book. The cover, location
-clustering and same-person grouping aren't built. See
+Usable end to end, but not yet proven against a printed book. The cover and location
+clustering are built. Same-person grouping is blocked: Apple's on-device face data does not
+separate people reliably (0.705 AUC over 555 labelled faces), and the usual alternative
+model is licensed for research only. See
 [`docs/PROJECT-STATUS.md`](docs/PROJECT-STATUS.md) for the full record.
 
 ## Docs

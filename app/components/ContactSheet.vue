@@ -1,5 +1,6 @@
 <script setup lang="ts" generic="T extends { path: string }">
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/vue-virtual";
+import type { PlaceNames } from "~/types/book";
 import { activeEventRow, sheetColumns, sheetRows, tileRows } from "~/types/sheet";
 
 /**
@@ -17,6 +18,7 @@ const {
   scrollElement,
   headers = true,
   stickyTop = 0,
+  names = {},
 } = defineProps<{
   groups: { eventCluster: number; photos: T[] }[];
   /** The smallest a tile may be, in CSS pixels. */
@@ -27,6 +29,8 @@ const {
   headers?: boolean;
   /** How far below the scroller's top a header sticks, clearing anything pinned above it. */
   stickyTop?: number;
+  /** Town names by `eventCluster`; a chapter without one is numbered. */
+  names?: PlaceNames;
 }>();
 
 defineSlots<{ tile(props: { photo: T }): unknown }>();
@@ -65,7 +69,7 @@ const columns = computed(() => sheetColumns(width.value, tileSize, GAP));
 const tileWidth = computed(() => (width.value - GAP * (columns.value - 1)) / columns.value);
 const rows = computed(() =>
   headers
-    ? sheetRows(groups, columns.value)
+    ? sheetRows(groups, columns.value, names)
     : groups.flatMap((group) => tileRows(group.photos, columns.value, `group-${group.eventCluster}`)),
 );
 
@@ -116,7 +120,12 @@ watch([tileWidth, rows], () => virtualizer.value.measure());
 
 <template>
   <div ref="root" class="relative" :style="{ height: `${virtualizer.getTotalSize()}px` }">
-    <template v-for="{ item, row, offset } in visible" :key="item.key">
+    <!--
+      `row.key` is the value `getItemKey` handed the virtualizer for this index.
+      It is read from the row because `item.key`'s type also admits a `bigint`,
+      which a `:key` cannot take.
+    -->
+    <template v-for="{ item, row, offset } in visible" :key="row.key">
       <div
         v-if="row.kind === 'event'"
         :style="
@@ -128,8 +137,8 @@ watch([tileWidth, rows], () => virtualizer.value.measure());
         <h2
           class="-mx-6 flex h-9 items-baseline gap-2 bg-default/95 px-6 py-2 text-sm font-semibold text-highlighted backdrop-blur"
         >
-          Event {{ row.ordinal }}
-          <span class="font-normal text-muted tabular-nums"
+          <span class="min-w-0 truncate">{{ row.title }}</span>
+          <span class="shrink-0 font-normal text-muted tabular-nums"
             >{{ row.count }} {{ row.count === 1 ? "photo" : "photos" }}</span
           >
         </h2>

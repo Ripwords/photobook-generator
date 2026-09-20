@@ -185,6 +185,28 @@ describe("groupByEvent", () => {
   });
 });
 
+describe("groupByEvent with place chapters", () => {
+  it("regroups by the chapter each path was given, not the time-only cluster", () => {
+    const result = groupByEvent(
+      [
+        photo({ path: "/p/osaka.jpg", eventCluster: 0 }),
+        photo({ path: "/p/kyoto.jpg", eventCluster: 0 }),
+        photo({ path: "/p/osaka-2.jpg", eventCluster: 0 }),
+      ],
+      { "/p/kyoto.jpg": 0, "/p/osaka.jpg": 1, "/p/osaka-2.jpg": 1 },
+    );
+    expect(result.map((g) => [g.eventCluster, g.photos.map((p) => p.path)])).toEqual([
+      [0, ["/p/kyoto.jpg"]],
+      [1, ["/p/osaka.jpg", "/p/osaka-2.jpg"]],
+    ]);
+  });
+
+  it("keeps a photo the chapters do not name in its own cluster", () => {
+    const result = groupByEvent([photo({ path: "/p/new.jpg", eventCluster: 4 })], {});
+    expect(result.map((g) => g.eventCluster)).toEqual([4]);
+  });
+});
+
 describe("burstSizes", () => {
   it("returns an empty map for no input", () => {
     expect(burstSizes([])).toEqual(new Map());

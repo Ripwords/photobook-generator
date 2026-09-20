@@ -1,0 +1,21 @@
+{
+  "legacy": {
+    "pageWIn": 8.0,
+    "pageHIn": 10.0,
+    "bleedIn": 0.25,
+    "gutterIn": 0.4,
+    "safeMarginIn": 0.05,
+    "minDpi": 150.0,
+    "warnDpi": 220.0
+  },
+  "loadsAs": {
+    "pageWIn": 8.0,
+    "pageHIn": 10.0,
+    "bleedIn": 0.25,
+    "gutterIn": 0.4,
+    "safeMarginIn": 0.05,
+    "minDpi": 150.0,
+    "warnDpi": 220.0,
+    "coverWrapIn": 0.75
+  }
+}
