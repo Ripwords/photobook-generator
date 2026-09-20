@@ -17,7 +17,7 @@ use crate::templates::{Library, Weights};
 use crate::{cluster, db::{Db, FileStamp}, ranking, sidecar::SidecarPool};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -2133,6 +2133,88 @@ pub async fn open_project(app: AppHandle, id: i64) -> Result<ProjectDetail, Stri
     .map_err(|e| e.to_string())?
 }
 
+/// What re-checking a saved book's folders found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderCheck {
+    /// Files under the book's folders that are not among the photos it was
+    /// built from.
+    pub new_photos: usize,
+    /// At least one folder could not be read -- an unplugged drive, a folder
+    /// the user moved. The count then covers only the folders that could be,
+    /// so it is a floor rather than a total, and the UI says so.
+    pub unreadable: bool,
+}
+
+/// Whether one file on disk is a photo the book has never seen.
+///
+/// Three ways to be new. Nothing has ever hashed this path. Something has,
+/// but the size or modified time has changed since, so the hash on record no
+/// longer describes the file. Or the hash is current and simply is not one of
+/// the book's. A file that cannot be stat'd at all does NOT count: it is
+/// unreadable, not new, and offering to re-analyse it would not help.
+///
+/// Pure, and stat-only by construction: the caller passes what it already
+/// read, nothing here opens or decodes a file. That is what makes it cheap
+/// enough to run every time a book is opened, and testable without a disk.
+pub(crate) fn photo_is_new(
+    now: Option<FileStamp>,
+    stamped: Option<(FileStamp, String)>,
+    known: &HashSet<String>,
+) -> bool {
+    match (now, stamped) {
+        (None, _) => false,
+        (Some(now), Some((seen, hash))) if now == seen => !known.contains(&hash),
+        _ => true,
+    }
+}
+
+/// How many photos sit in a saved book's folders that the book does not have.
+///
+/// Opening a book never touches the filesystem -- its photos are resolved from
+/// content hashes against the features cache -- so a photo dropped into the
+/// folder afterwards was invisible until the user happened to run **Edit
+/// photos**. This is the cheap check that tells them it is there: one
+/// directory walk and one stat and one point query per file. No hashing, no
+/// decoding, no Vision.
+///
+/// Separate from `open_project` on purpose. A book whose folder lives on a
+/// drive that is not plugged in must still open.
+#[tauri::command]
+pub async fn folder_check(app: AppHandle, project_id: i64) -> Result<FolderCheck, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        let project = db
+            .load_project(project_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("project {project_id} no longer exists"))?;
+        let known: HashSet<String> = project.photo_hashes.into_iter().collect();
+        // One folder at a time, so one unplugged drive costs its own photos
+        // and not the whole answer.
+        let mut paths = BTreeSet::new();
+        let mut unreadable = false;
+        for folder in &project.source_folders {
+            match collect_photo_paths(std::slice::from_ref(folder)) {
+                Ok(found) => paths.extend(found),
+                Err(err) => {
+                    log::warn!("folder_check: cannot read {folder}: {err}");
+                    unreadable = true;
+                }
+            }
+        }
+        let mut new_photos = 0;
+        for path in &paths {
+            let stamped = db.get_stamp(path).map_err(|e| e.to_string())?;
+            if photo_is_new(FileStamp::of(Path::new(path)), stamped, &known) {
+                new_photos += 1;
+            }
+        }
+        Ok(FolderCheck { new_photos, unreadable })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// The saved book's layout, for the read-only preview.
 ///
 /// Keyed by project id and read from the database rather than taken from the
@@ -2702,6 +2784,43 @@ mod tests {
     /// files, ignores non-images, and returns a sorted list -- asserted on a
     /// real temporary tree rather than a mock, so the recursion, the hidden-
     /// directory rule and the file filter are all exercised on disk.
+
+    fn stamp(size: i64, modified_ns: i64) -> FileStamp {
+        FileStamp { size, modified_ns }
+    }
+
+    #[test]
+    fn photo_is_new_only_when_the_book_cannot_already_have_it() {
+        let known: HashSet<String> = ["aaa".to_string()].into_iter().collect();
+        let now = stamp(10, 20);
+
+        // Hashed, unchanged, and the book has it: not new.
+        assert!(!photo_is_new(Some(now), Some((now, "aaa".to_string())), &known));
+        // Hashed, unchanged, but a hash the book never took: new.
+        assert!(photo_is_new(Some(now), Some((now, "bbb".to_string())), &known));
+        // Never hashed: new.
+        assert!(photo_is_new(Some(now), None, &known));
+    }
+
+    #[test]
+    fn photo_is_new_when_the_file_changed_under_a_hash_the_book_has() {
+        let known: HashSet<String> = ["aaa".to_string()].into_iter().collect();
+        // Same path, same recorded hash, but the file is a different size
+        // now -- the hash on record no longer describes it, so what is on
+        // disk is something the book has not seen.
+        assert!(photo_is_new(Some(stamp(11, 20)), Some((stamp(10, 20), "aaa".to_string())), &known));
+        // A touch that only moved the modified time counts the same way.
+        assert!(photo_is_new(Some(stamp(10, 99)), Some((stamp(10, 20), "aaa".to_string())), &known));
+    }
+
+    #[test]
+    fn photo_is_new_says_no_for_a_file_it_cannot_stat() {
+        // An unreadable file is not an invitation to re-analyse anything.
+        let known = HashSet::new();
+        assert!(!photo_is_new(None, None, &known));
+        assert!(!photo_is_new(None, Some((stamp(10, 20), "aaa".to_string())), &known));
+    }
+
     #[test]
     fn collect_photo_paths_walks_nested_folders_and_skips_hidden_and_apple_double() {
         let dir = tempfile::tempdir().unwrap();

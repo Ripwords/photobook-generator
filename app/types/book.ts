@@ -179,6 +179,37 @@ export interface ProjectDetail {
   exports: ExportSummary[];
 }
 
+/**
+ * Mirrors Rust's `FolderCheck`: what a saved book's source folders hold that
+ * the book itself does not. Opening a book resolves its photos from content
+ * hashes and never walks the disk, so this is the only thing that notices a
+ * photo added to the folder afterwards.
+ */
+export interface FolderCheck {
+  newPhotos: number;
+  /** A folder could not be read, so `newPhotos` covers only the ones that could. */
+  unreadable: boolean;
+}
+
+/**
+ * The folder check as something to show, or `null` for nothing worth saying.
+ * An unreadable folder alone is not news -- the book still opens and still
+ * exports from what was analysed -- so it only ever qualifies a count.
+ */
+export function folderNotice(
+  check: FolderCheck | null,
+): { title: string; description: string } | null {
+  if (!check || check.newPhotos === 0) return null;
+  const photos = check.newPhotos === 1 ? "1 new photo" : `${check.newPhotos} new photos`;
+  const floor = check.unreadable
+    ? "At least that many: one of the folders could not be read. "
+    : "";
+  return {
+    title: `${photos} in this book's folders`,
+    description: `${floor}Edit photos analyses them and brings them into the book. A photo the book has never seen is new Vision work, so that run is not instant.`,
+  };
+}
+
 /** Mirrors Rust's `ExportEvent`, streamed over a `tauri::ipc::Channel`. */
 export interface ExportStartedEvent {
   kind: "started";

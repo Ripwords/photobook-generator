@@ -14,6 +14,7 @@ import {
   type ExportEvent,
   type ExportProgress,
   type ExportResult,
+  type FolderCheck,
   type GeneratedBook,
   type ProjectDetail,
 } from "~/types/book";
@@ -68,6 +69,13 @@ export function useBook(
    * SQLite that only two of those transitions should trigger.
    */
   const layout = ref<BookLayout | null>(null);
+  /**
+   * What the book's folders hold that it does not. Filled by `folder_check`
+   * AFTER the editor is already on screen and deliberately outside `guard`:
+   * it walks the disk, so a folder on a drive that is not plugged in must
+   * never hold up opening the book or show as an error over it.
+   */
+  const folderCheck = ref<FolderCheck | null>(null);
   const progress = ref<ExportProgress>(initialExportProgress);
   const { projects, refresh: loadProjects } = useProjects();
   const outputDir = ref<string | null>(null);
@@ -173,11 +181,28 @@ export function useBook(
    * `withOpenedProject`'s doc comment.
    */
   async function openProject(id: number) {
+    folderCheck.value = null;
     await guard(async () => {
       const project = await invoke<ProjectDetail>("open_project", { id });
       applyBookState(withOpenedProject(project));
       await loadLayout(project.id);
     });
+    await checkFolders(id);
+  }
+
+  /**
+   * Re-walks the book's folders and records what they hold that it does not.
+   * Failure is silent on purpose: this is a courtesy notice, and a book whose
+   * photos live on an external drive still opens and still exports from the
+   * cache. `null` simply means the question was not answered.
+   */
+  async function checkFolders(id: number) {
+    try {
+      folderCheck.value = await invoke<FolderCheck>("folder_check", { projectId: id });
+    } catch (err) {
+      console.warn("folder_check failed", err);
+      folderCheck.value = null;
+    }
   }
 
   /**
@@ -300,6 +325,7 @@ export function useBook(
   function reset() {
     recommendation.value = null;
     layout.value = null;
+    folderCheck.value = null;
     applyBookState(initialBookState);
     progress.value = initialExportProgress;
     error.value = null;
@@ -316,6 +342,7 @@ export function useBook(
     exportResult,
     exportProjectId,
     layout,
+    folderCheck,
     progress,
     projects,
     outputDir,
@@ -324,6 +351,7 @@ export function useBook(
     refreshRecommendation,
     generate,
     openProject,
+    checkFolders,
     deleteProject,
     renameProject,
     pickOutputDir,

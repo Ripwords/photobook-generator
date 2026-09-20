@@ -59,6 +59,7 @@ pub fn run() {
             commands::list_projects,
             commands::open_project,
             commands::book_layout,
+            commands::folder_check,
             commands::agent_view,
             commands::agent_edit,
             commands::set_api_key,

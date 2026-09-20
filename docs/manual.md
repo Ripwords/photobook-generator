@@ -158,9 +158,17 @@ The book, spread by spread, as it will print. **Everything on this screen is wri
 as you do it** (the check beside the title says when it last saved), so there is nothing to
 save and you can leave whenever you like through the sidebar.
 
+Opening a saved book does not re-read its folders -- it resolves the photos it holds from
+what was analysed, so it opens instantly and works with the source drive unplugged. It does
+count what the folders have gained, though, and if photos have been added since the book was
+made a notice above the first spread says how many and offers **Edit photos**, which is the
+way to bring them in. Dismissing the notice hides it until the next time the book is opened.
+If a folder cannot be read at all, the count says "at least this many".
+
 The toolbar at the top holds the title, with a pencil to rename the book; **Edit photos**,
 which takes its photo selection back to the contact sheet and re-analyses the book's own
-folders (every photo a cache hit, no new Vision work); **Chat** (⌘J), which shows or hides
+folders (every photo the book already holds is a cache hit; a photo added to the folder
+since is analysed for the first time, which does take a moment); **Chat** (⌘J), which shows or hides
 the chat beside the book; and **Export** (⌘E). The bar along the bottom starts with the book's
 print size (for example **11 x 8.5 in**), then counts its pages, the photos placed, any blank
 pages and the photos left out, and says what dragging a photo does in the current mode.

@@ -2,6 +2,7 @@
 import {
   exportOutcome,
   folderListLabel,
+  folderNotice,
   projectDetailLabel,
   revealTarget,
   selectionLabel,
@@ -43,6 +44,7 @@ const emit = defineEmits<{
 const {
   activeProject,
   exportResult,
+  folderCheck,
   layout,
   progress,
   outputDir,
@@ -169,6 +171,16 @@ watch(
   },
 );
 
+/**
+ * The folder notice, once. Dismissing it is per visit to this book, not
+ * saved: the photos really are missing from the book until Edit photos is
+ * run, so the notice earns its place again next time the book is opened.
+ */
+const folderNoticeDismissed = ref(false);
+const notice = computed(() =>
+  folderNoticeDismissed.value ? null : folderNotice(folderCheck.value),
+);
+
 function requestEditPhotos() {
   const project = activeProject.value;
   if (!project) return;
@@ -250,7 +262,9 @@ onMounted(() => {
       a saved book is deliberately done without re-running Vision, so this is
       the only path back to its photos, and a book generated with no overrides
       needs it just as much as one that has them. It re-analyses the project's
-      own folders, which is every photo a features-cache hit and no Vision work.
+      own folders. Every photo the book already holds is a features-cache hit,
+      so that part costs nothing; a photo added to the folder since is new work
+      and does run Vision, which is what the folder notice warns about.
     -->
     <UTooltip text="Back to the contact sheet, with this book's choices">
       <UButton
@@ -323,6 +337,24 @@ onMounted(() => {
           :description="error"
           :ui="{ description: 'break-words' }"
           class="mx-auto mt-6 max-w-[1352px]"
+        />
+
+        <!--
+          What the folders have gained since the book was generated. Opening a
+          book resolves its photos by hash and never walks the disk, so without
+          this the only way to notice is to run Edit photos on spec.
+        -->
+        <UAlert
+          v-if="layout && notice"
+          icon="i-lucide-folder-plus"
+          color="neutral"
+          variant="subtle"
+          :title="notice.title"
+          :description="notice.description"
+          class="mx-auto mt-6 max-w-[1352px]"
+          :actions="[{ label: 'Edit photos', color: 'neutral', variant: 'outline', onClick: requestEditPhotos }]"
+          close
+          @update:open="folderNoticeDismissed = true"
         />
 
         <!--

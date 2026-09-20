@@ -6,6 +6,7 @@ import {
   blockingMessages,
   defaultProjectName,
   folderListLabel,
+  folderNotice,
   exportOutcome,
   generatedLabel,
   initialBookState,
@@ -623,5 +624,50 @@ describe("lastExportedOn", () => {
 
   it("returns null for a project that has never been exported", () => {
     expect(lastExportedOn(projects[1]!)).toBeNull();
+  });
+});
+
+describe("folderNotice", () => {
+  it("says nothing when the folders hold nothing the book does not", () => {
+    expect(folderNotice({ newPhotos: 0, unreadable: false })).toBeNull();
+  });
+
+  it("says nothing when the check never answered", () => {
+    expect(folderNotice(null)).toBeNull();
+  });
+
+  it("counts one photo in the singular", () => {
+    expect(folderNotice({ newPhotos: 1, unreadable: false })?.title).toBe(
+      "1 new photo in this book's folders",
+    );
+  });
+
+  it("counts several in the plural", () => {
+    expect(folderNotice({ newPhotos: 12, unreadable: false })?.title).toBe(
+      "12 new photos in this book's folders",
+    );
+  });
+
+  it("warns that new photos are real Vision work, not a cache hit", () => {
+    // The toolbar used to claim Edit photos was every photo a cache hit. It
+    // is not, the moment the folder has gained one.
+    expect(folderNotice({ newPhotos: 3, unreadable: false })?.description).toContain(
+      "not instant",
+    );
+  });
+
+  it("marks the count as a floor when a folder could not be read", () => {
+    const readable = folderNotice({ newPhotos: 3, unreadable: false })!;
+    const partial = folderNotice({ newPhotos: 3, unreadable: true })!;
+
+    expect(partial.title).toBe(readable.title);
+    expect(partial.description).toContain("At least that many");
+    expect(readable.description).not.toContain("At least");
+  });
+
+  // A folder that cannot be read is not, on its own, news: the book still
+  // opens and still exports. Only photos the book is missing are.
+  it("stays quiet about an unreadable folder that yielded no new photos", () => {
+    expect(folderNotice({ newPhotos: 0, unreadable: true })).toBeNull();
   });
 });
