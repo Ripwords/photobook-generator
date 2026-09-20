@@ -151,7 +151,7 @@ function onSlotPointerUp(event: PointerEvent) {
   slotDrag = null;
   (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
   const rect = liveRects.value[finished.key];
-  if (pressIsDrag(event.clientX - finished.startX, event.clientY - finished.startY) && rect) {
+  if (finished.moved && rect) {
     emit("slot", finished.ref, rect);
     return;
   }
@@ -181,9 +181,10 @@ const cornerClass: Record<Corner, string> = {
  * and one round trip, not one per pixel. Rust re-derives the height from the
  * slot, keeps the window inside the photo and re-runs the hard constraints;
  * whatever it returns is what stays on screen. A press that never travels
- * `DRAG_THRESHOLD_PX` is a click, which selects the photo for a swap; release
- * decides, on where the pointer ENDED, so a click that drifts out and back is
- * still a click and not a one-pixel crop nudge.
+ * `DRAG_THRESHOLD_PX` is a click, which selects the photo for a swap. That is
+ * decided once, on the way out, and `moved` carries it to release: a crop the
+ * user dragged out and brought back near where it started is still a crop they
+ * chose, and release commits what is on screen.
  *
  * `liveCrops` holds the windows mid-gesture, keyed like `PreviewSlot.key`.
  */
@@ -239,7 +240,7 @@ function onPointerUp(event: PointerEvent) {
   drag = null;
   (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
   const crop = liveCrops.value[finished.key];
-  if (pressIsDrag(event.clientX - finished.startX, event.clientY - finished.startY) && crop) {
+  if (finished.moved && crop) {
     emit("crop", finished.ref, crop);
     return;
   }

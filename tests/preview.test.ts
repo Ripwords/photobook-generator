@@ -1003,11 +1003,51 @@ describe("click versus drag", () => {
     expect(pressIsDrag(0, 40)).toBe(true);
   });
 
-  it("measures where the press ended, not how far it wandered", () => {
-    // A trackpad click that wobbles out and comes back is still a click. The
-    // components re-test the NET offset on pointerup for exactly this case.
+  it("does not care which way the press travelled", () => {
     expect(pressIsDrag(1, 0)).toBe(false);
-    expect(pressIsDrag(20, 0)).toBe(true);
+    expect(pressIsDrag(-20, 0)).toBe(true);
+    expect(pressIsDrag(0, -20)).toBe(true);
+  });
+});
+
+/**
+ * The threshold is asked once, on the way out, and the `moved` flag it sets
+ * carries that answer to release.
+ *
+ * Release used to re-test the NET offset instead, so a gesture dragged out and
+ * brought back within ten pixels of where it began was thrown away: the user
+ * watched the crop travel for the whole gesture, let go, and got the old crop
+ * back with nothing on the undo timeline to explain it. Driven in the browser
+ * harness, a crop went 12.5% -> 25% -> 13.7% and snapped back to 12.5% on
+ * release. The crop path also emitted a swap selection on the way out.
+ *
+ * The jitter this was meant to stop is already handled where it belongs: a
+ * press that never travels ten pixels never sets `moved`, so it stays a click.
+ *
+ * A pointer gesture is out of reach of a unit test, so this pins the three
+ * release handlers as source, the way `tests/overrides.test.ts` pins
+ * `GenerateBook`'s watcher.
+ */
+describe("a press that became a drag stays one until release", () => {
+  const sources = ["BookPreviewPage.vue", "BookPreviewCover.vue"].map((file) => ({
+    file,
+    text: readFileSync(new URL(`../app/components/${file}`, import.meta.url), "utf8"),
+  }));
+
+  it.each(sources)("$file asks the threshold only while the pointer moves", ({ text }) => {
+    const asks = [...text.matchAll(/pressIsDrag\(/g)].length;
+    const inMove = [...text.matchAll(/if \(!\w+\.moved && !pressIsDrag\(/g)].length;
+    expect(asks).toBeGreaterThan(0);
+    expect(asks).toBe(inMove);
+  });
+
+  it.each(sources)("$file commits on release from the moved flag", ({ text }) => {
+    const ups = [...text.matchAll(/function on\w*PointerUp\([\s\S]*?\n}/g)].map((m) => m[0]);
+    expect(ups.length).toBeGreaterThan(0);
+    for (const up of ups) {
+      expect(up).toMatch(/finished\.moved/);
+      expect(up).not.toMatch(/pressIsDrag/);
+    }
   });
 });
 

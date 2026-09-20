@@ -81,8 +81,7 @@ function onPointerUp(event: PointerEvent) {
   drag = null;
   (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
   const crop = live.value[finished.side];
-  const dragged = pressIsDrag(event.clientX - finished.startX, event.clientY - finished.startY);
-  if (dragged && crop) {
+  if (finished.moved && crop) {
     emit("crop", finished.side, crop);
     return;
   }

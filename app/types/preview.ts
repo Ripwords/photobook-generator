@@ -804,9 +804,12 @@ function slotScaled(rect: PreviewRect, corner: Corner, delta: SlotDelta, minSize
 export const DRAG_THRESHOLD_PX = 10;
 
 /**
- * Whether a press that ended `dx`,`dy` from where it began was a drag. Callers
- * test this again on release, against the NET offset, so a press that wanders
- * out past the threshold and comes back still counts as a click.
+ * Whether a press now `dx`,`dy` from where it began has become a drag.
+ *
+ * Asked only while the pointer is moving. Once it answers yes the gesture is a
+ * drag for good, carried to release on the handler's `moved` flag, so letting
+ * go near where the press started commits the crop or rect on screen instead
+ * of discarding it. Re-testing the net offset on release threw those away.
  */
 export function pressIsDrag(dx: number, dy: number): boolean {
   return Math.hypot(dx, dy) >= DRAG_THRESHOLD_PX;
