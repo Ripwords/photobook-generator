@@ -2618,6 +2618,7 @@ pub async fn agent_edit(
             .map_err(AgentError::failed)?;
         let (mut project, lib, photos) =
             load_for_agent(&app, &db, project_id).map_err(AgentError::failed)?;
+        let label = edit_label(&edit, &project.book);
         let view = crate::agent::edit::edit_and_view(
             &mut project.book,
             &edit,
@@ -2626,7 +2627,7 @@ pub async fn agent_edit(
             &load_weights(&app),
         )?;
         let changed = db
-            .commit_book(project_id, &project.book, edit_label(&edit))
+            .commit_book(project_id, &project.book, label)
             .map_err(AgentError::failed)?;
         if changed == 0 {
             return Err(AgentError::failed(format!("project {project_id} no longer exists")));
@@ -2709,10 +2710,13 @@ pub async fn edit_book(
         let lib = load_library(&app)?;
         let weights = load_weights(&app);
         let parsed = resolve_photos(&db, &project.photo_hashes)?;
+        // Asked before the edit lands: the label for a slot edit depends on
+        // the size the slot HAD, which applying it overwrites.
+        let label = edit_label(&edit, &project.book);
         crate::book::edit::apply(&mut project.book, &edit, &lib, &parsed, &weights)
             .map_err(|e| e.to_string())?;
         let changed = db
-            .commit_book(project_id, &project.book, edit_label(&edit))
+            .commit_book(project_id, &project.book, label)
             .map_err(|e| e.to_string())?;
         if changed == 0 {
             return Err(format!("project {project_id} no longer exists"));

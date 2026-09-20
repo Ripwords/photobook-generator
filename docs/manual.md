@@ -162,8 +162,9 @@ save and you can leave whenever you like through the sidebar.
 
 Because it saves as you go, there is no closing without saving to fall back on, so **Undo**
 and **Redo** (the two arrows beside that check, ⌘Z and ⇧⌘Z) are the way back. Each names the
-change it would move over -- the button reads "Undo resize" or "Undo photo replacement" --
-and is greyed out when there is nothing that way. Changes the chat made are on the same
+change it would move over -- the button reads "Undo move" or "Undo photo replacement" --
+and is greyed out when there is nothing that way. Moving a box and resizing one are named
+apart, even though both are the same kind of change underneath. Changes the chat made are on the same
 timeline and undo exactly like your own. The last fifty states of each book are kept, they
 survive quitting the app, and making a fresh change after undoing discards whatever Redo
 would have put back.

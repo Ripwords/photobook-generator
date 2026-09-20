@@ -285,7 +285,12 @@ function slotCandidates(ref: PlacementRef): SlotCandidate[] {
 let past: { label: string; layout: BookLayout }[] = [];
 let future: { label: string; layout: BookLayout }[] = [];
 
-export function editLabel(edit: BookEdit): string {
+/**
+ * Mirrors Rust's `book::history::edit_label`, including that `before` is the
+ * book as it stands: a `setSlot` is a move or a resize depending on the size
+ * the slot HAD, which the edit does not carry.
+ */
+export function editLabel(edit: BookEdit, before: BookLayout): string {
   switch (edit.kind) {
     case "regenerate":
       return "regenerate";
@@ -301,8 +306,16 @@ export function editLabel(edit: BookEdit): string {
       return "swap";
     case "setCrop":
       return "crop";
-    case "setSlot":
-      return "resize";
+    case "setSlot": {
+      const was = before.pages
+        .find((page) => page.number === edit.placement.page)
+        ?.placements.find((pl) => pl.z === edit.placement.z)?.slotRect;
+      const sameSize =
+        was !== undefined &&
+        Math.abs(was.w - edit.rect.w) < 1e-9 &&
+        Math.abs(was.h - edit.rect.h) < 1e-9;
+      return sameSize ? "move" : "resize";
+    }
     case "replacePhoto":
       return "photo replacement";
     case "setPrintSpec":
@@ -344,7 +357,7 @@ function applyEdit(edit: BookEdit): BookLayout {
     layout = before;
     throw refused;
   }
-  past.push({ label: editLabel(edit), layout: before });
+  past.push({ label: editLabel(edit, before), layout: before });
   future = [];
   return structuredClone(layout);
 }

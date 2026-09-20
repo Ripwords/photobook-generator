@@ -116,22 +116,109 @@ function rustLabel(arms: Map<string, string>, edit: BookEdit): string | undefine
 describe("the harness's undo timeline", () => {
   it("labels every edit exactly the way Rust does", () => {
     const rust = readFileSync(new URL("../src-tauri/src/book/history.rs", import.meta.url), "utf8");
-    const body = /pub fn edit_label\(edit: &BookEdit\) -> &'static str \{([\s\S]*?)\n\}/.exec(rust);
+    const body =
+      /pub fn edit_label\(edit: &BookEdit, before: &Book\) -> &'static str \{([\s\S]*?)\n\}/.exec(
+        rust,
+      );
     expect(body, "edit_label was renamed or reshaped in history.rs").not.toBeNull();
     const arms = rustArms(body![1]!);
     expect(arms.size).toBeGreaterThan(0);
 
+    // `SetSlot` is the one arm whose label is computed rather than fixed, so
+    // `rustArms` cannot read it and it is checked on its own below. Naming it
+    // here means a SECOND computed arm fails this test instead of quietly
+    // dropping out of both sides of the comparison.
+    const named = [...arms.keys()];
+    const computed = [...new Set([...body![1]!.matchAll(/BookEdit::(\w+)/g)].map((m) => m[1]!))]
+      .filter((variant) => !named.some((key) => key === variant || key.startsWith(`${variant} `)));
+    expect(new Set(computed)).toEqual(new Set(["SetSlot"]));
+
+    const fixed = EVERY_EDIT.filter((edit) => edit.kind !== "setSlot");
     // Edit by edit, not two sorted lists: sorted lists agree even when the
     // mock has swapped two labels, and a harness that calls a resize a crop
     // is worse than one that refuses to label anything.
-    for (const edit of EVERY_EDIT) {
-      expect(editLabel(edit), `${JSON.stringify(edit)} is labelled differently`).toBe(
+    for (const edit of fixed) {
+      expect(editLabel(edit, layoutFixture), `${JSON.stringify(edit)} is labelled differently`).toBe(
         rustLabel(arms, edit),
       );
     }
     // And no arm is left unvisited, so a label Rust grew is a failure here
     // rather than an untested corner of the harness.
-    expect(new Set(EVERY_EDIT.map(editLabel))).toEqual(new Set(arms.values()));
+    expect(new Set(fixed.map((edit) => editLabel(edit, layoutFixture)))).toEqual(
+      new Set(arms.values()),
+    );
+  });
+
+  /**
+   * Both layout-mode gestures emit one `setSlot`, and the harness has to tell
+   * them apart the way Rust does -- from the size the slot had, which lives
+   * in the book and not in the edit.
+   */
+  it("calls a slot that only changed place a move, and any other one a resize", () => {
+    const rust = readFileSync(new URL("../src-tauri/src/book/history.rs", import.meta.url), "utf8");
+    const arm = /BookEdit::SetSlot \{[^}]*\} => \{([\s\S]*?)\n        \}/.exec(rust);
+    expect(arm, "the SetSlot arm was reshaped in history.rs").not.toBeNull();
+    expect(arm![1]).toContain('"move"');
+    expect(arm![1]).toContain('"resize"');
+
+    const slot = layoutFixture.pages[0]!.placements[0]!;
+    const at = { page: layoutFixture.pages[0]!.number, z: slot.z };
+    const rect = slot.slotRect;
+
+    expect(
+      editLabel({ kind: "setSlot", placement: at, rect: { ...rect, x: rect.x / 2 } }, layoutFixture),
+    ).toBe("move");
+    expect(
+      editLabel({ kind: "setSlot", placement: at, rect: { ...rect, w: rect.w / 2 } }, layoutFixture),
+    ).toBe("resize");
+    // Height alone counts too: checking only the width called a box dragged
+    // shorter a move.
+    expect(
+      editLabel({ kind: "setSlot", placement: at, rect: { ...rect, h: rect.h / 2 } }, layoutFixture),
+    ).toBe("resize");
+    // A corner drag reshapes AND shifts the box; it is still a resize.
+    expect(
+      editLabel(
+        { kind: "setSlot", placement: at, rect: { x: 0, y: 0, w: rect.w / 2, h: rect.h / 2 } },
+        layoutFixture,
+      ),
+    ).toBe("resize");
+    // A slot the book does not have keeps the old wording.
+    expect(editLabel({ kind: "setSlot", placement: { page: 999, z: 0 }, rect }, layoutFixture)).toBe(
+      "resize",
+    );
+  });
+
+  /**
+   * The label has to be taken BEFORE the edit lands, or the slot already has
+   * its new size and every drag reads as a move. Rust cannot be driven from
+   * here -- both call sites need an `AppHandle` -- so the two orderings are
+   * pinned as source, and the harness, which can be driven, is driven.
+   */
+  it("reads the label off the book before the edit overwrites it", async () => {
+    const rust = readFileSync(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
+    const calls = [...rust.matchAll(/edit_label\(&edit, &project\.book\);([\s\S]*?)commit_book/g)];
+    expect(calls.length, "edit_label's call sites moved or changed shape").toBe(2);
+    for (const [, between] of calls) {
+      expect(between).toMatch(/apply\(&mut project\.book|edit_and_view\(\s*&mut project\.book/);
+    }
+
+    const before = await invoke<BookLayout>("book_layout");
+    const page = before.pages.find((p) => p.placements.length > 0)!;
+    const slot = page.placements[0]!;
+    const at = { page: page.number, z: slot.z };
+    const shifted = { ...slot.slotRect, x: Math.max(0, slot.slotRect.x - 0.02) };
+
+    await invoke<BookLayout>("edit_book", { edit: { kind: "setSlot", placement: at, rect: shifted } });
+    expect((await invoke<HistoryStatus>("book_history")).undo).toBe("move");
+
+    await invoke<BookLayout>("edit_book", {
+      edit: { kind: "setSlot", placement: at, rect: { ...shifted, w: shifted.w * 0.9 } },
+    });
+    expect((await invoke<HistoryStatus>("book_history")).undo).toBe("resize");
+
+    await invoke<BookLayout>("step_book", { step: "undo" });
+    await invoke<BookLayout>("step_book", { step: "undo" });
   });
 
   it("steps a real edit back and forward, and says what each control would do", async () => {
