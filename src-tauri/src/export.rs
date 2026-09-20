@@ -247,6 +247,30 @@ mod tests {
         );
     }
 
+    /// Either side may be left empty, so a one-sided cover must write ONE
+    /// cover file and not fall back to the other side's photo.
+    #[test]
+    fn build_items_writes_only_the_side_that_has_a_photo() {
+        let photos = vec![photo("/a.jpg", "haaa1111"), photo("/b.jpg", "hbbb2222")];
+        let book = Book {
+            spec: pixajoy_spec(),
+            options: Default::default(),
+            cover: Cover {
+                front: None,
+                back: Some(CoverPhoto { photo_index: 1, crop: Rect::new(0.0, 0.0, 1.0, 1.0) }),
+                spine: Default::default(),
+            },
+            controls: Default::default(),
+            seed: 1,
+            dropped: 0,
+            pages: vec![page_with_placements(1, Side::Right, &[0])],
+        };
+
+        let items = build_items(&book, &photos);
+        let names: Vec<&str> = items.iter().map(|i| i.filename.as_str()).collect();
+        assert_eq!(names, vec!["p01-z1-haaa1111", "cover-back-hbbb2222"]);
+    }
+
     #[test]
     fn build_items_produces_one_item_per_placement_in_book_order() {
         let photos = vec![photo("/a.jpg", "haaa1111"), photo("/b.jpg", "hbbb2222")];
