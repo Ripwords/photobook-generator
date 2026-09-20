@@ -3,7 +3,7 @@ use crate::book::history::{HistoryStatus, Step};
 use crate::book::pace::Book;
 use crate::place_names::PlaceKey;
 use crate::project::{self, ExportRecord, Project, ProjectSummary};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::path::Path;
 
 /// Bump this whenever the Swift analyzer's output changes shape or semantics.
@@ -74,6 +74,21 @@ impl Db {
         Ok(db)
     }
 
+    /// A transaction for a write path that reads before it writes.
+    ///
+    /// Every Tauri command opens its own `Connection`, so two writes can be
+    /// in flight at once. `unchecked_transaction` is DEFERRED: it takes its
+    /// read snapshot at the first SELECT and only asks for the write lock at
+    /// the first write, and if another connection has committed in between,
+    /// SQLite refuses the upgrade with SQLITE_BUSY_SNAPSHOT. That is a
+    /// refusal, not a wait -- no `busy_timeout` can retry it -- and the work
+    /// being committed exists only in the caller's memory, so the refusal
+    /// loses it. Taking the write lock at BEGIN turns the race back into a
+    /// queue that `busy_timeout` can sit out.
+    fn write_txn(&self) -> rusqlite::Result<Transaction<'_>> {
+        Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)
+    }
+
     /// `project_photo_overrides` holds the user's own include/exclude
     /// decisions, keyed by content hash exactly as `Overrides` is. Unordered,
     /// unlike `project_photos`: it is a map, and nothing indexes into it
@@ -84,6 +99,7 @@ impl Db {
         self.conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA foreign_keys = ON;
+             PRAGMA busy_timeout = 5000;
              CREATE TABLE IF NOT EXISTS features (
                  hash             TEXT PRIMARY KEY,
                  path             TEXT NOT NULL,
@@ -576,7 +592,7 @@ impl Db {
     pub fn commit_book(&self, id: i64, book: &Book, label: &str) -> rusqlite::Result<usize> {
         let book_json = serde_json::to_string(book)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write_txn()?;
         let current: Option<(String, Option<i64>)> = tx
             .query_row(
                 "SELECT book_json, history_seq FROM projects WHERE id = ?1 AND deleted_at IS NULL",
@@ -623,7 +639,7 @@ impl Db {
     /// now saved, or `None` when there is nothing that way -- which is what
     /// a Cmd-Z at the start of the timeline should do, rather than fail.
     pub fn step_book(&self, id: i64, step: Step) -> rusqlite::Result<Option<Book>> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write_txn()?;
         let Some(Some(seq)) = self.history_seq(&tx, id)? else {
             return Ok(None);
         };
@@ -713,7 +729,7 @@ impl Db {
     /// The read and the write are one transaction, so two imports racing for
     /// the same project cannot both take the same position.
     pub fn append_project_photo(&self, project_id: i64, hash: &str) -> rusqlite::Result<usize> {
-        let tx = self.conn.unchecked_transaction()?;
+        let tx = self.write_txn()?;
         let next: i64 = tx.query_row(
             "SELECT COUNT(*) FROM project_photos WHERE project_id = ?1",
             rusqlite::params![project_id],
@@ -1034,6 +1050,49 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM book_history WHERE project_id = ?1", [id], |r| r.get(0))
             .unwrap();
         assert_eq!(rows, 0);
+    }
+
+    #[test]
+    fn two_connections_committing_to_one_book_both_get_their_edits_written() {
+        // Every Tauri command opens its own `Connection`, so two writes in
+        // flight at once -- the agent's edit and the user's, or an edit
+        // landing while cache enforcement sweeps `features` -- really are
+        // separate writers on one WAL database. A DEFERRED transaction takes
+        // its read snapshot at the first SELECT and cannot upgrade to a
+        // writer once another connection has committed underneath it;
+        // SQLITE_BUSY_SNAPSHOT is not a wait, it is a refusal no busy
+        // handler can retry. The edited `Book` exists only inside that
+        // command's closure, so a refusal here loses the user's edit outright
+        // rather than delaying it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("books.sqlite");
+        let id = {
+            let db = Db::open(&path).unwrap();
+            saved(&db)
+        };
+
+        const ROUNDS: u64 = 40;
+        let refused: Vec<String> = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..2)
+                .map(|worker| {
+                    let path = path.clone();
+                    scope.spawn(move || {
+                        let db = Db::open(&path).unwrap();
+                        let mut refused = Vec::new();
+                        for round in 0..ROUNDS {
+                            let book = edited_book(worker * 1000 + round, false);
+                            if let Err(err) = db.commit_book(id, &book, "resize") {
+                                refused.push(format!("worker {worker} round {round}: {err}"));
+                            }
+                        }
+                        refused
+                    })
+                })
+                .collect();
+            workers.into_iter().flat_map(|w| w.join().unwrap()).collect()
+        });
+
+        assert!(refused.is_empty(), "no edit should be refused: {refused:#?}");
     }
 
     #[test]
