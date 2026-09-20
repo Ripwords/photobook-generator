@@ -232,6 +232,25 @@ export type BookEdit =
 /** Mirrors `geometry::CoverSide`. */
 export type CoverSide = "front" | "back";
 
+/**
+ * Mirrors `book::history::HistoryStatus`: the edit each control would move
+ * over, or `null` for that end of the timeline. Rust holds the timeline
+ * itself -- see `book::history` for why a layout could not.
+ */
+export interface HistoryStatus {
+  undo: string | null;
+  redo: string | null;
+}
+
+/** Mirrors `book::history::Step`, the one argument of `step_book`. */
+export type HistoryStep = "undo" | "redo";
+
+/** What the Undo or Redo control reads, e.g. "Undo resize". */
+export function stepLabel(step: HistoryStep, status: HistoryStatus): string {
+  const named = status[step];
+  return named ? `${step === "undo" ? "Undo" : "Redo"} ${named}` : `Nothing to ${step}`;
+}
+
 /** Mirrors `score::Rejection`: the hard constraints an edit can break. */
 export type Rejection = "faceClipped" | "faceInGutter" | "faceInSafeMargin" | "tooLowResolution";
 

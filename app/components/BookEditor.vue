@@ -11,7 +11,7 @@ import {
 import type { PhotoOverrides } from "~/types/features";
 import type { BookOptions } from "~/types/book";
 import { sizeLabel, type PrintSpec } from "~/types/printSpec";
-import type { PreviewGeometry } from "~/types/preview";
+import { stepLabel, type PreviewGeometry } from "~/types/preview";
 import { shortcutCombo, shortcutKbds } from "~/types/shortcuts";
 
 const { projectId, listedName } = defineProps<{
@@ -45,6 +45,7 @@ const {
   activeProject,
   exportResult,
   folderCheck,
+  history,
   layout,
   progress,
   outputDir,
@@ -55,6 +56,7 @@ const {
   pickOutputDir,
   exportBook,
   editBook,
+  stepBook,
   refreshLayout,
   reveal,
 } = useBook();
@@ -79,6 +81,12 @@ const editSlots = ref(false);
 const { openSettings } = useShell();
 
 defineShortcuts({
+  // No `usingInput` on these two, unlike the others: while the caret is in
+  // the chat box or the rename field, Cmd-Z belongs to the text being
+  // typed. Undoing a crop out from under someone mid-sentence is the worst
+  // possible reading of the key.
+  [shortcutCombo("undo")]: () => stepBook("undo"),
+  [shortcutCombo("redo")]: () => stepBook("redo"),
   [shortcutCombo("chat")]: { usingInput: true, handler: () => (chatOpen.value = !chatOpen.value) },
   [shortcutCombo("export")]: { usingInput: true, handler: () => (exportOpen.value = true) },
 });
@@ -236,6 +244,38 @@ onMounted(() => {
         </UTooltip>
       </div>
     </template>
+
+    <!--
+      Undo and Redo, beside the "saved" indicator they exist because of:
+      every edit here is written to disk as it is made, so there is no
+      unsaved copy to abandon and stepping back is the only way out of a
+      change. The timeline lives in SQLite with the book, so it is still
+      there tomorrow.
+    -->
+    <UFieldGroup v-if="activeProject" class="mr-2">
+      <UTooltip :text="stepLabel('undo', history)" :kbds="shortcutKbds('undo')">
+        <UButton
+          icon="i-lucide-undo-2"
+          color="neutral"
+          variant="ghost"
+          size="sm"
+          :disabled="busy || !history.undo"
+          :aria-label="stepLabel('undo', history)"
+          @click="stepBook('undo')"
+        />
+      </UTooltip>
+      <UTooltip :text="stepLabel('redo', history)" :kbds="shortcutKbds('redo')">
+        <UButton
+          icon="i-lucide-redo-2"
+          color="neutral"
+          variant="ghost"
+          size="sm"
+          :disabled="busy || !history.redo"
+          :aria-label="stepLabel('redo', history)"
+          @click="stepBook('redo')"
+        />
+      </UTooltip>
+    </UFieldGroup>
 
     <UTooltip
       v-if="activeProject"

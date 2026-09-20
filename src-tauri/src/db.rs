@@ -1,4 +1,5 @@
 use crate::book::cull::{Override, Overrides};
+use crate::book::history::{HistoryStatus, Step};
 use crate::book::pace::Book;
 use crate::place_names::PlaceKey;
 use crate::project::{self, ExportRecord, Project, ProjectSummary};
@@ -24,6 +25,11 @@ use std::path::Path;
 pub const ANALYZER_VERSION: u32 = 3;
 
 pub const DEFAULT_CACHE_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
+
+/// How many states of a book are kept for undo, the current one included,
+/// so `HISTORY_CAP - 1` edits can be stepped back. A 40-page book measures
+/// around 17 KB of JSON, which puts a full timeline under a megabyte.
+pub const HISTORY_CAP: i64 = 50;
 
 /// A file's size and modified time. When both match what they were when the
 /// file was last hashed, its contents are taken to be unchanged and the hash
@@ -138,6 +144,13 @@ impl Db {
                  path       TEXT NOT NULL,
                  PRIMARY KEY (project_id, position)
              );
+             CREATE TABLE IF NOT EXISTS book_history (
+                 project_id INTEGER NOT NULL REFERENCES projects(id),
+                 seq        INTEGER NOT NULL,
+                 label      TEXT NOT NULL,
+                 book_json  TEXT NOT NULL,
+                 PRIMARY KEY (project_id, seq)
+             );
              CREATE TABLE IF NOT EXISTS settings (
                  key   TEXT PRIMARY KEY,
                  value TEXT NOT NULL
@@ -163,6 +176,13 @@ impl Db {
         if !has_favourite {
             self.conn
                 .execute("ALTER TABLE projects ADD COLUMN favourite INTEGER NOT NULL DEFAULT 0", [])?;
+        }
+        let has_history_seq: bool = self
+            .conn
+            .prepare("SELECT 1 FROM pragma_table_info('projects') WHERE name = 'history_seq'")?
+            .exists([])?;
+        if !has_history_seq {
+            self.conn.execute("ALTER TABLE projects ADD COLUMN history_seq INTEGER", [])?;
         }
         let has_last_used_at: bool = self
             .conn
@@ -534,20 +554,135 @@ impl Db {
         Ok(())
     }
 
-    /// Replaces a project's book after an edit, re-deriving the denormalised
-    /// counts so the list stays truthful. Returns the rows affected (0 or 1),
-    /// like `rename_project`. The photo list and overrides are untouched: an
-    /// edit rearranges the book over the same photo slice, which is exactly
-    /// what keeps `Placement::photo_index` valid.
-    pub fn update_project_book(&self, id: i64, book: &Book) -> rusqlite::Result<usize> {
+    /// Saves `book` as the project's current state and records the step that
+    /// produced it, so `step_book` can walk back to what was there before.
+    /// Returns the rows affected (0 or 1), like `rename_project`.
+    ///
+    /// ## The timeline
+    ///
+    /// `book_history` holds successive whole states of the book, numbered by
+    /// `seq`, and `projects.history_seq` says which one the project is
+    /// currently showing. `label` names the edit that produced the state it
+    /// is stored with, which is what the Undo control reads.
+    ///
+    /// A project saved before any of this existed -- or simply never edited
+    /// -- has a NULL `history_seq`, so the first commit seeds `seq` 0 from
+    /// the book already on disk. That state is the one undo returns to, and
+    /// nothing produced it, so its label is empty.
+    ///
+    /// Everything happens in one transaction with the `projects` write: the
+    /// row at `history_seq` and `projects.book_json` are the same book, and
+    /// a crash between the two would make the Undo control lie.
+    pub fn commit_book(&self, id: i64, book: &Book, label: &str) -> rusqlite::Result<usize> {
         let book_json = serde_json::to_string(book)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        let (page_count, photo_count) = project::book_counts(book);
-        self.conn.execute(
-            "UPDATE projects SET book_json = ?1, page_count = ?2, photo_count = ?3,
-             updated_at = unixepoch() WHERE id = ?4",
-            rusqlite::params![book_json, page_count, photo_count, id],
+        let tx = self.conn.unchecked_transaction()?;
+        let current: Option<(String, Option<i64>)> = tx
+            .query_row(
+                "SELECT book_json, history_seq FROM projects WHERE id = ?1 AND deleted_at IS NULL",
+                rusqlite::params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((saved_json, seq)) = current else {
+            return Ok(0);
+        };
+        let seq = match seq {
+            Some(seq) => seq,
+            None => {
+                tx.execute(
+                    "INSERT OR REPLACE INTO book_history (project_id, seq, label, book_json)
+                     VALUES (?1, 0, '', ?2)",
+                    rusqlite::params![id, saved_json],
+                )?;
+                0
+            }
+        };
+        // An edit made after an undo abandons the branch redo would have
+        // re-applied, which is what every undo stack does and what stops the
+        // two controls describing different books.
+        tx.execute(
+            "DELETE FROM book_history WHERE project_id = ?1 AND seq > ?2",
+            rusqlite::params![id, seq],
+        )?;
+        let next = seq + 1;
+        tx.execute(
+            "INSERT INTO book_history (project_id, seq, label, book_json) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![id, next, label, book_json],
+        )?;
+        tx.execute(
+            "DELETE FROM book_history WHERE project_id = ?1 AND seq <= ?2",
+            rusqlite::params![id, next - HISTORY_CAP],
+        )?;
+        let changed = write_book(&tx, id, &book_json, book, next)?;
+        tx.commit()?;
+        Ok(changed)
+    }
+
+    /// Moves the project one state along its timeline and returns the book
+    /// now saved, or `None` when there is nothing that way -- which is what
+    /// a Cmd-Z at the start of the timeline should do, rather than fail.
+    pub fn step_book(&self, id: i64, step: Step) -> rusqlite::Result<Option<Book>> {
+        let tx = self.conn.unchecked_transaction()?;
+        let Some(Some(seq)) = self.history_seq(&tx, id)? else {
+            return Ok(None);
+        };
+        let target = match step {
+            Step::Undo => seq - 1,
+            Step::Redo => seq + 1,
+        };
+        let found: Option<String> = tx
+            .query_row(
+                "SELECT book_json FROM book_history WHERE project_id = ?1 AND seq = ?2",
+                rusqlite::params![id, target],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(book_json) = found else {
+            return Ok(None);
+        };
+        let book: Book = serde_json::from_str(&book_json).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+        write_book(&tx, id, &book_json, &book, target)?;
+        tx.commit()?;
+        Ok(Some(book))
+    }
+
+    /// What the Undo and Redo controls may offer this project right now.
+    pub fn history_status(&self, id: i64) -> rusqlite::Result<HistoryStatus> {
+        let Some(Some(seq)) = self.history_seq(&self.conn, id)? else {
+            return Ok(HistoryStatus::default());
+        };
+        let label = |at: i64| -> rusqlite::Result<Option<String>> {
+            self.conn
+                .query_row(
+                    "SELECT label FROM book_history WHERE project_id = ?1 AND seq = ?2",
+                    rusqlite::params![id, at],
+                    |row| row.get(0),
+                )
+                .optional()
+        };
+        // The label of the CURRENT state names the edit that produced it,
+        // which is the one undo reverses -- but only if the state before it
+        // is still kept. Trimming the oldest is what makes that "only if"
+        // real rather than theoretical.
+        let undo = match label(seq - 1)? {
+            Some(_) => label(seq)?,
+            None => None,
+        };
+        Ok(HistoryStatus { undo, redo: label(seq + 1)? })
+    }
+
+    /// The project's place on its timeline: `None` if there is no such
+    /// project, `Some(None)` if it has never been edited.
+    fn history_seq(&self, conn: &Connection, id: i64) -> rusqlite::Result<Option<Option<i64>>> {
+        conn.query_row(
+            "SELECT history_seq FROM projects WHERE id = ?1 AND deleted_at IS NULL",
+            rusqlite::params![id],
+            |row| row.get(0),
         )
+        .optional()
     }
 
     /// Appends one photo to a project's list and returns the position it
@@ -556,7 +691,7 @@ impl Db {
     /// Append, never insert: `project_photos.position` is what every
     /// placement in the saved book indexes into, so putting a hash anywhere
     /// but the end would silently repoint every placement after it at the
-    /// wrong photo. The same reason `update_project_book` leaves this table
+    /// wrong photo. The same reason `commit_book` leaves this table
     /// alone.
     ///
     /// No deduplication. The list is positional and the same hash may hold
@@ -661,13 +796,246 @@ impl Db {
             rusqlite::params![id],
         )?;
         self.conn.execute("DELETE FROM project_folders WHERE project_id = ?1", rusqlite::params![id])?;
+        self.conn.execute("DELETE FROM book_history WHERE project_id = ?1", rusqlite::params![id])?;
         self.conn.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])?;
         Ok(())
     }
 }
 
+/// Writes a book into the `projects` row and puts the project at `seq` on
+/// its timeline, re-deriving the denormalised counts the book list reads.
+/// Shared by `commit_book` and `step_book` so an undone book is stored
+/// exactly the way an edited one is.
+fn write_book(
+    conn: &Connection,
+    id: i64,
+    book_json: &str,
+    book: &Book,
+    seq: i64,
+) -> rusqlite::Result<usize> {
+    let (page_count, photo_count) = project::book_counts(book);
+    conn.execute(
+        "UPDATE projects SET book_json = ?1, page_count = ?2, photo_count = ?3,
+         updated_at = unixepoch(), history_seq = ?4 WHERE id = ?5",
+        rusqlite::params![book_json, page_count, photo_count, seq, id],
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    /// `fixture_book` with a different seed, a different page count and a
+    /// locked opening, so a snapshot that lost any of the three is visible.
+    /// `controls` is the point: it is the part of a `Book` that `BookLayout`
+    /// does not carry, so a webview-side undo could never restore it.
+    fn edited_book(seed: u64, locked: bool) -> Book {
+        let mut book = fixture_book();
+        book.seed = seed;
+        let mut tail = book.pages[1].clone();
+        tail.number = 3;
+        book.pages.push(tail);
+        if locked {
+            book.controls.insert(0, crate::book::edit::OpeningControls {
+                locked: true,
+                rejected: vec!["spread-a".into()],
+                rerolls: 2,
+            });
+        }
+        book
+    }
+
+    fn saved(db: &Db) -> i64 {
+        db.save_project("Book", "/tmp/book", &fixture_book(), &fixture_hashes(), &Overrides::new())
+            .unwrap()
+    }
+
+    fn book_of(db: &Db, id: i64) -> Book {
+        db.load_project(id).unwrap().unwrap().book
+    }
+
+    #[test]
+    fn commit_book_lets_the_edit_be_undone_back_to_the_book_that_was_saved_before_it() {
+        let db = Db::open_in_memory().unwrap();
+        let id = saved(&db);
+        let before = book_of(&db, id);
+
+        assert_eq!(db.commit_book(id, &edited_book(7, false), "resize").unwrap(), 1);
+        assert_eq!(book_of(&db, id).seed, 7);
+
+        assert_eq!(db.step_book(id, Step::Undo).unwrap(), Some(before.clone()));
+        assert_eq!(book_of(&db, id), before);
+    }
+
+    #[test]
+    fn stepping_back_restores_the_controls_a_layout_could_not_have_carried() {
+        let db = Db::open_in_memory().unwrap();
+        let id = saved(&db);
+        db.commit_book(id, &edited_book(7, true), "lock").unwrap();
+        assert!(book_of(&db, id).controls[&0].locked);
+
+        db.step_book(id, Step::Undo).unwrap();
+        assert!(book_of(&db, id).controls.is_empty(), "the lock survived the undo");
+
+        db.step_book(id, Step::Redo).unwrap();
+        let back = book_of(&db, id);
+        assert!(back.controls[&0].locked);
+        assert_eq!(back.controls[&0].rerolls, 2);
+        assert_eq!(back.controls[&0].rejected, vec!["spread-a".to_string()]);
+    }
+
+    #[test]
+    fn the_controls_say_what_stepping_either_way_would_do() {
+        let db = Db::open_in_memory().unwrap();
+        let id = saved(&db);
+        assert_eq!(db.history_status(id).unwrap(), HistoryStatus::default());
+
+        db.commit_book(id, &edited_book(7, false), "resize").unwrap();
+        assert_eq!(
+            db.history_status(id).unwrap(),
+            HistoryStatus { undo: Some("resize".into()), redo: None }
+        );
+
+        db.step_book(id, Step::Undo).unwrap();
+        assert_eq!(
+            db.history_status(id).unwrap(),
+            HistoryStatus { undo: None, redo: Some("resize".into()) }
+        );
+    }
+
+    #[test]
+    fn undo_and_redo_walk_a_run_of_edits_one_at_a_time_and_in_order() {
+        let db = Db::open_in_memory().unwrap();
+        let id = saved(&db);
+        for (seed, label) in [(7, "resize"), (8, "crop"), (9, "swap")] {
+            db.commit_book(id, &edited_book(seed, false), label).unwrap();
+        }
+
+        // Bounded, not `while let`: a `step_book` that never moves would
+        // hang a loop that trusts it to run out, and a hanging test reports
+        // nothing. Four tries for three states, so the fourth proving it has
+        // stopped is part of the assertion.
+        let walked: Vec<Option<u64>> =
+            (0..4).map(|_| db.step_book(id, Step::Undo).unwrap().map(|b| b.seed)).collect();
+        assert_eq!(walked, vec![Some(8), Some(7), Some(fixture_book().seed), None]);
+
+        let forward: Vec<Option<u64>> =
+            (0..4).map(|_| db.step_book(id, Step::Redo).unwrap().map(|b| b.seed)).collect();
+        assert_eq!(forward, vec![Some(7), Some(8), Some(9), None]);
+        assert_eq!(book_of(&db, id).seed, 9);
+    }
+
+    #[test]
+    fn a_fresh_edit_after_an_undo_abandons_what_redo_would_have_re_applied() {
+        let db = Db::open_in_memory().unwrap();
+        let id = saved(&db);
+        db.commit_book(id, &edited_book(7, false), "resize").unwrap();
+        db.commit_book(id, &edited_book(8, false), "crop").unwrap();
+        db.step_book(id, Step::Undo).unwrap();
+
+        db.commit_book(id, &edited_book(9, false), "swap").unwrap();
+
+        assert_eq!(db.history_status(id).unwrap().redo, None);
+        assert_eq!(db.step_book(id, Step::Redo).unwrap(), None);
+        assert_eq!(book_of(&db, id).seed, 9);
+        assert_eq!(db.step_book(id, Step::Undo).unwrap().map(|b| b.seed), Some(7));
+    }
+
+    #[test]
+    fn undo_stops_at_the_book_as_it_was_first_saved_and_leaves_it_there() {
+        let db = Db::open_in_memory().unwrap();
+        let id = saved(&db);
+        db.commit_book(id, &edited_book(7, false), "resize").unwrap();
+
+        assert!(db.step_book(id, Step::Undo).unwrap().is_some());
+        assert_eq!(db.step_book(id, Step::Undo).unwrap(), None);
+        assert_eq!(book_of(&db, id), fixture_book());
+        assert_eq!(db.history_status(id).unwrap().undo, None);
+    }
+
+    #[test]
+    fn a_book_that_has_never_been_edited_has_nothing_to_step_to() {
+        let db = Db::open_in_memory().unwrap();
+        let id = saved(&db);
+        assert_eq!(db.step_book(id, Step::Undo).unwrap(), None);
+        assert_eq!(db.step_book(id, Step::Redo).unwrap(), None);
+        assert_eq!(book_of(&db, id), fixture_book());
+    }
+
+    #[test]
+    fn the_timeline_keeps_the_most_recent_edits_and_forgets_the_oldest() {
+        let db = Db::open_in_memory().unwrap();
+        let id = saved(&db);
+        let edits = HISTORY_CAP + 5;
+        for n in 1..=edits {
+            db.commit_book(id, &edited_book(1000 + n as u64, false), "resize").unwrap();
+        }
+
+        let kept: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM book_history WHERE project_id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, HISTORY_CAP);
+
+        // Bounded for the same reason as the walk test above: one more try
+        // than the timeline can possibly answer.
+        let steps = (0..edits + 1)
+            .take_while(|_| db.step_book(id, Step::Undo).unwrap().is_some())
+            .count() as i64;
+        assert_eq!(steps, HISTORY_CAP - 1);
+        // The oldest retained state, not the book as first saved -- that one
+        // fell off the end.
+        assert_ne!(book_of(&db, id), fixture_book());
+    }
+
+    #[test]
+    fn purging_a_project_takes_its_timeline_with_it() {
+        let db = Db::open_in_memory().unwrap();
+        let id = saved(&db);
+        let other = saved(&db);
+        db.commit_book(id, &edited_book(7, false), "resize").unwrap();
+        db.commit_book(other, &edited_book(8, false), "crop").unwrap();
+
+        db.purge_project(id).unwrap();
+
+        let left: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM book_history WHERE project_id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0, "the purged project's snapshots outlived it");
+        assert_eq!(db.history_status(other).unwrap().undo, Some("crop".into()));
+    }
+
+    #[test]
+    fn stepping_re_derives_the_page_and_photo_counts_the_book_list_shows() {
+        let db = Db::open_in_memory().unwrap();
+        let id = saved(&db);
+        let bigger = edited_book(7, false);
+        db.commit_book(id, &bigger, "regenerate").unwrap();
+        let listed = db.list_projects().unwrap();
+        assert_eq!(listed[0].page_count, bigger.pages.len() as i64);
+        assert_eq!(
+            listed[0].photo_count,
+            bigger.pages.iter().map(|p| p.placements.len() as i64).sum::<i64>()
+        );
+
+        db.step_book(id, Step::Undo).unwrap();
+        let listed = db.list_projects().unwrap();
+        assert_eq!(listed[0].page_count, fixture_book().pages.len() as i64);
+    }
+
+    #[test]
+    fn committing_to_a_project_that_is_gone_changes_nothing_and_records_nothing() {
+        let db = Db::open_in_memory().unwrap();
+        let id = saved(&db);
+        db.purge_project(id).unwrap();
+
+        assert_eq!(db.commit_book(id, &edited_book(7, false), "resize").unwrap(), 0);
+        let rows: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM book_history WHERE project_id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
     #[test]
     fn a_place_name_is_kept_by_its_cell_and_a_later_name_replaces_it() {
         let db = Db::open_in_memory().unwrap();

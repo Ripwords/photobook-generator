@@ -29,6 +29,8 @@ import type {
   BookEdit,
   BookLayout,
   CoverSide,
+  HistoryStatus,
+  HistoryStep,
   PlacementRef,
   PreviewCoverSide,
   PreviewGeometry,
@@ -54,7 +56,7 @@ import type { PreflightFinding } from "../../app/types/book";
 import { cancelModelRequest, modelRequest, type ModelRequestArgs } from "./model";
 import { mockPhotos, mockPlaceChapters, mockPlaceNames, thumbnail } from "./photos";
 
-const layout: BookLayout = structuredClone(layoutFixture) as BookLayout;
+let layout: BookLayout = structuredClone(layoutFixture) as BookLayout;
 // The fixture is pinned against an EMPTY library, so it offers no alternative
 // layouts. Give the spread two so the buttons have something to do.
 layout.openings[1] = {
@@ -273,7 +275,81 @@ function slotCandidates(ref: PlacementRef): SlotCandidate[] {
   }));
 }
 
+/**
+ * The harness's copy of the timeline Rust keeps in SQLite beside the book --
+ * see `book::history`. Whole snapshots, for the same reason: the edits below
+ * rewrite the layout and none of them can be run backwards. The labels
+ * mirror `book::history::edit_label`; `tests/tauri-mock.test.ts` pins them
+ * to the Rust source so this cannot quietly drift out of step with the app.
+ */
+let past: { label: string; layout: BookLayout }[] = [];
+let future: { label: string; layout: BookLayout }[] = [];
+
+export function editLabel(edit: BookEdit): string {
+  switch (edit.kind) {
+    case "regenerate":
+      return "regenerate";
+    case "rejectTemplate":
+      return "reject layout";
+    case "setTemplate":
+      return "layout change";
+    case "setLocked":
+      return edit.locked ? "lock" : "unlock";
+    case "shuffle":
+      return "shuffle";
+    case "swapPhotos":
+      return "swap";
+    case "setCrop":
+      return "crop";
+    case "setSlot":
+      return "resize";
+    case "replacePhoto":
+      return "photo replacement";
+    case "setPrintSpec":
+      return "print size change";
+    case "setCoverPhoto":
+      return edit.photo === null ? "cover photo removal" : "cover photo";
+    case "setCoverCrop":
+      return "cover crop";
+    case "setSpineColour":
+      return "spine colour";
+  }
+}
+
+function stepHistory(step: HistoryStep): BookLayout {
+  const from = step === "undo" ? past : future;
+  const onto = step === "undo" ? future : past;
+  const entry = from.pop();
+  if (entry) {
+    onto.push({ label: entry.label, layout });
+    layout = entry.layout;
+  }
+  return structuredClone(layout);
+}
+
+function historyStatus(): HistoryStatus {
+  return { undo: past.at(-1)?.label ?? null, redo: future.at(-1)?.label ?? null };
+}
+
 function applyEdit(edit: BookEdit): BookLayout {
+  const before = structuredClone(layout);
+  try {
+    applyEditTo(edit);
+  } catch (refused) {
+    // A refused edit changes nothing, here as in Rust: the screen keeps
+    // showing what is saved and the timeline never hears about it. Every
+    // case below happens to validate before it touches `layout`, so no test
+    // can tell this line from its absence; it is here so the first case that
+    // does not cannot leave the harness showing a half-applied edit.
+    layout = before;
+    throw refused;
+  }
+  past.push({ label: editLabel(edit), layout: before });
+  future = [];
+  return structuredClone(layout);
+}
+
+function applyEditTo(edit: BookEdit): void {
   switch (edit.kind) {
     case "setLocked": {
       const opening = layout.openings[edit.opening];
@@ -400,7 +476,6 @@ function applyEdit(edit: BookEdit): BookLayout {
       break;
     }
   }
-  return structuredClone(layout);
 }
 
 /**
@@ -576,6 +651,12 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
 
     case "edit_book":
       return applyEdit(args?.edit as BookEdit) as T;
+
+    case "step_book":
+      return stepHistory(args?.step as HistoryStep) as T;
+
+    case "book_history":
+      return historyStatus() as T;
 
     case "slot_candidates":
       await sleep(250);

@@ -23,6 +23,7 @@ import {
   setCoverCropEdit,
   setCropEdit,
   setSlotEdit,
+  stepLabel,
   slotMoved,
   slotResized,
   snapValue,
@@ -1005,5 +1006,22 @@ describe("click versus drag", () => {
     // components re-test the NET offset on pointerup for exactly this case.
     expect(pressIsDrag(1, 0)).toBe(false);
     expect(pressIsDrag(20, 0)).toBe(true);
+  });
+});
+
+describe("stepLabel", () => {
+  it("names the edit each control would move over", () => {
+    const status = { undo: "resize", redo: "photo replacement" };
+    expect(stepLabel("undo", status)).toBe("Undo resize");
+    expect(stepLabel("redo", status)).toBe("Redo photo replacement");
+  });
+
+  it("reads each end of the timeline from its own side", () => {
+    // A book edited and never undone can be undone but not redone, so the
+    // two controls must not read the same status field.
+    expect(stepLabel("redo", { undo: "crop", redo: null })).toBe("Nothing to redo");
+    expect(stepLabel("undo", { undo: "crop", redo: null })).toBe("Undo crop");
+    expect(stepLabel("undo", { undo: null, redo: "crop" })).toBe("Nothing to undo");
+    expect(stepLabel("redo", { undo: null, redo: "crop" })).toBe("Redo crop");
   });
 });

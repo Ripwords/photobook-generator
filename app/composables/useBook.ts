@@ -18,7 +18,7 @@ import {
   type GeneratedBook,
   type ProjectDetail,
 } from "~/types/book";
-import type { BookEdit, BookLayout } from "~/types/preview";
+import type { BookEdit, BookLayout, HistoryStatus, HistoryStep } from "~/types/preview";
 import type { AnalyzedPhoto, PhotoOverrides } from "~/types/features";
 import type { PrintSpec } from "~/types/printSpec";
 import type { BookOptions } from "~/types/book";
@@ -76,6 +76,12 @@ export function useBook(
    * never hold up opening the book or show as an error over it.
    */
   const folderCheck = ref<FolderCheck | null>(null);
+  /**
+   * What Undo and Redo would do to the book on screen. Rust owns the
+   * timeline -- see `book::history` for why a `BookLayout` could not carry
+   * it -- so this is read back after every write rather than tracked here.
+   */
+  const history = ref<HistoryStatus>({ undo: null, redo: null });
   const progress = ref<ExportProgress>(initialExportProgress);
   const { projects, refresh: loadProjects } = useProjects();
   const outputDir = ref<string | null>(null);
@@ -119,6 +125,10 @@ export function useBook(
    */
   async function loadLayout(projectId: number) {
     layout.value = await invoke<BookLayout>("book_layout", { projectId });
+  }
+
+  async function loadHistory(projectId: number) {
+    history.value = await invoke<HistoryStatus>("book_history", { projectId });
   }
 
   async function guard<T>(work: () => Promise<T>): Promise<T | null> {
@@ -186,6 +196,9 @@ export function useBook(
       const project = await invoke<ProjectDetail>("open_project", { id });
       applyBookState(withOpenedProject(project));
       await loadLayout(project.id);
+      // A book's timeline outlives the app, because every edit here is
+      // written to disk as it is made and undo is the only way back.
+      await loadHistory(project.id);
     });
     await checkFolders(id);
   }
@@ -295,7 +308,26 @@ export function useBook(
     if (projectId === null) return;
     await guard(async () => {
       layout.value = await invoke<BookLayout>("edit_book", { projectId, edit });
+      await loadHistory(projectId);
       // An edit bumps the project's `updated_at`, which orders the saved list.
+      await loadProjects();
+    });
+  }
+
+  /**
+   * Steps the book one edit back or forward along its own timeline.
+   *
+   * Stepping past either end is a no-op in Rust rather than an error, so a
+   * shortcut pressed once too often leaves the book and the screen alone
+   * instead of raising a banner. The reply is the whole layout, exactly as
+   * `editBook`'s is, so nothing is patched here either.
+   */
+  async function stepBook(step: HistoryStep) {
+    const projectId = exportProjectId.value;
+    if (projectId === null) return;
+    await guard(async () => {
+      layout.value = await invoke<BookLayout>("step_book", { projectId, step });
+      await loadHistory(projectId);
       await loadProjects();
     });
   }
@@ -310,6 +342,9 @@ export function useBook(
     if (projectId === null) return;
     await guard(async () => {
       await loadLayout(projectId);
+      // The agent's edits go on the same timeline this screen's do, so
+      // they are undone with the same control.
+      await loadHistory(projectId);
       await loadProjects();
     });
   }
@@ -326,6 +361,7 @@ export function useBook(
     recommendation.value = null;
     layout.value = null;
     folderCheck.value = null;
+    history.value = { undo: null, redo: null };
     applyBookState(initialBookState);
     progress.value = initialExportProgress;
     error.value = null;
@@ -343,6 +379,7 @@ export function useBook(
     exportProjectId,
     layout,
     folderCheck,
+    history,
     progress,
     projects,
     outputDir,
@@ -357,6 +394,7 @@ export function useBook(
     pickOutputDir,
     exportBook,
     editBook,
+    stepBook,
     refreshLayout,
     loadProjects,
     reset,

@@ -24,6 +24,8 @@ you are. Right-click a book there for the same menu the library gives it (see be
 | ⌘N | New photobook (name it, then choose photo folders) | Anywhere |
 | ⌘B | Show or hide the sidebar | Anywhere |
 | ⌘, | Settings | Anywhere |
+| ⌘Z | Undo the last change | Book editor |
+| ⇧⌘Z | Redo the last undone change | Book editor |
 | ⌘J | Show or hide the chat | Book editor |
 | ⌘E | Export | Book editor |
 
@@ -157,6 +159,14 @@ source is not an update of the old one.
 The book, spread by spread, as it will print. **Everything on this screen is written to disk
 as you do it** (the check beside the title says when it last saved), so there is nothing to
 save and you can leave whenever you like through the sidebar.
+
+Because it saves as you go, there is no closing without saving to fall back on, so **Undo**
+and **Redo** (the two arrows beside that check, ⌘Z and ⇧⌘Z) are the way back. Each names the
+change it would move over -- the button reads "Undo resize" or "Undo photo replacement" --
+and is greyed out when there is nothing that way. Changes the chat made are on the same
+timeline and undo exactly like your own. The last fifty states of each book are kept, they
+survive quitting the app, and making a fresh change after undoing discards whatever Redo
+would have put back.
 
 Opening a saved book does not re-read its folders -- it resolves the photos it holds from
 what was analysed, so it opens instantly and works with the source drive unplugged. It does

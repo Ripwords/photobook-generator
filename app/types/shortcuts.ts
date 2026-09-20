@@ -9,6 +9,8 @@ export const SHORTCUTS = {
   newBook: { keys: ["meta", "N"], label: "New photobook", where: "Anywhere" },
   sidebar: { keys: ["meta", "B"], label: "Show or hide the sidebar", where: "Anywhere" },
   settings: { keys: ["meta", ","], label: "Settings", where: "Anywhere" },
+  undo: { keys: ["meta", "Z"], label: "Undo the last change", where: "Book editor" },
+  redo: { keys: ["meta", "shift", "Z"], label: "Redo the last undone change", where: "Book editor" },
   chat: { keys: ["meta", "J"], label: "Show or hide the chat", where: "Book editor" },
   export: { keys: ["meta", "E"], label: "Export", where: "Book editor" },
 } as const satisfies Record<string, { keys: readonly string[]; label: string; where: string }>;

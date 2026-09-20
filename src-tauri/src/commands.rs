@@ -4,6 +4,7 @@ use crate::agent::request::{ModelEvent, ModelRequestError, ModelRequests, Outbou
 use crate::agent::edit::AgentError;
 use crate::agent::view::{AgentView, SourcePhoto};
 use crate::book::cull::{Overrides, Photo};
+use crate::book::history::{edit_label, HistoryStatus, Step};
 use crate::book::manifest::{manifest, Manifest};
 use crate::book::pace::{Book, BookOptions};
 use crate::book::pack::{recommend_pages, Capacity};
@@ -2449,7 +2450,7 @@ pub async fn agent_edit(
             &load_weights(&app),
         )?;
         let changed = db
-            .update_project_book(project_id, &project.book)
+            .commit_book(project_id, &project.book, edit_label(&edit))
             .map_err(AgentError::failed)?;
         if changed == 0 {
             return Err(AgentError::failed(format!("project {project_id} no longer exists")));
@@ -2534,12 +2535,54 @@ pub async fn edit_book(
         let parsed = resolve_photos(&db, &project.photo_hashes)?;
         crate::book::edit::apply(&mut project.book, &edit, &lib, &parsed, &weights)
             .map_err(|e| e.to_string())?;
-        let changed = db.update_project_book(project_id, &project.book).map_err(|e| e.to_string())?;
+        let changed = db
+            .commit_book(project_id, &project.book, edit_label(&edit))
+            .map_err(|e| e.to_string())?;
         if changed == 0 {
             return Err(format!("project {project_id} no longer exists"));
         }
         let photos = resolve_preview_photos(&db, &project.photo_hashes)?;
         Ok(crate::preview::book_layout(project.id, &project.book, photos, &lib))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Steps the saved book one state back or forward along its own timeline --
+/// see `book::history` -- and returns the whole new layout, exactly as
+/// `edit_book` does.
+///
+/// Stepping past either end is NOT an error: the layout comes back
+/// unchanged. The keyboard shortcut fires whether or not anything is left to
+/// undo, and a red banner reading "there is nothing more" is noise, not news.
+/// The Undo control is greyed out from `book_history` instead.
+#[tauri::command]
+pub async fn step_book(app: AppHandle, project_id: i64, step: Step) -> Result<BookLayout, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        // The step has already been persisted, so the layout is built from
+        // the project as RELOADED rather than from what the step returned:
+        // one read path for both outcomes, and no way for the screen to show
+        // a book the database does not hold.
+        db.step_book(project_id, step).map_err(|e| e.to_string())?;
+        let project = db
+            .load_project(project_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("project {project_id} no longer exists"))?;
+        let lib = load_library(&app)?;
+        let photos = resolve_preview_photos(&db, &project.photo_hashes)?;
+        Ok(crate::preview::book_layout(project.id, &project.book, photos, &lib))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// What the Undo and Redo controls may offer this book right now.
+#[tauri::command]
+pub async fn book_history(app: AppHandle, project_id: i64) -> Result<HistoryStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        db.history_status(project_id).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?

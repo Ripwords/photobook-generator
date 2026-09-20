@@ -61,6 +61,8 @@ pub fn run() {
             commands::book_layout,
             commands::folder_check,
             commands::import_photo,
+            commands::step_book,
+            commands::book_history,
             commands::agent_view,
             commands::agent_edit,
             commands::set_api_key,
