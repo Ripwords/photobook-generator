@@ -1,6 +1,69 @@
 # Changelog
 
 
+## v0.1.2...master
+
+[compare changes](https://github.com/Ripwords/photobook-generator/compare/v0.1.2...master)
+
+### 🚀 Enhancements
+
+- **book:** Split chapters by place as well as time ([fb7e31c](https://github.com/Ripwords/photobook-generator/commit/fb7e31c))
+- **print-spec:** Add cover wrap and cover panel geometry ([48d55e3](https://github.com/Ripwords/photobook-generator/commit/48d55e3))
+- **book:** Calibrate PLACE_SPLIT_KM at 25 km on a real library ([f4155fc](https://github.com/Ripwords/photobook-generator/commit/f4155fc))
+- **book:** Lay a book out by place when its Places option is on ([7ce9330](https://github.com/Ripwords/photobook-generator/commit/7ce9330))
+- **book:** Choose a front and back cover photo and a spine colour ([93693a8](https://github.com/Ripwords/photobook-generator/commit/93693a8))
+- **edit:** Set the cover photos, their crops and the spine colour ([4ef6365](https://github.com/Ripwords/photobook-generator/commit/4ef6365))
+- **book:** Read a draft's place chapters and a book's options ([063b7b3](https://github.com/Ripwords/photobook-generator/commit/063b7b3))
+- **preview:** Carry the cover in the book layout ([a6af277](https://github.com/Ripwords/photobook-generator/commit/a6af277))
+- **draft:** Add a Split chapters by place switch ([62c4e1f](https://github.com/Ripwords/photobook-generator/commit/62c4e1f))
+- **preflight:** Check the cover photos before export ([8307460](https://github.com/Ripwords/photobook-generator/commit/8307460))
+- **export:** Write the cover photos and record them in the manifest ([cd5182a](https://github.com/Ripwords/photobook-generator/commit/cd5182a))
+- **sidecar:** Add a geocode request that names coordinates ([82e02c9](https://github.com/Ripwords/photobook-generator/commit/82e02c9))
+- **places:** Name place chapters from a cached reverse geocode ([b65662c](https://github.com/Ripwords/photobook-generator/commit/b65662c))
+- **places:** Title contact sheet chapters with their town ([ce43b82](https://github.com/Ripwords/photobook-generator/commit/ce43b82))
+- **cover:** Expose the cover board and cover photo candidates ([a56c89b](https://github.com/Ripwords/photobook-generator/commit/a56c89b))
+- **preview:** Show and edit the cover above page 1 ([a91e93d](https://github.com/Ripwords/photobook-generator/commit/a91e93d))
+- Front and back cover, chapters by place ([2536892](https://github.com/Ripwords/photobook-generator/commit/2536892))
+
+### 🩹 Fixes
+
+- **test:** Give the pack sweep's photos no location ([97a6370](https://github.com/Ripwords/photobook-generator/commit/97a6370))
+- **agent:** Show the chat the chapters a places book was laid out by ([f1e41fd](https://github.com/Ripwords/photobook-generator/commit/f1e41fd))
+- **settings:** Say in About that place chapters send coordinates to Apple ([d1dea19](https://github.com/Ripwords/photobook-generator/commit/d1dea19))
+- **reprint:** Count the cover among the crops a print-size change redoes ([def4007](https://github.com/Ripwords/photobook-generator/commit/def4007))
+- **preview:** Stop the browser dragging a page photo as an image ([0c2a30d](https://github.com/Ripwords/photobook-generator/commit/0c2a30d))
+- **preflight:** Measure free space for a missing output folder on its parent ([ddfb7c6](https://github.com/Ripwords/photobook-generator/commit/ddfb7c6))
+- **select:** Keep the contact sheet toolbar on one row ([7c1fdcc](https://github.com/Ripwords/photobook-generator/commit/7c1fdcc))
+- **select:** Keep the photo size slider at the app's narrowest width ([6def009](https://github.com/Ripwords/photobook-generator/commit/6def009))
+
+### 📖 Documentation
+
+- **readme:** Point the download button at v0.1.2 ([7962e31](https://github.com/Ripwords/photobook-generator/commit/7962e31))
+- **spec:** Design the cover, place chapters and people grouping ([3a7d277](https://github.com/Ripwords/photobook-generator/commit/3a7d277))
+- **spec:** Record the face-identity experiment and block people grouping ([f78f639](https://github.com/Ripwords/photobook-generator/commit/f78f639))
+- Document place names and what they send, and record people as blocked ([2584613](https://github.com/Ripwords/photobook-generator/commit/2584613))
+- **manual:** Document the cover, its export files and Pixajoy upload ([692ed5a](https://github.com/Ripwords/photobook-generator/commit/692ed5a))
+- Record the cover as built and say generating fills it ([80d9f19](https://github.com/Ripwords/photobook-generator/commit/80d9f19))
+- **readme:** List the cover and place chapters, and correct the status ([65acede](https://github.com/Ripwords/photobook-generator/commit/65acede))
+- Record the WebKit crop-drag proof and why draggable=false stays ([63e0f64](https://github.com/Ripwords/photobook-generator/commit/63e0f64))
+- **readme:** Show the cover row in the editor screenshot ([ea6e77a](https://github.com/Ripwords/photobook-generator/commit/ea6e77a))
+
+### 🏡 Chore
+
+- **typecheck:** Type check .vue templates and fix the twelve errors ([21055c2](https://github.com/Ripwords/photobook-generator/commit/21055c2))
+
+### ✅ Tests
+
+- **export:** Cover a one-sided cover writing only that side ([1dce0ba](https://github.com/Ripwords/photobook-generator/commit/1dce0ba))
+
+### 🤖 CI
+
+- Run the template type check ([6062efe](https://github.com/Ripwords/photobook-generator/commit/6062efe))
+
+### ❤️ Contributors
+
+- JJ <teohjjteoh@gmail.com>
+
 ## v0.1.1...master
 
 [compare changes](https://github.com/Ripwords/photobook-generator/compare/v0.1.1...master)
