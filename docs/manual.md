@@ -243,8 +243,15 @@ Zooming and then dragging is one change, not two. Regenerating that opening or s
 its crop, because the slot it was chosen for is gone.
 
 To **move or resize the boxes themselves**, switch the bar above the book from **Crop and
-swap** to **Move and resize boxes**. Drag a box to move it, drag a corner to resize it; edges snap to the trim, safe and
-gutter guides, the page edge (which prints as bleed) and the other boxes on the page. Hold
+swap** to **Move and resize boxes**. Drag a box to move it, drag a corner to resize it;
+edges and centres snap to the guides. An edge catches on the trim, safe and gutter guides,
+on the page edge (which prints as bleed), and on the edges of the other boxes on the page.
+Moving a box also catches its centre on the middle of the printed page and on the centre of
+another box, so two boxes can be lined up on their middles rather than their sides. Resizing
+catches only the edge you are dragging, because pulling the box's centre onto a line would
+move that edge twice as far as the pointer went. Whichever line is holding the box is drawn
+across the page while you drag and goes as soon as you let go, so a centre snap is visible
+even though no centre line is drawn at rest. Hold
 **shift** while dragging a corner to resize the box without changing its shape: it scales
 about the opposite corner and keeps the proportions it started with. Snapping is off while
 shift is held, because pulling one edge onto a guide is exactly what would change the shape.

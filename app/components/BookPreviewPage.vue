@@ -5,6 +5,7 @@ import {
   cropStyle,
   cropZoomed,
   insideCover,
+  NO_HOLD,
   pageGuides,
   pageSlots,
   pressIsDrag,
@@ -15,13 +16,16 @@ import {
   samePlacement,
   slotMoved,
   slotResized,
+  snapLines,
   type BookLayout,
   type Corner,
+  type HeldLines,
   type PageSide,
   type PlacementRef,
   type PreviewGeometry,
   type PreviewPage,
   type PreviewRect,
+  type SnapLine,
   wheelZoomFactor,
 } from "~/types/preview";
 
@@ -86,6 +90,7 @@ const emit = defineEmits<{
 const SNAP_THRESHOLD = 0.012;
 const MIN_SLOT_SIZE = 0.05;
 const liveRects = ref<Record<string, PreviewRect>>({});
+const held = ref<HeldLines>(NO_HOLD);
 interface SlotDrag {
   key: string;
   ref: PlacementRef;
@@ -145,13 +150,15 @@ function onSlotPointerMove(event: PointerEvent) {
   const next = slotDrag.corner
     ? slotResized(slotDrag.origin, slotDrag.corner, delta, guides, SNAP_THRESHOLD, MIN_SLOT_SIZE, event.shiftKey)
     : slotMoved(slotDrag.origin, delta, guides, SNAP_THRESHOLD);
-  liveRects.value = { ...liveRects.value, [slotDrag.key]: next };
+  liveRects.value = { ...liveRects.value, [slotDrag.key]: next.rect };
+  held.value = next.held;
 }
 
 function onSlotPointerUp(event: PointerEvent) {
   if (!slotDrag) return;
   const finished = slotDrag;
   slotDrag = null;
+  held.value = NO_HOLD;
   (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
   const rect = liveRects.value[finished.key];
   if (finished.moved && rect) {
@@ -167,6 +174,7 @@ function onSlotPointerCancel() {
   const { [slotDrag.key]: _dropped, ...rest } = liveRects.value;
   liveRects.value = rest;
   slotDrag = null;
+  held.value = NO_HOLD;
 }
 
 const CORNERS: Corner[] = ["nw", "ne", "sw", "se"];
@@ -369,6 +377,8 @@ function isSelected(ref: PlacementRef): boolean {
 const trim = computed(() => rectStyle(shown.value[side].trim));
 const safe = computed(() => rectStyle(shown.value[side].safe));
 const gutter = computed(() => rectStyle(shown.value[side].gutter));
+
+const snapped = computed<SnapLine[]>(() => snapLines(held.value));
 </script>
 
 <template>
@@ -472,6 +482,13 @@ const gutter = computed(() => rectStyle(shown.value[side].gutter));
         <div class="absolute border border-dashed border-red-500/70" :style="trim" />
         <div class="absolute border border-dashed border-sky-500/70" :style="safe" />
         <div class="absolute bg-amber-500/20" :style="gutter" />
+        <div
+          v-for="line in snapped"
+          :key="line.axis"
+          class="absolute border-primary"
+          :class="line.axis === 'x' ? 'border-l' : 'border-t'"
+          :style="line.style"
+        />
       </div>
 
       <span

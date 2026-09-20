@@ -722,18 +722,65 @@ export function setSlotEdit(placement: PlacementRef, rect: PreviewRect): BookEdi
 /** Which corner of a slot a resize handle drags. */
 export type Corner = "nw" | "ne" | "sw" | "se";
 
-/** The lines a slot edge snaps to, page-normalised. */
-export interface SnapGuides {
+/** Lines on one page, one list per axis, page-normalised, deduped and ascending. */
+export interface AxisLines {
   xs: number[];
   ys: number[];
 }
 
 /**
- * Every line worth snapping to on a page: the canvas edges (bleed), the trim
- * and safe lines, the gutter line at the fold, and the edges of every OTHER
- * slot on the page. The same geometry the preview draws and the engine
- * enforces -- `PreviewGeometry` is the book's own spec on the wire, so a slot
- * snapped to the safe line here is exactly inside `in_safe_margin` there.
+ * What a slot can snap to on a page, split by which feature of the slot may
+ * land on them. The pool IS the kind: a line's meaning is the array it sits
+ * in, and a line that is meaningful two ways (the trim centre) sits in both.
+ *
+ * `edges` holds the page's own lines -- canvas, trim, safe, gutter -- the trim
+ * centre, and the edges of every OTHER slot. `centres` holds the trim centre
+ * and the centres of every other slot; a MOVED slot's centre snaps here, a
+ * resized slot's centre never does.
+ *
+ * A feature snaps to the same feature. A box centre never catches on a
+ * neighbour's edge and an edge never on a neighbour's centre: nobody lays out
+ * to those, and each position offered is another place for a drag to stick.
+ */
+export interface SnapGuides {
+  edges: AxisLines;
+  centres: AxisLines;
+}
+
+/**
+ * Where a slot is held after a snap: per axis, the line it landed on, or
+ * `null` when that axis was left where the pointer put it.
+ *
+ * When `x` is not null, one of the slot's edges -- or, after a move, its
+ * centre -- lies at exactly `x`, and `x` is a member of the pool it was drawn
+ * from. A held line is a line the box is ON, never one it was pulled toward
+ * and then clamped off.
+ */
+export interface HeldLines {
+  readonly x: number | null;
+  readonly y: number | null;
+}
+
+/** Held on nothing. Frozen, so it is safe to share as the resting state. */
+export const NO_HOLD: HeldLines = Object.freeze({ x: null, y: null });
+
+/** A snapped slot: where it is now, and what holds it there. */
+export interface SnappedSlot {
+  rect: PreviewRect;
+  held: HeldLines;
+}
+
+/**
+ * Every line worth snapping to on a page, in two pools -- see `SnapGuides`.
+ * The same geometry the preview draws and the engine enforces:
+ * `PreviewGeometry` is the book's own spec on the wire, so a slot snapped to
+ * the safe line here is exactly inside `in_safe_margin` there.
+ *
+ * Exactly one centre per axis comes from the page: the TRIM centre, the middle
+ * of the finished printed page. On the fold side the canvas and safe centres
+ * sit within one threshold of it, because a page carries no bleed at the fold
+ * (trim 0.508797, safe 0.514379, canvas 0.5 on a left page), so offering all
+ * three would make one snap three ways. Vertically all three coincide at 0.5.
  */
 export function pageGuides(
   geometry: PreviewGeometry,
@@ -741,24 +788,45 @@ export function pageGuides(
   others: readonly PreviewRect[],
 ): SnapGuides {
   const { trim, safe, gutter } = geometry[side];
-  const xs = [0, 1, trim.x, trim.x + trim.w, safe.x, safe.x + safe.w, gutter.x, gutter.x + gutter.w];
-  const ys = [0, 1, trim.y, trim.y + trim.h, safe.y, safe.y + safe.h];
+  const cx = trim.x + trim.w / 2;
+  const cy = trim.y + trim.h / 2;
+  const xs = [0, 1, trim.x, trim.x + trim.w, safe.x, safe.x + safe.w, gutter.x, gutter.x + gutter.w, cx];
+  const ys = [0, 1, trim.y, trim.y + trim.h, safe.y, safe.y + safe.h, cy];
+  const centreXs = [cx];
+  const centreYs = [cy];
   for (const r of others) {
     xs.push(r.x, r.x + r.w);
     ys.push(r.y, r.y + r.h);
+    centreXs.push(r.x + r.w / 2);
+    centreYs.push(r.y + r.h / 2);
   }
-  return { xs: dedupe(xs), ys: dedupe(ys) };
+  return {
+    edges: { xs: dedupe(xs), ys: dedupe(ys) },
+    centres: { xs: dedupe(centreXs), ys: dedupe(centreYs) },
+  };
 }
 
 function dedupe(values: number[]): number[] {
   return [...new Set(values.map((v) => Math.round(v * 1e6) / 1e6))].toSorted((a, b) => a - b);
 }
 
-/** `value` pulled onto the nearest guide within `threshold`, else unchanged. */
-export function snapValue(value: number, guides: readonly number[], threshold: number): number {
-  let best = value;
+/**
+ * The nearest guide within `threshold` of `value` that also lies in `[lo, hi]`,
+ * or `null` when there is none. A guide outside the range is not a candidate at
+ * all, so the next-nearest admissible one can win instead of the caller
+ * snapping and then clamping to a position that is on no line.
+ */
+export function nearestGuide(
+  value: number,
+  guides: readonly number[],
+  threshold: number,
+  lo: number,
+  hi: number,
+): number | null {
+  let best: number | null = null;
   let gap = threshold;
   for (const g of guides) {
+    if (g < lo || g > hi) continue;
     const d = Math.abs(g - value);
     if (d < gap) {
       gap = d;
@@ -768,44 +836,94 @@ export function snapValue(value: number, guides: readonly number[], threshold: n
   return best;
 }
 
+/** One axis of a move: where the span starts now, and the line that holds it. */
+interface SpanSnap {
+  at: number;
+  held: number | null;
+}
+
 /**
- * The slot after being dragged by `delta` page-widths and page-heights. The
- * size is kept; whichever edge lands nearest a guide snaps, pulling the whole
- * slot with it; and the slot never leaves the page.
+ * A span of `size` starting at `start`, pulled so that whichever of its three
+ * anchors can land on a guide with the smallest correction does: its start or
+ * end on an `edges` line, or its centre on a `centres` line. An anchor whose
+ * pull would put the start outside `[0, hi]` is not a candidate.
+ *
+ * This function exists only for moves, and a move always has all three
+ * anchors. A resize snaps single edges with `nearestGuide` and never comes
+ * here, which is what keeps a box's centre out of a resize: there is no span
+ * to anchor.
+ *
+ * Ties keep the earlier anchor (start, then end, then centre), so an existing
+ * edge snap is never displaced by an equally close centre.
+ *
+ * Returns a START only, so nothing on the move path can recompute a size.
+ */
+function snapSpan(
+  start: number,
+  size: number,
+  edges: readonly number[],
+  centres: readonly number[],
+  threshold: number,
+  hi: number,
+): SpanSnap {
+  const anchors: [number, readonly number[]][] = [
+    [0, edges],
+    [size, edges],
+    [size / 2, centres],
+  ];
+  let best: SpanSnap | null = null;
+  let gap = Infinity;
+  for (const [offset, pool] of anchors) {
+    const g = nearestGuide(start + offset, pool, threshold, offset, hi + offset);
+    if (g === null) continue;
+    const correction = Math.abs(g - (start + offset));
+    if (correction < gap) {
+      gap = correction;
+      best = { at: g - offset, held: g };
+    }
+  }
+  return best ?? { at: start, held: null };
+}
+
+/**
+ * The slot after being dragged by `delta` page-widths and page-heights, and
+ * the lines that now hold it. Whichever of the slot's left edge, right edge or
+ * centre is nearest a line in its pool pulls the whole slot, and the slot
+ * never leaves the page.
+ *
+ * The size is kept BIT-IDENTICAL, by spreading `rect` rather than recomputing
+ * it: Rust's `edit_label` (src-tauri/src/book/history.rs:72) calls a `SetSlot`
+ * a move only when the size matches within 1e-9, and a width recomputed as
+ * `right - left` drifts by ~5e-17 after a centre snap, which relabels the move
+ * "Undo resize". Commit b896389 fixed exactly that once.
  */
 export function slotMoved(
   rect: PreviewRect,
   delta: SlotDelta,
   guides: SnapGuides,
   threshold: number,
-): PreviewRect {
+): SnappedSlot {
   const x = clamp(rect.x + delta.dx, 0, 1 - rect.w);
   const y = clamp(rect.y + delta.dy, 0, 1 - rect.h);
-  const sx = snapEither(x, rect.w, guides.xs, threshold);
-  const sy = snapEither(y, rect.h, guides.ys, threshold);
-  return { x: clamp(sx, 0, 1 - rect.w), y: clamp(sy, 0, 1 - rect.h), w: rect.w, h: rect.h };
+  const sx = snapSpan(x, rect.w, guides.edges.xs, guides.centres.xs, threshold, 1 - rect.w);
+  const sy = snapSpan(y, rect.h, guides.edges.ys, guides.centres.ys, threshold, 1 - rect.h);
+  return { rect: { ...rect, x: sx.at, y: sy.at }, held: { x: sx.held, y: sy.held } };
 }
 
 /**
- * The start of a span of `size` at `start`, pulled so that whichever of its
- * two edges can snap with the smaller correction does. An edge that is not
- * within `threshold` of any guide does not count, so an unsnapped edge never
- * wins over a snapped one merely by moving less.
- */
-function snapEither(start: number, size: number, guides: readonly number[], threshold: number): number {
-  const byStart = snapValue(start, guides, threshold) - start;
-  const byEnd = snapValue(start + size, guides, threshold) - (start + size);
-  const candidates = [byStart, byEnd].filter((c) => c !== 0);
-  if (candidates.length === 0) return start;
-  return start + candidates.reduce((a, b) => (Math.abs(b) < Math.abs(a) ? b : a));
-}
-
-/**
- * The slot after one corner is dragged by `delta`. The opposite corner stays
- * put, the moving edges snap to guides, and the slot can shrink no further
- * than `minSize` each way nor leave the page. Free-form on purpose: a slot's
- * shape is the user's to choose; Rust re-crops the photo for whatever shape
- * results and refuses one that breaks a hard constraint.
+ * The slot after one corner is dragged by `delta`, and the lines that hold its
+ * moving edges. The opposite corner stays put; each moving edge snaps to the
+ * `edges` pool within the room its floor and the page leave it; and the slot
+ * can shrink no further than `minSize` each way. Free-form on purpose: a
+ * slot's shape is the user's to choose; Rust re-crops the photo for whatever
+ * shape results and refuses one that breaks a hard constraint.
+ *
+ * The slot's centre is never a candidate. A resize is the user steering an
+ * EDGE, and pulling the centre onto a line would move that edge by twice the
+ * correction, to somewhere the pointer is not.
+ *
+ * With `lockAspect` the slot is scaled by `slotScaled`, which sees no guides,
+ * so the indicator goes dark the instant shift goes down.
  */
 export function slotResized(
   rect: PreviewRect,
@@ -815,23 +933,33 @@ export function slotResized(
   threshold: number,
   minSize: number,
   lockAspect = false,
-): PreviewRect {
-  if (lockAspect) return slotScaled(rect, corner, delta, minSize);
+): SnappedSlot {
+  if (lockAspect) return { rect: slotScaled(rect, corner, delta, minSize), held: NO_HOLD };
   let left = rect.x;
   let right = rect.x + rect.w;
   let top = rect.y;
   let bottom = rect.y + rect.h;
+  let heldX: number | null;
+  let heldY: number | null;
   if (corner === "nw" || corner === "sw") {
-    left = clamp(snapValue(clamp(left + delta.dx, 0, 1), guides.xs, threshold), 0, right - minSize);
+    const v = clamp(left + delta.dx, 0, 1);
+    heldX = nearestGuide(v, guides.edges.xs, threshold, 0, right - minSize);
+    left = heldX ?? clamp(v, 0, right - minSize);
   } else {
-    right = clamp(snapValue(clamp(right + delta.dx, 0, 1), guides.xs, threshold), left + minSize, 1);
+    const v = clamp(right + delta.dx, 0, 1);
+    heldX = nearestGuide(v, guides.edges.xs, threshold, left + minSize, 1);
+    right = heldX ?? clamp(v, left + minSize, 1);
   }
   if (corner === "nw" || corner === "ne") {
-    top = clamp(snapValue(clamp(top + delta.dy, 0, 1), guides.ys, threshold), 0, bottom - minSize);
+    const v = clamp(top + delta.dy, 0, 1);
+    heldY = nearestGuide(v, guides.edges.ys, threshold, 0, bottom - minSize);
+    top = heldY ?? clamp(v, 0, bottom - minSize);
   } else {
-    bottom = clamp(snapValue(clamp(bottom + delta.dy, 0, 1), guides.ys, threshold), top + minSize, 1);
+    const v = clamp(bottom + delta.dy, 0, 1);
+    heldY = nearestGuide(v, guides.edges.ys, threshold, top + minSize, 1);
+    bottom = heldY ?? clamp(v, top + minSize, 1);
   }
-  return { x: left, y: top, w: right - left, h: bottom - top };
+  return { rect: { x: left, y: top, w: right - left, h: bottom - top }, held: { x: heldX, y: heldY } };
 }
 
 /**
@@ -863,6 +991,26 @@ function slotScaled(rect: PreviewRect, corner: Corner, delta: SlotDelta, minSize
     w: sized,
     h,
   };
+}
+
+/** A hairline the indicator draws, positioned like any other guide box. */
+export interface SnapLine {
+  axis: "x" | "y";
+  style: BoxStyle;
+}
+
+/**
+ * The held lines as zero-thickness boxes: a held `x` is a full-height box of
+ * zero width at `x`, a held `y` a full-width box of zero height at `y`. The
+ * component gives each a one-sided border, which is the line. A zero-extent
+ * box puts that hairline on the exact coordinate; a 1px-wide box would sit
+ * half a pixel off it.
+ */
+export function snapLines(held: HeldLines): SnapLine[] {
+  const lines: SnapLine[] = [];
+  if (held.x !== null) lines.push({ axis: "x", style: rectStyle({ x: held.x, y: 0, w: 0, h: 1 }) });
+  if (held.y !== null) lines.push({ axis: "y", style: rectStyle({ x: 0, y: held.y, w: 1, h: 0 }) });
+  return lines;
 }
 
 /**

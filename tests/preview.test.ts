@@ -32,7 +32,9 @@ import {
   stepLabel,
   slotMoved,
   slotResized,
-  snapValue,
+  nearestGuide,
+  snapLines,
+  NO_HOLD,
   spreadTemplates,
   templateLabel,
   toSpreads,
@@ -45,6 +47,7 @@ import {
   type PreviewPhoto,
   type Rejection,
   type SlotCandidate,
+  type SnapGuides,
 } from "../app/types/preview";
 
 /**
@@ -496,15 +499,17 @@ describe("the guides", () => {
     };
 
     const g = pageGuides(odd, "left", []);
-    expect(g.xs.some((x) => Math.abs(x - 0.25 / 8) < 1e-9)).toBe(true);
-    expect(g.xs.some((x) => Math.abs(x - (1 - 0.4 / 8)) < 1e-9)).toBe(true);
-    expect(g.ys.some((y) => Math.abs(y - 0.03) < 1e-9)).toBe(true);
+    expect(g.edges.xs.some((x) => Math.abs(x - 0.25 / 8) < 1e-9)).toBe(true);
+    expect(g.edges.xs.some((x) => Math.abs(x - (1 - 0.4 / 8)) < 1e-9)).toBe(true);
+    expect(g.edges.ys.some((y) => Math.abs(y - 0.03) < 1e-9)).toBe(true);
+    // The centre follows the payload too: this page's trim centre, not 0.5.
+    expect(g.centres.xs).toEqual([0.25 / 8 + (1 - 0.25 / 8) / 2]);
     // Nothing of Pixajoy's leaks through.
-    expect(g.xs.some((x) => Math.abs(x - 0.197 / 11.197) < 1e-6)).toBe(false);
+    expect(g.edges.xs.some((x) => Math.abs(x - 0.197 / 11.197) < 1e-6)).toBe(false);
 
     const r = pageGuides(odd, "right", []);
-    expect(r.xs.some((x) => Math.abs(x - 0.4 / 8) < 1e-9)).toBe(true);
-    expect(r.xs.some((x) => Math.abs(x - (1 - 0.25 / 8)) < 1e-9)).toBe(true);
+    expect(r.edges.xs.some((x) => Math.abs(x - 0.4 / 8) < 1e-9)).toBe(true);
+    expect(r.edges.xs.some((x) => Math.abs(x - (1 - 0.25 / 8)) < 1e-9)).toBe(true);
     expect(rectStyle(odd.left.gutter)).not.toEqual(rectStyle(geometry.left.gutter));
   });
 
@@ -782,35 +787,96 @@ describe("hand cropping", () => {
 
 describe("slot editing", () => {
   const rect = { x: 0.2, y: 0.2, w: 0.3, h: 0.4 };
-  const guides = { xs: [0, 0.5, 1], ys: [0, 0.5, 1] };
+  const guides: SnapGuides = {
+    edges: { xs: [0, 0.5, 1], ys: [0, 0.5, 1] },
+    centres: { xs: [0.5], ys: [0.5] },
+  };
 
-  it("snaps a value only within the threshold, to the nearest guide", () => {
-    expect(snapValue(0.49, [0, 0.5, 1], 0.02)).toBe(0.5);
-    expect(snapValue(0.45, [0, 0.5, 1], 0.02)).toBe(0.45);
-    expect(snapValue(0.26, [0.25, 0.3], 0.05)).toBe(0.25);
+  it("finds the nearest guide within the threshold, or none", () => {
+    expect(nearestGuide(0.49, [0, 0.5, 1], 0.02, 0, 1)).toBe(0.5);
+    expect(nearestGuide(0.45, [0, 0.5, 1], 0.02, 0, 1)).toBeNull();
+    expect(nearestGuide(0.26, [0.25, 0.3], 0.05, 0, 1)).toBe(0.25);
+  });
+
+  /**
+   * A guide the value cannot legally reach is not a candidate at all, rather
+   * than a snap the caller then clamps away. Clamping would leave the box on
+   * no line while `held` claimed one, and it would hide the admissible guide
+   * sitting just behind the unreachable one.
+   */
+  it("offers only a guide the value may legally reach", () => {
+    expect(nearestGuide(0.49, [0.5, 0.475], 0.02, 0, 1)).toBe(0.5);
+    expect(nearestGuide(0.49, [0.5, 0.475], 0.02, 0, 0.48)).toBe(0.475);
+    expect(nearestGuide(0.49, [0.5, 0.475], 0.02, 0, 0.47)).toBeNull();
+    expect(nearestGuide(0.49, [0.5, 0.475], 0.02, 0.48, 1)).toBe(0.5);
   });
 
   it("moves a slot, snapping whichever edge is nearest a guide and keeping its size", () => {
     const moved = slotMoved(rect, { dx: -0.01, dy: 0 }, guides, 0.02);
-    expect(moved).toEqual({ x: 0.2, y: 0.2, w: 0.3, h: 0.4 });
+    expect(moved.rect).toEqual({ x: 0.2, y: 0.2, w: 0.3, h: 0.4 });
     const free = slotMoved(rect, { dx: 0.1, dy: 0.05 }, guides, 0.02);
-    expect(free.x).toBeCloseTo(0.3, 12);
-    expect(free.y).toBeCloseTo(0.25, 12);
-    expect([free.w, free.h]).toEqual([0.3, 0.4]);
+    expect(free.rect.x).toBeCloseTo(0.3, 12);
+    expect(free.rect.y).toBeCloseTo(0.25, 12);
+    expect([free.rect.w, free.rect.h]).toEqual([0.3, 0.4]);
   });
 
   it("keeps a moved slot on the page", () => {
-    expect(slotMoved(rect, { dx: 5, dy: 5 }, guides, 0)).toEqual({ x: 0.7, y: 0.6, w: 0.3, h: 0.4 });
-    expect(slotMoved(rect, { dx: -5, dy: -5 }, guides, 0)).toEqual({ x: 0, y: 0, w: 0.3, h: 0.4 });
+    expect(slotMoved(rect, { dx: 5, dy: 5 }, guides, 0).rect).toEqual({ x: 0.7, y: 0.6, w: 0.3, h: 0.4 });
+    expect(slotMoved(rect, { dx: -5, dy: -5 }, guides, 0).rect).toEqual({ x: 0, y: 0, w: 0.3, h: 0.4 });
+  });
+
+  /**
+   * The third anchor a move has and a resize does not. The box's centre lands
+   * at 0.492 under the pointer, inside the threshold of the 0.5 centre guide,
+   * and neither edge is near anything, so the centre pulls the whole box.
+   */
+  it("pulls a moved slot's centre onto a centre guide", () => {
+    const box = { x: 0.2, y: 0.1, w: 0.3, h: 0.3 };
+    const out = slotMoved(box, { dx: 0.142, dy: 0 }, guides, 0.02);
+    expect(out.rect.x).toBeCloseTo(0.35, 12);
+    expect(out.rect.x + out.rect.w / 2).toBeCloseTo(0.5, 12);
+    expect(out.held.x).toBe(0.5);
+    expect(out.held.y).toBeNull();
+  });
+
+  /**
+   * `edit_label` (src-tauri/src/book/history.rs:72) calls a `SetSlot` a move
+   * only when the size matches within 1e-9. A width recomputed as
+   * `right - left` drifts by ~5e-17 after the centre snap above, which
+   * `toBeCloseTo` cannot see and which relabels every move "Undo resize".
+   */
+  it("keeps a moved slot's size bit-identical, not merely close", () => {
+    const box = { x: 0.2, y: 0.1, w: 0.3, h: 0.3 };
+    const out = slotMoved(box, { dx: 0.142, dy: 0 }, guides, 0.02);
+    expect(Object.is(out.rect.w, box.w)).toBe(true);
+    expect(Object.is(out.rect.h, box.h)).toBe(true);
+  });
+
+  it("holds nothing when no anchor is near a line", () => {
+    const out = slotMoved({ x: 0.2, y: 0.1, w: 0.3, h: 0.3 }, { dx: 0.05, dy: 0.05 }, guides, 0.02);
+    expect(out.held).toEqual(NO_HOLD);
+  });
+
+  /**
+   * A zero correction is a hit, not a miss. Discarding it -- which the old
+   * `snapEither` did, to stop an unsnapped edge beating a snapped one --
+   * reports a box parked exactly on its guide as held by nothing, and the
+   * indicator goes dark under a box that is still snapped.
+   */
+  it("reports a box already exactly on a line as held by it", () => {
+    const out = slotMoved({ x: 0.5, y: 0.1, w: 0.3, h: 0.3 }, { dx: 0, dy: 0 }, guides, 0.02);
+    expect(out.rect.x).toBe(0.5);
+    expect(out.held.x).toBe(0.5);
+    expect(out.held.y).toBeNull();
   });
 
   it("resizes from a corner with the opposite corner fixed", () => {
-    const se = slotResized(rect, "se", { dx: 0.1, dy: 0.1 }, guides, 0, 0.05);
+    const se = slotResized(rect, "se", { dx: 0.1, dy: 0.1 }, guides, 0, 0.05).rect;
     expect(se.x).toBe(0.2);
     expect(se.y).toBe(0.2);
     expect(se.w).toBeCloseTo(0.4, 12);
     expect(se.h).toBeCloseTo(0.5, 12);
-    const nw = slotResized(rect, "nw", { dx: -0.1, dy: -0.1 }, guides, 0, 0.05);
+    const nw = slotResized(rect, "nw", { dx: -0.1, dy: -0.1 }, guides, 0, 0.05).rect;
     expect(nw.x).toBeCloseTo(0.1, 12);
     expect(nw.y).toBeCloseTo(0.1, 12);
     expect(nw.x + nw.w).toBeCloseTo(0.5, 12);
@@ -818,43 +884,57 @@ describe("slot editing", () => {
   });
 
   it("never resizes below the minimum or past the page, and snaps the moving edge", () => {
-    const tiny = slotResized(rect, "se", { dx: -5, dy: -5 }, guides, 0, 0.05);
+    const tiny = slotResized(rect, "se", { dx: -5, dy: -5 }, guides, 0, 0.05).rect;
     expect(tiny.w).toBeCloseTo(0.05, 12);
     expect(tiny.h).toBeCloseTo(0.05, 12);
-    const huge = slotResized(rect, "se", { dx: 5, dy: 5 }, guides, 0, 0.05);
+    const huge = slotResized(rect, "se", { dx: 5, dy: 5 }, guides, 0, 0.05).rect;
     expect(huge.x + huge.w).toBe(1);
     expect(huge.y + huge.h).toBe(1);
     const snapped = slotResized(rect, "ne", { dx: -0.01, dy: 0 }, guides, 0.02, 0.05);
-    expect(snapped.x + snapped.w).toBeCloseTo(0.5, 12);
+    expect(snapped.rect.x + snapped.rect.w).toBeCloseTo(0.5, 12);
+    expect(snapped.held.x).toBe(0.5);
+  });
+
+  /**
+   * A resize is the user steering one EDGE. Dragging the right edge to 0.79
+   * puts the box's centre at 0.495, well inside the threshold of the 0.5
+   * centre guide -- and nothing may happen, because honouring it would move
+   * the edge to 0.81, twice the correction and nowhere near the pointer.
+   */
+  it("never pulls a resized slot's centre onto a centre guide", () => {
+    const out = slotResized({ x: 0.2, y: 0.1, w: 0.3, h: 0.3 }, "se", { dx: 0.29, dy: 0 }, guides, 0.02, 0.05);
+    expect(out.rect.x + out.rect.w).toBeCloseTo(0.79, 12);
+    expect(out.rect.x + out.rect.w / 2).toBeCloseTo(0.495, 12);
+    expect(out.held.x).toBeNull();
   });
 
   it("locks the aspect ratio when asked, driving from the axis that moved more", () => {
     // 0.3 x 0.4, so a locked resize keeps w/h at 0.75 whatever the pointer does.
-    const wide = slotResized(rect, "se", { dx: 0.15, dy: 0.01 }, guides, 0, 0.05, true);
+    const wide = slotResized(rect, "se", { dx: 0.15, dy: 0.01 }, guides, 0, 0.05, true).rect;
     expect(wide.w / wide.h).toBeCloseTo(0.75, 12);
     expect(wide.w).toBeCloseTo(0.45, 12);
     expect(wide.h).toBeCloseTo(0.6, 12);
-    const tall = slotResized(rect, "se", { dx: 0.01, dy: 0.2 }, guides, 0, 0.05, true);
+    const tall = slotResized(rect, "se", { dx: 0.01, dy: 0.2 }, guides, 0, 0.05, true).rect;
     expect(tall.w / tall.h).toBeCloseTo(0.75, 12);
     expect(tall.h).toBeCloseTo(0.6, 12);
   });
 
   it("keeps the opposite corner fixed under a locked resize", () => {
-    const nw = slotResized(rect, "nw", { dx: -0.15, dy: -0.01 }, guides, 0, 0.05, true);
+    const nw = slotResized(rect, "nw", { dx: -0.15, dy: -0.01 }, guides, 0, 0.05, true).rect;
     expect(nw.x + nw.w).toBeCloseTo(0.5, 12);
     expect(nw.y + nw.h).toBeCloseTo(0.6, 12);
     expect(nw.w / nw.h).toBeCloseTo(0.75, 12);
-    const ne = slotResized(rect, "ne", { dx: 0.15, dy: -0.01 }, guides, 0, 0.05, true);
+    const ne = slotResized(rect, "ne", { dx: 0.15, dy: -0.01 }, guides, 0, 0.05, true).rect;
     expect(ne.x).toBeCloseTo(0.2, 12);
     expect(ne.y + ne.h).toBeCloseTo(0.6, 12);
     expect(ne.w / ne.h).toBeCloseTo(0.75, 12);
   });
 
   it("holds the ratio at both limits: the minimum size and the page edge", () => {
-    const tiny = slotResized(rect, "se", { dx: -5, dy: -5 }, guides, 0, 0.05, true);
+    const tiny = slotResized(rect, "se", { dx: -5, dy: -5 }, guides, 0, 0.05, true).rect;
     expect(tiny.w / tiny.h).toBeCloseTo(0.75, 12);
     expect(Math.min(tiny.w, tiny.h)).toBeCloseTo(0.05, 12);
-    const huge = slotResized(rect, "se", { dx: 5, dy: 5 }, guides, 0, 0.05, true);
+    const huge = slotResized(rect, "se", { dx: 5, dy: 5 }, guides, 0, 0.05, true).rect;
     expect(huge.w / huge.h).toBeCloseTo(0.75, 12);
     expect(huge.x + huge.w).toBeLessThanOrEqual(1 + 1e-12);
     expect(huge.y + huge.h).toBeLessThanOrEqual(1 + 1e-12);
@@ -867,7 +947,7 @@ describe("slot editing", () => {
     // for anything narrower than square the two floors are the same number,
     // so the case above passes with the scaling dropped entirely.
     const squat = { x: 0.2, y: 0.2, w: 0.4, h: 0.2 };
-    const squashed = slotResized(squat, "se", { dx: -5, dy: -5 }, guides, 0, 0.05, true);
+    const squashed = slotResized(squat, "se", { dx: -5, dy: -5 }, guides, 0, 0.05, true).rect;
     expect(squashed.w / squashed.h).toBeCloseTo(2, 12);
     expect(squashed.h).toBeCloseTo(0.05, 12);
     expect(squashed.w).toBeCloseTo(0.1, 12);
@@ -876,25 +956,60 @@ describe("slot editing", () => {
   it("ignores snapping while the ratio is locked, because a snapped edge breaks it", () => {
     // dx alone would pull the right edge onto the 0.5 guide and leave h at 0.4.
     const locked = slotResized(rect, "se", { dx: -0.01, dy: 0 }, guides, 0.02, 0.05, true);
-    expect(locked.w).toBeCloseTo(0.29, 12);
-    expect(locked.x + locked.w).toBeCloseTo(0.49, 12);
-    expect(locked.h).toBeCloseTo(0.29 / 0.75, 12);
+    expect(locked.rect.w).toBeCloseTo(0.29, 12);
+    expect(locked.rect.x + locked.rect.w).toBeCloseTo(0.49, 12);
+    expect(locked.rect.h).toBeCloseTo(0.29 / 0.75, 12);
     const free = slotResized(rect, "se", { dx: -0.01, dy: 0 }, guides, 0.02, 0.05);
-    expect(free.x + free.w).toBeCloseTo(0.5, 12);
-    expect(free.h).toBeCloseTo(0.4, 12);
+    expect(free.rect.x + free.rect.w).toBeCloseTo(0.5, 12);
+    expect(free.rect.h).toBeCloseTo(0.4, 12);
+  });
+
+  it("holds nothing while the ratio is locked, so the indicator goes dark with shift", () => {
+    const locked = slotResized(rect, "se", { dx: -0.01, dy: 0 }, guides, 0.02, 0.05, true);
+    expect(locked.held).toEqual(NO_HOLD);
+    const free = slotResized(rect, "se", { dx: -0.01, dy: 0 }, guides, 0.02, 0.05);
+    expect(free.held.x).toBe(0.5);
   });
 
   it("builds page guides from the engine's own geometry plus the other slots", () => {
     const g = pageGuides(geometry, "left", [{ x: 0.1, y: 0.3, w: 0.2, h: 0.2 }]);
-    expect(g.xs).toContain(0);
-    expect(g.xs).toContain(1);
-    expect(g.xs.some((x) => Math.abs(x - geometry.left.trim.x) < 1e-6)).toBe(true);
-    expect(g.xs.some((x) => Math.abs(x - geometry.left.gutter.x) < 1e-6)).toBe(true);
-    expect(g.xs).toContain(0.1);
-    expect(g.xs.some((x) => Math.abs(x - 0.3) < 1e-6)).toBe(true);
-    expect(g.ys).toContain(0.3);
-    expect(g.ys.some((y) => Math.abs(y - 0.5) < 1e-6)).toBe(true);
-    expect(g.xs.toSorted((a, b) => a - b)).toEqual(g.xs);
+    expect(g.edges.xs).toContain(0);
+    expect(g.edges.xs).toContain(1);
+    expect(g.edges.xs.some((x) => Math.abs(x - geometry.left.trim.x) < 1e-6)).toBe(true);
+    expect(g.edges.xs.some((x) => Math.abs(x - geometry.left.gutter.x) < 1e-6)).toBe(true);
+    expect(g.edges.xs).toContain(0.1);
+    expect(g.edges.xs.some((x) => Math.abs(x - 0.3) < 1e-6)).toBe(true);
+    expect(g.edges.ys).toContain(0.3);
+    expect(g.edges.ys.some((y) => Math.abs(y - 0.5) < 1e-6)).toBe(true);
+    expect(g.edges.xs.toSorted((a, b) => a - b)).toEqual(g.edges.xs);
+  });
+
+  /**
+   * Exactly one horizontal centre, the trim centre. A left page is asymmetric
+   * because the fold carries no bleed, so its canvas centre (0.5) and safe
+   * centre (0.514379) sit within one 0.012 threshold of the trim centre
+   * (0.508797); offering all three would make one snap three ways.
+   */
+  it("offers one page centre per axis, the trim centre, plus the other slots'", () => {
+    const g = pageGuides(geometry, "left", [{ x: 0.1, y: 0.3, w: 0.2, h: 0.2 }]);
+    const cx = geometry.left.trim.x + geometry.left.trim.w / 2;
+    expect(cx).toBeCloseTo(0.508797, 6);
+    expect(g.centres.xs).toEqual([0.2, Math.round(cx * 1e6) / 1e6]);
+    expect(g.centres.ys).toEqual([0.4, 0.5]);
+    // The trim centre is a target for an edge too; the other slots' are not.
+    expect(g.edges.xs.some((x) => Math.abs(x - cx) < 1e-6)).toBe(true);
+    expect(g.edges.xs.some((x) => Math.abs(x - 0.2) < 1e-6)).toBe(false);
+  });
+
+  it("draws a held line as a zero-thickness box across the page", () => {
+    expect(snapLines({ x: 0.25, y: null })).toEqual([
+      { axis: "x", style: { left: "25%", top: "0%", width: "0%", height: "100%" } },
+    ]);
+    expect(snapLines({ x: null, y: 0.5 })).toEqual([
+      { axis: "y", style: { left: "0%", top: "50%", width: "100%", height: "0%" } },
+    ]);
+    expect(snapLines(NO_HOLD)).toEqual([]);
+    expect(snapLines({ x: 0.25, y: 0.5 }).map((line) => line.axis)).toEqual(["x", "y"]);
   });
 
   it("sends the whole rect for a slot edit", () => {
@@ -1079,6 +1194,34 @@ describe("a slot nudge and a crop drag do not share a threshold", () => {
     // If a click on a slot ever comes to mean something, the small threshold
     // stops being free and this test is the place that says so.
     expect(body("onSlotPointerUp")).not.toMatch(/emit\("(select|swap)"/);
+  });
+});
+
+/**
+ * The snap indicator is lit only while a gesture is running. `held` has one
+ * setter, in `onSlotPointerMove`, which is reachable only while `slotDrag` is
+ * set, and a reset beside each of the two places a drag ends. Leave one out
+ * and the hairline stays painted over a page nobody is dragging.
+ *
+ * A pointer gesture is out of reach of a unit test, so this pins it as source
+ * the way the block above does.
+ */
+describe("the snap indicator goes dark when the gesture ends", () => {
+  const text = readFileSync(
+    new URL("../app/components/BookPreviewPage.vue", import.meta.url),
+    "utf8",
+  );
+  const body = (name: string) =>
+    text.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}`))?.[0] ?? "";
+
+  it.each(["onSlotPointerUp", "onSlotPointerCancel"])("%s clears the held lines", (name) => {
+    expect(body(name)).toContain("slotDrag = null;");
+    expect(body(name)).toContain("held.value = NO_HOLD;");
+  });
+
+  it("sets the held lines only where the drag is live", () => {
+    expect([...text.matchAll(/held\.value = (?!NO_HOLD)/g)]).toHaveLength(1);
+    expect(body("onSlotPointerMove")).toContain("held.value = next.held;");
   });
 });
 
