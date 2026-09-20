@@ -849,6 +849,20 @@ function slotScaled(rect: PreviewRect, corner: Corner, delta: SlotDelta, minSize
 export const DRAG_THRESHOLD_PX = 10;
 
 /**
+ * The same question for a gesture where a press that never travels means
+ * nothing at all -- moving or resizing a slot in layout mode, where releasing
+ * without having moved discards the live rect and emits no edit.
+ *
+ * Ten pixels there bought nothing and cost every nudge smaller than ten
+ * pixels, because the move applies the whole offset from the origin as soon as
+ * the threshold is crossed: a slot could not be shifted by three pixels at
+ * all, and a ten-pixel drag jumped to exactly ten. This floor is only large
+ * enough to stop tremor during a press committing an edit the user did not
+ * ask for and then has to undo.
+ */
+export const SLOT_DRAG_THRESHOLD_PX = 3;
+
+/**
  * Whether a press now `dx`,`dy` from where it began has become a drag.
  *
  * Asked only while the pointer is moving. Once it answers yes the gesture is a
@@ -856,8 +870,8 @@ export const DRAG_THRESHOLD_PX = 10;
  * go near where the press started commits the crop or rect on screen instead
  * of discarding it. Re-testing the net offset on release threw those away.
  */
-export function pressIsDrag(dx: number, dy: number): boolean {
-  return Math.hypot(dx, dy) >= DRAG_THRESHOLD_PX;
+export function pressIsDrag(dx: number, dy: number, threshold = DRAG_THRESHOLD_PX): boolean {
+  return Math.hypot(dx, dy) >= threshold;
 }
 
 /** Undated photos sort after every dated one. */

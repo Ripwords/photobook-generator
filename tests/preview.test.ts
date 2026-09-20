@@ -20,6 +20,8 @@ import {
   withImportedPhotos,
   pageGuides,
   pressIsDrag,
+  SLOT_DRAG_THRESHOLD_PX,
+  DRAG_THRESHOLD_PX,
   pickAspect,
   pickEdit,
   setCoverCropEdit,
@@ -1020,6 +1022,62 @@ describe("click versus drag", () => {
     expect(pressIsDrag(1, 0)).toBe(false);
     expect(pressIsDrag(-20, 0)).toBe(true);
     expect(pressIsDrag(0, -20)).toBe(true);
+  });
+
+  it("takes the threshold from the caller, defaulting to the generous one", () => {
+    expect(pressIsDrag(4, 0, SLOT_DRAG_THRESHOLD_PX)).toBe(true);
+    expect(pressIsDrag(4, 0)).toBe(false);
+    expect(pressIsDrag(4, 0, DRAG_THRESHOLD_PX)).toBe(false);
+  });
+
+  // A slot that cannot be nudged by less than ten pixels is the complaint.
+  // The floor exists only to stop tremor during a press committing an edit,
+  // which is a far smaller job than telling a click from a drag.
+  it("keeps a floor under the slot threshold rather than dropping it", () => {
+    expect(SLOT_DRAG_THRESHOLD_PX).toBeGreaterThan(0);
+    expect(SLOT_DRAG_THRESHOLD_PX).toBeLessThan(DRAG_THRESHOLD_PX);
+    expect(pressIsDrag(1, 0, SLOT_DRAG_THRESHOLD_PX)).toBe(false);
+  });
+});
+
+/**
+ * The two gestures on a slot want different thresholds because a press that
+ * never travels means different things in each.
+ *
+ * In crop mode a click selects the photo for a swap, so the threshold has to
+ * be generous enough to absorb the tremor in a real trackpad click -- at 3px
+ * a click on the cover registered as a tiny crop drag and the picker never
+ * opened. In layout mode `onSlotPointerUp` has no click branch at all: a
+ * press that does not travel discards its live rect and does nothing. So
+ * there the ten pixels protected nothing and cost the user every nudge
+ * smaller than ten pixels, since the move applies the whole offset from the
+ * origin the moment the threshold is crossed.
+ *
+ * Pinned as source for the same reason as the block above: a pointer gesture
+ * is out of reach of a unit test.
+ */
+describe("a slot nudge and a crop drag do not share a threshold", () => {
+  const text = readFileSync(
+    new URL("../app/components/BookPreviewPage.vue", import.meta.url),
+    "utf8",
+  );
+  const body = (name: string) =>
+    text.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}`))?.[0] ?? "";
+
+  it("moves a slot on the smaller threshold", () => {
+    expect(body("onSlotPointerMove")).toContain("pressIsDrag(dxPx, dyPx, SLOT_DRAG_THRESHOLD_PX)");
+  });
+
+  it("leaves the crop drag on the generous default", () => {
+    const move = body("onPointerMove");
+    expect(move).toContain("pressIsDrag(dxPx, dyPx)");
+    expect(move).not.toContain("SLOT_DRAG_THRESHOLD_PX");
+  });
+
+  it("still has no click branch in layout mode, which is why this is safe", () => {
+    // If a click on a slot ever comes to mean something, the small threshold
+    // stops being free and this test is the place that says so.
+    expect(body("onSlotPointerUp")).not.toMatch(/emit\("(select|swap)"/);
   });
 });
 

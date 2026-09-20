@@ -245,7 +245,10 @@ gutter guides, the page edge (which prints as bleed) and the other boxes on the 
 **shift** while dragging a corner to resize the box without changing its shape: it scales
 about the opposite corner and keeps the proportions it started with. Snapping is off while
 shift is held, because pulling one edge onto a guide is exactly what would change the shape.
-Shift is read as you drag, so you can take or drop the lock part-way through. A box
+Shift is read as you drag, so you can take or drop the lock part-way through. Nudges of a
+few pixels work here: a drag counts from about three pixels, rather than the ten a click on
+a photo has to clear to count as a drag instead of a swap. Below that the box does not move
+at all, so resting a hand on it does not quietly shift the layout. A box
 cannot leave the page, shrink below 5% of it, or overlap another box, and the photo is
 re-cropped for the new shape under the same rules as everything else. Switch back to **Crop
 and swap** to go back to swapping and cropping. A change that would cut a face, put one in the

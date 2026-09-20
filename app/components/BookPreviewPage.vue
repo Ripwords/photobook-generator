@@ -8,6 +8,7 @@ import {
   pageGuides,
   pageSlots,
   pressIsDrag,
+  SLOT_DRAG_THRESHOLD_PX,
   rectStyle,
   releaseAction,
   samePlacement,
@@ -133,7 +134,7 @@ function onSlotPointerMove(event: PointerEvent) {
   if (!slotDrag) return;
   const dxPx = event.clientX - slotDrag.startX;
   const dyPx = event.clientY - slotDrag.startY;
-  if (!slotDrag.moved && !pressIsDrag(dxPx, dyPx)) return;
+  if (!slotDrag.moved && !pressIsDrag(dxPx, dyPx, SLOT_DRAG_THRESHOLD_PX)) return;
   slotDrag.moved = true;
   const delta = { dx: dxPx / slotDrag.pageW, dy: dyPx / slotDrag.pageH };
   const guides = guidesFor(slotDrag.key);
