@@ -72,14 +72,66 @@ const EVERY_EDIT: BookEdit[] = [
   { kind: "setSpineColour", rgb: "#112233" },
 ];
 
+/**
+ * Rust's `edit_label` arms, keyed by the variant and by whatever the arm is
+ * guarded on: `SetLocked { locked: true, .. } => "lock"` becomes
+ * `"SetLocked locked: true" -> "lock"`. Two arms of one variant are the
+ * whole difficulty -- lock versus unlock, setting a cover photo versus
+ * clearing one -- and a key that dropped the guard would collapse them.
+ */
+function rustArms(body: string): Map<string, string> {
+  const arms = new Map<string, string>();
+  for (const [, variant, fields, label] of body.matchAll(
+    /BookEdit::(\w+)\s*(?:\{([^}]*)\})?\s*=> "([^"]+)"/g,
+  )) {
+    const guards = (fields ?? "")
+      .split(",")
+      .map((field) => field.trim())
+      .filter((field) => field !== "" && field !== "..");
+    arms.set([variant!, ...guards].join(" "), label!);
+  }
+  return arms;
+}
+
+/** What Rust would call this edit, by walking its arms the way `match` does. */
+function rustLabel(arms: Map<string, string>, edit: BookEdit): string | undefined {
+  const variant = edit.kind[0]!.toUpperCase() + edit.kind.slice(1);
+  const fields: Record<string, unknown> = { ...edit };
+  for (const [key, label] of arms) {
+    if (key !== variant && !key.startsWith(`${variant} `)) continue;
+    const guard = key.slice(variant.length).trim();
+    if (guard === "") return label;
+    const [field, want] = guard.split(":").map((part) => part.trim());
+    const got = fields[field!];
+    const matches =
+      want === "true" ? got === true
+      : want === "false" ? got === false
+      : want === "None" ? got === null
+      : got !== null && got !== undefined;
+    if (matches) return label;
+  }
+  return undefined;
+}
+
 describe("the harness's undo timeline", () => {
   it("labels every edit exactly the way Rust does", () => {
     const rust = readFileSync(new URL("../src-tauri/src/book/history.rs", import.meta.url), "utf8");
     const body = /pub fn edit_label\(edit: &BookEdit\) -> &'static str \{([\s\S]*?)\n\}/.exec(rust);
     expect(body, "edit_label was renamed or reshaped in history.rs").not.toBeNull();
-    const rustLabels = [...body![1]!.matchAll(/=> "([^"]+)"/g)].map((m) => m[1]!);
-    expect(rustLabels.length).toBeGreaterThan(0);
-    expect(EVERY_EDIT.map(editLabel).toSorted()).toEqual(rustLabels.toSorted());
+    const arms = rustArms(body![1]!);
+    expect(arms.size).toBeGreaterThan(0);
+
+    // Edit by edit, not two sorted lists: sorted lists agree even when the
+    // mock has swapped two labels, and a harness that calls a resize a crop
+    // is worse than one that refuses to label anything.
+    for (const edit of EVERY_EDIT) {
+      expect(editLabel(edit), `${JSON.stringify(edit)} is labelled differently`).toBe(
+        rustLabel(arms, edit),
+      );
+    }
+    // And no arm is left unvisited, so a label Rust grew is a failure here
+    // rather than an untested corner of the harness.
+    expect(new Set(EVERY_EDIT.map(editLabel))).toEqual(new Set(arms.values()));
   });
 
   it("steps a real edit back and forward, and says what each control would do", async () => {
