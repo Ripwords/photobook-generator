@@ -168,6 +168,11 @@ timeline and undo exactly like your own. The last fifty states of each book are 
 survive quitting the app, and making a fresh change after undoing discards whatever Redo
 would have put back.
 
+Two things sit outside that timeline. Renaming the book is not one of its states, so Undo
+will not take a name back -- rename it again. And while you are typing, in the chat box or
+in the name field, ⌘Z belongs to the text you are typing and does nothing to the book;
+click the book first.
+
 Opening a saved book does not re-read its folders -- it resolves the photos it holds from
 what was analysed, so it opens instantly and works with the source drive unplugged. It does
 count what the folders have gained, though, and if photos have been added since the book was
