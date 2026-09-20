@@ -1697,6 +1697,30 @@ Also explicitly deferred:
   because Pixajoy publishes no spine-width formula. The preview draws the spine at a nominal
   width. The cover is uploaded in Pixajoy's own cover editor.
 
+### Crop drag is verified on WebKit, and `draggable="false"` is load-bearing
+
+**2026-09-20.** The shipped app renders in WKWebView, so the crop-drag fix from `0c2a30d`
+was re-checked under Playwright's WebKit 26.6 against `bun run ui:mock`, not only under the
+Chromium the UI harness normally drives. Dragging moved the crop on a page slot and on the
+front cover, no `dragstart`/`drag`/`dragend` fired, the pointer stream stayed whole (12
+`pointermove` with `buttons == 1`, zero `pointercancel`), and Command-scroll zoom worked on
+both surfaces.
+
+**The mutation is what makes that mean anything.** Stripping `draggable="false"` from the
+rendered images at runtime reproduces the original bug on WebKit exactly: `dragstart` fires
+with an `IMG` target, the pointer stream dies after one or two moves, the page crop moves
+5 px instead of 60, and the cover crop does not move at all. So the attribute on
+`BookPreviewPage.vue` and `BookPreviewCover.vue` is not decoration. **Do not remove it**,
+and if you add another image inside a pointer-drag gesture, put it there too. The other five
+`<img>` tags in `app/components` sit in no drag gesture and need no guard.
+
+**Two honest limits.** This was Playwright's WebKit build, not the OS WKWebView the packaged
+app embeds, and the check lives in no committed test. Adding one needs a Playwright
+devDependency, a `test:webkit` script and a CI job with a browser download, which was judged
+too heavy for the one interaction it covers. A slot whose crop is already pinned (page 1 of
+the mock fixture is pinned on both axes) cannot move in any engine, so a drag test must pick
+a slot with headroom or it proves nothing.
+
 ### Deferred: smile detection calibration
 
 `SmileProxy`'s threshold is miscalibrated, proven with real measured data, and finishing
