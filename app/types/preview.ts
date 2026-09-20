@@ -296,6 +296,33 @@ export function releaseAction(moved: boolean, live: boolean, owed: boolean): Rel
   return live && (moved || owed) ? "save" : "select";
 }
 
+/**
+ * What a gesture starting now does to a zoom that is still waiting out
+ * `WHEEL_SETTLE_MS`.
+ *
+ * "save" emits it as its own edit, "hold" leaves it pending for the release to
+ * decide as `releaseAction`'s `owed`, and "none" means there is nothing to do.
+ *
+ * Only one zoom can be waiting, and one timer holds it. So a gesture on a
+ * DIFFERENT box has to flush it here: overwriting the pending box and
+ * re-arming the shared timer dropped the first zoom entirely. Measured on both
+ * surfaces -- command-scroll one cover panel then the other inside the settle
+ * window and the first panel went 113.475% wide on screen, then back to the
+ * 113.475% the book still held, with no edit for it in the timeline.
+ *
+ * A gesture on the SAME box is not a loss. Another roll of the wheel is
+ * computed from the window already on screen and so carries the waiting zoom,
+ * which is why it is "none" rather than a stale first edit; a press is held
+ * because a drag's crop starts from that same window.
+ */
+export type Takeover = "save" | "hold" | "none";
+
+export function zoomTakeover(pending: string | null, box: string, press: boolean): Takeover {
+  if (pending === null) return "none";
+  if (pending !== box) return "save";
+  return press ? "hold" : "none";
+}
+
 /** Mirrors `score::Rejection`: the hard constraints an edit can break. */
 export type Rejection = "faceClipped" | "faceInGutter" | "faceInSafeMargin" | "tooLowResolution";
 

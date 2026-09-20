@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   canRelayout,
   releaseAction,
+  zoomTakeover,
   cropMoved,
   cropStyle,
   cropZoomed,
@@ -1221,6 +1222,42 @@ describe("a photo imported from disk", () => {
   });
 });
 
+describe("zoomTakeover", () => {
+  it("has nothing to take over when no zoom is waiting", () => {
+    expect(zoomTakeover(null, "p2s1", false)).toBe("none");
+    expect(zoomTakeover(null, "p2s1", true)).toBe("none");
+  });
+
+  it("saves the waiting zoom when the wheel moves to another box", () => {
+    // The measured bug. Rolling one box then another inside the settle window
+    // overwrote the single pending zoom and re-armed the one shared timer, so
+    // the first box's zoom was never emitted. It stayed drawn until the second
+    // box's edit answered, then snapped back to the crop the book still held.
+    expect(zoomTakeover("p2s1", "p2s2", false)).toBe("save");
+  });
+
+  it("saves the waiting zoom when a press lands on another box", () => {
+    expect(zoomTakeover("p2s1", "p2s2", true)).toBe("save");
+  });
+
+  it("lets another roll of the wheel on the same box subsume the wait", () => {
+    // The new zoom is computed from the window already on screen, so it
+    // carries the waiting one. Saving here would be a stale first edit.
+    expect(zoomTakeover("p2s1", "p2s1", false)).toBe("none");
+  });
+
+  it("holds the waiting zoom for a press on the same box to decide", () => {
+    // `releaseAction`'s `owed`: the press may become a drag, whose crop starts
+    // from the zoomed window and so carries the zoom in one edit.
+    expect(zoomTakeover("p2s1", "p2s1", true)).toBe("hold");
+  });
+
+  it("keys the cover by its side, the only name a cover panel has", () => {
+    expect(zoomTakeover("back", "front", false)).toBe("save");
+    expect(zoomTakeover("back", "back", true)).toBe("hold");
+  });
+});
+
 describe("releaseAction", () => {
   it("saves what a drag left on screen", () => {
     expect(releaseAction(true, true, false)).toBe("save");
@@ -1274,13 +1311,58 @@ describe("a press on a photo takes over the wheel's pending save", () => {
     expect([...text.matchAll(/emit\("crop"/g)].length).toBe(2);
   });
 
-  it("holds a zoom on the pressed slot and flushes one on any other", () => {
-    expect(text).toContain("if (wheelPending?.key === key) clearTimeout(wheelTimer);");
-    expect(text).toContain("else saveWheel();");
+  it("asks zoomTakeover what a press does to the pending zoom", () => {
+    expect(text).toContain(
+      'if (zoomTakeover(wheelPending?.key ?? null, key, true) === "save") saveWheel();',
+    );
+  });
+
+  it("asks zoomTakeover what another roll of the wheel does to it", () => {
+    // The measured bug: `onWheel` overwrote `wheelPending` outright, so a roll
+    // that moved to another slot dropped the zoom before it. The flush has to
+    // be in `onWheel` too, not only in `onPointerDown`.
+    expect(text).toContain(
+      'if (zoomTakeover(wheelPending?.key ?? null, key, false) === "save") saveWheel();',
+    );
   });
 
   it("asks releaseAction what the release meant", () => {
     expect(text).toMatch(/releaseAction\(finished\.moved, true, owed\) === "save"/);
     expect(text).toContain("const owed = wheelPending?.key === finished.key;");
+  });
+});
+
+describe("the cover panels arbitrate the wheel the same way the pages do", () => {
+  // Two panels sit side by side, so the cross-box case is reachable with one
+  // roll of the wheel and a hand moving right. Measured before the fix: the
+  // back panel drew a zoom at 135.855% wide and then went back to the 113.475%
+  // the book still held, with no edit for it anywhere in the timeline.
+  const text = readFileSync(new URL("../app/components/BookPreviewCover.vue", import.meta.url), "utf8");
+
+  it("routes the settle timer through a function anything can flush", () => {
+    expect(text).toContain("wheelTimer = setTimeout(saveWheel, WHEEL_SETTLE_MS);");
+  });
+
+  it("flushes a zoom on the other panel before starting one here", () => {
+    expect(text).toContain(
+      'if (zoomTakeover(wheelPending?.side ?? null, side, false) === "save") saveWheel();',
+    );
+  });
+
+  it("flushes or holds one when a press lands", () => {
+    expect(text).toContain(
+      'if (zoomTakeover(wheelPending?.side ?? null, side, true) === "save") saveWheel();',
+    );
+  });
+
+  it("asks releaseAction what the release meant, so a click cannot drop a zoom", () => {
+    // Before: the click branch deleted the live crop and emitted `choose`,
+    // then the still-armed timer landed a crop edit underneath the open picker.
+    expect(text).toMatch(/releaseAction\(finished\.moved, true, owed\) === "save"/);
+    expect(text).toContain("const owed = wheelPending?.side === finished.side;");
+  });
+
+  it("keeps a zoom a cancelled press had taken over", () => {
+    expect(text).toContain("if (wheelPending?.side === cancelled.side) {");
   });
 });

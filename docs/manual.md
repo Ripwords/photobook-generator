@@ -237,7 +237,9 @@ trackpad wobbles, and a press that wanders and comes back to where it started is
 is saved when you let go. A zoom is saved a moment after the wheel stops, so that a roll of
 the wheel is one change rather than one per notch. Touching the photo again saves it at
 once: that click counts as keeping the zoom rather than as selecting the photo, so click
-once more if a swap was what you wanted. Zooming and then dragging is one change, not two. Regenerating that opening or swapping the photo away recomputes
+once more if a swap was what you wanted. So does rolling the wheel over a different photo,
+so zooming one and then the next keeps both rather than only the one you stopped on.
+Zooming and then dragging is one change, not two. Regenerating that opening or swapping the photo away recomputes
 its crop, because the slot it was chosen for is gone.
 
 To **move or resize the boxes themselves**, switch the bar above the book from **Crop and
@@ -278,7 +280,8 @@ the pages are left alone. Pick one and press **Use on the front cover**, or doub
 A photo that would put a face in the wrap or too near the board's edge, cut a face, or print
 too small for the panel is dimmed with the reason and cannot be picked. Click a cover photo
 to change it, or to take it off with **Remove** at the bottom of the dialog. Drag a cover
-photo to move its crop and hold ⌘ and scroll over it to zoom, exactly as on a page; a crop
+photo to move its crop and hold ⌘ and scroll over it to zoom, exactly as on a page, down to
+what a click or a zoom on the other panel does to a zoom that has not been saved yet; a crop
 that would cut a face, push one into the wrap or too near the board's edge, or zoom in below
 the lowest print resolution is refused with the reason, and the cover stays as it was.
 

@@ -11,6 +11,7 @@ import {
   SLOT_DRAG_THRESHOLD_PX,
   rectStyle,
   releaseAction,
+  zoomTakeover,
   samePlacement,
   slotMoved,
   slotResized,
@@ -224,8 +225,8 @@ function onPointerDown(event: PointerEvent, key: string, ref: PlacementRef, crop
   // This press takes over any zoom still waiting to be saved. On this slot it
   // is held for release to decide; on any other slot that gesture is over, so
   // it is saved now rather than firing part way through this one.
-  if (wheelPending?.key === key) clearTimeout(wheelTimer);
-  else saveWheel();
+  if (zoomTakeover(wheelPending?.key ?? null, key, true) === "save") saveWheel();
+  else clearTimeout(wheelTimer);
   el.setPointerCapture(event.pointerId);
 }
 
@@ -276,6 +277,10 @@ function onWheel(event: WheelEvent, key: string, ref: PlacementRef, crop: Previe
   const factor = wheelZoomFactor(event);
   if (!selectable || factor === null) return;
   event.preventDefault();
+  // One zoom waits at a time, so a roll that moves to another slot ends the
+  // one before it. Without this the pending slot was simply overwritten and
+  // its zoom never became an edit.
+  if (zoomTakeover(wheelPending?.key ?? null, key, false) === "save") saveWheel();
   const next = cropZoomed(cropOf(key, crop), factor);
   liveCrops.value = { ...liveCrops.value, [key]: next };
   wheelPending = { key, ref, crop: next };
@@ -287,9 +292,10 @@ function onWheel(event: WheelEvent, key: string, ref: PlacementRef, crop: Previe
  * Save the zoom the wheel has been building, whoever asks for it.
  *
  * A roll of the wheel is one edit, not one per notch, so the save waits for
- * `WHEEL_SETTLE_MS` of quiet. Anything that ends the gesture early -- a press
- * on this slot or on another one -- comes here instead of leaving the timer
- * armed to fire in the middle of whatever happens next.
+ * `WHEEL_SETTLE_MS` of quiet. Anything that ends the gesture early -- a press,
+ * or a roll of the wheel that has moved to another slot -- comes here instead
+ * of leaving the timer armed to fire in the middle of whatever happens next,
+ * or dropping the zoom on the floor. `zoomTakeover` decides which it is.
  */
 function saveWheel() {
   clearTimeout(wheelTimer);

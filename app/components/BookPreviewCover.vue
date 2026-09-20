@@ -6,6 +6,8 @@ import {
   cropZoomed,
   pressIsDrag,
   rectStyle,
+  releaseAction,
+  zoomTakeover,
   wheelZoomFactor,
   type BookLayout,
   type CoverSide,
@@ -49,6 +51,7 @@ interface Drag {
 }
 let drag: Drag | null = null;
 let wheelTimer: ReturnType<typeof setTimeout> | undefined;
+let wheelPending: { side: CoverSide; crop: PreviewRect } | null = null;
 
 function onPointerDown(event: PointerEvent, side: CoverSide, crop: PreviewRect) {
   if (busy || event.button !== 0) return;
@@ -63,6 +66,10 @@ function onPointerDown(event: PointerEvent, side: CoverSide, crop: PreviewRect) 
     h: box.height || 1,
     moved: false,
   };
+  // As on a page: this press takes over any zoom still waiting to be saved,
+  // held for release to decide on this side, saved now on the other one.
+  if (zoomTakeover(wheelPending?.side ?? null, side, true) === "save") saveWheel();
+  else clearTimeout(wheelTimer);
   el.setPointerCapture(event.pointerId);
 }
 
@@ -81,7 +88,9 @@ function onPointerUp(event: PointerEvent) {
   drag = null;
   (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
   const crop = live.value[finished.side];
-  if (finished.moved && crop) {
+  const owed = wheelPending?.side === finished.side;
+  wheelPending = null;
+  if (crop && releaseAction(finished.moved, true, owed) === "save") {
     emit("crop", finished.side, crop);
     return;
   }
@@ -92,19 +101,47 @@ function onPointerUp(event: PointerEvent) {
 
 function onPointerCancel() {
   if (!drag) return;
-  const { [drag.side]: _dropped, ...rest } = live.value;
-  live.value = rest;
+  const cancelled = drag;
   drag = null;
+  // A zoom this press took over is not the cancelled thing -- the wheel
+  // gesture finished before the press began -- so it is saved, not dropped.
+  if (wheelPending?.side === cancelled.side) {
+    saveWheel();
+    return;
+  }
+  const { [cancelled.side]: _dropped, ...rest } = live.value;
+  live.value = rest;
 }
 
 function onWheel(event: WheelEvent, side: CoverSide, crop: PreviewRect) {
   const factor = wheelZoomFactor(event);
   if (busy || factor === null) return;
   event.preventDefault();
+  // One zoom waits at a time, so a roll that moves to the other panel ends the
+  // one before it. Without this the back panel's zoom was drawn, never emitted,
+  // and snapped back to the saved crop when the front panel's edit answered.
+  if (zoomTakeover(wheelPending?.side ?? null, side, false) === "save") saveWheel();
   const next = cropZoomed(live.value[side] ?? crop, factor);
   live.value = { ...live.value, [side]: next };
+  wheelPending = { side, crop: next };
   clearTimeout(wheelTimer);
-  wheelTimer = setTimeout(() => emit("crop", side, next), WHEEL_SETTLE_MS);
+  wheelTimer = setTimeout(saveWheel, WHEEL_SETTLE_MS);
+}
+
+/**
+ * Save the zoom the wheel has been building, whoever asks for it.
+ *
+ * A roll of the wheel is one edit, not one per notch, so the save waits for
+ * `WHEEL_SETTLE_MS` of quiet. Anything that ends the gesture early -- a press,
+ * or a roll that has moved to the other panel -- comes here instead of leaving
+ * the timer armed to fire into whatever happens next. A click used to open the
+ * picker and let the timer land a crop edit underneath the open dialog.
+ */
+function saveWheel() {
+  clearTimeout(wheelTimer);
+  const pending = wheelPending;
+  wheelPending = null;
+  if (pending) emit("crop", pending.side, pending.crop);
 }
 
 // As on the pages: once an edit is answered, by a new layout or by a refusal
