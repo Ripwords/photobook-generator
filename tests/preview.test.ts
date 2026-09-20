@@ -24,6 +24,7 @@ import {
   setCoverCropEdit,
   setCropEdit,
   setSlotEdit,
+  canStep,
   stepLabel,
   slotMoved,
   slotResized,
@@ -1048,6 +1049,51 @@ describe("a press that became a drag stays one until release", () => {
       expect(up).toMatch(/finished\.moved/);
       expect(up).not.toMatch(/pressIsDrag/);
     }
+  });
+});
+
+/**
+ * The Undo button and the Cmd-Z that does the same thing have to agree about
+ * when stepping is allowed, and they did not: the button was disabled while a
+ * command was in flight and the shortcut fired regardless, so holding Cmd-Z
+ * during a save sent overlapping `step_book` calls and the book on screen was
+ * whichever reply landed last, not where the cursor ended up. One predicate
+ * now answers for both.
+ */
+describe("canStep", () => {
+  const both: HistoryStatus = { undo: "resize", redo: "crop" };
+
+  it("allows a step the timeline has, when nothing else is running", () => {
+    expect(canStep("undo", both, false)).toBe(true);
+    expect(canStep("redo", both, false)).toBe(true);
+  });
+
+  it("refuses the end of the timeline", () => {
+    expect(canStep("undo", { undo: null, redo: "crop" }, false)).toBe(false);
+    expect(canStep("redo", { undo: "resize", redo: null }, false)).toBe(false);
+  });
+
+  it("refuses while a command is in flight, whichever way", () => {
+    expect(canStep("undo", both, true)).toBe(false);
+    expect(canStep("redo", both, true)).toBe(false);
+  });
+});
+
+describe("the editor's undo and redo controls all ask canStep", () => {
+  const text = readFileSync(new URL("../app/components/BookEditor.vue", import.meta.url), "utf8");
+
+  it("sends every step through the one guarded caller", () => {
+    // Two mentions and no more: the `useBook` destructure, and the call inside
+    // `step`. A button or shortcut wired straight to `stepBook` is the drift
+    // that let the shortcut forget `busy` in the first place.
+    expect([...text.matchAll(/stepBook\b/g)].length).toBe(2);
+    expect(text).toMatch(/if \(canStep\(which, history\.value, busy\.value\)\) void stepBook\(which\)/);
+  });
+
+  it.each(["undo", "redo"])("disables the %s button from the same predicate the shortcut reads", (which) => {
+    expect(text).toContain(`:disabled="!canStep('${which}', history, busy)"`);
+    expect(text).toContain(`@click="step('${which}')"`);
+    expect(text).toContain(`[shortcutCombo("${which}")]: () => step("${which}")`);
   });
 });
 

@@ -11,7 +11,7 @@ import {
 import type { PhotoOverrides } from "~/types/features";
 import type { BookOptions } from "~/types/book";
 import { sizeLabel, type PrintSpec } from "~/types/printSpec";
-import { stepLabel, type PreviewGeometry } from "~/types/preview";
+import { canStep, stepLabel, type HistoryStep, type PreviewGeometry } from "~/types/preview";
 import { shortcutCombo, shortcutKbds } from "~/types/shortcuts";
 
 const { projectId, listedName } = defineProps<{
@@ -80,13 +80,24 @@ const editSlots = ref(false);
 
 const { openSettings } = useShell();
 
+/**
+ * Undo or redo, if it can run -- the buttons and the shortcuts both come here.
+ *
+ * They used to decide separately and the shortcut forgot `busy`, so holding
+ * Cmd-Z through a save sent overlapping `step_book` calls and the book left on
+ * screen was whichever reply landed last rather than where the cursor finished.
+ */
+function step(which: HistoryStep) {
+  if (canStep(which, history.value, busy.value)) void stepBook(which);
+}
+
 defineShortcuts({
   // No `usingInput` on these two, unlike the others: while the caret is in
   // the chat box or the rename field, Cmd-Z belongs to the text being
   // typed. Undoing a crop out from under someone mid-sentence is the worst
   // possible reading of the key.
-  [shortcutCombo("undo")]: () => stepBook("undo"),
-  [shortcutCombo("redo")]: () => stepBook("redo"),
+  [shortcutCombo("undo")]: () => step("undo"),
+  [shortcutCombo("redo")]: () => step("redo"),
   [shortcutCombo("chat")]: { usingInput: true, handler: () => (chatOpen.value = !chatOpen.value) },
   [shortcutCombo("export")]: { usingInput: true, handler: () => (exportOpen.value = true) },
 });
@@ -259,9 +270,9 @@ onMounted(() => {
           color="neutral"
           variant="ghost"
           size="sm"
-          :disabled="busy || !history.undo"
+          :disabled="!canStep('undo', history, busy)"
           :aria-label="stepLabel('undo', history)"
-          @click="stepBook('undo')"
+          @click="step('undo')"
         />
       </UTooltip>
       <UTooltip :text="stepLabel('redo', history)" :kbds="shortcutKbds('redo')">
@@ -270,9 +281,9 @@ onMounted(() => {
           color="neutral"
           variant="ghost"
           size="sm"
-          :disabled="busy || !history.redo"
+          :disabled="!canStep('redo', history, busy)"
           :aria-label="stepLabel('redo', history)"
-          @click="stepBook('redo')"
+          @click="step('redo')"
         />
       </UTooltip>
     </UFieldGroup>

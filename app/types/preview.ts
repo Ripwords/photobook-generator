@@ -245,6 +245,19 @@ export interface HistoryStatus {
 /** Mirrors `book::history::Step`, the one argument of `step_book`. */
 export type HistoryStep = "undo" | "redo";
 
+/**
+ * Whether Undo or Redo can run right now.
+ *
+ * Read by the buttons AND by the keyboard shortcuts that do the same thing.
+ * They used to decide separately, and the shortcut forgot `busy`: holding
+ * Cmd-Z during a save sent overlapping `step_book` calls, and the book left
+ * on screen was whichever reply landed last rather than where the cursor
+ * finished.
+ */
+export function canStep(step: HistoryStep, status: HistoryStatus, busy: boolean): boolean {
+  return !busy && status[step] !== null;
+}
+
 /** What the Undo or Redo control reads, e.g. "Undo resize". */
 export function stepLabel(step: HistoryStep, status: HistoryStatus): string {
   const named = status[step];

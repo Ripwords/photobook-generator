@@ -85,8 +85,7 @@ export function useBook(
   const progress = ref<ExportProgress>(initialExportProgress);
   const { projects, refresh: loadProjects } = useProjects();
   const outputDir = ref<string | null>(null);
-  const busy = ref(false);
-  const error = ref<string | null>(null);
+  const { busy, error, guard } = useBusy();
 
   /** The four ref values above, read as one `BookState` snapshot. */
   function currentBookState(): BookState {
@@ -129,19 +128,6 @@ export function useBook(
 
   async function loadHistory(projectId: number) {
     history.value = await invoke<HistoryStatus>("book_history", { projectId });
-  }
-
-  async function guard<T>(work: () => Promise<T>): Promise<T | null> {
-    busy.value = true;
-    error.value = null;
-    try {
-      return await work();
-    } catch (e) {
-      error.value = String(e);
-      return null;
-    } finally {
-      busy.value = false;
-    }
   }
 
   async function refreshRecommendation() {
