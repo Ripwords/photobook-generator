@@ -856,6 +856,17 @@ describe("slot editing", () => {
     expect(huge.y + huge.h).toBeLessThanOrEqual(1 + 1e-12);
     // It fills the page in whichever direction runs out first, and no further.
     expect(Math.max(huge.x + huge.w, huge.y + huge.h)).toBeCloseTo(1, 12);
+
+    // A slot WIDER than it is tall runs out on its height first: shrunk to
+    // 0.05 of width it would be 0.025 tall, half the minimum. The floor has
+    // to scale with the ratio, and a tall slot like `rect` never shows it --
+    // for anything narrower than square the two floors are the same number,
+    // so the case above passes with the scaling dropped entirely.
+    const squat = { x: 0.2, y: 0.2, w: 0.4, h: 0.2 };
+    const squashed = slotResized(squat, "se", { dx: -5, dy: -5 }, guides, 0, 0.05, true);
+    expect(squashed.w / squashed.h).toBeCloseTo(2, 12);
+    expect(squashed.h).toBeCloseTo(0.05, 12);
+    expect(squashed.w).toBeCloseTo(0.1, 12);
   });
 
   it("ignores snapping while the ratio is locked, because a snapped edge breaks it", () => {
