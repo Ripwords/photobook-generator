@@ -1,6 +1,47 @@
 # Changelog
 
 
+## v0.2.0...master
+
+[compare changes](https://github.com/Ripwords/photobook-generator/compare/v0.2.0...master)
+
+### 🚀 Enhancements
+
+- **editor:** Notice photos added to a book's folders since it was made ([32ee872](https://github.com/Ripwords/photobook-generator/commit/32ee872))
+- **editor:** Use any photo on disk as a cover or replacement ([5262f58](https://github.com/Ripwords/photobook-generator/commit/5262f58))
+- **editor:** Undo and redo every change to a book ([5874665](https://github.com/Ripwords/photobook-generator/commit/5874665))
+- **layout:** Snap a box's centre to the page and to other boxes ([13f9d39](https://github.com/Ripwords/photobook-generator/commit/13f9d39))
+
+### 🩹 Fixes
+
+- **editor:** Stop clicks registering as drags, and stop the app scrolling above itself ([8387da5](https://github.com/Ripwords/photobook-generator/commit/8387da5))
+- **db:** Stop one edit losing another it raced ([b28a3b2](https://github.com/Ripwords/photobook-generator/commit/b28a3b2))
+- **editor:** Actually place a photo added from disk ([c095381](https://github.com/Ripwords/photobook-generator/commit/c095381))
+- **editor:** Keep a crop or resize that was dragged back near where it began ([8a1acd2](https://github.com/Ripwords/photobook-generator/commit/8a1acd2))
+- **editor:** Stop one finished command re-enabling controls another still holds ([1b201be](https://github.com/Ripwords/photobook-generator/commit/1b201be))
+- **scan:** Say so when a folder inside a book's folders could not be read ([d0a89c1](https://github.com/Ripwords/photobook-generator/commit/d0a89c1))
+- **scan:** Stop counting a renamed photo as one the book has never seen ([9386a69](https://github.com/Ripwords/photobook-generator/commit/9386a69))
+- **preview:** Stop a click throwing away the zoom it interrupted ([31cca84](https://github.com/Ripwords/photobook-generator/commit/31cca84))
+- **scan:** Stop a photo analysis gave up on counting as new forever ([61415fc](https://github.com/Ripwords/photobook-generator/commit/61415fc))
+- **layout:** Let a box be nudged by less than ten pixels ([8e8abc6](https://github.com/Ripwords/photobook-generator/commit/8e8abc6))
+- **history:** Name a box that moved a move, not a resize ([b896389](https://github.com/Ripwords/photobook-generator/commit/b896389))
+- **preview:** Stop a zoom being dropped when the wheel moves to another box ([3895eba](https://github.com/Ripwords/photobook-generator/commit/3895eba))
+
+### 📖 Documentation
+
+- **readme:** Point the download button at v0.2.0 ([d240e5d](https://github.com/Ripwords/photobook-generator/commit/d240e5d))
+- **manual:** Name the two changes Undo does not cover ([d390acc](https://github.com/Ripwords/photobook-generator/commit/d390acc))
+
+### ✅ Tests
+
+- **mock:** Compare edit labels edit by edit, not as two sorted lists ([dd3ab47](https://github.com/Ripwords/photobook-generator/commit/dd3ab47))
+- **preview:** Exercise the minimum-size floor a wide slot actually hits ([6099ec1](https://github.com/Ripwords/photobook-generator/commit/6099ec1))
+- **preflight:** Stop a free-space test comparing two live readings ([8b589d4](https://github.com/Ripwords/photobook-generator/commit/8b589d4))
+
+### ❤️ Contributors
+
+- JJ <teohjjteoh@gmail.com>
+
 ## v0.1.2...master
 
 [compare changes](https://github.com/Ripwords/photobook-generator/compare/v0.1.2...master)
