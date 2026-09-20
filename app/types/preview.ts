@@ -844,6 +844,32 @@ export interface CandidateRow {
 }
 
 /**
+ * The layout the picker draws, with photos imported during this session
+ * merged in at the indices `import_photo` gave them.
+ *
+ * `import_photo` APPENDS to the project's photo list and hands back the new
+ * index, but the dialog is holding the `BookLayout` it was opened with --
+ * one photo shorter -- and nothing re-fetches it before the tiles are drawn.
+ * `replaceCandidates` walks `photos`, so without this the imported photo has
+ * no row, `chosen` matches no tile, and the import silently does nothing.
+ * That is the whole feature failing, so it is pinned in `tests/preview.test.ts`
+ * rather than left to the component.
+ *
+ * Keyed by index rather than appended blind: the layout prop can be replaced
+ * mid-dialog by an edit made elsewhere, and a photo already counted in a
+ * longer `photos` must land on itself, not past the end.
+ */
+export function withImportedPhotos(
+  layout: BookLayout,
+  imported: ReadonlyMap<number, PreviewPhoto>,
+): BookLayout {
+  if (imported.size === 0) return layout;
+  const photos = [...layout.photos];
+  for (const [index, photo] of imported) photos[index] = photo;
+  return { ...layout, photos };
+}
+
+/**
  * The picker's tiles for the slot at `target`: every photo `candidates`
  * answers for (one per `layout.photos` entry, in that order), filtered and
  * sorted. Ties keep photo order, so the grid never reshuffles between two

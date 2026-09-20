@@ -23,6 +23,7 @@
  */
 
 import type { PhotoOverrides } from "~/types/features";
+import type { PreviewPhoto } from "~/types/preview";
 
 /**
  * Mirrors `book::pace::BookOptions`: the draft screen's switches for one
@@ -180,12 +181,6 @@ export interface ProjectDetail {
 }
 
 /**
- * Mirrors Rust's `FolderCheck`: what a saved book's source folders hold that
- * the book itself does not. Opening a book resolves its photos from content
- * hashes and never walks the disk, so this is the only thing that notices a
- * photo added to the folder afterwards.
- */
-/**
  * The extensions `import_photo` will take, mirroring `SUPPORTED` in
  * `commands.rs`. Used to filter the native file picker; Rust re-checks, since
  * a path can also arrive from a drop or a stale recent-files entry.
@@ -211,8 +206,22 @@ export interface ImportedPhoto {
   photoIndex: number;
   /** The book already held this exact file, so nothing was appended. */
   alreadyKnown: boolean;
+  /**
+   * The photo itself, because the dialog cannot look it up.
+   *
+   * It is holding the `BookLayout` it was opened with, whose `photos` stop one
+   * short of `photoIndex`, and nothing re-fetches it before the tiles are
+   * drawn. See `withImportedPhotos`.
+   */
+  photo: PreviewPhoto;
 }
 
+/**
+ * Mirrors Rust's `FolderCheck`: what a saved book's source folders hold that
+ * the book itself does not. Opening a book resolves its photos from content
+ * hashes and never walks the disk, so this is the only thing that notices a
+ * photo added to the folder afterwards.
+ */
 export interface FolderCheck {
   newPhotos: number;
   /** A folder could not be read, so `newPhotos` covers only the ones that could. */

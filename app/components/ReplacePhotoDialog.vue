@@ -7,12 +7,14 @@ import {
   pickEdit,
   refusalText,
   replaceCandidates,
+  withImportedPhotos,
   type BookEdit,
   type BookLayout,
   type CandidateFilter,
   type CandidateRow,
   type CandidateSort,
   type PickTarget,
+  type PreviewPhoto,
   type SlotCandidate,
 } from "~/types/preview";
 import { IMPORTABLE, type ImportedPhoto } from "~/types/book";
@@ -30,6 +32,11 @@ import { IMPORTABLE, type ImportedPhoto } from "~/types/book";
  * and appended to the book's photo list, then shown as one more tile -- so it
  * gets the same crop preview and the same refusal check as everything else
  * rather than being applied blind.
+ *
+ * That last step needs `imported` below. The `layout` prop was fetched before
+ * the import and nothing refetches it while the dialog is open, so its
+ * `photos` stop one short of the index `import_photo` just handed back and
+ * the new photo would have no tile at all.
  */
 const open = defineModel<boolean>("open", { required: true });
 
@@ -50,8 +57,20 @@ const chosen = ref<number | null>(null);
 /** Analysis of a hand-picked file, which is a sidecar round-trip on a miss. */
 const importing = ref(false);
 const importError = ref<string | null>(null);
+/**
+ * Photos imported this session, by the index `import_photo` gave them.
+ *
+ * They are in the book's photo list in SQLite but not in the `layout` prop,
+ * which was fetched before the import. See `withImportedPhotos`.
+ */
+const imported = ref(new Map<number, PreviewPhoto>());
 /** Only the latest request may land, so a slow answer for another slot never shows here. */
 let request = 0;
+/**
+ * Bumped every time the dialog opens, so an import still in the sidecar when
+ * the user closes the dialog cannot select a photo in the slot they open next.
+ */
+let session = 0;
 
 async function load() {
   const mine = ++request;
@@ -76,20 +95,26 @@ watch(
   open,
   (isOpen) => {
     if (!isOpen) return;
+    session += 1;
     chosen.value = null;
     importError.value = null;
+    importing.value = false;
+    imported.value = new Map();
     filter.value = initialFilter();
     void load();
   },
   { immediate: true },
 );
 
+/** The book plus whatever was imported into it while this dialog has been open. */
+const shown = computed(() => withImportedPhotos(layout, imported.value));
+
 const rows = computed(() =>
-  candidates.value ? replaceCandidates(layout, candidates.value, target, filter.value, sort.value) : [],
+  candidates.value ? replaceCandidates(shown.value, candidates.value, target, filter.value, sort.value) : [],
 );
 
 const counts = computed(() => {
-  const all = candidates.value ? replaceCandidates(layout, candidates.value, target, "all", "best") : [];
+  const all = candidates.value ? replaceCandidates(shown.value, candidates.value, target, "all", "best") : [];
   const inBook = all.filter((row) => row.placedAt).length;
   return { leftOut: all.length - inBook, inBook, all: all.length };
 });
@@ -104,7 +129,7 @@ const SORTS = [
   { value: "taken", label: "Time taken" },
 ];
 
-const aspect = computed(() => pickAspect(layout, target));
+const aspect = computed(() => pickAspect(shown.value, target));
 
 const copy = computed(() =>
   target.kind === "cover"
@@ -179,21 +204,30 @@ async function addFromDisk() {
     filters: [{ name: "Photos", extensions: [...IMPORTABLE] }],
   });
   if (typeof picked !== "string") return;
+  const mine = session;
   importing.value = true;
   try {
     const added = await invoke<ImportedPhoto>("import_photo", {
       projectId: layout.projectId,
       path: picked,
     });
+    if (mine !== session) return;
+    imported.value = new Map(imported.value).set(added.photoIndex, added.photo);
     // "All", because a photo the book already holds is not in "Left out" and
     // the point is that the tile the user just asked for is on screen.
     filter.value = "all";
     await load();
-    chosen.value = added.photoIndex;
+    if (mine !== session) return;
+    // Through `blocked`, not straight to `chosen`: a photo the book already
+    // held can be the one in this very slot, or on a locked page, and
+    // selecting it would light up a button that then refuses to do anything.
+    const tile = tiles.value.find((row) => row.index === added.photoIndex);
+    if (tile?.blocked) importError.value = `${name(picked)} cannot go here: ${tile.blocked.toLowerCase()}.`;
+    else if (tile) chosen.value = added.photoIndex;
   } catch (e) {
     importError.value = String(e);
   } finally {
-    importing.value = false;
+    if (mine === session) importing.value = false;
   }
 }
 

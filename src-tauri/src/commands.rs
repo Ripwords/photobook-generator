@@ -2217,13 +2217,23 @@ pub async fn folder_check(app: AppHandle, project_id: i64) -> Result<FolderCheck
 }
 
 /// Where a photo the user picked by hand ended up in the book's photo list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportedPhoto {
     /// Its `Placement::photo_index`, ready for `ReplacePhoto`/`SetCoverPhoto`.
     pub photo_index: usize,
     /// The book already had this exact file; `photo_index` is where it was.
     pub already_known: bool,
+    /// The photo itself.
+    ///
+    /// The dialog that asked for this import is holding the `BookLayout` it
+    /// was opened with, whose `photos` stop one short of `photo_index`, and
+    /// nothing re-fetches it before the tiles are drawn. Without the photo
+    /// travelling back with its index there is no path, tile or crop preview
+    /// for the thing the user just picked, so the import silently does
+    /// nothing -- which is what shipped, and what
+    /// `tests/preview.test.ts` now pins.
+    pub photo: crate::preview::PreviewPhoto,
 }
 
 /// Whether this file is worth handing to the analyzer at all, by name alone.
@@ -2348,12 +2358,16 @@ async fn import_photo_gated(
             .ok_or("the analyzer returned a photo with no content hash")?
             .to_string();
 
+        let photo = resolve_preview_photos(&db, std::slice::from_ref(&hash))?
+            .pop()
+            .ok_or("the analysed photo could not be read back from the cache")?;
+
         if let Some(photo_index) = import_index(&project.photo_hashes, &hash) {
-            return Ok(ImportedPhoto { photo_index, already_known: true });
+            return Ok(ImportedPhoto { photo_index, already_known: true, photo });
         }
         let photo_index =
             db.append_project_photo(project_id, &hash).map_err(|e| e.to_string())?;
-        Ok(ImportedPhoto { photo_index, already_known: false })
+        Ok(ImportedPhoto { photo_index, already_known: false, photo })
     })
     .await
     .map_err(|e| e.to_string())?

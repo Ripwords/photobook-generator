@@ -211,10 +211,11 @@ that same dialog. The photo does not have to be in the folders this book was mad
 in any folder the app has analysed. It is analysed on the spot, which takes a moment the
 first time, and then appears as one more photo in the dialog, already picked, so you can see
 how it would be cropped and whether anything refuses it before pressing **Replace** or
-**Use on the cover**. The same button is on the cover picker. One caveat: a photo added this
-way belongs to the book, not to its folders, so if you later run **Edit photos** and
-**Update "<name>"**, the book is rebuilt from the folders and hand-added photos are not
-carried across.
+**Use on the front cover**. If the photo turns out to be one this slot refuses -- or one the
+book already held and already has here -- it is shown with the reason rather than picked.
+The same button is on the cover picker. One caveat: a photo added this way belongs to the
+book, not to its folders, so if you later run **Edit photos** and **Update "<name>"**, the
+book is rebuilt from the folders and hand-added photos are not carried across.
 
 To **adjust a crop**, drag the photo inside its
 slot to move the window, or hold ⌘ and scroll over it to zoom;

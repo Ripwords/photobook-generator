@@ -627,22 +627,37 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
     case "book_layout":
       return structuredClone(layout) as T;
 
-    // The real command stats every file in the book's folders. There are no
-    // folders here, so the harness just reports a plausible answer; set
-    // `localStorage.PBG_MOCK_NEW_PHOTOS` to drive the notice.
     // The real command hashes the file, analyses it through the sidecar and
-    // appends it to the book's photo list. Here the book's photos are fixed,
-    // so the harness hands back the last one -- enough to drive the dialog's
-    // import, reload and select path. Set `localStorage.PBG_MOCK_IMPORT_FAILS`
+    // APPENDS it to the book's photo list, so `slot_candidates` comes back one
+    // longer than the layout the dialog is holding. The harness appended
+    // nothing and handed back the last existing photo, which made a broken
+    // import look like a working one here -- the whole point of the feature is
+    // a photo the book did not have. Set `localStorage.PBG_MOCK_IMPORT_FAILS`
     // to drive the failure path instead.
     case "import_photo": {
       await sleep(400);
-      if (localStorage.getItem("PBG_MOCK_IMPORT_FAILS") === "1") {
+      // Optional-chained, unlike the flags above: this case is the one
+      // `tests/tauri-mock.test.ts` calls, and vitest runs it with no DOM.
+      if (globalThis.localStorage?.getItem("PBG_MOCK_IMPORT_FAILS") === "1") {
         throw new Error("from-disk.jpg could not be analysed.");
       }
-      return { photoIndex: layout.photos.length - 1, alreadyKnown: false } as T;
+      const path = args?.path as string;
+      const known = layout.photos.findIndex((photo) => photo.path === path);
+      if (known !== -1) {
+        return { photoIndex: known, alreadyKnown: true, photo: structuredClone(layout.photos[known]!) } as T;
+      }
+      const photo = { ...structuredClone(layout.photos[0]!), path, hash: `imported-${layout.photos.length}` };
+      // Onto the snapshots as well as the live book: in Rust the photo list is
+      // `project_photos`, which is not part of the `Book` the timeline saves,
+      // so undoing past the import cannot take the photo back out.
+      for (const snapshot of [...past, ...future]) snapshot.layout.photos.push(structuredClone(photo));
+      const photoIndex = layout.photos.push(photo) - 1;
+      return { photoIndex, alreadyKnown: false, photo: structuredClone(photo) } as T;
     }
 
+    // The real command stats every file in the book's folders. There are no
+    // folders here, so the harness just reports a plausible answer; set
+    // `localStorage.PBG_MOCK_NEW_PHOTOS` to drive the notice.
     case "folder_check":
       return {
         newPhotos: Number(localStorage.getItem("PBG_MOCK_NEW_PHOTOS") ?? 0),

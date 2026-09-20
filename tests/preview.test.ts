@@ -16,6 +16,7 @@ import {
   rectStyle,
   refusalText,
   replaceCandidates,
+  withImportedPhotos,
   pageGuides,
   pressIsDrag,
   pickAspect,
@@ -36,6 +37,7 @@ import {
   type PreviewGeometry,
   type PickTarget,
   type PreviewPage,
+  type PreviewPhoto,
   type Rejection,
   type SlotCandidate,
 } from "../app/types/preview";
@@ -1023,5 +1025,42 @@ describe("stepLabel", () => {
     expect(stepLabel("undo", { undo: "crop", redo: null })).toBe("Undo crop");
     expect(stepLabel("undo", { undo: null, redo: "crop" })).toBe("Nothing to undo");
     expect(stepLabel("redo", { undo: null, redo: "crop" })).toBe("Redo crop");
+  });
+});
+
+describe("a photo imported from disk", () => {
+  const target: PickTarget = { kind: "slot", placement: { page: 2, z: 1 } };
+  const extra: PreviewPhoto = {
+    ...layout.photos[0]!,
+    path: "/elsewhere/IMG_9999.JPG",
+    hash: "imported",
+  };
+  // `import_photo` APPENDS, so the index it hands back is one past the end of
+  // the layout the dialog is holding.
+  const index = layout.photos.length;
+  const shown = withImportedPhotos(layout, new Map([[index, extra]]));
+  const candidates: SlotCandidate[] = shown.photos.map(() => ({
+    crop: { x: 0, y: 0, w: 0.5, h: 1 },
+    refused: null,
+  }));
+
+  it("leaves the layout alone when nothing was imported", () => {
+    expect(withImportedPhotos(layout, new Map())).toBe(layout);
+  });
+
+  it("gets a tile of its own, which is the only reason to import it", () => {
+    const rows = replaceCandidates(shown, candidates, target, "all", "best");
+    expect(indices(rows)).toContain(index);
+    expect(rows.find((row) => row.index === index)?.photo.path).toBe("/elsewhere/IMG_9999.JPG");
+  });
+
+  it("counts as left out, since importing it does not place it", () => {
+    expect(indices(replaceCandidates(shown, candidates, target, "leftOut", "best"))).toContain(index);
+    expect(indices(replaceCandidates(shown, candidates, target, "inBook", "best"))).not.toContain(index);
+  });
+
+  it("does not disturb the photos the book already held", () => {
+    expect(shown.photos.slice(0, index)).toEqual(layout.photos);
+    expect(layout.photos).toHaveLength(index);
   });
 });

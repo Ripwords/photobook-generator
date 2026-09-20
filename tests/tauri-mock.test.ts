@@ -4,7 +4,8 @@ import { editLabel, invoke } from "../dev/tauri-mock/core";
 import { mockPhotos } from "../dev/tauri-mock/photos";
 import layoutFixture from "./fixtures/wire/book-layout.json";
 import type { AnalysisEvent, AnalysisSummary } from "../app/types/features";
-import type { BookEdit, BookLayout, HistoryStatus } from "../app/types/preview";
+import type { BookEdit, BookLayout, HistoryStatus, SlotCandidate } from "../app/types/preview";
+import type { ImportedPhoto } from "../app/types/book";
 import type { PrintSpec } from "../app/types/printSpec";
 
 describe("the browser harness's commands", () => {
@@ -23,6 +24,32 @@ describe("the browser harness's commands", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // The harness used to hand back the last photo the book already had, which
+  // made a broken import look like a working one on screen: the dialog is
+  // holding a `BookLayout` one photo short of the index Rust returns, and a
+  // harness that never went past the end could not show that. See
+  // `withImportedPhotos`.
+  it("appends a hand-picked photo past the end of the book's photos, the way Rust does", async () => {
+    const before = await invoke<BookLayout>("book_layout", {});
+    const added = await invoke<ImportedPhoto>("import_photo", { projectId: 1, path: "/elsewhere/IMG_9999.JPG" });
+
+    expect(added.alreadyKnown).toBe(false);
+    expect(added.photoIndex).toBe(before.photos.length);
+    expect(added.photo.path).toBe("/elsewhere/IMG_9999.JPG");
+    expect(await invoke<SlotCandidate[]>("slot_candidates", { placement: { page: 2, z: 1 } })).toHaveLength(
+      added.photoIndex + 1,
+    );
+  });
+
+  it("hands back where a photo it already holds sits, without appending again", async () => {
+    const before = await invoke<BookLayout>("book_layout", {});
+    const known = before.photos[1]!;
+    const added = await invoke<ImportedPhoto>("import_photo", { projectId: 1, path: known.path });
+
+    expect(added).toEqual({ photoIndex: 1, alreadyKnown: true, photo: known });
+    expect((await invoke<BookLayout>("book_layout", {})).photos).toHaveLength(before.photos.length);
   });
 });
 
