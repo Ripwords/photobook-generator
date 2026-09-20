@@ -257,16 +257,25 @@ export interface PreviewSpread {
   label: string;
 }
 
-/** CSS for an absolutely positioned box inside the page. */
-export interface BoxStyle {
+/**
+ * CSS for an absolutely positioned box inside the page.
+ *
+ * A type alias, not an interface, and that is load-bearing. Vue's
+ * `CSSProperties` carries a `` `--${string}` `` index signature for custom
+ * properties, and TypeScript grants an implicit index signature to an object
+ * type alias but never to an interface. As an interface this is not assignable
+ * to `:style` at all, which is how it went unchecked until `bun run typecheck`
+ * existed.
+ */
+export type BoxStyle = {
   left: string;
   top: string;
   width: string;
   height: string;
-}
+};
 
-/** CSS for the `<img>` inside a slot. */
-export interface CropStyle {
+/** CSS for the `<img>` inside a slot. A type alias for the reason `BoxStyle` is. */
+export type CropStyle = {
   width: string;
   height: string;
   /**
@@ -278,7 +287,7 @@ export interface CropStyle {
    */
   maxWidth: string;
   transform: string;
-}
+};
 
 /** One drawable slot: which photo, where on the page, and which part of it. */
 export interface PreviewSlot {

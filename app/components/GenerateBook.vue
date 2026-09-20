@@ -213,8 +213,13 @@ async function onGenerate(replace: boolean) {
       </UFormField>
 
       <UFormField label="Length">
+        <!--
+          `.nullable` widens the model's type to admit the `null` that means "no
+          length chosen yet". It is runtime-inert here: the modifier only maps a
+          nullish value to `null`, and this control only ever emits a `pages`.
+        -->
         <USelect
-          v-model="chosenPages"
+          v-model.nullable="chosenPages"
           :items="pageItems"
           :disabled="busy || pageItems.length === 0"
           value-key="value"
