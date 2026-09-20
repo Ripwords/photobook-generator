@@ -1,6 +1,22 @@
 # Changelog
 
 
+## v0.2.1...master
+
+[compare changes](https://github.com/Ripwords/photobook-generator/compare/v0.2.1...master)
+
+### 🩹 Fixes
+
+- **layout:** Stop one unplaceable photo blanking a whole spread ([10738ba](https://github.com/Ripwords/photobook-generator/commit/10738ba))
+
+### 📖 Documentation
+
+- **readme:** Point the download button at v0.2.1 ([e072ed6](https://github.com/Ripwords/photobook-generator/commit/e072ed6))
+
+### ❤️ Contributors
+
+- JJ <teohjjteoh@gmail.com>
+
 ## v0.2.0...master
 
 [compare changes](https://github.com/Ripwords/photobook-generator/compare/v0.2.0...master)
