@@ -9,6 +9,8 @@
  */
 interface PickerOptions {
   multiple?: boolean;
+  /** Present only on a file pick; the folder pickers pass none. */
+  filters?: { name: string; extensions: readonly string[] }[];
 }
 
 declare global {
@@ -19,6 +21,8 @@ declare global {
 
 export async function open(options?: PickerOptions): Promise<string | string[] | null> {
   if (globalThis.window?.pbgCancelPicker) return null;
+  // Only "Add from disk" passes filters, and it wants one file, not a folder.
+  if (options?.filters?.length) return "/mock/Desktop/from-disk.jpg";
   return options?.multiple
     ? ["/mock/Pictures/Holiday 2026", "/mock/Pictures/Phone camera roll"]
     : "/mock/Desktop/photobook-export";

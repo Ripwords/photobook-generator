@@ -185,6 +185,34 @@ export interface ProjectDetail {
  * hashes and never walks the disk, so this is the only thing that notices a
  * photo added to the folder afterwards.
  */
+/**
+ * The extensions `import_photo` will take, mirroring `SUPPORTED` in
+ * `commands.rs`. Used to filter the native file picker; Rust re-checks, since
+ * a path can also arrive from a drop or a stale recent-files entry.
+ */
+export const IMPORTABLE = [
+  "jpg",
+  "jpeg",
+  "png",
+  "heic",
+  "heif",
+  "cr2",
+  "cr3",
+  "nef",
+  "arw",
+  "dng",
+  "raf",
+  "orf",
+] as const;
+
+/** Mirrors Rust's `ImportedPhoto`: where a hand-picked photo landed. */
+export interface ImportedPhoto {
+  /** Its index into `BookLayout.photos`, ready for a replace or cover edit. */
+  photoIndex: number;
+  /** The book already held this exact file, so nothing was appended. */
+  alreadyKnown: boolean;
+}
+
 export interface FolderCheck {
   newPhotos: number;
   /** A folder could not be read, so `newPhotos` covers only the ones that could. */

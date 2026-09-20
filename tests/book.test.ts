@@ -7,6 +7,7 @@ import {
   defaultProjectName,
   folderListLabel,
   folderNotice,
+  IMPORTABLE,
   exportOutcome,
   generatedLabel,
   initialBookState,
@@ -669,5 +670,21 @@ describe("folderNotice", () => {
   // opens and still exports. Only photos the book is missing are.
   it("stays quiet about an unreadable folder that yielded no new photos", () => {
     expect(folderNotice({ newPhotos: 0, unreadable: true })).toBeNull();
+  });
+});
+
+describe("IMPORTABLE", () => {
+  // Two lists of the same extensions, one in TS for the picker filter and one
+  // in Rust for the check behind it. A format added to Rust and not here
+  // would be greyed out in the picker with no error anywhere, so the test
+  // reads the Rust list rather than a second copy of the same literal.
+  it("is exactly the set of extensions the Rust importer accepts", () => {
+    const rust = readFileSync(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
+    const block = /const SUPPORTED: &\[&str\] = &\[([^\]]*)\]/.exec(rust);
+    expect(block, "SUPPORTED was renamed or reshaped in commands.rs").not.toBeNull();
+    const supported = [...block![1]!.matchAll(/"([a-z0-9]+)"/g)].map((m) => m[1]!);
+
+    expect(supported.length).toBeGreaterThan(0);
+    expect([...IMPORTABLE].toSorted()).toEqual(supported.toSorted());
   });
 });

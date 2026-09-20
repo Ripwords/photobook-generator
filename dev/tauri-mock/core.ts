@@ -555,6 +555,19 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
     // The real command stats every file in the book's folders. There are no
     // folders here, so the harness just reports a plausible answer; set
     // `localStorage.PBG_MOCK_NEW_PHOTOS` to drive the notice.
+    // The real command hashes the file, analyses it through the sidecar and
+    // appends it to the book's photo list. Here the book's photos are fixed,
+    // so the harness hands back the last one -- enough to drive the dialog's
+    // import, reload and select path. Set `localStorage.PBG_MOCK_IMPORT_FAILS`
+    // to drive the failure path instead.
+    case "import_photo": {
+      await sleep(400);
+      if (localStorage.getItem("PBG_MOCK_IMPORT_FAILS") === "1") {
+        throw new Error("from-disk.jpg could not be analysed.");
+      }
+      return { photoIndex: layout.photos.length - 1, alreadyKnown: false } as T;
+    }
+
     case "folder_check":
       return {
         newPhotos: Number(localStorage.getItem("PBG_MOCK_NEW_PHOTOS") ?? 0),

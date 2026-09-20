@@ -550,6 +550,48 @@ impl Db {
         )
     }
 
+    /// Appends one photo to a project's list and returns the position it
+    /// landed at, which is its `Placement::photo_index`.
+    ///
+    /// Append, never insert: `project_photos.position` is what every
+    /// placement in the saved book indexes into, so putting a hash anywhere
+    /// but the end would silently repoint every placement after it at the
+    /// wrong photo. The same reason `update_project_book` leaves this table
+    /// alone.
+    ///
+    /// No deduplication. The list is positional and the same hash may hold
+    /// two positions legitimately (two byte-identical files, both placed), so
+    /// whether an already-listed photo should be reused instead of appended
+    /// is a decision only the caller has the context to make.
+    ///
+    /// The new position is the ROW COUNT, not `MAX(position) + 1`. The two
+    /// agree while positions run contiguously from 0, which is the only way
+    /// they are ever written, and only the count is the index `load_project`
+    /// will hand the photo back at -- it reads `ORDER BY position` and
+    /// numbers the result 0..n itself, so a gap would already have broken the
+    /// mapping before this function ran. If contiguity is ever violated the
+    /// count collides with an existing row and the primary key on
+    /// `(project_id, position)` refuses the insert, which is the loud failure
+    /// this file prefers: the quiet alternative is a book whose placements
+    /// silently point one photo along.
+    ///
+    /// The read and the write are one transaction, so two imports racing for
+    /// the same project cannot both take the same position.
+    pub fn append_project_photo(&self, project_id: i64, hash: &str) -> rusqlite::Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let next: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM project_photos WHERE project_id = ?1",
+            rusqlite::params![project_id],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO project_photos (project_id, position, hash) VALUES (?1, ?2, ?3)",
+            rusqlite::params![project_id, next, hash],
+        )?;
+        tx.commit()?;
+        Ok(next as usize)
+    }
+
     /// Renames a project. Returns the number of rows affected (0 or 1), so a
     /// caller can tell "renamed" from "that id does not exist" without a
     /// separate lookup -- `rename_project` (the Tauri command) turns 0 into
@@ -996,6 +1038,80 @@ mod tests {
         let id = db.save_project("Dupes", "/tmp/dupes", &fixture_book(), &hashes, &Overrides::new()).unwrap();
 
         assert_eq!(db.load_project(id).unwrap().unwrap().photo_hashes, hashes);
+    }
+
+    /// A photo imported from outside the analysed folders lands at the END
+    /// of the list. Position is the contract `Placement::photo_index` reads,
+    /// so appending is the only safe way to add one: inserting anywhere else
+    /// would renumber every placement after it.
+    #[test]
+    fn append_project_photo_adds_a_hash_at_the_end_of_the_list() {
+        let db = Db::open_in_memory().unwrap();
+        let hashes = fixture_hashes();
+        let id = db.save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &hashes, &Overrides::new()).unwrap();
+
+        let at = db.append_project_photo(id, "imported").unwrap();
+
+        assert_eq!(at, hashes.len());
+        let mut expected = hashes.clone();
+        expected.push("imported".to_string());
+        let loaded = db.load_project(id).unwrap().unwrap().photo_hashes;
+        assert_eq!(loaded, expected);
+        // The contract, stated as the caller relies on it: the number that
+        // came back is the index the photo loads at, which is what becomes
+        // its `Placement::photo_index`.
+        assert_eq!(loaded.get(at).map(String::as_str), Some("imported"));
+    }
+
+    /// `position` is dense by construction, and the returned index is only
+    /// meaningful because of it -- `load_project` renumbers what it reads
+    /// 0..n and a gap would already have desynchronised the two. So a gapped
+    /// table must fail loudly rather than hand back an index that points at
+    /// the wrong photo.
+    #[test]
+    fn append_project_photo_refuses_a_project_whose_positions_have_a_gap() {
+        let db = Db::open_in_memory().unwrap();
+        let id = db
+            .save_project("Gapped", "/tmp/gapped", &fixture_book(), &fixture_hashes(), &Overrides::new())
+            .unwrap();
+        // A hole at the end of the run, so the row count lands on a taken
+        // position. Reachable only through corruption, which is the point.
+        db.conn
+            .execute(
+                "INSERT INTO project_photos (project_id, position, hash) VALUES (?1, ?2, 'squatter')",
+                rusqlite::params![id, fixture_hashes().len() as i64 + 1],
+            )
+            .unwrap();
+
+        assert!(db.append_project_photo(id, "imported").is_err());
+    }
+
+    /// Twice over means two positions, not one: the list is positional, and
+    /// the same file may legitimately be placed twice (see
+    /// `keeps_a_repeated_hash_at_both_of_its_positions`). Deciding whether a
+    /// hash is already there is the caller's job, not the table's.
+    #[test]
+    fn append_project_photo_appends_again_rather_than_deduplicating() {
+        let db = Db::open_in_memory().unwrap();
+        let id = db
+            .save_project("Kyoto", "/tmp/kyoto", &fixture_book(), &fixture_hashes(), &Overrides::new())
+            .unwrap();
+
+        let first = db.append_project_photo(id, "imported").unwrap();
+        let second = db.append_project_photo(id, "imported").unwrap();
+
+        assert_eq!(second, first + 1);
+    }
+
+    /// A project saved before `project_photos` existed has no rows there, so
+    /// the next position is 0 rather than a `MAX(position)` of NULL.
+    #[test]
+    fn append_project_photo_starts_at_zero_on_a_project_with_no_photo_list() {
+        let db = Db::open_in_memory().unwrap();
+        let id = db.save_project("Legacy", "/tmp/legacy", &fixture_book(), &[], &Overrides::new()).unwrap();
+
+        assert_eq!(db.append_project_photo(id, "imported").unwrap(), 0);
+        assert_eq!(db.load_project(id).unwrap().unwrap().photo_hashes, vec!["imported".to_string()]);
     }
 
     /// A project saved before `project_photos` existed has no rows there.

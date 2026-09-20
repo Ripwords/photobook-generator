@@ -194,7 +194,19 @@ photos no page uses, each shown cropped the way that slot would print it; **In t
 **Replace**, or double-click it. Picking a photo that is already on another page reads **Swap
 with page N** and exchanges the two. A photo that would cut a face, put one in the fold or
 the trim margin, or print too small is dimmed with the reason and cannot be picked, and so
-are photos on a locked spread. To **adjust a crop**, drag the photo inside its
+are photos on a locked spread.
+
+To **use a photo from anywhere on the machine**, press **Add from disk…** at the top of
+that same dialog. The photo does not have to be in the folders this book was made from, or
+in any folder the app has analysed. It is analysed on the spot, which takes a moment the
+first time, and then appears as one more photo in the dialog, already picked, so you can see
+how it would be cropped and whether anything refuses it before pressing **Replace** or
+**Use on the cover**. The same button is on the cover picker. One caveat: a photo added this
+way belongs to the book, not to its folders, so if you later run **Edit photos** and
+**Update "<name>"**, the book is rebuilt from the folders and hand-added photos are not
+carried across.
+
+To **adjust a crop**, drag the photo inside its
 slot to move the window, or hold ⌘ and scroll over it to zoom;
 a plain scroll always scrolls the book, never a photo. A press only counts as a drag once it
 has travelled about 10px, so an ordinary click still selects the photo however much the

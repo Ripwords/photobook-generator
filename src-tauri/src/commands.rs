@@ -2215,6 +2215,149 @@ pub async fn folder_check(app: AppHandle, project_id: i64) -> Result<FolderCheck
     .map_err(|e| e.to_string())?
 }
 
+/// Where a photo the user picked by hand ended up in the book's photo list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedPhoto {
+    /// Its `Placement::photo_index`, ready for `ReplacePhoto`/`SetCoverPhoto`.
+    pub photo_index: usize,
+    /// The book already had this exact file; `photo_index` is where it was.
+    pub already_known: bool,
+}
+
+/// Whether this file is worth handing to the analyzer at all, by name alone.
+///
+/// The native picker is already filtered, so this is the second line: a path
+/// can also arrive from a drop or a stale recent-files entry. Refusing here
+/// costs nothing; refusing after a sidecar round-trip costs the user seconds
+/// and produces a worse message.
+pub(crate) fn importable(path: &Path) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("{} is not a file", path.display()))?;
+    if is_apple_double(name) {
+        return Err(format!(
+            "{name} is one of macOS's hidden sidecar files, not a photo -- the real photo is the one without the \"._\" in front."
+        ));
+    }
+    if !supported_extension(name) {
+        return Err(format!("{name} is not a photo this app can read."));
+    }
+    Ok(())
+}
+
+/// The position a hash already holds in a book's photo list, if any.
+///
+/// The FIRST position, because a hash may hold several (two byte-identical
+/// files, both placed) and picking the same file twice must give the same
+/// answer both times.
+pub(crate) fn import_index(known: &[String], hash: &str) -> Option<usize> {
+    known.iter().position(|h| h == hash)
+}
+
+/// Analyses one photo the user picked by hand and adds it to a book.
+///
+/// The user override behind "Add from disk": the file need not be in any of
+/// the book's analysed folders, or in any folder the app has ever seen. It
+/// goes through the SAME hash, cache and sidecar path a folder run uses
+/// (`gather_chunked`), so a file already analysed is a cache hit and costs
+/// nothing, and a new one is analysed exactly as its neighbours were -- on
+/// this machine, and only ever as derived JSON.
+///
+/// The photo is APPENDED to the project's photo list and the new index
+/// returned; the caller then sends the ordinary `ReplacePhoto` or
+/// `SetCoverPhoto` edit against it. Two calls rather than one, and
+/// deliberately: each is individually consistent, and the worst outcome if
+/// the second never happens is an unused photo in the pool, which is exactly
+/// what every photo the book left out already is.
+///
+/// A photo the book already holds is not appended twice -- the index it
+/// already has comes back instead, so picking the same file twice is a no-op
+/// rather than a slow way to grow the list.
+///
+/// NOTE: the book's own folders are still the source of truth when the book
+/// is REGENERATED. Running **Edit photos** and updating the book rebuilds its
+/// photo list from those folders, so a photo added this way is not carried
+/// across. That is documented in the manual rather than worked around: the
+/// alternative is a book whose photo list no longer matches any folder.
+#[tauri::command]
+pub async fn import_photo(
+    app: AppHandle,
+    project_id: i64,
+    path: String,
+) -> Result<ImportedPhoto, String> {
+    importable(Path::new(&path))?;
+
+    // Held for the same reason `analyze_folders` holds it: the features row
+    // is written before the photo is pinned by `project_photos`, and cache
+    // enforcement running in that window would evict what was just analysed.
+    let gate = app.state::<AppState>().cache_gate.clone().read_owned().await;
+    let imported = import_photo_gated(app.clone(), project_id, path).await;
+    drop(gate);
+    spawn_cache_enforcement(app);
+    imported
+}
+
+async fn import_photo_gated(
+    app: AppHandle,
+    project_id: i64,
+    path: String,
+) -> Result<ImportedPhoto, String> {
+    let db_path = database_path(&app)?;
+    // As in `analyze_folders_gated`: a missing thumbnail is a blank tile,
+    // not a lost photo, so failing to make the directory is logged, not fatal.
+    let thumbnail_dir = thumbnail_dir(&app)?;
+    if let Err(err) = std::fs::create_dir_all(&thumbnail_dir) {
+        log::warn!("failed to create thumbnail directory {thumbnail_dir:?}: {err}");
+    }
+    let thumbnail_dir = thumbnail_dir.to_string_lossy().into_owned();
+
+    // `spawn_blocking` for the same traced reason `analyze_folders_gated`
+    // documents at length: `Sidecar::request` blocks on a `recv_timeout`
+    // waiting for a tokio task, and running it on the async worker pool can
+    // starve that task of a thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&db_path).map_err(|e| e.to_string())?;
+        let project = db
+            .load_project(project_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("project {project_id} no longer exists"))?;
+
+        let state = app.state::<AppState>();
+        let gathered = gather_chunked(
+            &db,
+            std::slice::from_ref(&path),
+            |misses| {
+                with_sidecar(&state, |pool| {
+                    pool.analyze_all(&app, misses, &thumbnail_dir, |_| {})
+                })
+            },
+            |_, _, _, _| {},
+        )?;
+
+        let features = gathered.ok.first().ok_or_else(|| {
+            format!(
+                "{} could not be analysed. It may be unreadable, or a format this app cannot decode.",
+                Path::new(&path).file_name().and_then(|n| n.to_str()).unwrap_or(&path)
+            )
+        })?;
+        let hash = features["hash"]
+            .as_str()
+            .ok_or("the analyzer returned a photo with no content hash")?
+            .to_string();
+
+        if let Some(photo_index) = import_index(&project.photo_hashes, &hash) {
+            return Ok(ImportedPhoto { photo_index, already_known: true });
+        }
+        let photo_index =
+            db.append_project_photo(project_id, &hash).map_err(|e| e.to_string())?;
+        Ok(ImportedPhoto { photo_index, already_known: false })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// The saved book's layout, for the read-only preview.
 ///
 /// Keyed by project id and read from the database rather than taken from the
@@ -2819,6 +2962,52 @@ mod tests {
         let known = HashSet::new();
         assert!(!photo_is_new(None, None, &known));
         assert!(!photo_is_new(None, Some((stamp(10, 20), "aaa".to_string())), &known));
+    }
+
+    #[test]
+    fn importable_accepts_a_supported_photo_whatever_the_case_of_its_extension() {
+        assert!(importable(Path::new("/Users/jj/Desktop/IMG_0042.JPG")).is_ok());
+        assert!(importable(Path::new("/Users/jj/Desktop/scan.heic")).is_ok());
+    }
+
+    #[test]
+    fn importable_refuses_a_file_the_analyzer_cannot_read() {
+        // The native picker is filtered, but a path can also arrive by drop
+        // or from a stale recent-files entry, so the refusal lives here too.
+        let err = importable(Path::new("/Users/jj/Desktop/notes.pdf")).unwrap_err();
+        assert!(err.contains("notes.pdf"), "the message must name the file: {err}");
+    }
+
+    #[test]
+    fn importable_refuses_an_apple_double_sidecar_that_looks_like_a_photo() {
+        // `._IMG_0042.JPG` passes the extension check and is not an image.
+        assert!(importable(Path::new("/Volumes/CARD/._IMG_0042.JPG")).is_err());
+    }
+
+    #[test]
+    fn importable_refuses_a_path_with_no_file_name_at_all() {
+        assert!(importable(Path::new("/")).is_err());
+    }
+
+    #[test]
+    fn import_index_reuses_the_position_a_photo_already_holds() {
+        let known = ["aaa".to_string(), "bbb".to_string(), "ccc".to_string()];
+        assert_eq!(import_index(&known, "bbb"), Some(1));
+    }
+
+    /// A repeated hash holds several positions. Reusing the FIRST is what
+    /// keeps the import idempotent: picking the same file twice must not
+    /// walk the answer along the list.
+    #[test]
+    fn import_index_reuses_the_first_position_when_a_photo_holds_several() {
+        let known = ["aaa".to_string(), "dup".to_string(), "dup".to_string()];
+        assert_eq!(import_index(&known, "dup"), Some(1));
+    }
+
+    #[test]
+    fn import_index_has_no_position_for_a_photo_the_book_has_never_seen() {
+        let known = ["aaa".to_string(), "bbb".to_string()];
+        assert_eq!(import_index(&known, "zzz"), None);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { open as pickFile } from "@tauri-apps/plugin-dialog";
 import {
   cropStyle,
   pickAspect,
@@ -14,6 +15,7 @@ import {
   type PickTarget,
   type SlotCandidate,
 } from "~/types/preview";
+import { IMPORTABLE, type ImportedPhoto } from "~/types/book";
 
 /**
  * Picks any analysed photo for one slot or one side of the cover. For a slot,
@@ -22,6 +24,12 @@ import {
  * would print it, and a photo a hard constraint refuses says why instead of
  * failing after the click. Rust decides both (see `slot_candidates` and
  * `cover_candidates`); the dialog only filters and sorts what it is told.
+ *
+ * **Add from disk** escapes that set entirely: any photo on the machine,
+ * in the book's folders or not. It is analysed on the spot (`import_photo`)
+ * and appended to the book's photo list, then shown as one more tile -- so it
+ * gets the same crop preview and the same refusal check as everything else
+ * rather than being applied blind.
  */
 const open = defineModel<boolean>("open", { required: true });
 
@@ -39,6 +47,9 @@ const initialFilter = (): CandidateFilter => (target.kind === "cover" ? "all" : 
 const filter = ref<CandidateFilter>(initialFilter());
 const sort = ref<CandidateSort>("best");
 const chosen = ref<number | null>(null);
+/** Analysis of a hand-picked file, which is a sidecar round-trip on a miss. */
+const importing = ref(false);
+const importError = ref<string | null>(null);
 /** Only the latest request may land, so a slow answer for another slot never shows here. */
 let request = 0;
 
@@ -66,6 +77,7 @@ watch(
   (isOpen) => {
     if (!isOpen) return;
     chosen.value = null;
+    importError.value = null;
     filter.value = initialFilter();
     void load();
   },
@@ -151,6 +163,40 @@ function confirm() {
   open.value = false;
 }
 
+/**
+ * Any photo on the machine, as a user override. Analysed here rather than
+ * applied straight away: once it is in the book's photo list it is an
+ * ordinary candidate, so reloading shows it with its crop and with whatever
+ * this slot refuses it for -- which the user gets to see before committing.
+ */
+async function addFromDisk() {
+  if (importing.value) return;
+  importError.value = null;
+  const picked = await pickFile({
+    multiple: false,
+    directory: false,
+    title: "Choose a photo",
+    filters: [{ name: "Photos", extensions: [...IMPORTABLE] }],
+  });
+  if (typeof picked !== "string") return;
+  importing.value = true;
+  try {
+    const added = await invoke<ImportedPhoto>("import_photo", {
+      projectId: layout.projectId,
+      path: picked,
+    });
+    // "All", because a photo the book already holds is not in "Left out" and
+    // the point is that the tile the user just asked for is on screen.
+    filter.value = "all";
+    await load();
+    chosen.value = added.photoIndex;
+  } catch (e) {
+    importError.value = String(e);
+  } finally {
+    importing.value = false;
+  }
+}
+
 function name(path: string): string {
   return path.split("/").pop() ?? path;
 }
@@ -184,6 +230,17 @@ const scroller = useTemplateRef<HTMLElement>("scroller");
             <span class="tabular-nums opacity-70">{{ counts[option.value] }}</span>
           </UButton>
         </UFieldGroup>
+        <UButton
+          color="neutral"
+          variant="outline"
+          size="sm"
+          icon="i-lucide-hard-drive-upload"
+          :loading="importing"
+          :disabled="importing"
+          @click="addFromDisk"
+        >
+          Add from disk…
+        </UButton>
         <USelect v-model="sort" :items="SORTS" size="sm" class="ml-auto w-36" aria-label="Sort photos" />
       </div>
 
@@ -292,8 +349,10 @@ const scroller = useTemplateRef<HTMLElement>("scroller");
       </div>
     </template>
     <template #footer>
-      <p class="truncate text-xs text-muted">
-        <template v-if="selection">{{ name(selection.photo.path) }}</template>
+      <p class="truncate text-xs" :class="importError ? 'text-error' : 'text-muted'">
+        <template v-if="importError">{{ importError }}</template>
+        <template v-else-if="importing">Analysing that photo…</template>
+        <template v-else-if="selection">{{ name(selection.photo.path) }}</template>
         <template v-else>Choose a photo. Double-click to use it at once.</template>
       </p>
       <div class="flex shrink-0 gap-2">
