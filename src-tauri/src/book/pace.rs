@@ -311,8 +311,42 @@ fn single_page(
     }
 }
 
-/// The two pages of one spread, or `None` when no eligible template survives
-/// the hard constraints.
+/// How many of the library's slots the hard constraints will accept this
+/// photo into, over every template, either side.
+///
+/// Zero is the interesting answer: the photo cannot be printed ANYWHERE, so
+/// no rearrangement of the group it sits in can help. Counting rather than
+/// returning a bool is what makes the ranking below a preference and not a
+/// special case -- the group sheds its least printable photo whether or not
+/// any photo is outright unprintable.
+fn seatable_slots(spec: &PrintSpec, lib: &Library, photo: &Photo) -> usize {
+    lib.spreads
+        .iter()
+        .flat_map(|t| [&t.left, &t.right])
+        .flat_map(|half| half.slots.iter().map(move |slot| (slot, half.side)))
+        .filter(|(slot, side)| {
+            let crop = choose_crop(photo, slot_aspect(spec, slot));
+            rejects(spec, photo, &crop, slot, *side).is_none()
+        })
+        .count()
+}
+
+/// The two pages of one spread, or `None` when no photo of the group can be
+/// seated at all.
+///
+/// Sizes degrade ONE PHOTO AT A TIME, for the same reason `best_single`
+/// tries smaller halves before giving up: templates are exact-count, so a
+/// single photo the hard constraints reject -- a face Vision boxed past the
+/// frame edge, too few pixels for the slot it drew -- rejects every
+/// permutation of its group and used to blank the whole spread, throwing
+/// away the five printable photos sitting next to it. That is what printed
+/// blank pairs at pages 2-3, 22-23 and 30-31 of a real 40-page book.
+///
+/// The photo dropped is the one the library can seat in the fewest places,
+/// ties broken weakest-first on the same keys `strongest` ranks by, so the
+/// choice is deterministic and the spread keeps its strongest photos. The
+/// happy path pays nothing: the full group is tried first and the ranking
+/// only runs once a size has already failed.
 fn spread_pages<'a>(
     spec: &PrintSpec,
     group: &Group,
@@ -322,10 +356,30 @@ fn spread_pages<'a>(
     previous: Option<&str>,
     seed: u64,
 ) -> Option<(&'a SpreadTemplate, [Page; 2])> {
-    let refs: Vec<&Photo> = group.photos.iter().map(|&i| &photos[i]).collect();
-    let eligible = lib.spreads_with(group.photos.len());
-    let (template, assignment, _) = best_spread(spec, &eligible, &refs, previous, w, seed)?;
-    Some((template, rebuild(spec, template, &assignment, &group.photos, photos)))
+    let mut indices = group.photos.clone();
+    while !indices.is_empty() {
+        let refs: Vec<&Photo> = indices.iter().map(|&i| &photos[i]).collect();
+        let eligible = lib.spreads_with(indices.len());
+        if let Some((template, assignment, _)) =
+            best_spread(spec, &eligible, &refs, previous, w, seed)
+        {
+            return Some((template, rebuild(spec, template, &assignment, &indices, photos)));
+        }
+        let seatable: Vec<usize> =
+            indices.iter().map(|&i| seatable_slots(spec, lib, &photos[i])).collect();
+        let worst = (0..indices.len())
+            .min_by(|&a, &b| {
+                let (pa, pb) = (&photos[indices[a]], &photos[indices[b]]);
+                seatable[a]
+                    .cmp(&seatable[b])
+                    .then(pa.aesthetic_pct.cmp(&pb.aesthetic_pct))
+                    .then(pa.sharpness_pct.cmp(&pb.sharpness_pct))
+                    .then(pa.path.cmp(&pb.path))
+            })
+            .expect("the loop condition guarantees at least one photo");
+        indices.remove(worst);
+    }
+    None
 }
 
 /// Lays `indices` (ordered as `assignment` indexes them) into a template's
@@ -1347,6 +1401,106 @@ mod tests {
         );
     }
 
+    /// The defect behind a real 40-page book that printed blank pairs at
+    /// pages 2-3, 22-23 and 30-31: ONE photo the hard constraints reject in
+    /// every slot of every template poisons every permutation of its group,
+    /// `best_spread` returns `None`, and the whole spread goes blank --
+    /// throwing away the group's other, perfectly printable photos with it.
+    ///
+    /// `best_single` has degraded through smaller halves since it was
+    /// written, and its own comment says why: "a blank page is a legitimate
+    /// pacing device but it must be the last resort, not the first failure."
+    /// The spread path holds five times as many photos and had no fallback
+    /// at all.
+    #[test]
+    fn pace_drops_the_unseatable_photo_rather_than_blanking_the_whole_spread() {
+        let lib = fixture_library();
+        let mut photos = fixture_photos(3);
+        // ~30 DPI against a 200 floor: no slot of any template can hold it,
+        // which is what makes it poison rather than merely a poor fit.
+        photos[1].width = 300;
+        photos[1].height = 225;
+        let group = Group { photos: vec![0, 1, 2], event_cluster: 0, slot: SlotKind::Spread };
+
+        let (template, [left, right]) =
+            spread_pages(&pixajoy_spec(), &group, &photos, &lib, &Weights::default(), None, 7)
+                .expect("two of the three photos are printable, so this spread is not blank");
+
+        assert_eq!(
+            template.photo_count(),
+            2,
+            "the spread must shed exactly the one photo it cannot seat, not two"
+        );
+        let placed: BTreeSet<usize> = left
+            .placements
+            .iter()
+            .chain(right.placements.iter())
+            .map(|p| p.photo_index)
+            .collect();
+        assert_eq!(
+            placed,
+            BTreeSet::from([0, 2]),
+            "the two printable photos are the ones that print"
+        );
+    }
+
+    /// The other half of that rule, and the reason the fallback cannot be a
+    /// blanket "shrink until something fits": a group NOTHING can seat still
+    /// prints blank. Degrading past the last photo would print a spread of
+    /// nothing, or worse, loop.
+    #[test]
+    fn pace_still_blanks_a_spread_when_no_photo_in_the_group_can_be_seated() {
+        let lib = fixture_library();
+        let mut photos = fixture_photos(3);
+        for p in &mut photos {
+            p.width = 300;
+            p.height = 225;
+        }
+        let group = Group { photos: vec![0, 1, 2], event_cluster: 0, slot: SlotKind::Spread };
+        assert!(
+            spread_pages(&pixajoy_spec(), &group, &photos, &lib, &Weights::default(), None, 7)
+                .is_none(),
+            "a blank spread is still the answer when every photo is unprintable"
+        );
+    }
+
+    /// The same defect through the real entry point, on the shape the user
+    /// actually saw: one bad photo somewhere in the middle of a book, and a
+    /// pair of blank pages where a spread should be.
+    ///
+    /// Chapter 3's photos are otherwise fine here -- only one of them is
+    /// unprintable -- which is exactly what
+    /// `pace_leaves_a_failed_spread_blank_in_place_rather_than_shifting_the_book`
+    /// does NOT cover: that test breaks the WHOLE chapter, so the blank it
+    /// asserts is correct and stays correct.
+    #[test]
+    fn pace_prints_no_blank_pair_when_only_one_photo_of_a_chapter_is_unprintable() {
+        let lib = fixture_library();
+        let mut photos = fixture_photos(36);
+        let poisoned = photos
+            .iter()
+            .position(|p| p.event_cluster == 3 && !p.is_utility)
+            .expect("fixture check: chapter 3 must contain a photo that survives the cull");
+        photos[poisoned].width = 300;
+        photos[poisoned].height = 225;
+
+        let book = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 5, &Overrides::new()).expect("the fixture must place every included photo");
+        assert_eq!(book.pages.len(), 20);
+        let blanks: Vec<u32> = book
+            .pages
+            .iter()
+            .filter(|p| p.template_id == BLANK_TEMPLATE_ID)
+            .map(|p| p.number)
+            .collect();
+        assert!(
+            blanks.is_empty(),
+            "one unprintable photo cost pages {blanks:?}, not just itself"
+        );
+        assert!(
+            book.pages.iter().flat_map(|p| &p.placements).all(|p| p.photo_index != poisoned),
+            "the unprintable photo must be the thing dropped"
+        );
+    }
     /// When there are fewer photos than slots, `pack` produces fewer groups
     /// than the book has slots, so the last group it cut was sized for a
     /// SPREAD. Placing it on the closing page-half regardless means

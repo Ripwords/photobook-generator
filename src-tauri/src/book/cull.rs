@@ -95,6 +95,40 @@ fn rect_from(v: &serde_json::Value) -> Option<Rect> {
     Some(Rect::new(a[0].as_f64()?, a[1].as_f64()?, a[2].as_f64()?, a[3].as_f64()?))
 }
 
+/// Clamps a Vision face box to the image, dropping a box with no part of it
+/// in the picture.
+///
+/// Vision does not guarantee its boxes lie inside the frame -- it
+/// extrapolates a partially visible face -- and in one real 1133-photo
+/// library 9 of the 1164 detected faces overhang, by up to 0.15 of the frame.
+/// `VisionAnalyzer.topLeft` is a straight origin flip and is not the source.
+///
+/// Left alone it is a hard failure, not a rounding nuisance. Every crop
+/// window lies inside the frame by construction, so an overhanging box can
+/// never be CONTAINED by a crop while it does intersect one, which is exactly
+/// `score::rejects`'s definition of `FaceClipped` -- in every slot of every
+/// template. The photo becomes unplaceable anywhere and used to take its
+/// whole spread down with it, printing two blank pages.
+///
+/// The frame belongs here, at the boundary the external data arrives at: a
+/// box describing a region of the image cannot leave the image, and nothing
+/// downstream should have to defend against one that does. Clamping in Rust
+/// rather than in Swift also repairs the rows already in the features cache,
+/// which a sidecar fix would reach only behind an `ANALYZER_VERSION` bump and
+/// a full re-analysis.
+fn in_frame(face: Face) -> Option<Face> {
+    let frame = Rect::new(0.0, 0.0, 1.0, 1.0);
+    // An in-frame box is returned untouched rather than round-tripped through
+    // `intersect`, which rebuilds the rect from its edges and so perturbs a
+    // clean 0.2 into 0.20000000000000007. `contains` shares the module's
+    // float tolerance, so a box over the edge by less than that is already
+    // inside every downstream predicate's slack.
+    if frame.contains(&face.box_) {
+        return Some(face);
+    }
+    Some(Face { box_: frame.intersect(&face.box_)?, ..face })
+}
+
 /// Whether a record is expected to carry the WHOLE-SET derivations --
 /// `nearDupCluster`, `eventCluster`, `aestheticPct`, `sharpnessPct` -- that
 /// `commands::finalize_photos` stamps once every photo in the folder has been
@@ -175,7 +209,10 @@ fn parse_features(v: &serde_json::Value, derived: Derived) -> Option<Photo> {
                 capture_quality: f["captureQuality"].as_f64(),
             })
         })
-        .collect::<Option<Vec<Face>>>()?;
+        .collect::<Option<Vec<Face>>>()?
+        .into_iter()
+        .filter_map(in_frame)
+        .collect();
 
     let capture_quality = faces
         .iter()
@@ -1070,6 +1107,77 @@ mod tests {
 
         assert!(from_features(&without("faces")).is_none());
         assert!(from_features(&without("palette")).is_none());
+    }
+
+    /// Vision returns face boxes that leave the image. Nine of the 1164 faces
+    /// in the author's own cache do, by as much as 0.15 of the frame:
+    /// `MY_03204.ARW` at x 0.495 w 0.5434 (right edge 1.0385) and
+    /// `MY_03978.ARW` at x -0.1493 w 1.0659 are the two below, copied
+    /// verbatim. `VisionAnalyzer.topLeft` is a straight origin flip and is not
+    /// the culprit -- Vision itself extrapolates a box past the frame.
+    ///
+    /// It is a hard failure downstream. Every crop window lies inside the
+    /// frame by construction, so an overhanging box can never be CONTAINED by
+    /// a crop while it does intersect one, which is precisely
+    /// `score::rejects`'s definition of `FaceClipped` -- in every slot of
+    /// every template. The photo becomes unplaceable anywhere and takes its
+    /// whole spread down with it.
+    ///
+    /// So the frame is enforced here, at the parse boundary, where the
+    /// external data arrives: a box describing a region of the image cannot
+    /// leave the image. Clamping in Rust rather than in Swift also repairs
+    /// the rows already sitting in the features cache, which a sidecar fix
+    /// would need an `ANALYZER_VERSION` bump and a full re-analysis to reach.
+    #[test]
+    fn cull_clamps_a_face_box_vision_pushed_past_the_frame_edge() {
+        let frame = Rect::new(0.0, 0.0, 1.0, 1.0);
+        let mut v = full_record();
+        v["faces"] = serde_json::json!([
+            {"box": [0.495, 0.4455, 0.5434, 0.3633], "captureQuality": 0.7},
+            {"box": [-0.1493, 0.2365, 1.0659, 0.7127], "captureQuality": 0.6},
+            {"box": [0.30, 0.40, 0.12, 0.20], "captureQuality": 0.5}
+        ]);
+        let p = from_features(&v).expect("an overhanging box is a real Vision answer, not corruption");
+        assert_eq!(p.faces.len(), 3, "a clamped face is still a face and still scores");
+        for f in &p.faces {
+            assert!(frame.contains(&f.box_), "face {:?} still leaves the frame", f.box_);
+        }
+        // Clamped to the frame, not rescaled or recentred: only the overhang
+        // goes. `intersect` rebuilds a rect from its edges, so the clamped
+        // boxes are compared to within float reconstruction error and the
+        // UNTOUCHED one is compared exactly -- that exactness is the claim
+        // that an ordinary photo's data is not perturbed by this.
+        let near = |a: Rect, b: Rect| {
+            let d = (a.x - b.x).abs().max((a.y - b.y).abs()).max((a.w - b.w).abs()).max((a.h - b.h).abs());
+            assert!(d < 1e-12, "{a:?} is not {b:?}");
+        };
+        near(p.faces[0].box_, Rect::new(0.495, 0.4455, 0.505, 0.3633));
+        near(p.faces[1].box_, Rect::new(0.0, 0.2365, 0.9166, 0.7127));
+        assert_eq!(p.faces[2].box_, Rect::new(0.30, 0.40, 0.12, 0.20), "an in-frame box is untouched");
+
+        // The cache path is the one that has to repair the existing rows.
+        let cached = from_cached_features(&v).expect("the cached shape parses");
+        assert!(cached.faces.iter().all(|f| frame.contains(&f.box_)));
+    }
+
+    /// A box with no part of it in the frame is not a face in this photo, so
+    /// it is dropped rather than clamped to a degenerate sliver that the
+    /// gutter and safe-margin rules would then reason about.
+    #[test]
+    fn cull_drops_a_face_box_that_lies_entirely_outside_the_frame() {
+        let mut v = full_record();
+        v["faces"] = serde_json::json!([
+            {"box": [1.4, 0.2, 0.3, 0.3], "captureQuality": 0.9},
+            {"box": [0.30, 0.40, 0.12, 0.20], "captureQuality": 0.5}
+        ]);
+        let p = from_features(&v).expect("a record with an off-frame box still parses");
+        assert_eq!(p.faces.len(), 1, "only the face that is in the picture survives");
+        assert_eq!(p.faces[0].box_, Rect::new(0.30, 0.40, 0.12, 0.20));
+        assert_eq!(
+            p.capture_quality,
+            Some(0.5),
+            "the dropped face must not keep voting on the photo's capture quality"
+        );
     }
 
     /// A face entry without a `box` used to be dropped from the list by

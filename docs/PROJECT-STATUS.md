@@ -24,6 +24,77 @@ deliberately-parked decision that this file is the only surviving record of.**
 
 ---
 
+## What changed on 2026-09-20: the blank page pairs
+
+**The complaint.** A 40-page book of 1133 analysed photos printed "This page prints blank"
+at pages 2-3, 22-23 and 30-31 — three whole spreads, six pages, nothing on any of them.
+
+**Reproduced first, off the user's own project.** A throwaway harness loaded project 11
+straight out of `photobook.sqlite3` (book row plus `project_photos ⋈ features`, through
+`finalize_photos` and `photos_from_records`) and re-ran `assemble` at the book's own seed,
+1789908458352. It printed `BLANK PAGES: [2, 3, 22, 23, 30, 31]` — the screenshot exactly.
+Those are spread indices 0, 10 and 14 with continuous photo-index gaps, so "the packer ran
+out of groups" (which can only blank TRAILING spreads) was out. Every one of them showed
+`best_spread -> None` with the per-slot tally `{"None": 150, "FaceClipped": 30}`.
+
+**Root cause: Vision returns face boxes that leave the image.** Nine of the 1164 faces in
+that cache overhang the frame, by as much as 0.15 of it:
+
+| photo | face box (x, y, w, h) | overhang |
+|---|---|---|
+| `MY_03204.ARW` | `0.495, 0.4455, 0.5434, 0.3633` | right edge at 1.0385 |
+| `MY_03784.ARW` | `0.6324, 0.3307, 0.3882, 0.2596` | right edge at 1.0207 |
+| `MY_03978.ARW` | `-0.1493, 0.2365, 1.0659, 0.7127` | left edge at -0.149, wider than the frame |
+
+`VisionAnalyzer.topLeft` is a straight origin flip and is not the source; Vision
+extrapolates a partly visible face past the edge. Downstream that is fatal, not cosmetic.
+Every crop window lies inside the frame by construction, so an overhanging box can never
+be CONTAINED by a crop while it does intersect one, which is exactly `score::rejects`'
+definition of `FaceClipped` — in every slot of every template. Measured on the same 1133
+photos: **6 photos rejected by all 116 slots of the whole library, and all 6 were precisely
+the out-of-bounds-face photos.** No DPI-driven case existed at all.
+
+**The amplifier: one poisoned photo blanked five good ones.** Templates are exact-count, so
+`best_spread` brute-forces permutations of the WHOLE group; a photo no slot accepts rejects
+every permutation, `spread_pages` returned `None`, and `assemble` printed the pair blank and
+discarded the group's other five photos. `best_single` has degraded through smaller page
+halves since it was written, and says why in its own comment: "a blank page is a legitimate
+pacing device but it must be the last resort, not the first failure." The spread path,
+holding five times as many photos, had no fallback at all.
+
+**Both are fixed, and deliberately both.**
+
+1. `cull::in_frame` clamps a face box to the image at the parse boundary, dropping a box
+   with no part of it in the picture; a box already inside is returned untouched rather
+   than round-tripped through `intersect`, which would perturb a clean `0.2` into
+   `0.20000000000000007` on every photo in the library. This is in Rust, not Swift, on
+   purpose: it repairs the rows already sitting in the features cache, which a sidecar fix
+   would reach only behind an `ANALYZER_VERSION` bump and a full re-analysis of the user's
+   library.
+2. `pace::spread_pages` now degrades one photo at a time instead of blanking, mirroring
+   `best_single`. It sheds the photo `seatable_slots` finds the fewest homes for across the
+   whole library, ties broken weakest-first on the same keys `strongest` ranks by. A blank
+   spread now means every photo in the group is unprintable, which is the only case where
+   two blank pages is the honest answer. The happy path pays nothing — the full group is
+   tried first, and the ranking runs only after a size has already failed.
+
+**Verified on the real book.** Same project, same seed, after the fix: `BLANK PAGES: []`,
+and the unseatable count is `0` of 1133, down from 6. The two fixes were also measured
+apart: with the clamp reverted and only the fallback in place, the same real book drops
+from six blank pages to **one** (and that one is a real template whose remaining photo sits
+on a single half, not the `blank` id) — which is the defence-in-depth argument made
+numerically rather than asserted.
+
+**Mutation-checked, per the warning in "On tests in this project".** Three mutants, each
+caught: `in_frame` returning its input unchanged (both `cull` tests fail); `spread_pages`
+returning `None` instead of degrading (both new `pace` tests fail, and the existing
+`pace_still_blanks_...` guard correctly stays green); and the degradation dropping index 0
+instead of the least seatable photo (the spread sheds two photos instead of one and the
+test says so). The two pre-existing blank-page tests were left untouched and still pass:
+both break the WHOLE group, so a blank is still the correct answer for them.
+
+---
+
 ## What changed on 2026-09-20: a real type check over the templates
 
 **What shipped.** `bun run typecheck` is `nuxt prepare && vue-tsc --noEmit -p
@@ -774,7 +845,7 @@ file per placement.
 | Pack | `book::pack` | Chapter-aware grouping into buildable group sizes, **distributed over the available slots rather than front-loaded** and **sized against the kind of slot each group will land on** (a single page holds a page half's worth, a spread does not); selects **one photo per moment before a second from any, at most `MAX_PER_MOMENT` per moment**, down to `Capacity::target_photos` (about four per spread), then varies spread density with `DENSITY_RHYTHM`. See "Selection variety" below. |
 | Score | `book::score` | Scores each template against a group: aspect fit, saliency and face-area retention, hero match, resolution headroom, palette harmony, variety — plus `face_quality`, `spread_diversity`, `gutter_saliency` and `hero_prominence`, **all four at weight `0.0`**. Hard rejections for a face in the gutter, a face outside the safe margin, and resolution below the book's `min_dpi`. |
 | Crop | `book::crop::choose_crop` | Deterministic saliency- and face-aware crop window, normalised 0…1 of the photo's **oriented** frame. |
-| Pace | `book::pace::assemble` | Lays groups into pages, keeps both halves of a spread on one template, falls back to a smaller page half rather than blanking a page. |
+| Pace | `book::pace::assemble` | Lays groups into pages, keeps both halves of a spread on one template, and falls back rather than blanking — to a smaller page half on a single page, and by shedding the least seatable photo one at a time on a spread. A blank page now means nothing in the group could be printed at all. |
 | Pre-flight | `book::preflight` | Blocks and warnings before anything is written. |
 | Export | `export.rs` → `Sidecar` → `Exporter.swift` | Builds `ExportItem`s, ships them over NDJSON, the sidecar crops and re-encodes. |
 | Persist | `project.rs`, `db.rs` | Saves and reopens a project. |
