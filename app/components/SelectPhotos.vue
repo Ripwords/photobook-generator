@@ -285,9 +285,9 @@ function onGenerated(projectId: number) {
       <template v-else-if="stage === 'ready' && summary">
         <!-- The sheet's own toolbar, pinned while the photos scroll under it. -->
         <div
-          class="sticky top-0 z-20 flex h-11 items-center gap-4 border-b border-default bg-default/95 px-6 backdrop-blur"
+          class="@container sticky top-0 z-20 flex h-11 items-center gap-3 border-b border-default bg-default/95 px-6 backdrop-blur"
         >
-          <UFieldGroup v-if="leftOutCount > 0 || !showLeftOut" size="xs">
+          <UFieldGroup v-if="leftOutCount > 0 || !showLeftOut" size="xs" class="shrink-0">
             <UButton
               color="neutral"
               :variant="showLeftOut ? 'solid' : 'outline'"
@@ -305,11 +305,17 @@ function onGenerated(projectId: number) {
               Keepers only
             </UButton>
           </UFieldGroup>
-          <p class="text-xs text-muted tabular-nums">
+          <p class="min-w-0 truncate text-xs text-muted tabular-nums">
             <span class="font-medium text-highlighted">{{ kept.length }}</span> keepers,
             {{ leftOutCount }} left out
           </p>
-          <div class="ml-auto flex items-center gap-2">
+          <!--
+            Under 32.5rem of row the toggle, the counts and the slider stop
+            fitting side by side, so the slider stands down and the counts
+            truncate. The app's window (minWidth 1100) never gets that narrow;
+            the mock harness does.
+          -->
+          <div class="ml-auto hidden shrink-0 items-center gap-2 @min-[32.5rem]:flex">
             <UIcon name="i-lucide-image" class="size-3.5 text-muted" />
             <USlider
               v-model="tileSize"
