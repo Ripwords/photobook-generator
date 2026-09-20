@@ -431,7 +431,7 @@ fn available_bytes(output_dir: &Path) -> u64 {
     use std::mem::MaybeUninit;
     use std::os::unix::ffi::OsStrExt;
 
-    let Some(existing) = output_dir.ancestors().find(|p| p.exists()) else {
+    let Some(existing) = existing_ancestor(output_dir) else {
         return 0;
     };
     let Ok(c_path) = CString::new(existing.as_os_str().as_bytes()) else {
@@ -450,6 +450,18 @@ fn available_bytes(output_dir: &Path) -> u64 {
     // initialised by the call above.
     let stat = unsafe { stat.assume_init() };
     (stat.f_bavail as u64).saturating_mul(stat.f_bsize as u64)
+}
+
+/// The nearest path at or above `of` that exists, or `None` when none does.
+///
+/// Split out of `available_bytes` so the rule it exists for -- a folder that
+/// has not been created yet is measured on its nearest existing ancestor --
+/// can be asserted on its own. The alternative, comparing `available_bytes`
+/// of the missing folder against `available_bytes` of its parent, compares
+/// two live readings of free space taken microseconds apart, which are only
+/// equal on a machine that is not writing.
+fn existing_ancestor(of: &Path) -> Option<&Path> {
+    of.ancestors().find(|p| p.exists())
 }
 
 #[cfg(test)]
@@ -534,8 +546,25 @@ mod tests {
     fn preflight_measures_a_not_yet_created_output_folder_on_its_parent_volume() {
         let dir = tempdir();
         let missing = dir.path().join("deleted-after-picking").join("nested");
+        // WHICH path gets statted, not what it returned: free space is not a
+        // constant, so two readings of it are not a sound comparison.
+        assert_eq!(existing_ancestor(&missing), Some(dir.path()));
         assert!(available_bytes(&missing) > 0);
-        assert_eq!(available_bytes(&missing), available_bytes(dir.path()));
+    }
+
+    #[test]
+    fn preflight_measures_an_output_folder_that_does_exist_on_itself() {
+        let dir = tempdir();
+        assert_eq!(existing_ancestor(dir.path()), Some(dir.path()));
+    }
+
+    #[test]
+    fn preflight_reports_no_space_when_nothing_above_the_output_folder_exists() {
+        // The empty path has exactly one ancestor -- itself -- and it does not
+        // exist, so there is nothing to stat. `available_bytes` fails closed,
+        // which blocks the export rather than promising room it cannot see.
+        assert_eq!(existing_ancestor(Path::new("")), None);
+        assert_eq!(available_bytes(Path::new("")), 0);
     }
 
     #[test]
