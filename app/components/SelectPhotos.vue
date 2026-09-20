@@ -310,12 +310,15 @@ function onGenerated(projectId: number) {
             {{ leftOutCount }} left out
           </p>
           <!--
-            Under 32.5rem of row the toggle, the counts and the slider stop
-            fitting side by side, so the slider stands down and the counts
-            truncate. The app's window (minWidth 1100) never gets that narrow;
-            the mock harness does.
+            Measured, not guessed: the toggle is 164px, the slider group 162px
+            and the two gaps 24px, so everything fits once the row's content box
+            reaches ~26rem, with the counts giving way first. Below that the
+            slider stands down rather than being clipped. The narrowest real
+            surface is this sheet inside the editor's Edit photos panel, which
+            is 477px at the window's own minWidth of 1100, so the slider is
+            there at every size the app can reach.
           -->
-          <div class="ml-auto hidden shrink-0 items-center gap-2 @min-[32.5rem]:flex">
+          <div class="ml-auto hidden shrink-0 items-center gap-2 @min-[26rem]:flex">
             <UIcon name="i-lucide-image" class="size-3.5 text-muted" />
             <USlider
               v-model="tileSize"
