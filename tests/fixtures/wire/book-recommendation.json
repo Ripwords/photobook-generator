@@ -7,13 +7,47 @@
       "pages": 20,
       "capacityPhotos": 24,
       "droppedPhotos": 2,
-      "includedOverCapacity": 0
+      "includedOverCapacity": 0,
+      "events": [
+        {
+          "event": 0,
+          "tier": "featured",
+          "suggested": "featured",
+          "chosen": false,
+          "reason": { "kind": "standout" },
+          "merit": 0.87,
+          "moments": 12,
+          "kept": 20,
+          "photos": 24,
+          "selected": 20
+        }
+      ],
+      "eventsByTier": { "featured": 1, "normal": 0, "brief": 0, "skipped": 0 },
+      "selectedPaths": ["/photos/p000.jpg", "/photos/p001.jpg"],
+      "tierOverflow": null
     },
     {
       "pages": 40,
       "capacityPhotos": 54,
       "droppedPhotos": 0,
-      "includedOverCapacity": 0
+      "includedOverCapacity": 0,
+      "events": [
+        {
+          "event": 0,
+          "tier": "featured",
+          "suggested": "featured",
+          "chosen": false,
+          "reason": { "kind": "standout" },
+          "merit": 0.87,
+          "moments": 12,
+          "kept": 20,
+          "photos": 24,
+          "selected": 20
+        }
+      ],
+      "eventsByTier": { "featured": 1, "normal": 0, "brief": 0, "skipped": 0 },
+      "selectedPaths": ["/photos/p000.jpg", "/photos/p001.jpg"],
+      "tierOverflow": null
     }
   ]
 }

@@ -23,6 +23,7 @@ import {
   resolveExportProjectId,
   revealTarget,
   summarizeExport,
+  tierReasonText,
   warningMessages,
   withGeneratedBook,
   withOpenedProject,
@@ -70,6 +71,19 @@ const fixture = <T>(name: string): T =>
 describe("book recommendation wire shape", () => {
   const rec = fixture<BookRecommendation>("book-recommendation.json");
 
+  const eventRow = {
+    event: 0,
+    tier: "featured",
+    suggested: "featured",
+    chosen: false,
+    reason: { kind: "standout" },
+    merit: 0.87,
+    moments: 12,
+    kept: 20,
+    photos: 24,
+    selected: 20,
+  };
+
   it("reads the keeper count and the recommended length Rust serialised", () => {
     expect(rec.keeperCount).toBe(26);
     expect(recommendedOption(rec)).toEqual({
@@ -77,6 +91,10 @@ describe("book recommendation wire shape", () => {
       capacityPhotos: 24,
       droppedPhotos: 2,
       includedOverCapacity: 0,
+      events: [eventRow],
+      eventsByTier: { featured: 1, normal: 0, brief: 0, skipped: 0 },
+      selectedPaths: ["/photos/p000.jpg", "/photos/p001.jpg"],
+      tierOverflow: null,
     });
   });
 
@@ -86,6 +104,10 @@ describe("book recommendation wire shape", () => {
       capacityPhotos: 54,
       droppedPhotos: 0,
       includedOverCapacity: 0,
+      events: [eventRow],
+      eventsByTier: { featured: 1, normal: 0, brief: 0, skipped: 0 },
+      selectedPaths: ["/photos/p000.jpg", "/photos/p001.jpg"],
+      tierOverflow: null,
     });
   });
 
@@ -120,6 +142,28 @@ describe("book recommendation wire shape", () => {
     // unmatched recommendation must not put `undefined` on screen.
     const drifted: BookRecommendation = { ...rec, recommendedPages: 99 };
     expect(recommendedOption(drifted)).toEqual(rec.options[0]);
+  });
+});
+
+const eventTitle = (e: number) => `Event ${e + 1}`;
+
+describe("tierReasonText", () => {
+  it.each([
+    [{ kind: "utility", share: 0.92 }, "Mostly screenshots and documents (92%)"],
+    [{ kind: "nothingKept" }, "No photo here survived culling"],
+    [{ kind: "undated" }, "These photos have no date"],
+    [{ kind: "ranked", rank: 3, of: 19 }, "Ranked 3 of 19"],
+    [{ kind: "standout" }, "Stands out from the rest of the trip"],
+    [{ kind: "outOfRoom", rank: 14, of: 19 }, "Ranked 14 of 19, beyond what this length has room for"],
+    [{ kind: "similarTo", event: 0 }, "Similar to “Event 1”"],
+    [{ kind: "demoted" }, "Lowered so every event's minimum fits this length"],
+    [{ kind: "filled" }, "Raised so the book is not left with empty pages"],
+  ] as const)("%j", (reason, text) => {
+    expect(tierReasonText(reason, eventTitle)).toBe(text);
+  });
+  it("matches the wire fixture's first event row", () => {
+    const rec = fixture<BookRecommendation>("book-recommendation.json");
+    expect(typeof tierReasonText(rec.options[0]!.events[0]!.reason, eventTitle)).toBe("string");
   });
 });
 

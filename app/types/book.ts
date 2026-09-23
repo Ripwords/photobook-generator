@@ -22,7 +22,7 @@
  * encodes a decision worth pinning.
  */
 
-import type { PhotoOverrides } from "~/types/features";
+import type { PhotoOverrides, Tier } from "~/types/features";
 import type { PreviewPhoto } from "~/types/preview";
 
 /**
@@ -71,6 +71,56 @@ export interface PreflightFinding {
 }
 
 /** One page length the user can choose, and what choosing it costs. */
+/**
+ * Mirrors `book::events::Reason`: why `recommend`'s per-event plan landed on
+ * the tier it did. Internally tagged (`kind`) to match Rust's
+ * `#[serde(tag = "kind", rename_all = "camelCase")]`.
+ */
+export type TierReason =
+  | { kind: "utility"; share: number }
+  | { kind: "nothingKept" }
+  | { kind: "undated" }
+  | { kind: "ranked"; rank: number; of: number }
+  | { kind: "standout" }
+  | { kind: "outOfRoom"; rank: number; of: number }
+  | { kind: "similarTo"; event: number }
+  | { kind: "demoted" }
+  | { kind: "filled" };
+
+/**
+ * Mirrors `commands::EventRow`: one event's plan (Rust's `book::events::EventPlan`,
+ * `#[serde(flatten)]`ed) plus how many of its photos this length actually
+ * selected.
+ */
+export interface EventRow {
+  event: number;
+  /** Effective: the user's choice, else the suggestion, after budgeting. */
+  tier: Tier;
+  suggested: Tier;
+  /** True when this is the user's own choice, not the engine's suggestion. */
+  chosen: boolean;
+  reason: TierReason;
+  merit: number;
+  moments: number;
+  kept: number;
+  photos: number;
+  selected: number;
+}
+
+/** Mirrors `commands::TierCounts`: how many events at a length landed on each tier. */
+export interface TierCounts {
+  featured: number;
+  normal: number;
+  brief: number;
+  skipped: number;
+}
+
+/** Mirrors `book::events::TierOverflow`: the book cannot fit the floors it owes. */
+export interface TierOverflow {
+  needed: number;
+  capacity: number;
+}
+
 export interface PageOption {
   pages: number;
   capacityPhotos: number;
@@ -82,6 +132,17 @@ export interface PageOption {
    * discard (Rust's `book::pack::IncludeOverflow`).
    */
   includedOverCapacity: number;
+  /** Every event's plan at this length, sorted by event id. */
+  events: EventRow[];
+  eventsByTier: TierCounts;
+  /** The photos this length would actually place, before layout ever runs. */
+  selectedPaths: string[];
+  /**
+   * Set when the user's own tier floors (or Includes) could not fit this
+   * length even after every suggested event was demoted as far as possible.
+   * Generating anyway fails with Rust's `BookError::TierFloorNotMet`.
+   */
+  tierOverflow: TierOverflow | null;
 }
 
 export interface BookRecommendation {
@@ -91,6 +152,36 @@ export interface BookRecommendation {
   includedCount: number;
   recommendedPages: number;
   options: PageOption[];
+}
+
+/**
+ * The sentence shown against an event's tier, explaining why `recommend`
+ * suggested it (or, for `demoted`/`filled`, why `budget` overrode it).
+ * `title` looks up an event's display name so the sentence can name a
+ * duplicate ("Similar to <title>") without this function owning chapter
+ * naming.
+ */
+export function tierReasonText(reason: TierReason, title: (event: number) => string): string {
+  switch (reason.kind) {
+    case "utility":
+      return `Mostly screenshots and documents (${Math.round(reason.share * 100)}%)`;
+    case "nothingKept":
+      return "No photo here survived culling";
+    case "undated":
+      return "These photos have no date";
+    case "ranked":
+      return `Ranked ${reason.rank} of ${reason.of}`;
+    case "standout":
+      return "Stands out from the rest of the trip";
+    case "outOfRoom":
+      return `Ranked ${reason.rank} of ${reason.of}, beyond what this length has room for`;
+    case "similarTo":
+      return `Similar to “${title(reason.event)}”`;
+    case "demoted":
+      return "Lowered so every event's minimum fits this length";
+    case "filled":
+      return "Raised so the book is not left with empty pages";
+  }
 }
 
 export interface GeneratedBook {

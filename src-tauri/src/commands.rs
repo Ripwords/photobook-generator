@@ -4,6 +4,7 @@ use crate::agent::request::{ModelEvent, ModelRequestError, ModelRequests, Outbou
 use crate::agent::edit::AgentError;
 use crate::agent::view::{AgentView, SourcePhoto};
 use crate::book::cull::{Overrides, Photo};
+use crate::book::events::{EventTiers, Tier, TierOverflow};
 use crate::book::history::{edit_label, HistoryStatus, Step};
 use crate::book::manifest::{manifest, Manifest};
 use crate::book::pace::{Book, BookOptions};
@@ -1073,8 +1074,35 @@ async fn analyze_folders_gated(
 /// book.
 pub(crate) const PAGE_OPTIONS: [u32; 2] = [20, 40];
 
+/// One event's row in a `PageOption`: its plan (tier, reason, merit, ...)
+/// plus how many of its photos this length actually selected.
+///
+/// `#[serde(flatten)]` on `plan` is why `Reason`'s own internal tag
+/// (`#[serde(tag = "kind", ...)]`) matters: flatten plus an internally
+/// tagged enum still serialises flat -- see `event_row_serialises_flat` --
+/// whereas an externally tagged `Reason` would nest under a `reason` key
+/// containing another object, breaking the wire shape below.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventRow {
+    #[serde(flatten)]
+    pub plan: crate::book::events::EventPlan,
+    pub selected: usize,
+}
+
+/// How many events of `PageOption.events` landed on each tier, for the
+/// draft screen's summary line.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TierCounts {
+    pub featured: usize,
+    pub normal: usize,
+    pub brief: usize,
+    pub skipped: usize,
+}
+
 /// One page length the user can pick, and what picking it costs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageOption {
     pub pages: u32,
@@ -1088,9 +1116,19 @@ pub struct PageOption {
     /// cannot hold. Non-zero means this length cannot be generated at all --
     /// see `book::pack::IncludeOverflow`.
     pub included_over_capacity: usize,
+    /// Every event's plan at this length, sorted by event id.
+    pub events: Vec<EventRow>,
+    pub events_by_tier: TierCounts,
+    /// The photos `events::budget` selected, in `culled` order -- what this
+    /// length would actually place, before layout ever runs.
+    pub selected_paths: Vec<String>,
+    /// Set when the user's own tier floors (or Includes) could not fit this
+    /// length even after every suggested event was demoted as far as
+    /// possible. Generating anyway fails with `BookError::TierFloorNotMet`.
+    pub tier_overflow: Option<TierOverflow>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BookRecommendation {
     /// Survivors of `book::cull::cull` -- utility images dropped, one photo
@@ -1442,32 +1480,71 @@ pub(crate) fn cover_thumbnails(db: &Db, book: &Book, photo_hashes: &[String]) ->
         .collect()
 }
 
+/// Photos with `event_cluster` restamped to place chapters when Places is on,
+/// borrowed untouched otherwise. The one place this choice is made, shared by
+/// `recommend` and `generate_and_save` so the two can never count events
+/// differently.
+pub(crate) fn with_chapters(photos: &[Photo], places: bool) -> std::borrow::Cow<'_, [Photo]> {
+    if !places {
+        return std::borrow::Cow::Borrowed(photos);
+    }
+    std::borrow::Cow::Owned(
+        photos
+            .iter()
+            .zip(crate::book::chapter::chapters(photos, true))
+            .map(|(p, event_cluster)| Photo { event_cluster, ..p.clone() })
+            .collect(),
+    )
+}
+
 /// The recommended book length and what each length would cost.
 pub(crate) fn recommend(
     photos: &[Photo],
     lib: &Library,
     overrides: &Overrides,
+    tiers: &EventTiers,
+    options: BookOptions,
 ) -> BookRecommendation {
-    let culled = crate::book::cull::cull(photos, overrides);
+    let photos = with_chapters(photos, options.places);
+    let culled = crate::book::cull::cull(&photos, overrides);
     let keeper_count = culled.len();
-    let included_count = overrides.included_in(photos);
-    let options = PAGE_OPTIONS
+    let included_count = overrides.included_in(&photos);
+    let options_out = PAGE_OPTIONS
         .iter()
         .map(|&pages| {
             let capacity = Capacity::from_library(pages, lib);
+            let plan = crate::book::events::plan(&photos, &culled, tiers, &capacity);
+            let budget = crate::book::events::budget(&culled, plan, &capacity, overrides, &options);
+            let mut by_tier = TierCounts::default();
+            let events: Vec<EventRow> = budget
+                .plan
+                .iter()
+                .map(|p| {
+                    match p.tier {
+                        Tier::Featured => by_tier.featured += 1,
+                        Tier::Normal => by_tier.normal += 1,
+                        Tier::Brief => by_tier.brief += 1,
+                        Tier::Skipped => by_tier.skipped += 1,
+                    }
+                    EventRow { plan: p.clone(), selected: budget.selected_in(&culled, p.event) }
+                })
+                .collect();
             PageOption {
                 pages,
                 capacity_photos: capacity.target_photos,
                 // What `pack` will actually place, so the figure counts both
                 // the photos past the density target and the surplus frames
                 // of a moment beyond `MAX_PER_MOMENT`.
-                dropped_photos: keeper_count
-                    - crate::book::pack::select(&culled, capacity.target_photos, overrides).len(),
+                dropped_photos: keeper_count - budget.selected.len(),
                 // The figure that decides whether this length can be built at
                 // all. `dropped_photos` above is a cost the user accepts; this
                 // one is a refusal, because the engine will not choose which
                 // of their own picks to discard.
                 included_over_capacity: included_count.saturating_sub(capacity.max_photos),
+                events,
+                events_by_tier: by_tier,
+                selected_paths: budget.selected.iter().map(|&i| culled[i].path.clone()).collect(),
+                tier_overflow: budget.overflow,
             }
         })
         .collect();
@@ -1475,7 +1552,7 @@ pub(crate) fn recommend(
         keeper_count,
         included_count,
         recommended_pages: recommend_pages(keeper_count, lib),
-        options,
+        options: options_out,
     }
 }
 
@@ -1540,33 +1617,25 @@ pub(crate) fn generate_and_save(
     lib: &Library,
     weights: &Weights,
     overrides: &Overrides,
+    tiers: &EventTiers,
 ) -> Result<GeneratedBook, String> {
-    // `assemble` refuses rather than returning a book that lost a photo the
-    // user explicitly asked for. Surfaced as a command error, with the
+    // `assemble_with` refuses rather than returning a book that lost a photo
+    // the user explicitly asked for. Surfaced as a command error, with the
     // numbers they need to fix it -- see `book::pack::IncludeOverflow`.
     // Places off keeps the chapters `finalize_photos` stamped, untouched.
-    let by_place: Vec<Photo>;
-    let photos = if meta.options.places {
-        by_place = photos
-            .iter()
-            .zip(crate::book::chapter::chapters(photos, true))
-            .map(|(p, event_cluster)| Photo { event_cluster, ..p.clone() })
-            .collect();
-        &by_place
-    } else {
-        photos
-    };
-    let mut book = crate::book::pace::assemble(
+    let photos = with_chapters(photos, meta.options.places);
+    let book = crate::book::pace::assemble_with(
         &meta.spec,
-        photos,
+        &photos,
         meta.pages,
         lib,
         weights,
         meta.seed,
         overrides,
+        tiers,
+        meta.options,
     )
     .map_err(|e| e.to_string())?;
-    book.options = meta.options;
     // The hash of EVERY photo the book was assembled against, in that
     // slice's order -- `Placement::photo_index` indexes it positionally.
     // This is what makes the project exportable after a restart; see
@@ -1893,11 +1962,23 @@ pub async fn recommend_book(
     app: AppHandle,
     run_id: u64,
     overrides: Option<Overrides>,
+    // The user's own tier choices, by photo content hash. `None` from a
+    // caller that has none is every event on its suggested tier.
+    tiers: Option<EventTiers>,
+    // The draft screen's switches. `None` from a caller that has none is
+    // every option off, the recommendation this command always gave.
+    options: Option<BookOptions>,
 ) -> Result<BookRecommendation, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let lib = load_library(&app)?;
         let parsed = cached_photos(&app, run_id)?;
-        Ok(recommend(&parsed, &lib, &overrides.unwrap_or_default()))
+        Ok(recommend(
+            &parsed,
+            &lib,
+            &overrides.unwrap_or_default(),
+            &tiers.unwrap_or_default(),
+            options.unwrap_or_default(),
+        ))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1968,6 +2049,9 @@ pub async fn generate_book(
     // The draft screen's switches. `None` from a caller that has none is
     // every option off, the book this command always built.
     options: Option<BookOptions>,
+    // The user's own tier choices, by photo content hash. `None` from a
+    // caller that has none is every event on its suggested tier.
+    tiers: Option<EventTiers>,
 ) -> Result<GeneratedBook, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let lib = load_library(&app)?;
@@ -1991,7 +2075,7 @@ pub async fn generate_book(
         // no geometry gets the printer this app was built against.
         let spec = spec.unwrap_or_else(PrintSpec::pixajoy);
         let meta = NewProject { name: &name, source_folders, pages, seed, spec, options: options.unwrap_or_default() };
-        generate_and_save(&db, &meta, &parsed, &lib, &weights, &overrides)
+        generate_and_save(&db, &meta, &parsed, &lib, &weights, &overrides, &tiers.unwrap_or_default())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -5436,6 +5520,63 @@ mod tests {
 
     // --- `recommend`: page length and what it costs -----------------------
 
+    fn shipped_library() -> Library {
+        Library::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../templates")).expect("shipped library")
+    }
+
+    /// Three chapters (60, 6, 40 photos), so a tier decision can single one
+    /// out without disturbing the other two.
+    fn three_events() -> Vec<Photo> {
+        let records: Vec<_> = (0..106)
+            .map(|i| photo_record(i, false, i as u32, if i < 60 { 0 } else if i < 66 { 1 } else { 2 }))
+            .collect();
+        photos_from_records(&records).unwrap()
+    }
+
+    #[test]
+    fn recommend_reports_each_event_and_selects_by_tier() {
+        let photos = three_events();
+        let mut tiers = EventTiers::new();
+        for p in photos.iter().filter(|p| p.event_cluster == 2) {
+            tiers.set(p.hash.clone(), Some(Tier::Skipped));
+        }
+        let rec = recommend(&photos, &shipped_library(), &Overrides::new(), &tiers, BookOptions::default());
+        let twenty = rec.options.iter().find(|o| o.pages == 20).unwrap();
+        assert_eq!(twenty.events.len(), 3);
+        let skipped = twenty.events.iter().find(|r| r.plan.event == 2).unwrap();
+        assert_eq!((skipped.plan.tier, skipped.plan.chosen, skipped.selected), (Tier::Skipped, true, 0));
+        assert_eq!(twenty.events_by_tier.skipped, 1);
+        assert_eq!(twenty.selected_paths.len(), rec.keeper_count - twenty.dropped_photos);
+        assert!(twenty.selected_paths.iter().all(|p| photos.iter().any(|q| &q.path == p && q.event_cluster != 2)));
+    }
+
+    #[test]
+    fn recommend_respects_the_places_option_for_event_ids() {
+        // One time event: 40 photos a minute apart, the first 20 in Reykjavik,
+        // the last 20 in Vík (~180 km). Places on splits it into two chapters.
+        let lib = shipped_library();
+        let records: Vec<_> = (0..40).map(|i| photo_record(i, false, i as u32, 0)).collect();
+        let mut photos = photos_from_records(&records).unwrap();
+        for (i, p) in photos.iter_mut().enumerate() {
+            p.captured_at = Some(1_700_000_000 + i as i64 * 60);
+            p.location = if i < 20 {
+                crate::book::chapter::LatLon::new(64.14, -21.94)
+            } else {
+                crate::book::chapter::LatLon::new(63.42, -19.01)
+            };
+        }
+        let rec_off = recommend(&photos, &lib, &Overrides::new(), &EventTiers::new(), BookOptions::default());
+        let rec_on = recommend(
+            &photos,
+            &lib,
+            &Overrides::new(),
+            &EventTiers::new(),
+            BookOptions { places: true, ..BookOptions::default() },
+        );
+        assert_eq!(rec_off.options[0].events.len(), 1);
+        assert_eq!(rec_on.options[0].events.len(), 2);
+    }
+
     #[test]
     fn recommend_counts_keepers_after_culling_not_raw_photos() {
         let lib = fixture_library();
@@ -5447,7 +5588,7 @@ mod tests {
         ];
         let photos = photos_from_records(&records).unwrap();
 
-        let rec = recommend(&photos, &lib, &Overrides::new());
+        let rec = recommend(&photos, &lib, &Overrides::new(), &EventTiers::new(), BookOptions::default());
 
         assert_eq!(rec.keeper_count, 2, "one utility dropped, one near-duplicate collapsed");
     }
@@ -5461,7 +5602,7 @@ mod tests {
             .expect("the shipped library must decompose");
         let photos = photos_from_records(&distinct_records(200)).unwrap();
 
-        let rec = recommend(&photos, &lib, &Overrides::new());
+        let rec = recommend(&photos, &lib, &Overrides::new(), &EventTiers::new(), BookOptions::default());
 
         assert_eq!(rec.keeper_count, 200);
         for option in &rec.options {
@@ -5491,7 +5632,7 @@ mod tests {
             .collect();
         let photos = photos_from_records(&records).unwrap();
 
-        let rec = recommend(&photos, &lib, &Overrides::new());
+        let rec = recommend(&photos, &lib, &Overrides::new(), &EventTiers::new(), BookOptions::default());
 
         assert_eq!(rec.keeper_count, 6);
         let cap = crate::book::pack::MAX_PER_MOMENT;
@@ -5509,7 +5650,7 @@ mod tests {
         let lib = fixture_library();
         let photos = photos_from_records(&distinct_records(3)).unwrap();
 
-        let rec = recommend(&photos, &lib, &Overrides::new());
+        let rec = recommend(&photos, &lib, &Overrides::new(), &EventTiers::new(), BookOptions::default());
 
         assert!(rec.options.iter().all(|o| o.dropped_photos == 0), "{:?}", rec.options);
     }
@@ -5523,17 +5664,17 @@ mod tests {
         let twenty = crate::book::pack::Capacity::from_library(20, &lib).max_photos;
 
         let fits = photos_from_records(&distinct_records(twenty)).unwrap();
-        assert_eq!(recommend(&fits, &lib, &Overrides::new()).recommended_pages, 20);
+        assert_eq!(recommend(&fits, &lib, &Overrides::new(), &EventTiers::new(), BookOptions::default()).recommended_pages, 20);
 
         let overflows = photos_from_records(&distinct_records(twenty + 1)).unwrap();
-        assert_eq!(recommend(&overflows, &lib, &Overrides::new()).recommended_pages, 40);
+        assert_eq!(recommend(&overflows, &lib, &Overrides::new(), &EventTiers::new(), BookOptions::default()).recommended_pages, 40);
     }
 
     #[test]
     fn recommend_offers_every_page_length_the_user_can_choose_between() {
         let lib = fixture_library();
         let photos = photos_from_records(&distinct_records(5)).unwrap();
-        let rec = recommend(&photos, &lib, &Overrides::new());
+        let rec = recommend(&photos, &lib, &Overrides::new(), &EventTiers::new(), BookOptions::default());
         let offered: Vec<u32> = rec.options.iter().map(|o| o.pages).collect();
         assert_eq!(offered, PAGE_OPTIONS.to_vec());
         assert!(
@@ -5563,7 +5704,7 @@ mod tests {
             .collect();
         overrides.set("a-hash-from-another-folder", crate::book::cull::Override::Include);
 
-        let rec = recommend(&photos, &lib, &overrides);
+        let rec = recommend(&photos, &lib, &overrides, &EventTiers::new(), BookOptions::default());
 
         assert_eq!(rec.included_count, twenty + 3, "the stray hash must not be counted");
         let twenty_option = rec.options.iter().find(|o| o.pages == 20).unwrap();
@@ -5579,7 +5720,7 @@ mod tests {
         let lib = fixture_library();
         let photos = photos_from_records(&distinct_records(5)).unwrap();
 
-        let rec = recommend(&photos, &lib, &Overrides::new());
+        let rec = recommend(&photos, &lib, &Overrides::new(), &EventTiers::new(), BookOptions::default());
 
         assert_eq!(rec.included_count, 0);
         assert!(rec.options.iter().all(|o| o.included_over_capacity == 0), "{:?}", rec.options);
@@ -5644,7 +5785,7 @@ mod tests {
                 options: BookOptions { places, ..BookOptions::default() },
                 ..new_project("Kansai", 20, 7)
             };
-            let id = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap().project_id;
+            let id = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new(), &EventTiers::new()).unwrap().project_id;
             db.load_project(id).unwrap().expect("saved")
         };
 
@@ -5703,7 +5844,7 @@ mod tests {
 
         let meta = NewProject { spec: crate::print_spec::odd_spec(), ..new_project("Portrait", 20, 7) };
         let generated =
-            generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
+            generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new(), &EventTiers::new()).unwrap();
 
         let loaded = db.load_project(generated.project_id).unwrap().expect("the project must be readable");
         assert_eq!(loaded.book.spec, crate::print_spec::odd_spec());
@@ -5737,7 +5878,7 @@ mod tests {
         let photos = photos_from_records(&distinct_records(12)).unwrap();
 
         let meta = new_project("Japan 2026", 20, 7);
-        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
+        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new(), &EventTiers::new()).unwrap();
 
         let loaded = db
             .load_project(generated.project_id)
@@ -5778,7 +5919,7 @@ mod tests {
 
         let meta = new_project("Japan 2026", 20, 7);
         let generated =
-            generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &overrides).unwrap();
+            generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &overrides, &EventTiers::new()).unwrap();
 
         let loaded = db.load_project(generated.project_id).unwrap().expect("saved project");
         assert_eq!(loaded.overrides, overrides, "reopening must restore what the user chose");
@@ -5815,7 +5956,7 @@ mod tests {
         overrides.set(photos[9].hash.clone(), crate::book::cull::Override::Exclude);
         let meta = new_project("Japan 2026", 20, 7);
         let generated =
-            generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &overrides).unwrap();
+            generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &overrides, &EventTiers::new()).unwrap();
 
         let detail = project_detail(db.load_project(generated.project_id).unwrap().unwrap());
 
@@ -5848,7 +5989,7 @@ mod tests {
             .collect();
 
         let meta = new_project("Too many", 20, 7);
-        let err = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &overrides)
+        let err = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &overrides, &EventTiers::new())
             .expect_err("a book that cannot hold every explicit choice must not be built");
 
         assert!(err.contains(&(capacity + 4).to_string()), "{err}");
@@ -5868,7 +6009,7 @@ mod tests {
         let photos = photos_from_records(&distinct_records(12)).unwrap();
 
         let meta = new_project("Japan 2026", 20, 7);
-        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
+        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new(), &EventTiers::new()).unwrap();
 
         let listed = db.list_projects().unwrap();
         assert_eq!(listed.len(), 1);
@@ -5883,7 +6024,7 @@ mod tests {
         let photos = photos_from_records(&distinct_records(30)).unwrap();
 
         let meta = new_project("b", 40, 3);
-        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
+        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new(), &EventTiers::new()).unwrap();
 
         assert_eq!(generated.page_count, 40);
         assert_eq!(generated.seed, 3);
@@ -6175,30 +6316,75 @@ mod tests {
         assert_eq!(serde_json::to_value(&value).unwrap(), wire_fixture("cache-status.json"));
     }
 
+    /// `EventRow` uses `#[serde(flatten)]` on `plan`, whose own `reason`
+    /// field is an internally tagged enum (`#[serde(tag = "kind", ...)]`).
+    /// Flatten plus an internal tag still serialises flat -- see
+    /// `event_row_serialises_flat` for that pinned on its own -- so this
+    /// fixture's `events[].reason` is a nested object while every other
+    /// `EventPlan` field sits directly on the row beside `selected`.
+    fn event_row() -> EventRow {
+        EventRow {
+            plan: crate::book::events::EventPlan {
+                event: 0,
+                tier: Tier::Featured,
+                suggested: Tier::Featured,
+                chosen: false,
+                reason: crate::book::events::Reason::Standout,
+                merit: 0.87,
+                moments: 12,
+                kept: 20,
+                photos: 24,
+            },
+            selected: 20,
+        }
+    }
+
     #[test]
     fn book_recommendation_serialises_exactly_the_keys_the_webview_reads() {
+        let page_option = |pages, capacity_photos, dropped_photos| PageOption {
+            pages,
+            capacity_photos,
+            dropped_photos,
+            included_over_capacity: 0,
+            events: vec![event_row()],
+            events_by_tier: TierCounts { featured: 1, normal: 0, brief: 0, skipped: 0 },
+            selected_paths: vec!["/photos/p000.jpg".to_string(), "/photos/p001.jpg".to_string()],
+            tier_overflow: None,
+        };
         let value = BookRecommendation {
             keeper_count: 26,
             included_count: 3,
             recommended_pages: 20,
-            options: vec![
-                PageOption {
-                    pages: 20,
-                    capacity_photos: 24,
-                    dropped_photos: 2,
-                    included_over_capacity: 0,
-                },
-                PageOption {
-                    pages: 40,
-                    capacity_photos: 54,
-                    dropped_photos: 0,
-                    included_over_capacity: 0,
-                },
-            ],
+            options: vec![page_option(20, 24, 2), page_option(40, 54, 0)],
         };
         assert_eq!(
             serde_json::to_value(&value).unwrap(),
             wire_fixture("book-recommendation.json")
+        );
+    }
+
+    /// `EventRow`'s `#[serde(flatten)]` on `plan` combined with `Reason`'s
+    /// own internal tag (`#[serde(tag = "kind", ...)]`) is the one
+    /// combination that could silently nest `reason` twice or drop the tag
+    /// -- pinned on its own so a regression here doesn't hide inside the
+    /// bigger `book_recommendation` fixture above.
+    #[test]
+    fn event_row_serialises_flat() {
+        let value = serde_json::to_value(event_row()).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "event": 0,
+                "tier": "featured",
+                "suggested": "featured",
+                "chosen": false,
+                "reason": { "kind": "standout" },
+                "merit": 0.87,
+                "moments": 12,
+                "kept": 20,
+                "photos": 24,
+                "selected": 20,
+            })
         );
     }
 
@@ -6557,7 +6743,7 @@ mod tests {
             let meta =
                 new_project("Japan", 20, 11);
             let generated =
-                generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
+                generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new(), &EventTiers::new()).unwrap();
             let book = db.load_project(generated.project_id).unwrap().unwrap().book;
             (generated.project_id, crate::export::build_items(&book, &photos))
         }; // every handle dropped here -- this is the "quit".
@@ -6587,7 +6773,7 @@ mod tests {
         let photos = photos_from_records(&records).unwrap();
         let meta = new_project("Kyoto", 20, 5);
         let generated =
-            generate_and_save(db, &meta, &photos, &fixture_library(), &Weights::default(), &Overrides::new()).unwrap();
+            generate_and_save(db, &meta, &photos, &fixture_library(), &Weights::default(), &Overrides::new(), &EventTiers::new()).unwrap();
         db.conn.execute("UPDATE features SET last_used_at = 0", []).unwrap();
         for n in 0..20 {
             db.put_features(&format!("{n:064x}"), "/stray.jpg", r#"{"stray":true}"#).unwrap();
@@ -6636,7 +6822,7 @@ mod tests {
         let photos = photos_from_records(&records).unwrap();
         let meta = new_project("b", 20, 2);
 
-        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap();
+        let generated = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new(), &EventTiers::new()).unwrap();
 
         let expected: Vec<String> = photos.iter().map(|p| p.hash.clone()).collect();
         let mut sorted = expected.clone();
