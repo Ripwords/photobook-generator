@@ -524,18 +524,25 @@ pub fn budget(
     let target = capacity.target_photos;
     let avail = |e: u32| order.get(&e).map_or(0, |o| o.list.len());
     let included = |e: u32| order.get(&e).map_or(0, |o| o.included);
-    let floor_of = |p: &EventPlan| p.tier.floor(options).min(avail(p.event)).max(included(p.event));
+    let floor_at = |p: &EventPlan, tier: Tier| tier.floor(options).min(avail(p.event)).max(included(p.event));
+    let floor_of = |p: &EventPlan| floor_at(p, p.tier);
     let total = |plan: &[EventPlan]| plan.iter().map(floor_of).sum::<usize>();
 
     // Step 3: floors that do not fit demote SUGGESTIONS, lowest merit first:
     // Featured -> Normal, then Normal -> Brief, then (R9) Brief -> Skipped.
     // A Skipped event still places its Includes -- `floor_of` maxes with
-    // `included`, and an Include always wins regardless of tier.
+    // `included`, and an Include always wins regardless of tier. A
+    // candidate is only eligible when the new tier's floor is strictly
+    // less than its current one: an event whose floor is already held up
+    // by its own Includes (e.g. a Brief event with one Include has floor 1
+    // either as Brief or as Skipped) frees nothing by being demoted, so it
+    // is skipped in favour of the next-lowest-merit event that actually
+    // shrinks the total.
     for (from, to) in [(Tier::Featured, Tier::Normal), (Tier::Normal, Tier::Brief), (Tier::Brief, Tier::Skipped)] {
         while total(&plan) > target {
             let Some(p) = plan
                 .iter_mut()
-                .filter(|p| !p.chosen && p.tier == from)
+                .filter(|p| !p.chosen && p.tier == from && floor_at(p, to) < floor_at(p, from))
                 .min_by(|a, b| a.merit.total_cmp(&b.merit).then(b.event.cmp(&a.event)))
             else {
                 break;
@@ -1446,5 +1453,100 @@ mod tests {
             let idx = kept.iter().position(|k| k.hash == p.hash).unwrap();
             assert!(b.selected.contains(&idx), "every Include must be selected even past brief_cap");
         }
+    }
+
+    #[test]
+    fn demotion_skips_a_candidate_whose_floor_would_not_shrink() {
+        // 25 unchosen Brief events (floor 1 each = 25 > target 20). Events
+        // 15..25, the 10 LOWEST-merit ones, each hold one Include, so
+        // demoting them to Skipped frees nothing -- `floor_of` still maxes
+        // with `included` at 1 either way. Events 10..15, the next 5
+        // lowest-merit ones, hold no Include, so demoting them genuinely
+        // frees a photo each -- exactly enough to reach the target. A
+        // demotion candidate is only eligible when its floor at the new
+        // tier is strictly less than its floor at the old one, so the fix
+        // must skip straight past every Include-holding event and demote
+        // exactly events 10..15, leaving both the Include-holders and the
+        // higher-merit events 0..10 untouched.
+        let mut photos = Vec::new();
+        for e in 0..25u32 {
+            photos.extend(event(e, e as i64, 4, 50));
+        }
+        let kept = keepers(&photos);
+        let mut overrides = Overrides::new();
+        for e in 15..25u32 {
+            let hash = photos.iter().find(|p| p.event_cluster == e).unwrap().hash.clone();
+            overrides.set(hash, Override::Include);
+        }
+        let cap = capacity(9, 20);
+        let plan: Vec<EventPlan> = (0..25u32)
+            .map(|e| EventPlan {
+                event: e,
+                tier: Tier::Brief,
+                suggested: Tier::Brief,
+                chosen: false,
+                reason: Reason::OutOfRoom { rank: e as usize + 1, of: 25 },
+                merit: 100.0 - e as f64, // event 0 highest merit, event 24 lowest
+                moments: 2,
+                kept: 4,
+                photos: 4,
+            })
+            .collect();
+        let b = budget(&kept, plan, &cap, &overrides, &BookOptions::default());
+        let tier_of = |e: u32| b.plan.iter().find(|p| p.event == e).unwrap().tier;
+        let reason_of = |e: u32| b.plan.iter().find(|p| p.event == e).unwrap().reason;
+
+        for e in 10..15u32 {
+            assert_eq!(tier_of(e), Tier::Skipped, "event {e} (no Include, lowest eligible merit) must be cut");
+            assert_eq!(reason_of(e), Reason::Demoted);
+        }
+        for e in 15..25u32 {
+            assert_eq!(tier_of(e), Tier::Brief, "event {e} holds an Include; demoting it frees nothing");
+        }
+        for e in 0..10u32 {
+            assert_eq!(tier_of(e), Tier::Brief, "higher-merit events must not be touched");
+        }
+        assert_eq!(b.floors.values().sum::<usize>(), 20);
+    }
+
+    #[test]
+    fn demotion_order_is_lowest_merit_first_ties_to_the_later_id() {
+        // 5 unchosen Brief events, no Includes, floor 1 each = 5 > target
+        // 3, so exactly 2 demotions are needed. Merits: 10, 20, 20, 30, 40
+        // (events 0..5) -- event 0 is uniquely lowest and must go first;
+        // events 1 and 2 tie at the next-lowest merit, and only ONE of
+        // them is needed for the second demotion, so the tie-break ("ties
+        // go to the later event id") is the sole thing deciding which:
+        // event 2. A mutant that demoted highest-merit first would instead
+        // cut events 3 and 4, and a mutant that broke the tie toward the
+        // earlier id would cut event 1 instead of event 2 -- either is
+        // caught by asserting the exact Skipped set.
+        let mut photos = Vec::new();
+        for e in 0..5u32 {
+            photos.extend(event(e, e as i64, 4, 50));
+        }
+        let kept = keepers(&photos);
+        let cap = capacity(9, 3);
+        let merits = [10.0, 20.0, 20.0, 30.0, 40.0];
+        let plan: Vec<EventPlan> = (0..5u32)
+            .map(|e| EventPlan {
+                event: e,
+                tier: Tier::Brief,
+                suggested: Tier::Brief,
+                chosen: false,
+                reason: Reason::OutOfRoom { rank: e as usize + 1, of: 5 },
+                merit: merits[e as usize],
+                moments: 2,
+                kept: 4,
+                photos: 4,
+            })
+            .collect();
+        let b = budget(&kept, plan, &cap, &Overrides::new(), &BookOptions::default());
+        let tier_of = |e: u32| b.plan.iter().find(|p| p.event == e).unwrap().tier;
+        assert_eq!(tier_of(0), Tier::Skipped, "event 0 is uniquely lowest merit");
+        assert_eq!(tier_of(2), Tier::Skipped, "of the merit-20 tie, the later id (2) is cut");
+        assert_eq!(tier_of(1), Tier::Brief, "of the merit-20 tie, the earlier id (1) survives");
+        assert_eq!(tier_of(3), Tier::Brief);
+        assert_eq!(tier_of(4), Tier::Brief);
     }
 }
