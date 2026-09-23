@@ -205,6 +205,12 @@ pub struct EventStats {
 
 /// Per-event figures, sorted by event id. `kept` is `cull`'s output for
 /// `photos`; an event whose photos were all culled has `keepers == 0`.
+///
+/// `moments` comes from `pack::moments` over the WHOLE `kept` slice, not
+/// per event, and that function makes an undated photo its own moment. So
+/// in a library with no dates at all, every keeper is its own moment and
+/// `engagement` (§3) degenerates to counting keepers -- burst length, not
+/// distinct things photographed.
 pub fn stats(photos: &[Photo], kept: &[Photo]) -> Vec<EventStats> {
     let ids: Vec<u32> = photos.iter().map(|p| p.event_cluster).collect();
     let locations: Vec<Option<LatLon>> = photos.iter().map(|p| p.location).collect();
@@ -318,7 +324,15 @@ fn look_similarity(_a: &EventStats, _b: &EventStats) -> f64 {
     0.0
 }
 
+/// Suggests a tier and reason for every event in `stats`, sorted by event
+/// id (§4). `stats` must carry one entry per event id -- `stats()` above
+/// guarantees this by construction -- since a repeated id would double an
+/// event's vote in `normal_room`, the median and the novelty walk.
 pub fn suggest(stats: &[EventStats], capacity: &Capacity) -> Vec<Suggestion> {
+    debug_assert!(
+        stats.iter().map(|s| s.event).collect::<BTreeSet<_>>().len() == stats.len(),
+        "suggest: event ids must be unique"
+    );
     let mut out: Vec<Suggestion> = Vec::new();
     let mut eligible: Vec<&EventStats> = Vec::new();
     // "Undated" only means something beside dated events; in a library with
@@ -337,6 +351,9 @@ pub fn suggest(stats: &[EventStats], capacity: &Capacity) -> Vec<Suggestion> {
         }
     }
 
+    // Normalised against the OTHER eligible events only: a Skipped or Brief
+    // (undated) event's moment count must not deflate everyone else's
+    // engagement, since those events never reach the ranking below.
     let most = eligible.iter().map(|s| s.moments).max().unwrap_or(0);
     let engagement = |s: &EventStats| {
         if most == 0 { 0.0 } else { (1.0 + s.moments as f64).ln() / (1.0 + most as f64).ln() }
@@ -371,7 +388,18 @@ pub fn suggest(stats: &[EventStats], capacity: &Capacity) -> Vec<Suggestion> {
 
     let of = scored.len();
     let room = normal_room(of, capacity);
-    let mut top: Vec<f64> = scored[..room].iter().map(|x| x.merit).collect();
+    let featured_limit = (room / 6).max(1);
+    // The Featured bar is the median merit of the events that STAY Normal,
+    // not the whole top-`room` set: a candidate must clear a bar set by its
+    // peers, not by a bar it could itself inflate by being counted in the
+    // median. `scored` is sorted by merit descending, so ranks
+    // `0..featured_limit` are the only ranks any event can be promoted from
+    // (the cap enforces that); `featured_limit..room` is guaranteed to stay
+    // Normal and is what the median is measured over. When `room <=
+    // featured_limit` there is no such slice, so nothing is Featured --
+    // there is nothing left to stand out from.
+    let normal: &[Scored] = if room > featured_limit { &scored[featured_limit..room] } else { &[] };
+    let mut top: Vec<f64> = normal.iter().map(|x| x.merit).collect();
     top.sort_by(f64::total_cmp);
     let median = if top.is_empty() {
         0.0
@@ -380,17 +408,21 @@ pub fn suggest(stats: &[EventStats], capacity: &Capacity) -> Vec<Suggestion> {
     } else {
         (top[top.len() / 2 - 1] + top[top.len() / 2]) / 2.0
     };
-    let featured_limit = (room / 6).max(1);
     let mut featured = 0;
     for (rank, x) in scored.iter().enumerate() {
         let (tier, reason) = if rank < room {
-            if featured < featured_limit && x.merit >= FEATURED_MARGIN * median {
+            if !normal.is_empty() && featured < featured_limit && x.merit >= FEATURED_MARGIN * median {
                 featured += 1;
                 (Tier::Featured, Reason::Standout)
             } else {
                 (Tier::Normal, Reason::Ranked { rank: rank + 1, of })
             }
         } else if x.novelty < SIMILAR_BELOW && x.base_rank < room {
+            // A proxy for "novelty is what pushed it out": an event with
+            // near-zero novelty that would have taken a normal/featured slot
+            // by BASE merit (before novelty was applied) lost its place to
+            // its near-duplicate, so it is named as a duplicate rather than
+            // merely reported as out of room.
             (Tier::Brief, Reason::SimilarTo { event: x.nearest.unwrap_or(x.s.event) })
         } else {
             (Tier::Brief, Reason::OutOfRoom { rank: rank + 1, of })
@@ -483,6 +515,19 @@ mod tests {
         assert!(matches!(s[1].reason, Reason::Utility { share } if share > 0.8));
     }
 
+    /// An ordinary (non-utility) event that the culler dropped every photo
+    /// of -- e.g. all near-duplicates of a worse shot elsewhere -- gets
+    /// `NothingKept`/Skipped, distinctly from the `Utility` skip reason.
+    #[test]
+    fn an_event_with_no_cull_keepers_is_suggested_skipped() {
+        let mut photos = event(0, 0, 20, 80);
+        photos.extend(event(1, 1, 20, 85));
+        let kept: Vec<Photo> = keepers(&photos).into_iter().filter(|p| p.event_cluster != 1).collect();
+        let s = suggest(&stats(&photos, &kept), &capacity(9, 45));
+        assert_eq!(s[1].tier, Tier::Skipped, "{s:?}");
+        assert_eq!(s[1].reason, Reason::NothingKept);
+    }
+
     #[test]
     fn an_undated_event_is_suggested_brief() {
         let mut undated = event(1, 0, 30, 90);
@@ -528,18 +573,122 @@ mod tests {
         let count = |t: Tier| s.iter().filter(|x| x.tier == t).count();
         assert_eq!(s[9].tier, Tier::Featured, "{:?}", s[9]);
         assert_eq!(s[9].reason, Reason::Standout);
+        assert_eq!(count(Tier::Featured), 1, "{s:?}");
         assert_eq!(count(Tier::Featured) + count(Tier::Normal), 6);
         assert_eq!(count(Tier::Brief), 4);
         assert!(s.iter().filter(|x| x.tier == Tier::Brief).all(|x| matches!(
             x.reason,
             Reason::OutOfRoom { .. } | Reason::SimilarTo { .. }
         )));
+        // e0-e3 share "tag" and are more than NOVELTY_KM apart from every
+        // other event, so novelty is 0 for all of them -- but each ranked
+        // below `room` by BASE merit too (base_rank 6..9), so they are out
+        // of room on their own account, not standing in for a look-alike.
+        for x in &s[0..4] {
+            assert!(matches!(x.reason, Reason::OutOfRoom { .. }), "{x:?}");
+        }
+    }
+
+    /// Same shape as the standout test above, but the "standout" only edges
+    /// out the Normal median rather than clearing 1.3x it, so it must stay
+    /// Normal: R-a measures the Featured bar against the Normal events, and
+    /// an event that merely ties or slightly beats its peers is not a
+    /// standout.
+    #[test]
+    fn an_event_that_does_not_clear_the_featured_margin_stays_normal() {
+        // 9 identical events, each with its own tag and > NOVELTY_KM from
+        // every other, so novelty is 1 for all ten and plays no favourites.
+        // A 10th ("almost") has a slim edge in moments and quality -- real,
+        // but nowhere near 1.3x the other nine's merit -- so it must stay
+        // Normal rather than being called a standout.
+        let mut photos = Vec::new();
+        for e in 0..9 {
+            let tag = format!("tag{e}");
+            photos.extend(located(event(e, e as i64, 12, 50), 10.0 + e as f64 * 10.0, 100.0, &[&tag]));
+        }
+        photos.extend(located(event(9, 9, 14, 55), 80.0, 50.0, &["summit"]));
+        let s = suggest(&stats(&photos, &keepers(&photos)), &capacity(9, 45));
+        let count = |t: Tier| s.iter().filter(|x| x.tier == t).count();
+        assert_eq!(count(Tier::Featured), 0, "{s:?}");
+        assert_eq!(s[9].tier, Tier::Normal, "{:?}", s[9]);
+        assert!(matches!(s[9].reason, Reason::Ranked { .. }), "{:?}", s[9]);
+    }
+
+    /// Two events, 12 photos each, all kept, same aesthetic pattern -- the
+    /// only difference is how many distinct moments they group into. §3
+    /// defines engagement from moments, not photo or keeper count, so the
+    /// event with more moments must rank higher even though every count
+    /// (photos, keepers) tied.
+    #[test]
+    fn more_moments_ranks_above_more_photos_at_equal_keeper_count() {
+        let many_moments = located(event(0, 0, 12, 60), 10.0, 100.0, &["tagA"]);
+        let mut few_moments = located(event(1, 1, 12, 60), 80.0, 50.0, &["tagB"]);
+        // Collapse the 6 normal moments (600 s apart) into one 330 s burst
+        // (consecutive gaps of 30 s, well under MOMENT_GAP_SECONDS) -- same
+        // 12 photos, same 12 keepers, 1 moment instead of 6.
+        for (n, p) in few_moments.iter_mut().enumerate() {
+            p.captured_at = Some(86_400 + n as i64 * 30);
+        }
+        let mut photos = many_moments;
+        photos.extend(few_moments);
+        let s = suggest(&stats(&photos, &keepers(&photos)), &capacity(9, 45));
+        let merit = |e: u32| s.iter().find(|x| x.event == e).unwrap().merit;
+        assert!(merit(0) > merit(1), "{s:?}");
+    }
+
+    /// Two events with the same photo/keeper count and moments, but a
+    /// quality distribution where the top-3 mean and the whole-keeper mean
+    /// disagree on which is better: event 0's best three keepers (90) beat
+    /// event 1's flat 60, but event 0's other two keepers (10) are bad
+    /// enough to pull its ALL-keeper mean (58) below event 1's (60). §3
+    /// scores quality from the top `QUALITY_TOP` keepers only, so event 0
+    /// must still rank above event 1.
+    #[test]
+    fn quality_ranks_by_the_top_keepers_not_the_whole_event_mean() {
+        let mut best_few = located(event(0, 0, 5, 90), 10.0, 100.0, &["tagA"]);
+        for (n, aes) in [90u8, 90, 90, 10, 10].into_iter().enumerate() {
+            best_few[n].aesthetic_pct = aes;
+        }
+        let mut flat = located(event(1, 1, 5, 60), 80.0, 50.0, &["tagB"]);
+        for p in &mut flat {
+            p.aesthetic_pct = 60;
+        }
+        let mut photos = best_few;
+        photos.extend(flat);
+        let s = suggest(&stats(&photos, &keepers(&photos)), &capacity(9, 45));
+        let merit = |e: u32| s.iter().find(|x| x.event == e).unwrap().merit;
+        assert!(merit(0) > merit(1), "{s:?}");
+    }
+
+    /// UTILITY_SKIP is a share, not a round number: 0.775 stays eligible,
+    /// 0.825 -- just over the 0.8 bar -- is Skipped.
+    #[test]
+    fn utility_share_boundary_below_and_above_the_skip_threshold() {
+        let mut below = event(0, 0, 40, 80);
+        for p in below.iter_mut().take(31) {
+            p.is_utility = true; // 31 / 40 = 0.775
+        }
+        let mut above = event(1, 1, 40, 80);
+        for p in above.iter_mut().take(33) {
+            p.is_utility = true; // 33 / 40 = 0.825
+        }
+        let mut photos = below;
+        photos.extend(above);
+        let s = suggest(&stats(&photos, &keepers(&photos)), &capacity(9, 45));
+        assert_ne!(s[0].tier, Tier::Skipped, "{:?}", s[0]);
+        assert_eq!(s[1].tier, Tier::Skipped, "{:?}", s[1]);
+        assert!(
+            matches!(s[1].reason, Reason::Utility { share } if (share - 0.825).abs() < 1e-9),
+            "{:?}",
+            s[1]
+        );
     }
 
     #[test]
     fn of_two_look_alike_events_the_lower_is_brief_when_room_is_tight() {
-        // Two pool afternoons 300 m apart with the same tags, plus distinct
-        // events enough to make room tight (room = floor(3 * 0.6) = 1 with 1 spread + 2 singles).
+        // Two pool afternoons 300 m apart with the same tags, plus a distinct
+        // event, with a capacity(2, 16) fixture tight enough that room = 2
+        // (see below) has no space for both pool events.
         let pool = |e: u32, day: i64, aes: u8| located(event(e, day, 12, aes), 8.0, 115.0, &["pool", "water"]);
         let mut photos = pool(0, 0, 80);
         photos.extend(pool(1, 2, 78));
