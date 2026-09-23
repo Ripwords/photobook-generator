@@ -5640,7 +5640,10 @@ mod tests {
             .collect();
         let photos = photos_from_records(&records).unwrap();
         let generate = |places: bool| {
-            let meta = NewProject { options: BookOptions { places }, ..new_project("Kansai", 20, 7) };
+            let meta = NewProject {
+                options: BookOptions { places, ..BookOptions::default() },
+                ..new_project("Kansai", 20, 7)
+            };
             let id = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new()).unwrap().project_id;
             db.load_project(id).unwrap().expect("saved")
         };

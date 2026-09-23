@@ -108,7 +108,9 @@
     }
   ],
   "options": {
-    "places": true
+    "places": true,
+    "featuredFloor": 6,
+    "briefCap": 2
   },
   "pageCount": 4,
   "pages": [

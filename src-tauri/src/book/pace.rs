@@ -98,12 +98,62 @@ pub struct Book {
     pub cover: Cover,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+pub const DEFAULT_FEATURED_FLOOR: u8 = 6;
+pub const DEFAULT_BRIEF_CAP: u8 = 2;
+pub const FEATURED_FLOOR_RANGE: std::ops::RangeInclusive<u8> = 2..=12;
+pub const BRIEF_CAP_RANGE: std::ops::RangeInclusive<u8> = 1..=3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", try_from = "RawBookOptions")]
 pub struct BookOptions {
     /// Chapters split where the photos move between towns as well as at a
     /// gap in time. See `book::chapter`.
     pub places: bool,
+    /// The fewest photos a Featured event places. Set per project; see
+    /// `book::events`.
+    pub featured_floor: u8,
+    /// The most photos a Brief event places. Set per project.
+    pub brief_cap: u8,
+}
+
+impl Default for BookOptions {
+    fn default() -> Self {
+        Self { places: false, featured_floor: DEFAULT_FEATURED_FLOOR, brief_cap: DEFAULT_BRIEF_CAP }
+    }
+}
+
+/// The wire shape, before validation. A book or draft saved before tiers
+/// existed has neither key and gets the defaults.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawBookOptions {
+    #[serde(default)]
+    places: bool,
+    #[serde(default = "default_featured_floor")]
+    featured_floor: u8,
+    #[serde(default = "default_brief_cap")]
+    brief_cap: u8,
+}
+
+fn default_featured_floor() -> u8 {
+    DEFAULT_FEATURED_FLOOR
+}
+
+fn default_brief_cap() -> u8 {
+    DEFAULT_BRIEF_CAP
+}
+
+impl TryFrom<RawBookOptions> for BookOptions {
+    type Error = String;
+    fn try_from(raw: RawBookOptions) -> Result<Self, String> {
+        if !FEATURED_FLOOR_RANGE.contains(&raw.featured_floor) {
+            return Err(format!("featuredFloor {} is outside {:?}", raw.featured_floor, FEATURED_FLOOR_RANGE));
+        }
+        if !BRIEF_CAP_RANGE.contains(&raw.brief_cap) {
+            return Err(format!("briefCap {} is outside {:?}", raw.brief_cap, BRIEF_CAP_RANGE));
+        }
+        Ok(Self { places: raw.places, featured_floor: raw.featured_floor, brief_cap: raw.brief_cap })
+    }
 }
 
 impl BookOptions {
@@ -2447,6 +2497,27 @@ mod spec_persistence_tests {
         assert_eq!(book.cover, Cover::default(), "a book from before covers has none");
     }
 
+    #[test]
+    fn book_options_saved_before_tiers_load_with_the_default_floor_and_cap() {
+        let o: BookOptions = serde_json::from_str(r#"{"places":true}"#).unwrap();
+        assert_eq!(o, BookOptions { places: true, featured_floor: 6, brief_cap: 2 });
+    }
+
+    #[test]
+    fn book_options_refuse_a_floor_or_cap_outside_their_range() {
+        for bad in [r#"{"featuredFloor":1}"#, r#"{"featuredFloor":13}"#, r#"{"briefCap":0}"#, r#"{"briefCap":4}"#] {
+            assert!(serde_json::from_str::<BookOptions>(bad).is_err(), "{bad} must be refused");
+        }
+        let edge: BookOptions = serde_json::from_str(r#"{"featuredFloor":12,"briefCap":3}"#).unwrap();
+        assert_eq!((edge.featured_floor, edge.brief_cap), (12, 3));
+    }
+
+    #[test]
+    fn default_book_options_still_serialise_to_nothing_on_a_book() {
+        assert!(BookOptions::default().is_default());
+        assert!(!BookOptions { featured_floor: 9, ..BookOptions::default() }.is_default());
+    }
+
     /// A hand-written literal for the same reason as the test above.
     #[test]
     fn a_book_saved_before_options_loads_with_every_option_off() {
@@ -2461,9 +2532,12 @@ mod spec_persistence_tests {
         let json = serde_json::to_value(&off).unwrap();
         assert!(json.get("options").is_none(), "all-off must be the bytes an old book has: {json}");
 
-        let on = Book { options: BookOptions { places: true }, ..off };
+        let on = Book { options: BookOptions { places: true, ..BookOptions::default() }, ..off };
         let json = serde_json::to_value(&on).unwrap();
-        assert_eq!(json["options"], serde_json::json!({ "places": true }));
+        assert_eq!(
+            json["options"],
+            serde_json::json!({ "places": true, "featuredFloor": 6, "briefCap": 2 })
+        );
         assert_eq!(serde_json::from_value::<Book>(json).unwrap().options, on.options);
     }
 

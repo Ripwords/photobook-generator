@@ -93,7 +93,7 @@ describe("the wire fixture", () => {
     expect(layout.pageCount).toBe(4);
     expect(layout.placedPhotos).toBe(3);
     expect(layout.droppedPhotos).toBe(2);
-    expect(layout.options).toStrictEqual({ places: true });
+    expect(layout.options).toStrictEqual({ places: true, featuredFloor: 6, briefCap: 2 });
     expect(layout.pages).toHaveLength(4);
     expect(layout.photos).toHaveLength(5);
     // A real template id on a page that still prints white -- the text-zone

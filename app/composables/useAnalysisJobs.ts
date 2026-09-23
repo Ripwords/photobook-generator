@@ -3,7 +3,13 @@ import { open } from "@tauri-apps/plugin-dialog";
 // Imported explicitly rather than left to Nuxt's auto-imports so this file
 // runs under plain vitest -- see `tests/jobs.test.ts`.
 import { reactive, ref, watch } from "vue";
-import { DEFAULT_BOOK_OPTIONS, defaultProjectName, type BookOptions } from "~/types/book";
+import {
+  BRIEF_CAP_RANGE,
+  DEFAULT_BOOK_OPTIONS,
+  FEATURED_FLOOR_RANGE,
+  defaultProjectName,
+  type BookOptions,
+} from "~/types/book";
 import {
   applyAnalysisEvent,
   initialStreamState,
@@ -120,16 +126,27 @@ function parseSpec(value: unknown): PrintSpec | null {
   return spec;
 }
 
-/** Saved options, with anything missing or torn read as off. */
+function inRange(value: unknown, range: { min: number; max: number }, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= range.min && value <= range.max
+    ? value
+    : fallback;
+}
+
+/** Saved options, with anything missing, torn or out of range read as the default. */
 function parseOptions(value: unknown): BookOptions {
-  return { places: isRecord(value) && value.places === true };
+  if (!isRecord(value)) return { ...DEFAULT_BOOK_OPTIONS };
+  return {
+    places: value.places === true,
+    featuredFloor: inRange(value.featuredFloor, FEATURED_FLOOR_RANGE, DEFAULT_BOOK_OPTIONS.featuredFloor),
+    briefCap: inRange(value.briefCap, BRIEF_CAP_RANGE, DEFAULT_BOOK_OPTIONS.briefCap),
+  };
 }
 
 /**
  * Reads a saved draft back, or `null` for one this version cannot use. A
  * draft saved before print sizes existed, or with a torn one, is still a
  * draft: it gets the default size rather than being thrown away. The same
- * goes for options, which read as off.
+ * goes for options, which read as their defaults.
  */
 export function parseSavedDraft(json: string): SavedDraft | null {
   let value: unknown;

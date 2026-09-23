@@ -465,7 +465,7 @@ mod tests {
                     placements: Vec::new(),
                 },
             ],
-            options: BookOptions { places: true },
+            options: BookOptions { places: true, ..BookOptions::default() },
         }
     }
 

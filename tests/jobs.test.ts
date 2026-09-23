@@ -46,7 +46,7 @@ const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke, Channel: FakeChannel }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
-const { createAnalysisJobs, jobProgress, jobRunId } = await import(
+const { createAnalysisJobs, jobProgress, jobRunId, parseSavedDraft } = await import(
   "../app/composables/useAnalysisJobs"
 );
 const { usePhotoOverrides } = await import("../app/composables/usePhotoOverrides");
@@ -423,12 +423,12 @@ describe("analysis jobs", () => {
       const before = createAnalysisJobs();
       await before.restoreDrafts();
       const id = before.startJob({ name: "Kansai", folders: ["/k"] });
-      before.setOptions(id, { places: true });
+      before.setOptions(id, { places: true, featuredFloor: 6, briefCap: 2 });
       await settle();
 
       const after = createAnalysisJobs();
       await after.restoreDrafts();
-      expect(after.jobs.value[0]!.options).toStrictEqual({ places: true });
+      expect(after.jobs.value[0]!.options).toStrictEqual({ places: true, featuredFloor: 6, briefCap: 2 });
     });
 
     it("keeps a re-edited book's options on its draft", () => {
@@ -437,12 +437,12 @@ describe("analysis jobs", () => {
         name: "Kansai",
         folders: ["/k"],
         replacing: { id: 4, name: "Kansai" },
-        options: { places: true },
+        options: { places: true, featuredFloor: 6, briefCap: 2 },
       });
-      expect(store.find(id)!.options).toStrictEqual({ places: true });
+      expect(store.find(id)!.options).toStrictEqual({ places: true, featuredFloor: 6, briefCap: 2 });
     });
 
-    it("reads a draft saved before options existed, or with torn ones, as every option off", async () => {
+    it("reads a draft saved before options existed, or with torn ones, with every option at its default", async () => {
       savedDrafts.set(3, JSON.stringify({ id: 3, name: "Old", folders: ["/f"], replacing: null, overrides: {} }));
       savedDrafts.set(4, JSON.stringify({ id: 4, name: "Torn", folders: ["/f"], replacing: null, overrides: {}, options: { places: "yes" } }));
       savedDrafts.set(5, JSON.stringify({ id: 5, name: "On", folders: ["/f"], replacing: null, overrides: {}, options: { places: true } }));
@@ -451,9 +451,9 @@ describe("analysis jobs", () => {
       await store.restoreDrafts();
 
       expect(store.jobs.value.map((job) => [job.name, job.options])).toEqual([
-        ["Old", { places: false }],
-        ["Torn", { places: false }],
-        ["On", { places: true }],
+        ["Old", { places: false, featuredFloor: 6, briefCap: 2 }],
+        ["Torn", { places: false, featuredFloor: 6, briefCap: 2 }],
+        ["On", { places: true, featuredFloor: 6, briefCap: 2 }],
       ]);
     });
 
@@ -484,5 +484,17 @@ describe("analysis jobs", () => {
 
       expect(store.jobs.value.map((job) => job.name)).toEqual(["Fine"]);
     });
+  });
+});
+
+describe("parseSavedDraft options", () => {
+  const base = { id: 1, name: "Trip", folders: ["/a"] };
+  it("gives a draft saved before tiers the default floor and cap", () => {
+    const draft = parseSavedDraft(JSON.stringify({ ...base, options: { places: true } }));
+    expect(draft?.options).toEqual({ places: true, featuredFloor: 6, briefCap: 2 });
+  });
+  it("replaces an out-of-range floor or cap with its default", () => {
+    const draft = parseSavedDraft(JSON.stringify({ ...base, options: { featuredFloor: 40, briefCap: 0 } }));
+    expect(draft?.options).toEqual({ places: false, featuredFloor: 6, briefCap: 2 });
   });
 });

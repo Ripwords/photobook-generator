@@ -32,6 +32,10 @@ import type { PreviewPhoto } from "~/types/preview";
 export interface BookOptions {
   /** Chapters split where the photos move between towns, not only at a gap in time. */
   places: boolean;
+  /** The fewest photos a Featured event places. Rust accepts 2..=12. */
+  featuredFloor: number;
+  /** The most photos a Brief event places. Rust accepts 1..=3. */
+  briefCap: number;
 }
 
 /** Mirrors `book::chapter::PlaceChapters`: what "Split chapters by place" would do to a draft. */
@@ -45,7 +49,14 @@ export interface PlaceChapters {
 /** What `place_names` answers: a town name by place chapter id, for the chapters that have one. */
 export type PlaceNames = Readonly<Record<number, string>>;
 
-export const DEFAULT_BOOK_OPTIONS: Readonly<BookOptions> = Object.freeze({ places: false });
+export const FEATURED_FLOOR_RANGE = { min: 2, max: 12 } as const;
+export const BRIEF_CAP_RANGE = { min: 1, max: 3 } as const;
+
+export const DEFAULT_BOOK_OPTIONS: Readonly<BookOptions> = Object.freeze({
+  places: false,
+  featuredFloor: 6,
+  briefCap: 2,
+});
 
 /** Mirrors `book::preflight::Severity`, which serialises lowercase. */
 export type FindingSeverity = "block" | "warn";

@@ -394,7 +394,10 @@ pub(crate) mod tests {
             seed: 1,
             dropped: 1,
             controls: Default::default(),
-            options: crate::book::pace::BookOptions { places: true },
+            options: crate::book::pace::BookOptions {
+                places: true,
+                ..crate::book::pace::BookOptions::default()
+            },
         };
 
         let text = serde_json::to_string(&agent_view(&book, &frozen_library(), &photos)).unwrap();
