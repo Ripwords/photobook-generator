@@ -495,7 +495,7 @@ pub enum BookError {
 }
 
 /// One event the packed groups shorted: it was promised `floor` photos and
-/// `placed` reached a page.
+/// `placed` reached `pack_selected`'s groups (ruling R10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FloorMiss {
     pub event: u32,

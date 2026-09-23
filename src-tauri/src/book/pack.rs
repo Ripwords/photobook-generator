@@ -1886,17 +1886,6 @@ mod tests {
         );
     }
 
-    /// **The merge's last resort: a book with fewer photos than one spread.**
-    ///
-    /// Every chapter is then below the spread minimum, so every one of them
-    /// carries forward and NO chapter is ever inserted into the output --
-    /// `merge_sub_spread_chapters` reaches its final `carry` with nothing to
-    /// append it to. The arm that handles that reinstates the photos as a
-    /// chapter of their own; without it they are silently discarded and the
-    /// book comes out empty, which is the worst outcome available for a
-    /// one-photo book. Slot 0 is a single page and can hold exactly this.
-    ///
-    /// Probed: `placed=1 sizes=[1]` with the arm, `placed=0 sizes=[]` without.
     /// A Brief event folds into its neighbour whatever its size: its two
     /// photos meet the spread minimum, so without the fold it takes a whole
     /// spread of its own (spec §2).
@@ -1920,8 +1909,32 @@ mod tests {
         let out = merge_sub_spread_chapters(chapters.clone(), 1, &brief);
         assert_eq!(out.keys().copied().collect::<Vec<_>>(), vec![0, 2]);
         assert_eq!(merge_sub_spread_chapters(chapters.clone(), 1, &BTreeSet::new()), chapters);
+        // A Brief FIRST chapter folds forward too.
+        let out = merge_sub_spread_chapters(chapters.clone(), 2, &BTreeSet::from([0]));
+        assert_eq!(out.keys().copied().collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(out[&1], vec![4, 5, 0, 1, 2, 3], "the Brief first chapter joins chapter 1");
+        // Consecutive Brief chapters keep the earlier carry: both land in 2.
+        let out = merge_sub_spread_chapters(chapters.clone(), 2, &BTreeSet::from([0, 1]));
+        assert_eq!(out.keys().copied().collect::<Vec<_>>(), vec![2]);
+        assert_eq!(out[&2].len(), 10);
+        // Every chapter Brief: one chapter holding every photo.
+        let out = merge_sub_spread_chapters(chapters.clone(), 2, &BTreeSet::from([0, 1, 2]));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out.values().map(Vec::len).sum::<usize>(), 10);
     }
 
+
+    /// **The merge's last resort: a book with fewer photos than one spread.**
+    ///
+    /// Every chapter is then below the spread minimum, so every one of them
+    /// carries forward and NO chapter is ever inserted into the output --
+    /// `merge_sub_spread_chapters` reaches its final `carry` with nothing to
+    /// append it to. The arm that handles that reinstates the photos as a
+    /// chapter of their own; without it they are silently discarded and the
+    /// book comes out empty, which is the worst outcome available for a
+    /// one-photo book. Slot 0 is a single page and can hold exactly this.
+    ///
+    /// Probed: `placed=1 sizes=[1]` with the arm, `placed=0 sizes=[]` without.
     #[test]
     fn pack_places_the_only_photo_in_a_book_too_small_for_a_spread() {
         let photos = vec![photo("/only.jpg", 0, 50)];
