@@ -108,6 +108,27 @@ counts and a key to the marks on the tiles. **Choose different folders** at the 
 again from other folders. The app recommends the shortest Pixajoy length that fits the keepers and says
 how many each length would leave out.
 
+**Event tiers.** Every event lands in one of four tiers, which decides how much of it the
+book places: **Featured** gets at least your floor (2 to 12 photos, 6 by default), **Normal**
+gets at least 2, **Brief** gets at most your cap (1 to 3, 2 by default), and **Skip** gets
+none. The app suggests a tier for each event and gives a reason, such as "Stands out from the
+rest of the trip" or "Ranked 4 of 9" -- hover the control on the event's header, in the
+contact sheet, to read it. Click **Featured**, **Brief** or **Skip** there to set the tier
+yourself, or **Auto** to hand it back to the app; your own choice shows as **(you)** and is
+saved with the draft and, once you generate, with the book. Marking a photo **+** always
+places it, even in a Skipped event.
+
+**The events panel**, above **Length**, lists every event at the chosen length: its tier and
+who chose it, and either why (a Skipped or empty event) or how many of its photos made it in,
+such as "6 kept → 4 placed". Click a row to scroll the contact sheet to that event. The
+**Length** menu counts the same thing at each length, for example "40 pages · 12 of 19
+events, 85 photos": how many events get a page to themselves (Featured and Normal -- Brief
+and Skipped events share space with others rather than getting one each) out of every event
+the book has, and how many photos that length places. If your tiers ask for more photos than
+a length can hold, the panel says so under the list and gives every event at least one photo
+anyway. Choosing a longer length that earns another event a page of its own says so too, for
+example "At 60 pages, 2 more events get their own pages."
+
 **Split chapters by place**, under **Print size**, is off for a new book. The book is laid
 out in chapters, one per event, and with the switch off a chapter ends only at a break of more
 than four hours. With it on, a chapter also ends when you move to another town, so a day in
@@ -125,6 +146,11 @@ longitude, to Apple's map service. It never sends a photo, and it sends nothing 
 switch is off. Names are kept on this Mac, so reopening a draft asks Apple nothing new. A
 chapter Apple cannot name, or any chapter while this Mac is offline, keeps its number, such
 as **Event 3**.
+
+**Featured events get at least** and **Brief events get at most**, the two steppers under
+**Split chapters by place**, set the floor and cap the tiers above use: Featured from 2 to 12
+photos (6 by default), Brief from 1 to 3 (2 by default). Changing either re-scores every
+event at every length.
 
 The book aims for variety over density. It places about four photos per spread, so a
 40-page book places around 85 rather than the 130 its layouts could squeeze in, and it mixes
@@ -150,12 +176,13 @@ the app is reopened. A draft that was still analysing when you quit starts again
 analysis is cached, so photos it already reached are quick.
 
 Arriving here from **Edit photos** on a saved book is the same screen, as a draft named after
-that book, with its decisions, print size and **Split chapters by place** restored once the
-analysis is done (**Edit photos** again
-reopens the same draft), and the generate control becomes two: **Update "<name>"** replaces the
-saved book (its export history goes with it), **Save as a new photobook** keeps both.
-Choosing different folders makes it a new book again, since a book built from a different
-source is not an update of the old one.
+that book, with its decisions, print size, event tiers and **Split chapters by place**
+restored once the analysis is done (**Edit photos** again reopens the same draft), and the
+generate control becomes two: **Update "<name>"** asks you to confirm, then builds the book
+again from these photos and settings, replacing any changes you made in the editor -- swapped
+photos, layouts and captions -- and clearing its export history; **Save as a new photobook**
+keeps both. Choosing different folders makes it a new book again, since a book built from a
+different source is not an update of the old one.
 
 ## 3. Editing the book
 

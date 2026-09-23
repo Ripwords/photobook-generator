@@ -474,6 +474,19 @@ export function placedCount(photos: readonly { path: string; kept: boolean }[], 
   return photos.filter((photo) => isPlaced(photo, option)).length;
 }
 
+/**
+ * The `pageItems` label for one length: the page count, how many events get
+ * their own place at it (Featured and Normal -- Brief and Skipped events
+ * share a spread rather than getting one each), out of every event the book
+ * has, and how many photos it places.
+ */
+export function pageOptionLabel(option: PageOption): string {
+  const t = option.eventsByTier;
+  const own = t.featured + t.normal;
+  const all = own + t.brief + t.skipped;
+  return `${option.pages} pages · ${own} of ${all} events, ${option.selectedPaths.length} photos`;
+}
+
 /** The option for a given page length, or `undefined` if it was not offered. */
 export function optionFor(
   recommendation: BookRecommendation,

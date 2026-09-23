@@ -7,9 +7,11 @@ import {
   keepers,
   overrideFor,
   pickHero,
+  withEventTier,
   type AnalyzedPhoto,
   type PhotoOverride,
   type PhotoOverrides,
+  type Tier,
 } from "~/types/features";
 import { selectStage } from "~/types/navigation";
 import { jobProgress, jobRunId, pickFolders, type AnalysisJob } from "~/composables/useAnalysisJobs";
@@ -116,6 +118,24 @@ const chapterOverride = computed(() => (job.options.places ? (placeChapters.valu
 const placeNames = usePlaceNames(runId, toRef(() => job.options.places));
 
 const eventGroups = computed(() => groupByEvent(visiblePhotos.value, chapterOverride.value));
+
+/** The place name when Places is on, else "Event N" by position among the events currently shown -- what `ContactSheet` titles the same header with. */
+function titleOf(event: number): string {
+  const index = eventGroups.value.findIndex((group) => group.eventCluster === event);
+  return placeNames.value[event] ?? `Event ${index + 1}`;
+}
+
+/** Sets (or clears, for "auto") every photo of one event to a tier, written straight onto the job like `decisions` is. */
+function setEventTier(event: number, tier: Tier | "auto") {
+  const hashes = eventGroups.value.find((group) => group.eventCluster === event)?.photos.map((p) => p.hash) ?? [];
+  job.tiers = withEventTier(job.tiers, hashes, tier);
+}
+
+const contactSheet = useTemplateRef("contactSheet");
+/** An events-panel row was clicked: scroll the sheet to that event's header. */
+function revealEvent(event: number) {
+  contactSheet.value?.revealEvent(event);
+}
 const burstMap = computed<Map<number, number>>(() => burstSizes(photos.value));
 // One hero per event group - the outline and star mark exactly this
 // photo, so it stays meaningful instead of becoming decoration. Chosen from
@@ -375,6 +395,7 @@ function onGenerated(projectId: number) {
 
           <ContactSheet
             v-else
+            ref="contactSheet"
             :groups="eventGroups"
             :names="placeNames"
             :tile-size
@@ -389,6 +410,14 @@ function onGenerated(projectId: number) {
                 :is-kept="isPlaced(photo, chosenOption)"
                 :override="overrideFor(overrides, photo.hash)"
                 @set-override="onSetOverride(photo, $event)"
+              />
+            </template>
+            <template #header="{ event }">
+              <EventTierControl
+                :row="chosenOption?.events.find((row) => row.event === event)"
+                :title="titleOf(event)"
+                :title-of="titleOf"
+                @set="setEventTier(event, $event)"
               />
             </template>
           </ContactSheet>
@@ -424,8 +453,10 @@ function onGenerated(projectId: number) {
         :options="job.options"
         @update:options="setOptions(job.id, $event)"
         :located="placeChapters?.located ?? null"
+        :title-of="titleOf"
         @generated="onGenerated"
         @option="chosenOption = $event"
+        @reveal="revealEvent"
       />
 
       <section class="space-y-2 border-t border-default pt-6" aria-labelledby="select-stats">

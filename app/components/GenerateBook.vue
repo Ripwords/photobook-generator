@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
 import {
+  BRIEF_CAP_RANGE,
   canGenerateAt,
+  FEATURED_FLOOR_RANGE,
   includeOverflowLabel,
   optionFor,
+  pageOptionLabel,
   recommendedOption,
   type BookOptions,
   type PageOption,
@@ -42,11 +45,15 @@ const {
   replacing?: ReplacedProject | null;
   /** How many photos carry a location, or `null` until `place_chapters` answers. */
   located?: number | null;
+  /** The events panel's row title: the place name when Places is on, else "Event N" -- the same function the sheet titles chapters with. */
+  titleOf: (event: number) => string;
 }>();
 
 const emit = defineEmits<{
   generated: [projectId: number];
   option: [option: PageOption | undefined];
+  /** An events-panel row was clicked; `SelectPhotos` scrolls the sheet to it. */
+  reveal: [event: number];
 }>();
 
 // `toRef` rather than passing the props straight through: `useBook` holds
@@ -98,6 +105,18 @@ const places = computed({
     options.value = { ...options.value, places: on };
   },
 });
+const featuredFloor = computed({
+  get: () => options.value.featuredFloor,
+  set: (n: number) => {
+    options.value = { ...options.value, featuredFloor: n };
+  },
+});
+const briefCap = computed({
+  get: () => options.value.briefCap,
+  set: (n: number) => {
+    options.value = { ...options.value, briefCap: n };
+  },
+});
 
 /** The draft's name, owned by its job so the sidebar shows the same one. */
 const name = defineModel<string>("name", { required: true });
@@ -129,7 +148,7 @@ const isRecommended = computed(
 );
 const pageItems = computed(() =>
   (recommendation.value?.options ?? []).map((option) => ({
-    label: `${option.pages} pages`,
+    label: pageOptionLabel(option),
     value: option.pages,
     // Not merely expensive -- unbuildable. The engine refuses to choose which
     // of the user's own picks to discard, so generating at this length fails
@@ -141,6 +160,47 @@ const pageItems = computed(() =>
 const overflowMessage = computed(() =>
   chosenOption.value ? includeOverflowLabel(chosenOption.value) : null,
 );
+
+/** The tiers' own floors cannot all fit this length -- `PageOption.tierOverflow`. */
+const tierOverflowMessage = computed(() => {
+  const option = chosenOption.value;
+  const overflow = option?.tierOverflow;
+  if (!option || !overflow) return null;
+  return `These tiers need ${overflow.needed} photos but ${option.pages} pages hold ${overflow.capacity}; every event gets at least one.`;
+});
+
+/**
+ * Events getting their own place (Featured or Normal, see `pageOptionLabel`)
+ * out of every event, at one page length.
+ */
+function ownEventCount(option: PageOption): number {
+  return option.eventsByTier.featured + option.eventsByTier.normal;
+}
+
+/**
+ * "At 40 pages, 3 more events get their own pages" -- shown for the one
+ * render right after the CHOSEN LENGTH changes, comparing the length just
+ * left to the one just picked. Both options are already in `recommendation`
+ * (`recommend_book` answers every length at once), so this reads across two
+ * already-fetched options rather than awaiting a second call. Reassigning a
+ * tier or moving a stepper changes the SAME length's option in place and
+ * does not touch `pages`, so it never fires this watcher -- only a length
+ * change does.
+ */
+const risenMessage = ref<string | null>(null);
+watch(pages, (next, prev) => {
+  risenMessage.value = null;
+  if (!recommendation.value || prev === null || next === null || prev === next) return;
+  const before = optionFor(recommendation.value, prev);
+  const after = optionFor(recommendation.value, next);
+  if (!before || !after) return;
+  const rose = ownEventCount(after) - ownEventCount(before);
+  if (rose <= 0) return;
+  risenMessage.value =
+    rose === 1
+      ? `At ${next} pages, 1 more event gets its own page.`
+      : `At ${next} pages, ${rose} more events get their own pages.`;
+});
 
 // A DIFFERENT ANALYSED SET -- not a different array.
 //
@@ -210,6 +270,13 @@ async function onGenerate(replace: boolean) {
   if (replace && replacing) await deleteProject(replacing.id);
   emit("generated", projectId);
 }
+
+/** Open by the Update button; only its own Update click calls `onGenerate(true)`. */
+const confirmUpdate = ref(false);
+async function confirmedUpdate() {
+  confirmUpdate.value = false;
+  await onGenerate(true);
+}
 </script>
 
 <template>
@@ -222,6 +289,12 @@ async function onGenerate(replace: boolean) {
       <UFormField label="Book name">
         <UInput v-model="name" :disabled="busy" placeholder="Untitled photobook" class="w-full" />
       </UFormField>
+
+      <div v-if="chosenOption && chosenOption.events.length > 0" class="space-y-1.5">
+        <EventsPanel :rows="chosenOption.events" :title="titleOf" @reveal="emit('reveal', $event)" />
+        <p v-if="tierOverflowMessage" class="text-xs text-muted">{{ tierOverflowMessage }}</p>
+        <p v-if="risenMessage" class="text-xs text-muted">{{ risenMessage }}</p>
+      </div>
 
       <UFormField label="Length">
         <!--
@@ -267,11 +340,57 @@ async function onGenerate(replace: boolean) {
           :disabled="busy || located === 0"
         />
       </UFormField>
+
+      <div class="flex items-center gap-2 text-sm text-muted">
+        <span>Featured events get at least</span>
+        <UInputNumber
+          v-model="featuredFloor"
+          :min="FEATURED_FLOOR_RANGE.min"
+          :max="FEATURED_FLOOR_RANGE.max"
+          :disabled="busy"
+          size="xs"
+          class="w-24"
+          aria-label="Featured events get at least this many photos"
+        />
+        <span>photos</span>
+      </div>
+      <div class="flex items-center gap-2 text-sm text-muted">
+        <span>Brief events get at most</span>
+        <UInputNumber
+          v-model="briefCap"
+          :min="BRIEF_CAP_RANGE.min"
+          :max="BRIEF_CAP_RANGE.max"
+          :disabled="busy"
+          size="xs"
+          class="w-24"
+          aria-label="Brief events get at most this many photos"
+        />
+        <span>photos</span>
+      </div>
     </div>
 
     <UModal v-model:open="printSizeOpen" title="Print size" :ui="{ content: 'max-w-md' }">
       <template #body>
         <PrintSizePanel v-if="shownSpec" :spec="shownSpec" @apply="choosePrintSize" />
+      </template>
+    </UModal>
+
+    <UModal
+      v-if="replacing"
+      v-model:open="confirmUpdate"
+      :title="`Update “${replacing.name}”?`"
+      :ui="{ footer: 'justify-end' }"
+    >
+      <template #body>
+        <p class="text-sm text-default">
+          Updating builds the book again from these photos and settings. Any changes you made in
+          the editor, such as swapped photos, layouts and captions, are replaced, and the export
+          history is cleared.
+        </p>
+      </template>
+      <template #footer>
+        <UButton color="neutral" variant="outline" @click="confirmUpdate = false">Cancel</UButton>
+        <UButton color="primary" :loading="busy" @click="confirmedUpdate">Update</UButton>
       </template>
     </UModal>
 
@@ -316,7 +435,7 @@ async function onGenerate(replace: boolean) {
           color="primary"
           :loading="busy"
           :disabled="busy || !recommendation || overflowMessage !== null"
-          @click="onGenerate(true)"
+          @click="confirmUpdate = true"
         >
           Update &ldquo;{{ replacing.name }}&rdquo;
         </UButton>

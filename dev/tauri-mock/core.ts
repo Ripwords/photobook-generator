@@ -38,7 +38,9 @@ import type {
   SlotCandidate,
 } from "../../app/types/preview";
 import type { PrintSpec, SpecCheck, SpecError } from "../../app/types/printSpec";
+import { DEFAULT_BOOK_OPTIONS } from "../../app/types/book";
 import type {
+  BookOptions,
   BookRecommendation,
   EventRow,
   ExportEvent,
@@ -231,19 +233,47 @@ function keptPaths(overrides: PhotoOverrides): string[] {
  * One length's plan, built from the mock's own 36 synthetic photos rather
  * than the static fixture -- so switching page counts in the harness visibly
  * changes what the contact sheet dims. This is NOT a stand-in for the
- * engine's tier/merit/budget logic (that lives only in Rust); it exists so
- * `isPlaced` has something real to read. Every option places a PREFIX of the
- * same kept-photo order, so a longer book's `selectedPaths` is always a
- * superset of a shorter one's, never a differently-chosen set of the same
- * size.
+ * engine's tier/merit/budget logic (that lives only in Rust, in
+ * `book::events`); it exists so `isPlaced` and the events panel have
+ * something real to react to. It honours three things a screenshot check can
+ * actually see:
+ *  - an event the user set a tier on (`tiers` holds any of its photos' hashes)
+ *    keeps that tier, with `chosen: true`;
+ *  - a Skipped event's photos are left out of `selectedPaths`, except a photo
+ *    marked **+** (`overrides[hash] === "include"`), which always places;
+ *  - a Featured event is topped up to `options.featuredFloor` photos, from
+ *    its own kept order, past the length's ordinary capacity if it must.
+ * Every OTHER event still places a prefix of the kept order, so a longer
+ * book's selection still grows outward from a shorter one's rather than
+ * jumping to a differently-chosen set of the same size.
  */
-function mockOptionFor(option: PageOption, keptOrdered: string[], overrides: PhotoOverrides): PageOption {
-  const selectedPaths = keptOrdered.slice(0, Math.min(option.capacityPhotos, keptOrdered.length));
-  const selected = new Set(selectedPaths);
+function mockOptionFor(
+  option: PageOption,
+  keptOrdered: string[],
+  overrides: PhotoOverrides,
+  tiers: EventTiers,
+  bookOptions: BookOptions,
+): PageOption {
   const clusterIds = [...new Set(photos.map((photo) => photo.eventCluster))].toSorted((a, b) => a - b);
-  const tiersByRank: readonly Tier[] = ["featured", "normal", "brief", "skipped"];
+  const suggestedByRank: readonly Tier[] = ["featured", "normal", "brief", "skipped"];
+  const REASON_BY_TIER: Record<Tier, EventRow["reason"]> = {
+    featured: { kind: "standout" },
+    normal: { kind: "ranked", rank: 2, of: clusterIds.length },
+    brief: { kind: "outOfRoom", rank: 3, of: clusterIds.length },
+    skipped: { kind: "nothingKept" },
+  };
+
+  /** The tier the user chose for this event, by looking up any one of its photos' hashes. */
+  function chosenTierOf(inCluster: { hash: string }[]): Tier | null {
+    for (const photo of inCluster) {
+      const t = tiers[photo.hash];
+      if (t) return t;
+    }
+    return null;
+  }
+
   const eventsByTier: TierCounts = { featured: 0, normal: 0, brief: 0, skipped: 0 };
-  const events: EventRow[] = clusterIds.map((event, index) => {
+  const plans = clusterIds.map((event, index) => {
     const inCluster = photos.filter((photo) => photo.eventCluster === event);
     const keptInCluster = inCluster.filter((photo) => {
       const decision = overrides[photo.hash];
@@ -251,22 +281,52 @@ function mockOptionFor(option: PageOption, keptOrdered: string[], overrides: Pho
       if (decision === "exclude") return false;
       return photo.kept;
     });
-    const selectedInCluster = inCluster.filter((photo) => selected.has(photo.path)).length;
-    const tier = tiersByRank[index % tiersByRank.length] ?? "normal";
+    const suggested = suggestedByRank[index % suggestedByRank.length] ?? "normal";
+    const chosenTier = chosenTierOf(inCluster);
+    const tier = chosenTier ?? suggested;
     eventsByTier[tier] += 1;
-    return {
-      event,
-      tier,
-      suggested: tier,
-      chosen: false,
-      reason: { kind: "standout" },
-      merit: 0.5,
-      moments: inCluster.length,
-      kept: keptInCluster.length,
-      photos: inCluster.length,
-      selected: selectedInCluster,
-    };
+    return { event, tier, suggested, chosen: chosenTier !== null, inCluster, keptInCluster };
   });
+  const tierOf = new Map(plans.map((p) => [p.event, p.tier]));
+
+  // Build the selection: walk the kept order, skip a Skipped event's photos
+  // unless the user marked them **+**, and stop once `capacityPhotos` is hit.
+  const selectedPaths: string[] = [];
+  for (const path of keptOrdered) {
+    if (selectedPaths.length >= option.capacityPhotos) break;
+    const photo = photos.find((p) => p.path === path);
+    if (!photo) continue;
+    const included = overrides[photo.hash] === "include";
+    if (tierOf.get(photo.eventCluster) === "skipped" && !included) continue;
+    selectedPaths.push(path);
+  }
+  // Top up every Featured event to its floor, past capacity if there is no
+  // room left, so raising the stepper is visible even on a nearly-full book.
+  const selected = new Set(selectedPaths);
+  for (const plan of plans) {
+    if (plan.tier !== "featured") continue;
+    for (const photo of plan.keptInCluster) {
+      const inThisEvent = plan.keptInCluster.filter((p) => selected.has(p.path)).length;
+      if (inThisEvent >= bookOptions.featuredFloor) break;
+      if (selected.has(photo.path)) continue;
+      selected.add(photo.path);
+      selectedPaths.push(photo.path);
+    }
+  }
+
+  const events: EventRow[] = plans.map((plan) => ({
+    event: plan.event,
+    tier: plan.tier,
+    suggested: plan.suggested,
+    chosen: plan.chosen,
+    reason: REASON_BY_TIER[plan.tier],
+    merit: 0.5,
+    moments: plan.inCluster.length,
+    kept: plan.keptInCluster.length,
+    photos: plan.inCluster.length,
+    selected: plan.inCluster.filter((photo) => selected.has(photo.path)).length,
+  }));
+
   return {
     ...option,
     droppedPhotos: Math.max(0, keptOrdered.length - selectedPaths.length),
@@ -808,13 +868,15 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
 
     case "recommend_book": {
       const overrides = (args?.overrides as PhotoOverrides) ?? {};
+      const tiers = (args?.tiers as EventTiers) ?? {};
+      const bookOptions = (args?.options as BookOptions) ?? DEFAULT_BOOK_OPTIONS;
       const base = structuredClone(recommendationFixture) as BookRecommendation;
       const keptOrdered = keptPaths(overrides);
       return {
         ...base,
         keeperCount: keptOrdered.length,
         includedCount: Object.values(overrides).filter((state) => state === "include").length,
-        options: base.options.map((option) => mockOptionFor(option, keptOrdered, overrides)),
+        options: base.options.map((option) => mockOptionFor(option, keptOrdered, overrides, tiers, bookOptions)),
       } as T;
     }
 

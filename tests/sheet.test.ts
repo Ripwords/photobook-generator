@@ -84,6 +84,13 @@ describe("sheetRows", () => {
     const keys = sheetRows(groups, 2).map((row) => row.key);
     expect(new Set(keys).size).toBe(keys.length);
   });
+
+  it("carries the cluster id on each header, for the header slot", () => {
+    const headers = sheetRows(groups, 2).filter((row) => row.kind === "event");
+    // The cluster ids (4, 9), not the 1-based display position (1, 2) --
+    // a consumer needs the id to look up tier state and place a callback.
+    expect(headers.map((row) => row.event)).toEqual([4, 9]);
+  });
 });
 
 describe("activeEventRow", () => {

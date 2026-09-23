@@ -18,6 +18,7 @@ import {
   canGenerateAt,
   includeOverflowLabel,
   isPlaced,
+  pageOptionLabel,
   placedCount,
   projectDetailLabel,
   selectionLabel,
@@ -827,5 +828,37 @@ describe("placedCount", () => {
 
   it("falls back to the cull verdict before a recommendation arrives", () => {
     expect(placedCount(photos, undefined)).toBe(2);
+  });
+});
+
+describe("pageOptionLabel", () => {
+  it("counts the events that get their own place, and the photos", () => {
+    const option = {
+      pages: 40,
+      // Deliberately different from `selectedPaths.length`: the label must
+      // read the photos actually placed, not the length's raw capacity.
+      capacityPhotos: 90,
+      droppedPhotos: 0,
+      includedOverCapacity: 0,
+      events: [],
+      selectedPaths: Array.from({ length: 85 }, (_, i) => `/p${i}`),
+      tierOverflow: null,
+      eventsByTier: { featured: 2, normal: 10, brief: 5, skipped: 2 },
+    } satisfies PageOption;
+    expect(pageOptionLabel(option)).toBe("40 pages · 12 of 19 events, 85 photos");
+  });
+
+  it("counts zero events and zero photos without dividing by them", () => {
+    const option = {
+      pages: 20,
+      capacityPhotos: 0,
+      droppedPhotos: 0,
+      includedOverCapacity: 0,
+      events: [],
+      selectedPaths: [],
+      tierOverflow: null,
+      eventsByTier: { featured: 0, normal: 0, brief: 0, skipped: 0 },
+    } satisfies PageOption;
+    expect(pageOptionLabel(option)).toBe("20 pages · 0 of 0 events, 0 photos");
   });
 });

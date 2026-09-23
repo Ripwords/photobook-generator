@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { editLabel, invoke } from "../dev/tauri-mock/core";
 import { mockPhotos } from "../dev/tauri-mock/photos";
 import layoutFixture from "./fixtures/wire/book-layout.json";
-import type { AnalysisEvent, AnalysisSummary } from "../app/types/features";
+import { withEventTier } from "../app/types/features";
+import { DEFAULT_BOOK_OPTIONS } from "../app/types/book";
+import type { AnalysisEvent, AnalysisSummary, PhotoOverrides } from "../app/types/features";
 import type { BookEdit, BookLayout, HistoryStatus, SlotCandidate } from "../app/types/preview";
 import type { BookRecommendation, ImportedPhoto } from "../app/types/book";
 import type { PrintSpec } from "../app/types/printSpec";
@@ -49,7 +51,15 @@ describe("the browser harness's commands", () => {
   // undimmed at 40 pages back to dimmed at 20 -- this pins the property the
   // dimming logic actually depends on, not just that options differ.
   it("recommend_book nests a shorter option's selection inside a longer one's", async () => {
-    const recommendation = await invoke<BookRecommendation>("recommend_book", { overrides: {} });
+    // The harness's own 4 mock events suggest the last one (event 3) Skipped
+    // by round robin, which would otherwise remove it from every option's
+    // selection and make both lengths converge on the same 21 non-Skipped
+    // kept photos (of 29 total). Choosing it a tier here restores the
+    // capacity difference (24 vs 54) this test is actually about.
+    const photos = mockPhotos();
+    const fourthCluster = photos.filter((p) => p.eventCluster === 3);
+    const tiers = withEventTier({}, fourthCluster.map((p) => p.hash), "brief");
+    const recommendation = await invoke<BookRecommendation>("recommend_book", { overrides: {}, tiers });
     const [shorter, longer] = recommendation.options.toSorted((a, b) => a.pages - b.pages);
 
     expect(shorter!.selectedPaths.length).toBeGreaterThan(0);
@@ -57,6 +67,66 @@ describe("the browser harness's commands", () => {
     // A prefix, in order -- not just a subset -- so a tile undimmed at the
     // shorter length is undimmed at the same position in the longer one too.
     expect(longer!.selectedPaths.slice(0, shorter!.selectedPaths.length)).toEqual(shorter!.selectedPaths);
+  });
+
+  // Task 11: the events panel and header control read `EventRow.tier` and
+  // `.chosen` straight off `recommend_book`'s answer, so the harness has to
+  // actually honour a tier the user picked, not just echo the suggestion.
+  it("recommend_book honours a tier the user chose over the suggestion, marking it chosen", async () => {
+    const photos = mockPhotos();
+    const secondCluster = photos.filter((p) => p.eventCluster === 1); // suggested Normal by round robin
+    const tiers = withEventTier({}, secondCluster.map((p) => p.hash), "featured");
+    const recommendation = await invoke<BookRecommendation>("recommend_book", { overrides: {}, tiers });
+    const row = recommendation.options[0]!.events.find((e) => e.event === 1)!;
+
+    expect(row.suggested).toBe("normal");
+    expect(row.tier).toBe("featured");
+    expect(row.chosen).toBe(true);
+    // An event nobody touched still reports the suggestion, unchosen.
+    const untouched = recommendation.options[0]!.events.find((e) => e.event === 0)!;
+    expect(untouched.chosen).toBe(false);
+    expect(untouched.tier).toBe(untouched.suggested);
+  });
+
+  // The header control's Skip button, and the "+" that is meant to beat it.
+  it("recommend_book leaves a Skipped event's photos out of selectedPaths, except one marked include", async () => {
+    const photos = mockPhotos();
+    const fourthCluster = photos.filter((p) => p.eventCluster === 3); // suggested Skipped by round robin
+    const marked = fourthCluster.find((p) => p.kept)!;
+    const overrides: PhotoOverrides = { [marked.hash]: "include" };
+    const recommendation = await invoke<BookRecommendation>("recommend_book", { overrides });
+    const option = recommendation.options.find((o) => o.pages === 40)!;
+    const selected = new Set(option.selectedPaths);
+
+    expect(selected.has(marked.path)).toBe(true);
+    for (const photo of fourthCluster) {
+      if (photo.path === marked.path) continue;
+      expect(selected.has(photo.path)).toBe(false);
+    }
+    const row = option.events.find((e) => e.event === 3)!;
+    expect(row.tier).toBe("skipped");
+    expect(row.selected).toBe(1);
+  });
+
+  // The "Featured events get at least" stepper.
+  it("recommend_book tops a Featured event up to the featured floor, past the length's own capacity", async () => {
+    const photos = mockPhotos();
+    // Event 3 is last in `recommend_book`'s selection order and has 8 kept
+    // photos; choosing it Featured, at the 20-page option's capacity of 24,
+    // leaves room for only 24 - 7 - 8 - 6 = 3 of them before the floor
+    // top-up has to step in and add 3 more, to DEFAULT_BOOK_OPTIONS's floor
+    // of 6 -- fewer than its 8 kept, so this is the floor acting, not a
+    // ceiling.
+    const fourthCluster = photos.filter((p) => p.eventCluster === 3);
+    const tiers = withEventTier({}, fourthCluster.map((p) => p.hash), "featured");
+    const recommendation = await invoke<BookRecommendation>("recommend_book", { overrides: {}, tiers });
+    const option = recommendation.options.find((o) => o.pages === 20)!;
+    const row = option.events.find((e) => e.event === 3)!;
+
+    expect(row.tier).toBe("featured");
+    expect(row.kept).toBe(8);
+    expect(row.selected).toBe(DEFAULT_BOOK_OPTIONS.featuredFloor);
+    expect(row.selected).toBeLessThan(row.kept);
   });
 
   it("hands back where a photo it already holds sits, without appending again", async () => {

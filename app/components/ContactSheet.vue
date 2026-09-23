@@ -33,7 +33,11 @@ const {
   names?: PlaceNames;
 }>();
 
-defineSlots<{ tile(props: { photo: T }): unknown }>();
+defineSlots<{
+  tile(props: { photo: T }): unknown;
+  /** Extra header content, after the count -- see `EventTierControl` in `SelectPhotos.vue`. */
+  header(props: { event: number }): unknown;
+}>();
 
 const GAP = 12;
 /** Between one event's last row and the next event's header. */
@@ -116,6 +120,13 @@ const visible = computed(() =>
 // Sizes come from `rowHeight`, which the virtualizer caches; a new width or
 // tile size changes them without changing any row's key.
 watch([tileWidth, rows], () => virtualizer.value.measure());
+
+/** Scrolls so `event`'s header lands at the top -- the events panel's row click. */
+function revealEvent(event: number) {
+  const index = rows.value.findIndex((row) => row.kind === "event" && row.event === event);
+  if (index !== -1) virtualizer.value.scrollToIndex(index, { align: "start" });
+}
+defineExpose({ revealEvent });
 </script>
 
 <template>
@@ -141,6 +152,7 @@ watch([tileWidth, rows], () => virtualizer.value.measure());
           <span class="shrink-0 font-normal text-muted tabular-nums"
             >{{ row.count }} {{ row.count === 1 ? "photo" : "photos" }}</span
           >
+          <span class="ml-auto shrink-0"><slot name="header" :event="row.event" /></span>
         </h2>
       </div>
       <div

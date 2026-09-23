@@ -13,6 +13,8 @@ export interface SheetEventRow {
   /** The chapter's town, or "Event N" by its 1-based position among the sheet's events. */
   title: string;
   count: number;
+  /** The cluster id this header is for -- see `EventRow.event` in `~/types/book`. */
+  event: number;
 }
 
 export interface SheetTileRow<T> {
@@ -59,6 +61,7 @@ export function sheetRows<T>(
       key: `event-${group.eventCluster}`,
       title: names[group.eventCluster] ?? `Event ${index + 1}`,
       count: group.photos.length,
+      event: group.eventCluster,
     },
     ...tileRows(group.photos, columns, `event-${group.eventCluster}`),
   ]);
