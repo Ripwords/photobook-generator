@@ -614,6 +614,63 @@ mod tests {
         assert!(matches!(s[9].reason, Reason::Ranked { .. }), "{:?}", s[9]);
     }
 
+    /// R-a: the Featured bar is 1.3x the median merit of the events that
+    /// STAY Normal (`scored[featured_limit..room]`), not the median of the
+    /// whole top-`room` set including the candidate itself
+    /// (`scored[..room]`). Two events, room 2 (via `capacity(9, 45)` with
+    /// only 2 eligible events: 11 slots -> floor(11*0.6) = 6, capped to the
+    /// 2 eligible), `featured_limit = max(1, 2/6) = 1`, so `normal` is just
+    /// event 1 -- its merit alone is the median under the fix.
+    ///
+    /// Event 0 (candidate): 6 moments (12 photos), aesthetic 90 -- engagement
+    /// 1.0, quality (top-3 mean of [90,90,89,...]/100) ~0.8967, novelty 1.0
+    /// (walks first, nothing above it): merit = 0.4*1.0 + 0.4*0.8967 +
+    /// 0.2*1.0 ~ 0.9587.
+    /// Event 1 (peer): 1 moment (2 photos), aesthetic 50 -- engagement
+    /// ln(2)/ln(7) ~ 0.3562, quality (mean of [50,49]/100) 0.495, novelty
+    /// 1.0 (no GPS/tag overlap with event 0): merit = 0.4*0.3562 +
+    /// 0.4*0.495 + 0.2*1.0 ~ 0.5405.
+    ///
+    /// Fixed code: median = event 1's merit alone (~0.5405); 1.3 * 0.5405 ~
+    /// 0.7026 <= event 0's ~0.9587 -> Featured.
+    /// Mutant R (`&scored[..room]`, i.e. median of BOTH events): median =
+    /// (0.9587 + 0.5405) / 2 ~ 0.7496; 1.3 * 0.7496 ~ 0.9745 > event 0's
+    /// ~0.9587 -> NOT Featured. This test must catch that regression.
+    #[test]
+    fn a_candidate_that_clears_the_peer_median_but_not_the_self_inclusive_one_is_featured() {
+        let candidate = located(event(0, 0, 12, 90), 10.0, 100.0, &["tagA"]);
+        let peer = located(event(1, 1, 2, 50), 80.0, 50.0, &["tagB"]);
+        let mut photos = candidate;
+        photos.extend(peer);
+        let s = suggest(&stats(&photos, &keepers(&photos)), &capacity(9, 45));
+        assert_eq!(s[0].tier, Tier::Featured, "{s:?}");
+        assert_eq!(s[0].reason, Reason::Standout);
+    }
+
+    /// R-a's `!normal.is_empty()` guard: when `room <= featured_limit`
+    /// there are no events left to measure a Normal median from
+    /// (`normal` is empty, so `median` defaults to 0.0), and NOTHING may be
+    /// Featured -- not even a clear standout -- because there is nothing to
+    /// stand out from. `capacity(0, n)`: 0 spreads + 2 singles = 2 slots,
+    /// floor(2*0.6) = 1, so `room = 1` and `featured_limit = max(1, 1/6) =
+    /// 1`; `room > featured_limit` is false, so `normal` is empty.
+    ///
+    /// Without the guard, `median` would be 0.0 and `x.merit >= 1.3 * 0.0`
+    /// is true for any positive merit, so the top-ranked event would be
+    /// wrongly promoted to Featured on an empty comparison set.
+    #[test]
+    fn a_room_of_one_never_features_even_a_clear_standout() {
+        let standout = located(event(0, 0, 20, 95), 10.0, 100.0, &["tagA"]);
+        let mut photos = standout;
+        photos.extend(located(event(1, 1, 4, 40), 80.0, 50.0, &["tagB"]));
+        photos.extend(located(event(2, 2, 4, 40), 20.0, 150.0, &["tagC"]));
+        let s = suggest(&stats(&photos, &keepers(&photos)), &capacity(0, 45));
+        let count = |t: Tier| s.iter().filter(|x| x.tier == t).count();
+        assert_eq!(count(Tier::Featured), 0, "{s:?}");
+        assert_eq!(s[0].tier, Tier::Normal, "{:?}", s[0]);
+        assert!(matches!(s[0].reason, Reason::Ranked { .. }), "{:?}", s[0]);
+    }
+
     /// Two events, 12 photos each, all kept, same aesthetic pattern -- the
     /// only difference is how many distinct moments they group into. §3
     /// defines engagement from moments, not photo or keeper count, so the
@@ -623,9 +680,12 @@ mod tests {
     fn more_moments_ranks_above_more_photos_at_equal_keeper_count() {
         let many_moments = located(event(0, 0, 12, 60), 10.0, 100.0, &["tagA"]);
         let mut few_moments = located(event(1, 1, 12, 60), 80.0, 50.0, &["tagB"]);
-        // Collapse the 6 normal moments (600 s apart) into one 330 s burst
-        // (consecutive gaps of 30 s, well under MOMENT_GAP_SECONDS) -- same
-        // 12 photos, same 12 keepers, 1 moment instead of 6.
+        // Collapse the 6 normal moments (600 s apart) into a 330 s burst.
+        // `pack::moments` starts a new moment once a photo lands more than
+        // MOMENT_GAP_SECONDS (120 s) past the CURRENT moment's first photo,
+        // so 12 photos 30 s apart (0, 30, .., 330 s) split into 3 moments
+        // (0-120 s, 150-270 s, 300-330 s) -- same 12 photos, same 12
+        // keepers, 3 moments instead of 6.
         for (n, p) in few_moments.iter_mut().enumerate() {
             p.captured_at = Some(86_400 + n as i64 * 30);
         }
