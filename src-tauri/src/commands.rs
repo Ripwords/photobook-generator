@@ -6122,6 +6122,36 @@ mod tests {
         );
     }
 
+    /// **Reopening a project hands the user's own tier choices back to the
+    /// webview, not the engine's empty default.**
+    ///
+    /// Mirrors `reopening_a_project_returns_the_users_own_include_and_exclude_decisions`
+    /// above but for tiers: `project_detail`'s `tiers` field must come from
+    /// the loaded `Project`, not be hardcoded to `EventTiers::new()`. A
+    /// constant empty default there would pass every other test in the
+    /// suite -- `ProjectDetail` is only ever built one place, and nothing
+    /// else exercises it with a non-empty saved `tiers` -- while quietly
+    /// reverting every reopened project's tier choices to Auto.
+    #[test]
+    fn reopening_a_project_returns_the_users_own_tier_choices() {
+        let db = Db::open_in_memory().unwrap();
+        let lib = fixture_library();
+        let photos = photos_from_records(&distinct_records(12)).unwrap();
+        let mut tiers = EventTiers::new();
+        tiers.set(photos[3].hash.clone(), Some(Tier::Featured));
+        tiers.set(photos[9].hash.clone(), Some(Tier::Brief));
+        let meta = new_project("Japan 2026", 20, 7);
+        let generated =
+            generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new(), &tiers).unwrap();
+
+        let detail = project_detail(db.load_project(generated.project_id).unwrap().unwrap());
+
+        assert_eq!(detail.id, generated.project_id);
+        assert_eq!(detail.tiers, tiers, "the tier choices must survive the reopen");
+        assert_eq!(detail.tiers.get(&photos[3].hash), Some(Tier::Featured));
+        assert_eq!(detail.tiers.get(&photos[9].hash), Some(Tier::Brief));
+    }
+
     /// Generation REFUSES rather than quietly building a book that is missing
     /// photos the user explicitly asked for. The message carries the three
     /// numbers they need to act: how many they picked, how many fit, how many
