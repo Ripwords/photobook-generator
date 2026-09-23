@@ -231,7 +231,8 @@ The toolbar at the top holds the title, with a pencil to rename the book; **Edit
 which takes its photo selection back to the contact sheet and re-analyses the book's own
 folders (every photo the book already holds is a cache hit; a photo added to the folder
 since is analysed for the first time, which does take a moment); **Chat** (⌘J), which shows or hides
-the chat beside the book; and **Export** (⌘E). The bar along the bottom starts with the book's
+the chat beside the book (while a reply is coming in, its send button stops it, and a message
+you type waits in the box until the reply has finished); and **Export** (⌘E). The bar along the bottom starts with the book's
 print size (for example **11 x 8.5 in**), then counts its pages, the photos placed, any blank
 pages and the photos left out, and says what dragging a photo does in the current mode.
 

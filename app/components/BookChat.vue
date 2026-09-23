@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { UIMessage } from "ai";
-import { NO_DEEPSEEK_KEY, messageBlocks, type ProposalBlock } from "~/agent/chat";
+import { NO_DEEPSEEK_KEY, messageBlocks, messageToSend, type ProposalBlock } from "~/agent/chat";
 import { toSpreads, type BookLayout } from "~/types/preview";
 
 const { projectId, layout } = defineProps<{
@@ -36,10 +36,10 @@ const SUGGESTIONS = [
 const input = ref("");
 
 function send(text: string) {
-  const trimmed = text.trim();
-  if (!trimmed || noKey.value) return;
+  const message = messageToSend(text, status.value, noKey.value);
+  if (message === null) return;
   input.value = "";
-  void sendMessage({ text: trimmed });
+  void sendMessage({ text: message });
 }
 
 interface StatusLine {

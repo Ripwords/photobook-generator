@@ -8,6 +8,7 @@ import {
   NO_DEEPSEEK_KEY,
   chatErrorText,
   describeEdit,
+  messageToSend,
   messageBlocks,
   type ProposalBlock,
 } from "../app/agent/chat";
@@ -407,5 +408,22 @@ describe("the browser harness's scripts", () => {
     expect(streamedText("deepseek", { messages: [{ role: "user", content: "hello" }] })).toBe(
       DEEPSEEK_TEXT_REPLY,
     );
+  });
+});
+
+describe("messageToSend", () => {
+  // Sending while a reply streams let the old stream finish into the new
+  // turn: the previous reply rendered again after the next one's proposal.
+  it("sends nothing while a reply is on its way, so the text stays in the box", () => {
+    expect(messageToSend("Swap the two photos on page 2", "submitted", false)).toBeNull();
+    expect(messageToSend("Swap the two photos on page 2", "streaming", false)).toBeNull();
+  });
+  it("sends the trimmed text once the chat is ready, or after an error", () => {
+    expect(messageToSend("  Swap them  ", "ready", false)).toBe("Swap them");
+    expect(messageToSend("Swap them", "error", false)).toBe("Swap them");
+  });
+  it("sends nothing blank, and nothing without a key", () => {
+    expect(messageToSend("   ", "ready", false)).toBeNull();
+    expect(messageToSend("Swap them", "ready", true)).toBeNull();
   });
 });

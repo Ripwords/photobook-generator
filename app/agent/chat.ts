@@ -2,7 +2,7 @@
  * What the chat panel shows, derived from the AI SDK's messages. Pure, so
  * every state a proposal card can be in is tested without a component.
  */
-import { APICallError, getToolName, isToolUIPart, type UIMessage } from "ai";
+import { APICallError, getToolName, isToolUIPart, type ChatStatus, type UIMessage } from "ai";
 import { templateLabel } from "~/types/preview";
 import { MissingKeyError } from "./fetch";
 import { AGENT_TOOLS, type ToolName, type WriteToolName } from "./tools";
@@ -170,6 +170,17 @@ export function messageBlocks(message: UIMessage, label: OpeningLabel): ChatBloc
       },
     ];
   });
+}
+
+/**
+ * The text to send from the prompt, or `null` to send nothing and leave it in
+ * the box. Never while a reply is on its way: the old stream would finish
+ * into the new turn and its reply render again after the next one.
+ */
+export function messageToSend(text: string, status: ChatStatus, noKey: boolean): string | null {
+  const trimmed = text.trim();
+  if (!trimmed || noKey || status === "submitted" || status === "streaming") return null;
+  return trimmed;
 }
 
 /** The text the panel shows when there is no DeepSeek key, and knows to offer Settings for. */
