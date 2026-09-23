@@ -2157,6 +2157,20 @@ tests did not catch them and a fresh reader would repeat them.
 - **Look-alike is not the same as time-adjacent.** A time-lapse is all look-alikes, which is
   why the 120 s cap exists. A 6 s gap can separate a close portrait from a wide street shot,
   so time alone is not a substitute either.
+- **The cull's 120 s cap lets look-alikes through, and per-event budgets print them.** Built
+  2026-09-23. A look-alike retaken minutes later is its own cluster and its own moment, so
+  it survives the cull. Library-wide selection rarely reached it, but event tiers deal each
+  event its own quota, and Iceland's night-sky time-lapse (18 star frames, 2 aurora) got 5
+  slots. At 40 pages that put 13 pairs at print distance ≤ 0.35 in one book, 8 of them on a
+  shared page. Before tiers it was 3 and 1. `pack::defer_look_alikes` moves a photo within
+  `SIMILAR_DISTANCE` of one ahead of it in its event to the back of that event's order.
+  `EventOrder::distinct` counts what is left in front. `budget` caps floors at that count
+  and deals D'Hondt over different pictures before any look-alike. Measured on projects
+  10, 12 and 13 at 20 and 40 pages: 0 pairs ≤ 0.35 anywhere in any book, the same photo
+  counts, unchanged tiers and no event at zero. Iceland 40 p Gini rose from 0.387 to 0.419.
+  Deferral is not dropping: an event of nothing but look-alikes still fills its quota once
+  every event is out of different pictures. Not pinned: the Brief promotion in the first
+  pass uses the same distinct limit, but no test tells it apart from the full limit.
 - **pHash says nothing reliable about sky, mist or snow.** Iceland's pHash-matching pairs have
   a median print distance of 0.52. Trust the print when both photos have one.
 - **Do not rank a cluster's members by their print distance to each other.** Complete

@@ -165,7 +165,11 @@ The book aims for variety over density. It places about four photos per spread, 
 sparse spreads with the occasional six-up. Photos taken within two minutes of each other
 count as one moment: for an event that places anything, the book takes the best photo of
 every moment before a second from any, and never more than two from one moment unless you
-marked the others **+**. A Skipped event places nothing regardless, moments included. The
+marked the others **+**. A photo that looks like one the book already takes -- the same shot
+retaken minutes later, or a time-lapse of one sky -- waits until every event has run out of
+different pictures, and a tier's floor counts different pictures only: an event of twenty
+frames of one star field is owed that picture once, not six times. A Skipped event places
+nothing regardless, moments included. The
 photos this leaves out are still one click away in the editor, under **Choose any photo…**. A length that cannot hold every photo you explicitly
 marked **+** cannot be generated at all, and says so instead of quietly dropping one.
 

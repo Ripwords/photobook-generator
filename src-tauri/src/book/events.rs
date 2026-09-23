@@ -559,8 +559,11 @@ pub fn budget(
     let order = pack::event_order(kept, overrides);
     let target = capacity.target_photos;
     let avail = |e: u32| order.get(&e).map_or(0, |o| o.list.len());
+    let distinct = |e: u32| order.get(&e).map_or(0, |o| o.distinct);
     let included = |e: u32| order.get(&e).map_or(0, |o| o.included);
-    let floor_at = |p: &EventPlan, tier: Tier| tier.floor(options).min(avail(p.event)).max(included(p.event));
+    // A floor guarantees different pictures: an event of one shot retaken
+    // twenty times is owed that shot once, not six copies of it.
+    let floor_at = |p: &EventPlan, tier: Tier| tier.floor(options).min(distinct(p.event)).max(included(p.event));
     let floor_of = |p: &EventPlan| floor_at(p, p.tier);
     let total = |plan: &[EventPlan]| plan.iter().map(floor_of).sum::<usize>();
 
@@ -603,13 +606,18 @@ pub fn budget(
 
     // Step 4: D'Hondt over the remainder, vote = weight x sqrt(moments).
     // Step 4b: when nothing can take a photo, promote the best suggested Brief.
+    // Both run first over each event's different pictures only, then again
+    // over its look-alikes, so no event prints a second copy of a shot while
+    // another still has a picture the book has not shown.
     let mut quota = floors.clone();
     let mut left = target.saturating_sub(quota.values().sum());
+    let mut copies = false;
     while left > 0 {
+        let limit = |e: u32| if copies { avail(e) } else { distinct(e) };
         let open = |p: &&EventPlan| {
             let q = quota[&p.event];
             p.tier != Tier::Skipped
-                && q < avail(p.event)
+                && q < limit(p.event)
                 && (p.tier != Tier::Brief || q < options.brief_cap as usize)
         };
         let score = |p: &EventPlan| p.tier.weight() * (p.moments as f64).sqrt() / (quota[&p.event] + 1) as f64;
@@ -628,13 +636,14 @@ pub fn budget(
             None => {
                 let promote = plan
                     .iter_mut()
-                    .filter(|p| !p.chosen && p.tier == Tier::Brief && avail(p.event) > quota[&p.event])
+                    .filter(|p| !p.chosen && p.tier == Tier::Brief && limit(p.event) > quota[&p.event])
                     .max_by(|a, b| a.merit.total_cmp(&b.merit).then(b.event.cmp(&a.event)));
                 match promote {
                     Some(p) => {
                         p.tier = Tier::Normal;
                         p.reason = Reason::Filled;
                     }
+                    None if !copies => copies = true,
                     None => break,
                 }
             }
@@ -1251,6 +1260,39 @@ mod tests {
         let idx = kept.iter().position(|p| p.hash == photos[40].hash).unwrap();
         assert!(one.selected.contains(&idx), "the Include in a Skipped event is selected");
         assert_eq!(placed(&one, &kept, 1), 1);
+    }
+
+    /// Iceland 2025's night sky: 18 frames of one star field and 2 of the
+    /// aurora, a time-lapse too long for the cull to merge. Its many moments
+    /// out-voted a smaller event, so 5 of its frames were dealt -- three the
+    /// same stars -- while the other event had pictures to spare.
+    ///
+    /// Event 0 is ten frames of ONE picture over five moments; event 1 is four
+    /// different pictures over two. Six photos: event 0's single picture and
+    /// all four of event 1's before a second copy of anything, which still
+    /// fills the book.
+    #[test]
+    fn budget_deals_different_pictures_before_a_look_alike() {
+        let print = |axis: usize| {
+            let mut p = vec![0.0f32; 8];
+            p[axis] = 1.0;
+            Some(p)
+        };
+        let mut photos = event(0, 0, 10, 80);
+        for p in &mut photos {
+            p.feature_print = print(0);
+        }
+        let mut other = event(1, 1, 4, 80);
+        for (n, p) in other.iter_mut().enumerate() {
+            p.feature_print = print(n + 1);
+        }
+        photos.extend(other);
+        let kept = keepers(&photos);
+        let tiers: EventTiers = photos.iter().map(|p| (p.hash.clone(), Tier::Normal)).collect();
+        let cap = capacity(1, 6);
+        let b = budget(&kept, plan_of(&photos, &tiers, &cap), &cap, &Overrides::new(), &BookOptions::default());
+        assert_eq!((placed(&b, &kept, 0), placed(&b, &kept, 1)), (2, 4));
+        assert_eq!(b.floors[&0], 1, "a floor guarantees different pictures, not copies of one");
     }
 
     #[test]

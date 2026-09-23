@@ -592,10 +592,14 @@ pub fn select(photos: &[Photo], target: usize, overrides: &Overrides) -> Vec<usi
 pub struct EventOrder {
     pub list: Vec<usize>,
     pub included: usize,
+    /// How many of `list`'s leading photos are different pictures: its
+    /// Includes and every auto pick `defer_look_alikes` did not move back.
+    pub distinct: usize,
 }
 
 /// Each event's photos ranked ONCE (spec §5 step 5): its Includes, then
-/// `ranked_auto` restricted to the event. A quota takes a prefix, so more
+/// `ranked_auto` restricted to the event, with look-alikes moved behind the
+/// rest (`defer_look_alikes`). A quota takes a prefix, so more
 /// room only ever adds photos to an event, never swaps them.
 ///
 /// `moments` (and so `MAX_PER_MOMENT`) is computed over the whole `photos`
@@ -611,18 +615,59 @@ pub fn event_order(
     let mut out: std::collections::BTreeMap<u32, EventOrder> = std::collections::BTreeMap::new();
     for (i, p) in photos.iter().enumerate() {
         let entry =
-            out.entry(p.event_cluster).or_insert_with(|| EventOrder { list: Vec::new(), included: 0 });
+            out.entry(p.event_cluster).or_insert_with(|| EventOrder { list: Vec::new(), included: 0, distinct: 0 });
         if overrides.get(&p.hash) == Override::Include {
             entry.list.push(i);
             entry.included += 1;
+            entry.distinct += 1;
         }
     }
+    let mut auto: std::collections::BTreeMap<u32, Vec<usize>> = std::collections::BTreeMap::new();
     for i in ranked_auto(photos, overrides) {
-        if let Some(entry) = out.get_mut(&photos[i].event_cluster) {
-            entry.list.push(i);
+        auto.entry(photos[i].event_cluster).or_default().push(i);
+    }
+    for (event, ranked) in auto {
+        if let Some(entry) = out.get_mut(&event) {
+            let (list, fresh) = defer_look_alikes(photos, &entry.list, ranked);
+            entry.list.extend(list);
+            entry.distinct += fresh;
         }
     }
     out
+}
+
+/// `ranked` reordered so a photo that looks like one already ahead of it (in
+/// `chosen` or earlier in `ranked`) waits behind every photo that does not.
+///
+/// The cull only merges look-alikes taken within `SIMILAR_SPAN_SECONDS`, and a
+/// moment ends after `MOMENT_GAP_SECONDS`, so the same shot retaken every
+/// few minutes -- a time-lapse, a pose repeated along a walk -- is a keeper
+/// and a moment each time. An event with room for several photos then
+/// printed that shot several times over a different picture ranked below it. Deferred, not dropped: an event with nothing
+/// else still fills its quota with them. Also returns how many lead the
+/// list as different pictures.
+fn defer_look_alikes(photos: &[Photo], chosen: &[usize], ranked: Vec<usize>) -> (Vec<usize>, usize) {
+    let print = |i: usize| photos[i].feature_print.as_deref();
+    let mut ahead: Vec<&[f32]> = chosen.iter().filter_map(|&i| print(i)).collect();
+    let (mut first, mut later) = (Vec::with_capacity(ranked.len()), Vec::new());
+    for i in ranked {
+        let Some(p) = print(i) else {
+            first.push(i);
+            continue;
+        };
+        let alike = ahead
+            .iter()
+            .any(|a| crate::cluster::feature_distance(a, p).is_some_and(|d| d <= crate::cluster::SIMILAR_DISTANCE));
+        if alike {
+            later.push(i);
+        } else {
+            ahead.push(p);
+            first.push(i);
+        }
+    }
+    let fresh = first.len();
+    first.extend(later);
+    (first, fresh)
 }
 
 /// The fewest photos any spread in this library can be built from, floored at
@@ -2178,5 +2223,52 @@ mod tests {
             let distinct = o.list.iter().map(|&i| moment[i]).collect::<std::collections::BTreeSet<_>>().len();
             assert_eq!(firsts, distinct);
         }
+    }
+
+    /// A timed photo whose feature print is one-hot on `axis`, nudged by
+    /// `offset` along the next axis: two prints on one axis are exactly their
+    /// offsets apart, and prints on different axes are more than 1 apart.
+    fn printed(path: &str, aesthetic: u8, at: i64, axis: usize, offset: f32) -> Photo {
+        let mut print = vec![0.0f32; 8];
+        print[axis] = 1.0;
+        print[axis + 1] = offset;
+        Photo { feature_print: Some(print), ..timed(path, aesthetic, Some(at)) }
+    }
+
+    /// Iceland 2025: four frames of one star field, 3 to 24 minutes apart and
+    /// 0.11 to 0.31 apart in feature print, each far enough from the others in
+    /// time to be a moment -- and a cull cluster -- of its own. The event
+    /// ranked them all ahead of a different picture, so they printed side by
+    /// side on one page.
+    ///
+    /// A look-alike goes behind every photo that is not one, not out: with
+    /// room for all three it is still placed.
+    #[test]
+    fn event_order_puts_a_look_alike_behind_a_different_picture() {
+        let photos = vec![
+            printed("/portrait.jpg", 90, 0, 0, 0.0),
+            printed("/portrait-again.jpg", 80, 600, 0, 0.2),
+            printed("/lagoon.jpg", 40, 1_200, 3, 0.0),
+        ];
+        let order = event_order(&photos, &Overrides::new());
+        let list: Vec<&str> = order[&0].list.iter().map(|&i| photos[i].path.as_str()).collect();
+        assert_eq!(list, ["/portrait.jpg", "/lagoon.jpg", "/portrait-again.jpg"]);
+    }
+
+    /// An `Include` counts as already chosen: the best auto pick that looks
+    /// like it waits behind a different picture. A pair just past
+    /// `SIMILAR_DISTANCE` is not a look-alike and keeps its rank.
+    #[test]
+    fn event_order_measures_look_alikes_against_includes_and_at_the_threshold() {
+        let near = crate::cluster::SIMILAR_DISTANCE;
+        let photos = vec![
+            printed("/kept.jpg", 10, 0, 0, 0.0),
+            printed("/like-kept.jpg", 90, 600, 0, near),
+            printed("/other.jpg", 40, 1_200, 3, 0.0),
+            printed("/just-past.jpg", 30, 1_800, 3, near + 0.01),
+        ];
+        let order = event_order(&photos, &include(&["/kept.jpg"]));
+        let list: Vec<&str> = order[&0].list.iter().map(|&i| photos[i].path.as_str()).collect();
+        assert_eq!(list, ["/kept.jpg", "/other.jpg", "/just-past.jpg", "/like-kept.jpg"]);
     }
 }
