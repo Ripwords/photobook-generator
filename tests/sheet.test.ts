@@ -132,8 +132,19 @@ describe("rowIndexAtOffset", () => {
     expect(rowIndexAtOffset(starts, 48)).toBe(1);
     expect(rowIndexAtOffset(starts, 219)).toBe(1);
     expect(rowIndexAtOffset(starts, 220)).toBe(2);
-    expect(rowIndexAtOffset(starts, 267.5)).toBe(2);
+    expect(rowIndexAtOffset(starts, 267)).toBe(2);
     expect(rowIndexAtOffset(starts, 268)).toBe(3);
+  });
+
+  it("counts a row as reached when it starts less than 1px below the offset", () => {
+    // Tile widths are fractional (e.g. 110.25px), so row starts end in .25 or
+    // .75 while a scroll lands on a whole (or half) pixel.
+    const fractional = [0, 48, 815.25, 863.25];
+    expect(rowIndexAtOffset(fractional, 815)).toBe(2);
+    expect(rowIndexAtOffset(fractional, 814.5)).toBe(2);
+    expect(rowIndexAtOffset(fractional, 814.25)).toBe(1);
+    expect(rowIndexAtOffset(fractional, 814)).toBe(1);
+    expect(rowIndexAtOffset(starts, 267.5)).toBe(3);
   });
 
   it("is the first row above the sheet and the last row past its end", () => {
@@ -160,8 +171,17 @@ describe("pinnedEventRow", () => {
 
   it("switches to an event exactly when its header reaches the offset, not a pixel before", () => {
     expect(pinnedEventRow(rows, starts, 411)).toBe(0);
-    expect(pinnedEventRow(rows, starts, 411.5)).toBe(0);
+    expect(pinnedEventRow(rows, starts, 411.5)).toBe(3);
     expect(pinnedEventRow(rows, starts, 412)).toBe(3);
+  });
+
+  it("pins a header whose start is a fraction of a pixel below a whole-pixel scroll", () => {
+    // Osaka at 1100px with the smallest tiles: its header starts at 815.25
+    // and the reveal scrolls the line under the toolbar to 815.
+    const fractional = [0, 48, 215.25, 815.25, 863.25];
+    const osaka = rows.slice(0, 5);
+    expect(pinnedEventRow(osaka, fractional, 815)).toBe(3);
+    expect(pinnedEventRow(osaka, fractional, 814.25)).toBe(0);
   });
 
   it("stays on an event through all of its tile rows", () => {

@@ -35,7 +35,11 @@ const {
 
 defineSlots<{
   tile(props: { photo: T }): unknown;
-  /** Extra header content, after the count -- see `EventTierControl` in `SelectPhotos.vue`. */
+  /**
+   * Extra header content, after the count -- see `EventTierControl` in `SelectPhotos.vue`.
+   * Place its root nodes with `col-start-2` (a note that gives way first) and
+   * `col-start-3` (a control that never shrinks); see the header row's grid.
+   */
   header(props: { event: number }): unknown;
 }>();
 
@@ -173,22 +177,25 @@ const visible = computed(() =>
 watch([tileWidth, rows], () => virtualizer.value.measure());
 
 /**
- * Scrolls so `event`'s header lands at the top -- the events panel's row
- * click. `scrollToIndex({ align: "start" })` alone put the header UNDER the
- * sticky toolbar above this sheet (`stickyTop`'s own height, 44px in `SelectPhotos`): the
- * virtualizer knows nothing about that toolbar, only about this sheet's own
- * content. `getOffsetForIndex` gives the same target offset `scrollToIndex`
- * would use, and subtracting `stickyTop` from it (then scrolling there
- * directly) leaves that much room above the header for the toolbar to sit
- * in without covering it. `scrollToOffset` clamps a negative result to 0 on
- * its own, so an event near the very top is not a special case here.
+ * Scrolls so `event`'s header lands just under the sticky toolbar -- the
+ * events panel's row click. `scrollToIndex({ align: "start" })` alone put
+ * the header UNDER that toolbar (`stickyTop`, 44px in `SelectPhotos`): the
+ * virtualizer knows nothing about it. So the target is the header's own
+ * start in the scroller (`rowStarts` + `scrollMargin`, the same numbers
+ * `pinnedHeader` compares against) minus `stickyTop`.
+ *
+ * `scrollToOffset` clamps that to [0, max scroll] once. The subtraction
+ * must come before the clamp: `getOffsetForIndex` clamps to the max scroll
+ * itself, so subtracting `stickyTop` after it stopped a late event 44px
+ * short of the end of the sheet (round 5). An event near the end of the
+ * sheet whose header cannot reach the toolbar still scrolls as far as the
+ * sheet goes, with its header visible lower down.
  */
 function revealEvent(event: number) {
   const index = rows.value.findIndex((row) => row.kind === "event" && row.event === event);
-  if (index === -1) return;
-  const target = virtualizer.value.getOffsetForIndex(index, "start");
-  if (!target) return;
-  virtualizer.value.scrollToOffset(target[0] - stickyTop, { align: "start" });
+  const start = rowStarts.value[index];
+  if (start === undefined) return;
+  virtualizer.value.scrollToOffset(start + scrollMargin.value - stickyTop, { align: "start" });
 }
 defineExpose({ revealEvent });
 </script>
@@ -210,31 +217,33 @@ defineExpose({ revealEvent });
         "
       >
         <div
-          class="-mx-6 flex h-9 items-baseline gap-2 bg-default/95 px-6 py-2 text-sm backdrop-blur"
+          class="-mx-6 grid h-9 grid-cols-[minmax(0,max-content)_minmax(0,1fr)_max-content] items-baseline bg-default/95 px-6 py-2 text-sm backdrop-blur"
         >
           <!--
             The slot's content (the tier control, a11y-wise M5) must NOT be a
             descendant of the h2: an h2's accessible name is built from every
             text descendant, including a slotted button's own label, which
             made the heading announce "Kyoto 5 photos Featured Normal Brief
-            Skip" instead of just its title. Keeping it a sibling in the same
-            flex row leaves the layout unchanged while the heading's name
-            stays just the title and count.
+            Skip" instead of just its title. It sits beside the h2 as a
+            direct child of this row instead.
 
-            The slot's own root nodes sit directly in this row rather than
-            inside a wrapping span: a wrapping `<span class="min-w-0">` here
-            (fix2) let the OUTER row's shrink pass squeeze the whole
-            note+control cluster below what the control alone needs, before
-            the control's own `shrink-0` ever got a say -- overflow at
-            1100px with a long title (fix3). With title, note and control as
-            flat siblings of one row, `h2`'s own (default) shrink and the
-            note's much higher one below resolve who gives way first, and
-            `shrink-0` on the control is honoured at the level that actually
-            distributes the row's space, not two flex contexts removed from
-            it. `h2` grows to absorb any slack, keeping the note+control
-            cluster flush right when the title is short, as it was before.
+            A grid, not a flex row, so the title is truncated only after the
+            note is gone (round 5). Flex shrink is proportional: however high
+            the note's shrink factor, the title still gave up a fraction of
+            a pixel, enough to turn "Osaka" into "Osa…" beside a readable
+            note. Grid track sizing is ordered instead. Column 3
+            (`max-content`) holds the tier control and is never squeezed.
+            Column 1 (`minmax(0, max-content)`) holds the title and grows to
+            its full width before any `fr` track gets space. Column 2
+            (`minmax(0, 1fr)`) holds the note and takes only what is left,
+            down to 0. With a short title, column 2 also absorbs the slack,
+            which keeps the control flush right. A slotted note goes in
+            `col-start-2` and a control in `col-start-3`. There is no column
+            gap, because a gap stays even when the note column is empty and
+            took 5px from a note-less title; spacing is on the items (`ml-2`)
+            instead.
           -->
-          <h2 class="flex min-w-0 grow items-baseline gap-2 font-semibold text-highlighted">
+          <h2 class="flex min-w-0 items-baseline gap-2 font-semibold text-highlighted">
             <span class="min-w-0 truncate">{{ row.title }}</span>
             <span class="shrink-0 font-normal text-muted tabular-nums"
               >{{ row.count }} {{ row.count === 1 ? "photo" : "photos" }}</span

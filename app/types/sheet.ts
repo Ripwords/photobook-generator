@@ -76,9 +76,17 @@ export function activeEventRow<T>(rows: SheetRow<T>[], top: number): number | un
 }
 
 /**
- * The row whose span covers `offset`: the last row that starts at or before
- * it. `starts` are the rows' top edges in ascending order; an offset above the
- * first row answers the first row, and one past the end the last.
+ * The row whose span covers `offset`: the last row that starts less than 1px
+ * below it. `starts` are the rows' top edges in ascending order; an offset
+ * above the first row answers the first row, and one past the end the last.
+ *
+ * Why the 1px of slack rather than a strict `start <= offset`: a tile row is
+ * as tall as a fractional column width (110.25px at 1100px with the smallest
+ * tiles), so row starts end in .25 or .75, while a scroll -- the events
+ * panel's reveal included -- lands on a whole pixel (half a pixel on some
+ * Retina WebKit). Strictly, a header at 815.25 is not reached by a scroll to
+ * 815 and the previous event stays pinned over it. A row starting a whole
+ * pixel or more below is still not reached.
  */
 export function rowIndexAtOffset(starts: readonly number[], offset: number): number | undefined {
   if (starts.length === 0) return undefined;
@@ -87,7 +95,7 @@ export function rowIndexAtOffset(starts: readonly number[], offset: number): num
   while (low < high) {
     // Rounded up, so `low = middle` always makes progress.
     const middle = Math.ceil((low + high) / 2);
-    if ((starts[middle] ?? 0) <= offset) low = middle;
+    if ((starts[middle] ?? 0) < offset + 1) low = middle;
     else high = middle - 1;
   }
   return low;
@@ -96,8 +104,9 @@ export function rowIndexAtOffset(starts: readonly number[], offset: number): num
 /**
  * The header that should be pinned when `offset` is the first line visible
  * below whatever sits above the sheet: the header of the event the row there
- * belongs to. A header counts from its own top edge, so it takes over the
- * moment it reaches the offset, not a pixel later.
+ * belongs to. A header takes over the moment its top edge reaches the
+ * offset (within the sub-pixel slack `rowIndexAtOffset` explains), not a
+ * pixel later.
  */
 export function pinnedEventRow<T>(
   rows: SheetRow<T>[],

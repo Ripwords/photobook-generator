@@ -476,24 +476,19 @@ function onGenerated(projectId: number) {
             </template>
             <template #header="{ event }">
               <!--
-                Two root nodes, not one wrapping div: ContactSheet renders
-                this slot as a direct child of its header row (fix3), so a
-                wrapper here would reintroduce the same min-w-0 box the
-                outer row's own shrink pass could squeeze past what the
-                control needs, regardless of the control's own `shrink-0`.
-                `shrink-[999]` on the note (vs. the title's own default
-                shrink inside `ContactSheet`'s `h2`) is what makes the note
-                give way first: its scaled shrink factor swamps the
-                title's, so it is driven to its `min-w-0` floor before the
-                row's shrink math touches the title at all.
+                Two root nodes, not one wrapping div: each takes its own
+                column of ContactSheet's header grid. The note goes in column
+                2, which gets only the space the title (column 1) leaves, so
+                the note truncates to nothing before the title loses a pixel.
+                The control goes in column 3, which is never squeezed.
               -->
               <span
                 v-if="skipNoteFor(event)"
-                class="min-w-0 shrink-[999] truncate text-xs font-normal text-muted"
+                class="col-start-2 ml-2 min-w-0 truncate text-xs font-normal text-muted"
               >
                 {{ skipNoteFor(event) }}
               </span>
-              <span v-if="tierControlReady" class="shrink-0">
+              <span v-if="tierControlReady" class="col-start-3 ml-2">
                 <EventTierControl
                   :row="eventRowFor(event)"
                   :title="titleOf(event)"
