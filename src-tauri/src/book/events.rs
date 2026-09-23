@@ -263,4 +263,40 @@ mod tests {
         t.set("a", None);
         assert!(t.is_empty());
     }
+
+    /// Pins the FULL rank, not just one pair: a transposition of two adjacent
+    /// variants (e.g. `Skipped, Normal, Brief, Featured`) changes `Ord`
+    /// exactly the way `tier_resolution_ties_go_to_the_higher_tier_and_unset_is_none`
+    /// cannot see, because that test only ever compares Skipped against
+    /// Normal. Sorting every variant and comparing against the declared order
+    /// catches ANY adjacent-pair swap, not only that one.
+    #[test]
+    fn tier_rank_is_skipped_then_brief_then_normal_then_featured() {
+        let mut all = [Tier::Featured, Tier::Skipped, Tier::Normal, Tier::Brief];
+        all.sort();
+        assert_eq!(all, [Tier::Skipped, Tier::Brief, Tier::Normal, Tier::Featured]);
+    }
+
+    #[test]
+    fn tier_resolution_ties_go_to_the_higher_tier_for_every_adjacent_pair() {
+        let brief_normal: EventTiers =
+            [("a".to_string(), Tier::Brief), ("b".to_string(), Tier::Normal)].into_iter().collect();
+        assert_eq!(resolve(["a", "b"], &brief_normal), Some(Tier::Normal));
+
+        let normal_featured: EventTiers =
+            [("a".to_string(), Tier::Normal), ("b".to_string(), Tier::Featured)].into_iter().collect();
+        assert_eq!(resolve(["a", "b"], &normal_featured), Some(Tier::Featured));
+
+        let skipped_brief: EventTiers =
+            [("a".to_string(), Tier::Skipped), ("b".to_string(), Tier::Brief)].into_iter().collect();
+        assert_eq!(resolve(["a", "b"], &skipped_brief), Some(Tier::Brief));
+    }
+
+    /// An untiered hash casts no vote: one Brief photo plus three photos with
+    /// no stored choice still resolves to Brief, not to a tie or to `None`.
+    #[test]
+    fn tier_resolution_ignores_untiered_hashes_when_counting_votes() {
+        let tiers: EventTiers = [("a".to_string(), Tier::Brief)].into_iter().collect();
+        assert_eq!(resolve(["a", "x", "y", "z"], &tiers), Some(Tier::Brief));
+    }
 }
