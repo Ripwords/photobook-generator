@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
-import { folderListLabel, isPlaced, type PageOption, type PlaceChapters } from "~/types/book";
+import { folderListLabel, isPlaced, placedCount, type PageOption, type PlaceChapters } from "~/types/book";
 import {
   burstSizes,
   groupByEvent,
@@ -76,6 +76,13 @@ const {
 const stage = computed(() => selectStage(job.running, job.error, summary.value));
 
 const kept = computed(() => keepers(photos.value));
+/**
+ * Photos the chosen length actually places -- the same membership `isPlaced`
+ * checks per tile. Before a recommendation exists this is the cull verdict,
+ * same as `kept`; once one exists it is what "Keepers only" filters to, so
+ * the toggle never disagrees with the dimming.
+ */
+const placed = computed(() => photos.value.filter((photo) => isPlaced(photo, chosenOption.value)));
 
 /**
  * Whether photos the book will leave out are shown. On for every new set of
@@ -87,7 +94,7 @@ const showLeftOut = ref(true);
 watch(photoSetId, () => {
   showLeftOut.value = true;
 });
-const visiblePhotos = computed(() => (showLeftOut.value ? photos.value : kept.value));
+const visiblePhotos = computed(() => (showLeftOut.value ? photos.value : placed.value));
 
 /** The analysed run's place chapters, fetched once per run whatever the switch says, so the switch knows whether it can do anything. */
 const placeChapters = ref<PlaceChapters | null>(null);
@@ -121,7 +128,9 @@ const heroPaths = computed<Set<string>>(
         .filter((path): path is string => path !== undefined),
     ),
 );
-const leftOutCount = computed(() => photos.value.length - kept.value.length);
+/** What the chosen length actually places, out of every analysed photo -- drives the toolbar count so it agrees with the tiles' dimming. */
+const placedTotal = computed(() => placedCount(photos.value, chosenOption.value));
+const leftOutCount = computed(() => photos.value.length - placedTotal.value);
 
 function onSetOverride(photo: AnalyzedPhoto, decision: PhotoOverride) {
   void setOverride(photo.hash, decision);
@@ -310,7 +319,7 @@ function onGenerated(projectId: number) {
             </UButton>
           </UFieldGroup>
           <p class="min-w-0 truncate text-xs text-muted tabular-nums">
-            <span class="font-medium text-highlighted">{{ kept.length }}</span> keepers,
+            <span class="font-medium text-highlighted">{{ placedTotal }}</span> keepers,
             {{ leftOutCount }} left out
           </p>
           <!--

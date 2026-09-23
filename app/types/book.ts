@@ -463,6 +463,17 @@ export function isPlaced(photo: { path: string; kept: boolean }, option: PageOpt
   return option ? option.selectedPaths.includes(photo.path) : photo.kept;
 }
 
+/**
+ * How many of `photos` land in the book at the chosen length -- the same
+ * membership `isPlaced` checks one photo at a time, counted. Drives the
+ * contact sheet's toolbar count and its Keepers-only filter, so both agree
+ * with what the tiles dim instead of drifting back to the cull verdict once
+ * a recommendation exists.
+ */
+export function placedCount(photos: readonly { path: string; kept: boolean }[], option: PageOption | undefined): number {
+  return photos.filter((photo) => isPlaced(photo, option)).length;
+}
+
 /** The option for a given page length, or `undefined` if it was not offered. */
 export function optionFor(
   recommendation: BookRecommendation,

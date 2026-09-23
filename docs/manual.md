@@ -99,7 +99,9 @@ The contact sheet dims every photo the book would leave out **at the length you 
 longer book places more, so switching from 20 to 40 pages lights more of them up. Use **+**
 and **−** on a photo to include or exclude it yourself. The bar above the sheet stays pinned
 while you scroll it: **All photos** or **Keepers only**, the keeper count, and the tile
-size. The panel on the
+size. Once a length is chosen, both the count and **Keepers only** switch to that length too,
+so "N keepers" always matches what is undimmed and **Keepers only** hides exactly what the
+book would leave out at the length you picked, not just what culling excluded. The panel on the
 right is the book itself: name it, pick a length and, under **Print size**, **Change…** the
 page size (the same panel as in the editor, without the dry run), and below that are the selection
 counts and a key to the marks on the tiles. **Choose different folders** at the top starts

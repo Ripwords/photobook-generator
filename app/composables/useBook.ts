@@ -1,5 +1,12 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+// `ref`/`computed`/`Ref`, and the two composables below, are imported
+// explicitly rather than left to Nuxt's auto-imports -- the same reason
+// `usePhotoOverrides.ts` does -- so this file can be exercised by
+// `tests/book-invoke.test.ts` under plain vitest, which has no Nuxt runtime.
+import { computed, ref, type Ref } from "vue";
+import { useBusy } from "~/composables/useBusy";
+import { useProjects } from "~/composables/useProjects";
 import {
   applyExportEvent,
   initialBookState,

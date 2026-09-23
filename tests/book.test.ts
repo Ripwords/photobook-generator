@@ -18,6 +18,7 @@ import {
   canGenerateAt,
   includeOverflowLabel,
   isPlaced,
+  placedCount,
   projectDetailLabel,
   selectionLabel,
   recommendedOption,
@@ -805,5 +806,26 @@ describe("isPlaced", () => {
   });
   it("falls back to the cull verdict before a recommendation arrives", () => {
     expect(isPlaced({ path: "/b.jpg", kept: true }, undefined)).toBe(true);
+  });
+});
+
+describe("placedCount", () => {
+  // The toolbar's "N keepers, M left out" and the Keepers-only toggle must
+  // agree with what the tiles dim, or the sheet can say "0 left out" while
+  // tiles are visibly grayed out. This pins that they read off the same
+  // membership isPlaced does, not the cull verdict.
+  const photos = [
+    { path: "/a.jpg", kept: true },
+    { path: "/b.jpg", kept: true },
+    { path: "/c.jpg", kept: false },
+  ];
+
+  it("counts only the photos the chosen length actually places", () => {
+    const option = { selectedPaths: ["/a.jpg"] } as Pick<PageOption, "selectedPaths"> as PageOption;
+    expect(placedCount(photos, option)).toBe(1);
+  });
+
+  it("falls back to the cull verdict before a recommendation arrives", () => {
+    expect(placedCount(photos, undefined)).toBe(2);
   });
 });
