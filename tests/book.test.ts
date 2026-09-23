@@ -17,6 +17,7 @@ import {
   optionFor,
   canGenerateAt,
   includeOverflowLabel,
+  isPlaced,
   projectDetailLabel,
   selectionLabel,
   recommendedOption,
@@ -35,6 +36,7 @@ import {
   type ExportResult,
   type FolderCheck,
   type GeneratedBook,
+  type PageOption,
   type ProjectDetail,
   type ProjectListItem,
 } from "../app/types/book";
@@ -792,5 +794,16 @@ describe("IMPORTABLE", () => {
 
     expect(supported.length).toBeGreaterThan(0);
     expect([...IMPORTABLE].toSorted()).toEqual(supported.toSorted());
+  });
+});
+
+describe("isPlaced", () => {
+  const option = { selectedPaths: ["/a.jpg"] } as Pick<PageOption, "selectedPaths"> as PageOption;
+  it("dims by the chosen length once there is one", () => {
+    expect(isPlaced({ path: "/a.jpg", kept: true }, option)).toBe(true);
+    expect(isPlaced({ path: "/b.jpg", kept: true }, option)).toBe(false);
+  });
+  it("falls back to the cull verdict before a recommendation arrives", () => {
+    expect(isPlaced({ path: "/b.jpg", kept: true }, undefined)).toBe(true);
   });
 });

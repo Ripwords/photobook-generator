@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { PhotoOverrides } from "~/types/features";
+import type { EventTiers, PhotoOverrides } from "~/types/features";
 import type { Screen } from "~/types/navigation";
 import type { BookOptions } from "~/types/book";
 import type { PrintSpec } from "~/types/printSpec";
@@ -116,6 +116,7 @@ function onEditPhotos(payload: {
   name: string;
   sourceFolders: string[];
   overrides: PhotoOverrides;
+  tiers: EventTiers;
   spec: PrintSpec | null;
   options: BookOptions | null;
 }) {
@@ -130,6 +131,7 @@ function onEditPhotos(payload: {
       folders: payload.sourceFolders,
       replacing: { id: payload.projectId, name: payload.name },
       restoreOverrides: payload.overrides,
+      restoreTiers: payload.tiers,
       spec: payload.spec,
       options: payload.options ?? undefined,
     }),

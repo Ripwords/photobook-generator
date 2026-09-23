@@ -27,9 +27,11 @@ const {
    */
   override?: PhotoOverride;
   /**
-   * Whether this photo survives culling -- RUST'S verdict, read off
-   * `AnalyzedPhoto.kept` by the caller, never re-derived here. Drives nothing
-   * but the tile's appearance.
+   * Whether this photo is placed in the book -- computed by the caller
+   * (`isPlaced`), never re-derived here. Once a recommendation exists this is
+   * membership in the chosen length's `selectedPaths`, not the raw cull
+   * verdict; before one exists it falls back to `AnalyzedPhoto.kept`. Drives
+   * nothing but the tile's appearance.
    */
   isKept?: boolean;
 }>();
@@ -46,7 +48,7 @@ function press(state: Exclude<PhotoOverride, "auto">) {
 }
 
 /**
- * A photo the book will not contain is dimmed rather than hidden: it has to
+ * A photo the book will not place is dimmed rather than hidden: it has to
  * stay on screen for the user to be able to ask for it back, which is the
  * whole point of the include control.
  */

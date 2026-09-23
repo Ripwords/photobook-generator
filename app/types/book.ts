@@ -453,6 +453,16 @@ export function includeOverflowLabel(option: PageOption): string | null {
   return `${option.includedOverCapacity} more photo${option.includedOverCapacity === 1 ? "" : "s"} marked to include than a ${option.pages}-page book holds`;
 }
 
+/**
+ * Whether a photo lands in the book at the chosen length. Before a
+ * recommendation exists there is no length to place photos into yet, so this
+ * falls back to the cull verdict -- the same thing the contact sheet showed
+ * before options existed at all.
+ */
+export function isPlaced(photo: { path: string; kept: boolean }, option: PageOption | undefined): boolean {
+  return option ? option.selectedPaths.includes(photo.path) : photo.kept;
+}
+
 /** The option for a given page length, or `undefined` if it was not offered. */
 export function optionFor(
   recommendation: BookRecommendation,

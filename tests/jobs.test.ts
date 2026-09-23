@@ -347,6 +347,22 @@ describe("analysis jobs", () => {
       expect(after.jobs.value[0]!.overrides).toEqual({ b: "exclude" });
     });
 
+    it("brings a draft's tier choices back after a restart, the same way as its overrides", async () => {
+      const before = createAnalysisJobs();
+      await before.restoreDrafts();
+      const id = before.startJob({ name: "Kyoto", folders: ["/k", "/k2"] });
+      runs[0]!.finish(summary(1, "a", "b"));
+      await settle();
+      before.find(id)!.tiers = { h1: "featured" };
+      await settle();
+
+      const after = createAnalysisJobs();
+      await after.restoreDrafts();
+      runs.at(-1)!.finish(summary(2, "a", "b"));
+      await settle();
+      expect(after.jobs.value[0]!.tiers).toEqual({ h1: "featured" });
+    });
+
     it("keeps a saved book's decisions for a draft quit before its analysis finished", async () => {
       const before = createAnalysisJobs();
       await before.restoreDrafts();
@@ -496,5 +512,19 @@ describe("parseSavedDraft options", () => {
   it("replaces an out-of-range floor or cap with its default", () => {
     const draft = parseSavedDraft(JSON.stringify({ ...base, options: { featuredFloor: 40, briefCap: 0 } }));
     expect(draft?.options).toEqual({ places: false, featuredFloor: 6, briefCap: 2 });
+  });
+});
+
+describe("parseSavedDraft tiers", () => {
+  const base = { id: 1, name: "Trip", folders: ["/a"] };
+  it("restores the user's tier choices", () => {
+    const draft = parseSavedDraft(JSON.stringify({ ...base, tiers: { h1: "featured", h2: "skipped" } }));
+    expect(draft?.tiers).toEqual({ h1: "featured", h2: "skipped" });
+  });
+  it("gives a draft saved before tiers an empty map", () => {
+    expect(parseSavedDraft(JSON.stringify(base))?.tiers).toEqual({});
+  });
+  it("fails the load on an unknown tier token (spec §6)", () => {
+    expect(parseSavedDraft(JSON.stringify({ ...base, tiers: { h1: "hero" } }))).toBeNull();
   });
 });

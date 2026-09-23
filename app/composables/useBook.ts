@@ -19,7 +19,7 @@ import {
   type ProjectDetail,
 } from "~/types/book";
 import type { BookEdit, BookLayout, HistoryStatus, HistoryStep } from "~/types/preview";
-import type { AnalyzedPhoto, PhotoOverrides } from "~/types/features";
+import type { AnalyzedPhoto, EventTiers, PhotoOverrides } from "~/types/features";
 import type { PrintSpec } from "~/types/printSpec";
 import type { BookOptions } from "~/types/book";
 
@@ -54,6 +54,8 @@ export function useBook(
    * finally gives the decisions somewhere durable to live.
    */
   overrides: Ref<PhotoOverrides> = ref({}),
+  /** The user's per-event tier choices. Sent with both commands, like `overrides`. */
+  tiers: Ref<EventTiers> = ref({}),
   /** The analysis the photos came from -- see `AnalysisSummary.runId`. */
   runId: Ref<number> = ref(0),
 ) {
@@ -130,7 +132,7 @@ export function useBook(
     history.value = await invoke<HistoryStatus>("book_history", { projectId });
   }
 
-  async function refreshRecommendation() {
+  async function refreshRecommendation(options: BookOptions) {
     await guard(async () => {
       // No photos: Rust reads the set cached by `analyze_folder`. This runs
       // on every override toggle, and re-uploading several megabytes of
@@ -139,6 +141,8 @@ export function useBook(
       recommendation.value = await invoke<BookRecommendation>("recommend_book", {
         runId: runId.value,
         overrides: overrides.value,
+        tiers: tiers.value,
+        options,
       });
     });
   }
@@ -155,6 +159,7 @@ export function useBook(
         name,
         sourceFolders: folders.value,
         overrides: overrides.value,
+        tiers: tiers.value,
         spec,
         options,
       });

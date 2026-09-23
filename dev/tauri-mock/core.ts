@@ -40,17 +40,22 @@ import type {
 import type { PrintSpec, SpecCheck, SpecError } from "../../app/types/printSpec";
 import type {
   BookRecommendation,
+  EventRow,
   ExportEvent,
   ExportResult,
   GeneratedBook,
+  PageOption,
   ProjectDetail,
   ProjectListItem,
+  TierCounts,
 } from "../../app/types/book";
 import type {
   AnalysisEvent,
   AnalysisSummary,
   AnalyzedPhoto,
+  EventTiers,
   PhotoOverrides,
+  Tier,
 } from "../../app/types/features";
 import type { PreflightFinding } from "../../app/types/book";
 import { cancelModelRequest, modelRequest, type ModelRequestArgs } from "./model";
@@ -187,6 +192,8 @@ const projects: ProjectListItem[] = (structuredClone(listFixture) as ProjectList
 const trash: { project: ProjectListItem; index: number }[] = [];
 /** Decisions each saved project was generated with, so reopening restores them. */
 const savedOverrides = new Map<number, PhotoOverrides>();
+/** Tier choices each saved project was generated with, so reopening restores them. */
+const savedTiers = new Map<number, EventTiers>();
 let nextProjectId = 100;
 
 function detailFor(id: number): ProjectDetail {
@@ -204,6 +211,7 @@ function detailFor(id: number): ProjectDetail {
     droppedPhotos: layout.droppedPhotos,
     seed: layout.seed,
     overrides: savedOverrides.get(id) ?? {},
+    tiers: savedTiers.get(id) ?? {},
     exports: listed.lastExport ? [listed.lastExport] : [],
   };
 }
@@ -217,6 +225,56 @@ function keptPaths(overrides: PhotoOverrides): string[] {
       return photo.kept;
     })
     .map((photo) => photo.path);
+}
+
+/**
+ * One length's plan, built from the mock's own 36 synthetic photos rather
+ * than the static fixture -- so switching page counts in the harness visibly
+ * changes what the contact sheet dims. This is NOT a stand-in for the
+ * engine's tier/merit/budget logic (that lives only in Rust); it exists so
+ * `isPlaced` has something real to read. Every option places a PREFIX of the
+ * same kept-photo order, so a longer book's `selectedPaths` is always a
+ * superset of a shorter one's, never a differently-chosen set of the same
+ * size.
+ */
+function mockOptionFor(option: PageOption, keptOrdered: string[], overrides: PhotoOverrides): PageOption {
+  const selectedPaths = keptOrdered.slice(0, Math.min(option.capacityPhotos, keptOrdered.length));
+  const selected = new Set(selectedPaths);
+  const clusterIds = [...new Set(photos.map((photo) => photo.eventCluster))].toSorted((a, b) => a - b);
+  const tiersByRank: readonly Tier[] = ["featured", "normal", "brief", "skipped"];
+  const eventsByTier: TierCounts = { featured: 0, normal: 0, brief: 0, skipped: 0 };
+  const events: EventRow[] = clusterIds.map((event, index) => {
+    const inCluster = photos.filter((photo) => photo.eventCluster === event);
+    const keptInCluster = inCluster.filter((photo) => {
+      const decision = overrides[photo.hash];
+      if (decision === "include") return true;
+      if (decision === "exclude") return false;
+      return photo.kept;
+    });
+    const selectedInCluster = inCluster.filter((photo) => selected.has(photo.path)).length;
+    const tier = tiersByRank[index % tiersByRank.length] ?? "normal";
+    eventsByTier[tier] += 1;
+    return {
+      event,
+      tier,
+      suggested: tier,
+      chosen: false,
+      reason: { kind: "standout" },
+      merit: 0.5,
+      moments: inCluster.length,
+      kept: keptInCluster.length,
+      photos: inCluster.length,
+      selected: selectedInCluster,
+    };
+  });
+  return {
+    ...option,
+    droppedPhotos: Math.max(0, keptOrdered.length - selectedPaths.length),
+    events,
+    eventsByTier,
+    selectedPaths,
+    tierOverflow: null,
+  };
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -751,10 +809,12 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
     case "recommend_book": {
       const overrides = (args?.overrides as PhotoOverrides) ?? {};
       const base = structuredClone(recommendationFixture) as BookRecommendation;
+      const keptOrdered = keptPaths(overrides);
       return {
         ...base,
-        keeperCount: keptPaths(overrides).length,
+        keeperCount: keptOrdered.length,
         includedCount: Object.values(overrides).filter((state) => state === "include").length,
+        options: base.options.map((option) => mockOptionFor(option, keptOrdered, overrides)),
       } as T;
     }
 
@@ -792,6 +852,7 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
         coverThumbnails: coverFrom(0),
       });
       savedOverrides.set(id, { ...(args?.overrides as PhotoOverrides | undefined) });
+      savedTiers.set(id, { ...(args?.tiers as EventTiers | undefined) });
       const book: GeneratedBook = {
         projectId: id,
         pageCount: (args?.pages as number) ?? layout.pageCount,

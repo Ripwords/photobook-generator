@@ -6,14 +6,16 @@ import {
   optionFor,
   recommendedOption,
   type BookOptions,
+  type PageOption,
 } from "~/types/book";
-import type { AnalyzedPhoto, PhotoOverrides } from "~/types/features";
+import type { AnalyzedPhoto, EventTiers, PhotoOverrides } from "~/types/features";
 import type { ReplacedProject } from "~/types/navigation";
 import { sizeLabel, type PrintSpec } from "~/types/printSpec";
 
 const {
   photos = [],
   overrides = {},
+  tiers = {},
   photoSetId = 0,
   runId = 0,
   folders = [],
@@ -24,6 +26,8 @@ const {
   photos?: AnalyzedPhoto[];
   /** The user's own include/exclude decisions, persisted with the project by `generate_book`. */
   overrides?: PhotoOverrides;
+  /** The user's per-event tier choices, persisted with the project by `generate_book`. */
+  tiers?: EventTiers;
   /**
    * Identity of the analysed SET, bumped once per analysis and never per
    * override -- see `usePhotoOverrides.photoSetId`. Watched instead of
@@ -42,6 +46,7 @@ const {
 
 const emit = defineEmits<{
   generated: [projectId: number];
+  option: [option: PageOption | undefined];
 }>();
 
 // `toRef` rather than passing the props straight through: `useBook` holds
@@ -50,6 +55,7 @@ const emit = defineEmits<{
 const photosRef = toRef(() => photos);
 const foldersRef = toRef(() => folders);
 const overridesRef = toRef(() => overrides);
+const tiersRef = toRef(() => tiers);
 const runIdRef = toRef(() => runId);
 
 const {
@@ -61,7 +67,7 @@ const {
   generate,
   deleteProject,
   reset,
-} = useBook(photosRef, foldersRef, overridesRef, runIdRef);
+} = useBook(photosRef, foldersRef, overridesRef, tiersRef, runIdRef);
 
 /**
  * The draft's print size, owned by its job so it survives a restart. `null`
@@ -155,28 +161,33 @@ watch(
     // longer on screen.
     reset();
     chosenPages.value = null;
-    if (canGenerate.value) void refreshRecommendation();
+    if (canGenerate.value) void refreshRecommendation(options.value);
   },
   { immediate: true },
 );
 
-// The overrides change what the book contains, so they change both the keeper
-// count and whether a length can hold every photo the user asked for. This is
-// the ONLY refresh a toggle triggers -- the watcher above used to fire on the
-// same click, sending the whole analysed array twice per click.
+// The overrides, tiers and options change what the book contains, so they
+// change both the keeper count and whether a length can hold every photo the
+// user asked for. This is the ONLY refresh those changes trigger -- the
+// watcher above used to fire on the same click, sending the whole analysed
+// array twice per click.
 //
 // Nothing else is touched: no reset, no name, no page length. The user is
 // refining a selection, not starting over.
 watch(
-  () => overrides,
+  [() => overrides, () => tiers, () => options.value],
   () => {
-    if (canGenerate.value) void refreshRecommendation();
+    if (canGenerate.value) void refreshRecommendation(options.value);
   },
 );
 
 watch(recommendation, (next) => {
   if (next && chosenPages.value === null) chosenPages.value = next.recommendedPages;
 });
+
+// Lets the caller dim the contact sheet by what the chosen length actually
+// places, rather than by the cull verdict alone -- see `isPlaced`.
+watch(chosenOption, (next) => emit("option", next), { immediate: true });
 
 /**
  * `generate_book` always INSERTs, so regenerating a re-edited selection leaves

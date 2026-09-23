@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
-import { folderListLabel, type PlaceChapters } from "~/types/book";
+import { folderListLabel, isPlaced, type PageOption, type PlaceChapters } from "~/types/book";
 import {
   burstSizes,
   groupByEvent,
@@ -61,6 +61,10 @@ const decisions = computed({
     job.overrides = next;
   },
 });
+/** The job's tier choices, restored on reopen -- no control writes these yet. */
+const tiers = computed(() => job.tiers);
+/** The option the user has chosen a length for, so the sheet can dim by what it actually places. */
+const chosenOption = ref<PageOption>();
 const {
   overrides,
   photos,
@@ -373,7 +377,7 @@ function onGenerated(projectId: number) {
                 :photo
                 :burst-size="burstMap.get(photo.nearDupCluster) ?? 1"
                 :is-hero="heroPaths.has(photo.path)"
-                :is-kept="photo.kept"
+                :is-kept="isPlaced(photo, chosenOption)"
                 :override="overrideFor(overrides, photo.hash)"
                 @set-override="onSetOverride(photo, $event)"
               />
@@ -399,6 +403,7 @@ function onGenerated(projectId: number) {
       <GenerateBook
         :photos
         :overrides
+        :tiers
         :photo-set-id="photoSetId"
         :run-id="runId"
         :folders="job.folders"
@@ -411,6 +416,7 @@ function onGenerated(projectId: number) {
         @update:options="setOptions(job.id, $event)"
         :located="placeChapters?.located ?? null"
         @generated="onGenerated"
+        @option="chosenOption = $event"
       />
 
       <section class="space-y-2 border-t border-default pt-6" aria-labelledby="select-stats">

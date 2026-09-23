@@ -5,7 +5,7 @@ import { mockPhotos } from "../dev/tauri-mock/photos";
 import layoutFixture from "./fixtures/wire/book-layout.json";
 import type { AnalysisEvent, AnalysisSummary } from "../app/types/features";
 import type { BookEdit, BookLayout, HistoryStatus, SlotCandidate } from "../app/types/preview";
-import type { ImportedPhoto } from "../app/types/book";
+import type { BookRecommendation, ImportedPhoto } from "../app/types/book";
 import type { PrintSpec } from "../app/types/printSpec";
 
 describe("the browser harness's commands", () => {
@@ -41,6 +41,22 @@ describe("the browser harness's commands", () => {
     expect(await invoke<SlotCandidate[]>("slot_candidates", { placement: { page: 2, z: 1 } })).toHaveLength(
       added.photoIndex + 1,
     );
+  });
+
+  // `isPlaced` (app/types/book.ts) dims the contact sheet by whichever
+  // option the user has chosen a length for. If a shorter option's
+  // selection were not a prefix of a longer one's, a tile could go from
+  // undimmed at 40 pages back to dimmed at 20 -- this pins the property the
+  // dimming logic actually depends on, not just that options differ.
+  it("recommend_book nests a shorter option's selection inside a longer one's", async () => {
+    const recommendation = await invoke<BookRecommendation>("recommend_book", { overrides: {} });
+    const [shorter, longer] = recommendation.options.toSorted((a, b) => a.pages - b.pages);
+
+    expect(shorter!.selectedPaths.length).toBeGreaterThan(0);
+    expect(longer!.selectedPaths.length).toBeGreaterThan(shorter!.selectedPaths.length);
+    // A prefix, in order -- not just a subset -- so a tile undimmed at the
+    // shorter length is undimmed at the same position in the longer one too.
+    expect(longer!.selectedPaths.slice(0, shorter!.selectedPaths.length)).toEqual(shorter!.selectedPaths);
   });
 
   it("hands back where a photo it already holds sits, without appending again", async () => {

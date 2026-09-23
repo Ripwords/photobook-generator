@@ -8,7 +8,7 @@ import {
   selectionLabel,
   summarizeExport,
 } from "~/types/book";
-import type { PhotoOverrides } from "~/types/features";
+import type { EventTiers, PhotoOverrides } from "~/types/features";
 import type { BookOptions } from "~/types/book";
 import { sizeLabel, type PrintSpec } from "~/types/printSpec";
 import { canStep, stepLabel, type HistoryStep, type PreviewGeometry } from "~/types/preview";
@@ -33,6 +33,7 @@ const emit = defineEmits<{
       name: string;
       sourceFolders: string[];
       overrides: PhotoOverrides;
+      tiers: EventTiers;
       /** Its print size, so generating it again keeps the book it was. */
       spec: PrintSpec | null;
       /** Its options, for the same reason. */
@@ -208,6 +209,7 @@ function requestEditPhotos() {
     name: project.name,
     sourceFolders: project.sourceFolders,
     overrides: project.overrides,
+    tiers: project.tiers,
     spec: layout.value?.spec ?? null,
     options: layout.value?.options ?? null,
   });

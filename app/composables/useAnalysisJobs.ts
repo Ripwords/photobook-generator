@@ -13,10 +13,13 @@ import {
 import {
   applyAnalysisEvent,
   initialStreamState,
+  TIERS,
   type AnalysisEvent,
   type AnalysisSummary,
+  type EventTiers,
   type PhotoOverrides,
   type StreamState,
+  type Tier,
 } from "~/types/features";
 import type { ReplacedProject } from "~/types/navigation";
 import type { PrintSpec } from "~/types/printSpec";
@@ -38,12 +41,16 @@ export interface AnalysisJob {
   replacing: ReplacedProject | null;
   /** That book's saved decisions, applied once its analysis is done. */
   restoreOverrides: PhotoOverrides;
+  /** That book's saved tier choices, applied once its analysis is done. */
+  restoreTiers: EventTiers;
   /** The streamed run, accumulated by `applyAnalysisEvent`. */
   stream: StreamState;
   running: boolean;
   error: string | null;
   /** The user's include/exclude decisions about the current run's photos. */
   overrides: PhotoOverrides;
+  /** The user's tier choices for the current run's events. */
+  tiers: EventTiers;
   /**
    * The print size the book will be generated at. `null` is the app's
    * default, which only Rust knows -- see `default_print_spec`.
@@ -59,6 +66,7 @@ export interface NewJob {
   folders: string[];
   replacing?: ReplacedProject | null;
   restoreOverrides?: PhotoOverrides;
+  restoreTiers?: EventTiers;
   spec?: PrintSpec | null;
   options?: BookOptions;
 }
@@ -74,6 +82,8 @@ export interface SavedDraft {
   replacing: ReplacedProject | null;
   /** The decisions to apply once the draft is analysed again. */
   overrides: PhotoOverrides;
+  /** The tier choices to apply once the draft is analysed again. */
+  tiers: EventTiers;
   spec: PrintSpec | null;
   options: BookOptions;
 }
@@ -90,6 +100,7 @@ export function savedDraft(job: AnalysisJob): SavedDraft {
     folders: [...job.folders],
     replacing: job.replacing ? { ...job.replacing } : null,
     overrides: { ...(analysed ? job.overrides : job.restoreOverrides) },
+    tiers: { ...(analysed ? job.tiers : job.restoreTiers) },
     spec: job.spec ? { ...job.spec } : null,
     options: { ...job.options },
   };
@@ -156,7 +167,7 @@ export function parseSavedDraft(json: string): SavedDraft | null {
     return null;
   }
   if (!isRecord(value)) return null;
-  const { id, name, folders, replacing, overrides, spec, options } = value;
+  const { id, name, folders, replacing, overrides, tiers, spec, options } = value;
   if (typeof id !== "number" || typeof name !== "string") return null;
   if (!Array.isArray(folders) || folders.length === 0) return null;
   if (!folders.every((folder) => typeof folder === "string")) return null;
@@ -170,12 +181,20 @@ export function parseSavedDraft(json: string): SavedDraft | null {
       if (state === "include" || state === "exclude") decisions[hash] = state;
     }
   }
+  const chosenTiers: EventTiers = {};
+  if (isRecord(tiers)) {
+    for (const [hash, tier] of Object.entries(tiers)) {
+      if (typeof tier !== "string" || !(TIERS as readonly string[]).includes(tier)) return null;
+      chosenTiers[hash] = tier as Tier;
+    }
+  }
   return {
     id,
     name,
     folders,
     replacing: replaced,
     overrides: decisions,
+    tiers: chosenTiers,
     spec: parseSpec(spec),
     options: parseOptions(options),
   };
@@ -233,6 +252,7 @@ export function createAnalysisJobs() {
     // A new run is a new set of photos, and a decision keyed by content hash
     // must not carry into it.
     job.overrides = {};
+    job.tiers = {};
 
     // A `Channel`, not Tauri's event system, which is JSON-string-only and
     // not built for this volume.
@@ -258,6 +278,9 @@ export function createAnalysisJobs() {
       if (Object.keys(job.restoreOverrides).length > 0) {
         job.overrides = { ...job.restoreOverrides };
       }
+      if (Object.keys(job.restoreTiers).length > 0) {
+        job.tiers = { ...job.restoreTiers };
+      }
     } catch (error) {
       if (current()) job.error = String(error);
     }
@@ -278,10 +301,12 @@ export function createAnalysisJobs() {
       folders: [...options.folders],
       replacing: options.replacing ?? null,
       restoreOverrides: { ...options.restoreOverrides },
+      restoreTiers: { ...options.restoreTiers },
       stream: initialStreamState,
       running: true,
       error: null,
       overrides: {},
+      tiers: {},
       spec: options.spec ?? null,
       options: { ...(options.options ?? DEFAULT_BOOK_OPTIONS) },
     }) as AnalysisJob;
@@ -306,6 +331,7 @@ export function createAnalysisJobs() {
     if (folders.join("\n") !== job.folders.join("\n")) {
       job.replacing = null;
       job.restoreOverrides = {};
+      job.restoreTiers = {};
     }
     job.folders = [...folders];
     void run(job);
@@ -399,6 +425,7 @@ export function createAnalysisJobs() {
           folders: draft.folders,
           replacing: draft.replacing,
           restoreOverrides: draft.overrides,
+          restoreTiers: draft.tiers,
           spec: draft.spec,
           options: draft.options,
         },

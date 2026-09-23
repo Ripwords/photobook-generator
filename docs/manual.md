@@ -95,7 +95,8 @@ When you shot the same picture several times within two minutes, the app keeps o
 sharpest, unless it is almost entirely black or blown out and a properly exposed frame
 exists.
 
-The contact sheet shows every photo with the ones the book would leave out dimmed. Use **+**
+The contact sheet dims every photo the book would leave out **at the length you have chosen**. A
+longer book places more, so switching from 20 to 40 pages lights more of them up. Use **+**
 and **−** on a photo to include or exclude it yourself. The bar above the sheet stays pinned
 while you scroll it: **All photos** or **Keepers only**, the keeper count, and the tile
 size. The panel on the
