@@ -507,6 +507,12 @@ impl Budget {
 }
 
 /// Deals the book's `target_photos` out to events by tier (§5).
+///
+/// Availability (`avail`, via `pack::event_order`) and floors are per event,
+/// but the photo ranking underneath is library-wide: `moments` is computed
+/// once over every kept photo, not per event, so two events that overlap in
+/// capture time share the same `MAX_PER_MOMENT` slots rather than each
+/// getting their own.
 pub fn budget(
     kept: &[Photo],
     mut plan: Vec<EventPlan>,
@@ -521,8 +527,11 @@ pub fn budget(
     let floor_of = |p: &EventPlan| p.tier.floor(options).min(avail(p.event)).max(included(p.event));
     let total = |plan: &[EventPlan]| plan.iter().map(floor_of).sum::<usize>();
 
-    // Step 3: floors that do not fit demote SUGGESTIONS, lowest merit first.
-    for (from, to) in [(Tier::Featured, Tier::Normal), (Tier::Normal, Tier::Brief)] {
+    // Step 3: floors that do not fit demote SUGGESTIONS, lowest merit first:
+    // Featured -> Normal, then Normal -> Brief, then (R9) Brief -> Skipped.
+    // A Skipped event still places its Includes -- `floor_of` maxes with
+    // `included`, and an Include always wins regardless of tier.
+    for (from, to) in [(Tier::Featured, Tier::Normal), (Tier::Normal, Tier::Brief), (Tier::Brief, Tier::Skipped)] {
         while total(&plan) > target {
             let Some(p) = plan
                 .iter_mut()
@@ -535,6 +544,9 @@ pub fn budget(
             p.reason = Reason::Demoted;
         }
     }
+    // By now only the user's OWN floors (`chosen` tiers) and Includes can
+    // still overflow the target -- every suggested event has already been
+    // demoted as far as Skipped.
     let mut floors: BTreeMap<u32, usize> = plan.iter().map(|p| (p.event, floor_of(p))).collect();
     let needed: usize = floors.values().sum();
     let mut overflow = None;
@@ -1316,5 +1328,123 @@ mod tests {
         assert_eq!(b.selected.len(), 6);
         assert_eq!(placed(&b, &kept, 0), 2, "event 0's own divisor never overtakes event 1's");
         assert_eq!(placed(&b, &kept, 1), 4, "both remainder seats go to the higher-moments event");
+    }
+
+    #[test]
+    fn r9a_no_choices_no_includes_never_exceeds_the_target() {
+        // 30 events of 4 photos (2 moments) each, no user tiers and no
+        // Includes. Suggested floors alone (Normal 2, Brief 1) sum well
+        // past the 20-photo target, and none of them is `chosen`, so
+        // without demoting unchosen Brief events all the way to Skipped,
+        // `selected` overflows the target -- the bug this ruling fixes: 30
+        // events x 4 photos at target 20 used to select 30.
+        let mut photos = Vec::new();
+        for e in 0..30u32 {
+            photos.extend(event(e, e as i64, 4, 90 - e as u8));
+        }
+        let kept = keepers(&photos);
+        let cap = capacity(9, 20);
+        let b = budget(&kept, plan_of(&photos, &EventTiers::new(), &cap), &cap, &Overrides::new(), &BookOptions::default());
+        assert!(b.selected.len() <= 20, "got {}", b.selected.len());
+        assert!(b.overflow.is_none());
+        assert!(
+            b.plan.iter().any(|p| p.tier == Tier::Skipped && p.reason == Reason::Demoted),
+            "the lowest-merit events must be demoted all the way to Skipped: {:?}",
+            b.plan.iter().map(|p| (p.event, p.tier, p.reason)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn r9b_zero_capacity_with_no_choices_selects_nothing() {
+        let mut photos = Vec::new();
+        for e in 0..5u32 {
+            photos.extend(event(e, e as i64, 4, 90 - e as u8));
+        }
+        let kept = keepers(&photos);
+        let cap = capacity(0, 0);
+        let b = budget(&kept, plan_of(&photos, &EventTiers::new(), &cap), &cap, &Overrides::new(), &BookOptions::default());
+        assert_eq!(b.selected.len(), 0);
+        assert!(b.overflow.is_none());
+    }
+
+    #[test]
+    fn r9c_a_chosen_brief_on_every_event_is_never_demoted_and_can_overflow() {
+        // Every event's tier is the user's own choice (Brief), so the new
+        // Brief -> Skipped step must never touch them: `!p.chosen` excludes
+        // every event from all three demotion steps, and the book reports
+        // overflow instead of silently demoting the user's own floors.
+        let mut photos = Vec::new();
+        for e in 0..21u32 {
+            photos.extend(event(e, e as i64, 4, 90 - e as u8));
+        }
+        let kept = keepers(&photos);
+        let tiers: EventTiers = photos.iter().map(|p| (p.hash.clone(), Tier::Brief)).collect();
+        let cap = capacity(9, 20); // 21 x floor 1 = 21 > 20
+        let b = budget(&kept, plan_of(&photos, &tiers, &cap), &cap, &Overrides::new(), &BookOptions::default());
+        assert!(b.plan.iter().all(|p| p.tier == Tier::Brief), "a chosen tier is never demoted");
+        assert!(b.overflow.is_some());
+    }
+
+    #[test]
+    fn floors_are_honored_even_when_plain_dhondt_never_catches_up() {
+        // A hand-built plan: a Featured event with almost no moments (fake
+        // `moments: 1`, so its D'Hondt vote is tiny) beside a Normal event
+        // with an enormous fake `moments: 1000` vote. `quota` MUST start
+        // from each event's already-computed floor, not from something
+        // weaker (e.g. Includes alone): seeded from Includes only, the
+        // Featured event would need to WIN a remainder seat by score to
+        // ever reach its floor, and the huge competitor's score dominates
+        // every one of the 10 remainder seats this fixture hands out, so a
+        // wrongly-seeded quota would leave the Featured event under floor.
+        let mut photos = event(0, 0, 20, 90); // Featured, avail 20
+        photos.extend(event(1, 1, 50, 80)); // Normal, avail 50
+        let kept = keepers(&photos);
+        let cap = capacity(1, 18); // floor 6 + floor 2 + 10 remainder seats
+        let plan = vec![
+            EventPlan {
+                event: 0,
+                tier: Tier::Featured,
+                suggested: Tier::Featured,
+                chosen: false,
+                reason: Reason::Standout,
+                merit: 1.0,
+                moments: 1,
+                kept: 20,
+                photos: 20,
+            },
+            EventPlan {
+                event: 1,
+                tier: Tier::Normal,
+                suggested: Tier::Normal,
+                chosen: false,
+                reason: Reason::Ranked { rank: 1, of: 2 },
+                merit: 0.9,
+                moments: 1000,
+                kept: 50,
+                photos: 50,
+            },
+        ];
+        let b = budget(&kept, plan, &cap, &Overrides::new(), &BookOptions::default());
+        assert_eq!(b.floors[&0], 6);
+        assert!(placed(&b, &kept, 0) >= b.floors[&0], "got {}", placed(&b, &kept, 0));
+    }
+
+    #[test]
+    fn a_brief_events_includes_are_never_capped_below_brief_cap() {
+        let photos = event(0, 0, 10, 60); // 5 moments, avail 10
+        let kept = keepers(&photos);
+        let mut overrides = Overrides::new();
+        for p in &photos[..3] {
+            overrides.set(p.hash.clone(), Override::Include);
+        }
+        let tiers: EventTiers = photos.iter().map(|p| (p.hash.clone(), Tier::Brief)).collect();
+        let cap = capacity(9, 45);
+        let o = BookOptions { brief_cap: 2, ..BookOptions::default() };
+        let b = budget(&kept, plan_of(&photos, &tiers, &cap), &cap, &overrides, &o);
+        assert_eq!(b.floors[&0], 3, "the floor must cover all 3 Includes, past brief_cap 2");
+        for p in &photos[..3] {
+            let idx = kept.iter().position(|k| k.hash == p.hash).unwrap();
+            assert!(b.selected.contains(&idx), "every Include must be selected even past brief_cap");
+        }
     }
 }

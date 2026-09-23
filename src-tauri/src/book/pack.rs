@@ -580,6 +580,13 @@ pub struct EventOrder {
 /// Each event's photos ranked ONCE (spec §5 step 5): its Includes, then
 /// `ranked_auto` restricted to the event. A quota takes a prefix, so more
 /// room only ever adds photos to an event, never swaps them.
+///
+/// `moments` (and so `MAX_PER_MOMENT`) is computed over the whole `photos`
+/// slice passed in here, not per event: events are bucketed by
+/// `event_cluster` AFTER one library-wide `ranked_auto` pass. Two events
+/// whose capture times overlap -- e.g. one event's photos span long enough
+/// to run chronologically alongside a neighbour's -- compete for the same
+/// per-moment slots, not separate ones.
 pub fn event_order(
     photos: &[Photo],
     overrides: &Overrides,
