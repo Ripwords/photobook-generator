@@ -1,7 +1,7 @@
 # Event tiers: design
 
 **Date:** 2026-09-23
-**Status:** draft. The user answered the open questions on 2026-09-23 (§11). The spec has not been approved as a whole yet.
+**Status:** implemented; constants measured on 2026-09-23 (§9). The user answered the open questions on 2026-09-23 (§11).
 
 A book should show the events of a trip that are worth showing. It should not show every
 event, and it should not favour whichever event had the most shooting. This spec gives
@@ -418,6 +418,76 @@ The same copy of the database and the same command, now built through `assemble_
 
 All three seeds gave identical rows, as in the baseline. `events_at_zero` and
 `blank_pages` rose on no row.
+
+### Checks 1, 3 and 4 (measured 2026-09-23)
+
+Same copy of the database, `Tuning::default()` (the constants of §3 and §4 unchanged).
+The fixtures are built from project 9's (Iceland) real cached records by
+`book_report::scenarios`; every source event is chosen by a rule on the real figures
+(most keepers, best quality), not by id. Iceland has no GPS, so the pool-days fixture
+sets its own locations.
+
+**Check 1, scenarios** — `cargo run --release --example book_report -- --scenarios 9`,
+exit 0:
+
+| Scenario | Construction | Pages | Expect | Result |
+|---|---|---|---|---|
+| screenshots | first 40 photos of the 4th-largest event, `is_utility` on 36, beside the 3 largest | 20, 40 | Skipped | PASS, PASS |
+| pool days | the 4th-largest of the 7 largest repeated on 3 days (same tags), within 450 m; the other 6 as distinct events 55 km apart | 20 | one Normal/Featured, two Brief | PASS (ranks 5, 7, 8 of 9) |
+| dinner | the library's 8 lowest-aesthetic photos (4 moments) between the first 300 of the two best 300-photo events | 20 / 40 | ≥ Brief / Normal | PASS / PASS |
+| undated | 30 photos of the 5th-largest event with no capture time, beside the 3 largest | 20, 40 | Brief | PASS, PASS |
+| standout | the best-quality event of ≥ 20 moments (29), beside every event with at most half its moments (6) | 20, 40 | Featured | PASS, PASS |
+
+Each fixture was checked against an engine mutant: removing the utility rule fails
+screenshots, removing similarity fails pool days, removing the undated rule fails
+undated, never assigning Featured fails standout, and Skipping a low-quality event fails
+dinner.
+
+**Check 3, stability** — `--stability 9 10 12`: **0 violations**. Tiers are identical
+across the 3 seeds (true by construction: nothing on the tier path takes a seed). Removing
+each of 20 photos (every `len/20`-th) moved no event's suggested or effective tier, the
+removed photo's own event included. 20 → 40 pages lowered no suggested or effective tier.
+The check has teeth: a mutant that couples every event's rank to the library's photo
+count raised 906 violations, and one that shrinks `normal_room` as pages grow raised 20.
+
+**Check 4, sensitivity** — `--sensitivity 9`, each `Tuning` field × {0.5, 0.9, 1.1, 1.5}:
+
+| Constant | Flips | Verdict |
+|---|---|---|
+| `W_ENGAGEMENT` 0.4 | none | not load-bearing |
+| `W_QUALITY` 0.4 | none | not load-bearing |
+| `W_NOVELTY` 0.2 | none | not load-bearing |
+| `UTILITY_SKIP` 0.8 | ×1.5 (1.2): screenshots FAIL at both lengths | ok |
+| `FEATURED_MARGIN` 1.3 | ×1.5 (1.95): standout FAIL at both lengths | ok |
+| `NORMAL_SLOT_SHARE` 0.6 | ×0.5, ×1.1, ×1.5: pool days FAIL | **fragile** |
+| `NOVELTY_KM` 2.0 | none | not load-bearing |
+| `SIMILAR_BELOW` 0.3 | none | not load-bearing |
+
+**What was done about it.** No scenario failed, so no constant was re-derived and the
+engine is unchanged. The five "not load-bearing" constants are already round values and
+stay as they are; none is removed, because each is not load-bearing *in these fixtures*
+for a stated reason, not because it does nothing:
+
+- The three merit weights: every fixture's answer is decided by a wide margin (the
+  standout scores 0.990 against a next best of 0.736 and a Featured bar of 0.83, which is
+  1.3 × the 0.640 median at 20 pages; the screenshots and undated events are decided by
+  rule, not by rank), so ±50% moves no verdict. They are still chosen, not measured;
+  hand-tiering (below) is what can measure them.
+- `SIMILAR_BELOW` only picks the reason (`SimilarTo` or `OutOfRoom`), never the tier, and
+  the fixtures check tiers.
+- `NOVELTY_KM`: the pool days share their tags, so Jaccard alone makes them similar 1.0
+  and GPS never decides; no real library has GPS.
+
+`NORMAL_SLOT_SHARE` is fragile by arithmetic, not by tuning: a 20-page book has 11 slots,
+0.6 × 11 = 6.6 gives room 6, and any share from 7/11 (0.636) gives room 7. The pool-days
+fixture has 9 events whose duplicates rank 7th and 8th, 0.009 of merit above the next
+distinct event, so room 7 admits a second pool day. The same fixture also shows why:
+real Vision top-10 scene tags overlap heavily between different events ("outdoor", "sky",
+"people", "structure"), so the first pool day's own novelty is only 0.325, and a
+duplicate loses just 0.065 of merit to it. Novelty separates a duplicate from a distinct
+event only weakly on real tags.
+
+Hand-tiering (secondary, see above): not yet done.
 
 ## 10. Prior work this draws on
 

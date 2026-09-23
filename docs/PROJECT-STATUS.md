@@ -1,6 +1,6 @@
 # PhotobookGen — Project Status
 
-**Last updated:** 2026-09-20
+**Last updated:** 2026-09-23
 **Branch:** `master`
 
 This document exists so a new agent can pick the project up without re-deriving what
@@ -21,6 +21,92 @@ are long but they are where the reasoning lives.
 
 **If you read only one section, read "Phase 2 open items" — every entry there is a real,
 deliberately-parked decision that this file is the only surviving record of.**
+
+---
+
+## What changed on 2026-09-23: event tiers
+
+**The problem.** `pack::select` ranked every moment's best photo across the whole library
+and never read the event, so short or low-scoring events placed nothing and an event's
+space followed how long it was shot. Every event now has a **tier** (Featured, Normal,
+Brief, Skipped). The app suggests one with a reason, the user can override it on the
+contact sheet, and the photo budget follows the tiers. Design and every measurement:
+`docs/superpowers/specs/2026-09-23-event-tiers-design.md` (§9 holds the figures below in
+full). The engine is `src-tauri/src/book/events.rs`; the measuring harness is
+`src-tauri/examples/book_report.rs`.
+
+**Measured against the real libraries**, on a copy of the database (never the live file),
+projects 9 (Iceland 25, 2784 photos, 14 events), 10 (Vietnam 2026, 81 photos, 5 events)
+and 12 (Japan 2026, 1133 photos, 11 events), seeds 7/1234/99 giving identical rows.
+`cargo run --release --example book_report -- 9 10 12`:
+
+| project | pages | events_at_zero | gini | blank_pages | F/N/B/S (effective) | floor_misses |
+|---|---|---|---|---|---|---|
+| 9 | 20 | 0 (was 5) | 0.379 (was 0.649) | 0 | 0/6/8/0 | 0 |
+| 9 | 40 | 0 (was 3) | 0.387 (was 0.547) | 0 | 2/10/2/0 | 0 |
+| 10 | 20 | 1 (was 1) | 0.516 (was 0.516) | 0 | 1/3/0/1 | 0 |
+| 10 | 40 | 1 (was 1) | 0.516 (was 0.516) | 11 (was 11) | 1/3/0/1 | 0 |
+| 12 | 20 | 0 (was 2) | 0.509 (was 0.567) | 0 | 1/5/5/0 | 0 |
+| 12 | 40 | 0 (was 0) | 0.396 (was 0.505) | 0 | 1/10/0/0 | 0 |
+
+Project 10's remaining event at zero is the one it Skips (a utility event), which is the
+point of Skipped. Its 11 blank pages at 40 were there before and are not caused by tiers:
+81 photos cannot fill 40 pages. `--places` is byte-identical because no photo in any saved
+library carries GPS.
+
+**Scenarios (spec §9 check 1), all PASS.** `--scenarios 9` builds five synthetic
+libraries from Iceland's real records, picking each source event by a rule (most keepers,
+best quality), not by id:
+
+| scenario | expect | result |
+|---|---|---|
+| screenshots (36 of 40 photos `is_utility`) | Skipped at 20 and 40 | Skipped |
+| pool days (one event repeated on 3 days, within 450 m, same tags) | one Normal/Featured, two Brief at 20 | Normal 0.761, Brief 0.696, Brief 0.696 |
+| dinner (the 8 lowest-aesthetic photos, 4 moments) | ≥ Brief at 20, Normal at 40 | Normal at both |
+| undated (30 photos with no capture time) | Brief at 20 and 40 | Brief |
+| standout (best-quality 29-moment event) | Featured at 20 and 40 | Featured, 0.990 against a next best of 0.736 |
+
+**Stability (check 3): 0 violations** (`--stability 9 10 12`). Three seeds, 20 single-photo
+removals per project at both lengths, and 20 → 40 pages: no event's tier moved on
+removal (not even the removed photo's own), and no tier was lowered by a longer book.
+
+**Sensitivity (check 4)** (`--sensitivity 9`, each constant × 0.5/0.9/1.1/1.5):
+`UTILITY_SKIP` and `FEATURED_MARGIN` are ok (they flip a scenario only at ×1.5);
+`W_ENGAGEMENT`, `W_QUALITY`, `W_NOVELTY`, `NOVELTY_KM` and `SIMILAR_BELOW` are not
+load-bearing on these fixtures and stay at their round values; **`NORMAL_SLOT_SHARE` is
+fragile** — pool days fails at ×0.5, ×1.1 and ×1.5. That is discrete arithmetic, not a
+tuning error: 20 pages is 11 slots, 0.6 × 11 = 6.6 gives room 6, and any share from 0.636
+gives room 7, which admits the second pool day (0.009 of merit above the next distinct
+event). Underneath it: generic Vision scene tags overlap across unrelated events, so a
+true duplicate loses only 0.065 of merit to novelty. No constant was changed, because no
+scenario failed. The tunable constants are now a `Tuning` struct; `suggest` is
+`suggest_with(.., &Tuning::default())`.
+
+**Hand-tiering (secondary, §9): not yet done.** The merit weights are still chosen, not
+measured; only a user tiering a real trip by hand can measure them.
+
+**Four deviations from the spec, found while planning** (all in the spec and the plan):
+
+1. **Budget fill rule, step 4b.** When the D'Hondt deal has photos left and no event can
+   take them, the highest-merit *suggested* Brief event is promoted to Normal (reason
+   `Filled`) so the book never underfills into blank spreads. A user's own Brief is never
+   promoted.
+2. **Step 3 demotes Featured first.** When floors overflow the book, suggested Featured
+   events drop to Normal before suggested Normal events drop to Brief (reason `Demoted`).
+   A user's own choice is never demoted.
+3. **The report uses projects 9, 10 and 12.** The spec names Bali, and the plan named
+   projects 4, 5 and 11; those are trashed or absent, so the report uses the three
+   non-deleted projects.
+4. **Undated goes to Brief only beside dated events.** In a library where nothing is dated
+   (scanned prints, the engine's test fixtures) the rule would make every event Brief, so
+   `suggest` applies it only when at least one event is dated.
+
+**Mutation-checked.** Every `Tuning` field read from its constant instead of the struct
+turns `every_tuning_field_is_read` red. Each scenario was broken on purpose and caught:
+no utility rule (screenshots), similarity 0 (pool days), no undated rule (undated), never
+Featured (standout), room = every eligible event (pool days), low quality Skipped (dinner).
+The stability check caught a rank that depends on photo-count parity (906 violations) and
+a room that shrinks as pages grow (20).
 
 ---
 

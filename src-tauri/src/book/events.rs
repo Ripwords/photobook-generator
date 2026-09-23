@@ -25,6 +25,37 @@ pub const NORMAL_SLOT_SHARE: f64 = 0.6;
 pub const NOVELTY_KM: f64 = 2.0;
 pub const SIMILAR_BELOW: f64 = 0.3;
 const QUALITY_TOP: usize = 3;
+
+/// The chosen constants of §3 and §4 in one value, so the report's
+/// sensitivity sweep (§9 check 4) can vary them one at a time. `Default` is
+/// exactly the `pub const`s above, and `suggest` always uses it: the app has
+/// no path that tunes them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tuning {
+    pub w_engagement: f64,
+    pub w_quality: f64,
+    pub w_novelty: f64,
+    pub utility_skip: f64,
+    pub featured_margin: f64,
+    pub normal_slot_share: f64,
+    pub novelty_km: f64,
+    pub similar_below: f64,
+}
+
+impl Default for Tuning {
+    fn default() -> Self {
+        Self {
+            w_engagement: W_ENGAGEMENT,
+            w_quality: W_QUALITY,
+            w_novelty: W_NOVELTY,
+            utility_skip: UTILITY_SKIP,
+            featured_margin: FEATURED_MARGIN,
+            normal_slot_share: NORMAL_SLOT_SHARE,
+            novelty_km: NOVELTY_KM,
+            similar_below: SIMILAR_BELOW,
+        }
+    }
+}
 const TOP_TAGS: usize = 10;
 
 /// How much of the book an event gets. Declared lowest first, so the derived
@@ -295,9 +326,9 @@ pub struct Suggestion {
 }
 
 /// How many events the page length can give a chapter of their own (§4).
-pub fn normal_room(eligible: usize, capacity: &Capacity) -> usize {
+pub fn normal_room(eligible: usize, capacity: &Capacity, t: &Tuning) -> usize {
     let slots = capacity.spreads as usize + capacity.singles as usize;
-    eligible.min((slots as f64 * NORMAL_SLOT_SHARE).floor() as usize)
+    eligible.min((slots as f64 * t.normal_slot_share).floor() as usize)
 }
 
 fn jaccard(a: &BTreeSet<String>, b: &BTreeSet<String>) -> f64 {
@@ -309,9 +340,9 @@ fn jaccard(a: &BTreeSet<String>, b: &BTreeSet<String>) -> f64 {
 }
 
 /// How alike two events are, 0..1: the highest of place, scene and look (§3.1).
-fn similarity(a: &EventStats, b: &EventStats) -> f64 {
+fn similarity(a: &EventStats, b: &EventStats, t: &Tuning) -> f64 {
     let gps = match (a.centroid, b.centroid) {
-        (Some(x), Some(y)) => 1.0 - (x.km_to(y) / NOVELTY_KM).min(1.0),
+        (Some(x), Some(y)) => 1.0 - (x.km_to(y) / t.novelty_km).min(1.0),
         _ => 0.0,
     };
     gps.max(jaccard(&a.tags, &b.tags)).max(look_similarity(a, b))
@@ -329,6 +360,11 @@ fn look_similarity(_a: &EventStats, _b: &EventStats) -> f64 {
 /// guarantees this by construction -- since a repeated id would double an
 /// event's vote in `normal_room`, the median and the novelty walk.
 pub fn suggest(stats: &[EventStats], capacity: &Capacity) -> Vec<Suggestion> {
+    suggest_with(stats, capacity, &Tuning::default())
+}
+
+/// `suggest` under explicit constants, for the report's sensitivity sweep.
+pub fn suggest_with(stats: &[EventStats], capacity: &Capacity, t: &Tuning) -> Vec<Suggestion> {
     debug_assert!(
         stats.iter().map(|s| s.event).collect::<BTreeSet<_>>().len() == stats.len(),
         "suggest: event ids must be unique"
@@ -340,7 +376,7 @@ pub fn suggest(stats: &[EventStats], capacity: &Capacity) -> Vec<Suggestion> {
     let any_dated = stats.iter().any(|s| !s.undated);
     for s in stats {
         let fixed = |tier, reason| Suggestion { event: s.event, tier, reason, merit: 0.0 };
-        if s.utility > UTILITY_SKIP {
+        if s.utility > t.utility_skip {
             out.push(fixed(Tier::Skipped, Reason::Utility { share: s.utility }));
         } else if s.keepers == 0 {
             out.push(fixed(Tier::Skipped, Reason::NothingKept));
@@ -358,7 +394,7 @@ pub fn suggest(stats: &[EventStats], capacity: &Capacity) -> Vec<Suggestion> {
     let engagement = |s: &EventStats| {
         if most == 0 { 0.0 } else { (1.0 + s.moments as f64).ln() / (1.0 + most as f64).ln() }
     };
-    let base = |s: &EventStats| (W_ENGAGEMENT * engagement(s) + W_QUALITY * s.quality) * (1.0 - s.utility);
+    let base = |s: &EventStats| (t.w_engagement * engagement(s) + t.w_quality * s.quality) * (1.0 - s.utility);
 
     // Walk in base-merit order; each event's novelty is against those above it.
     let mut walk = eligible.clone();
@@ -376,10 +412,10 @@ pub fn suggest(stats: &[EventStats], capacity: &Capacity) -> Vec<Suggestion> {
         .map(|(k, &s)| {
             let (sim, nearest) = walk[..k]
                 .iter()
-                .map(|o| (similarity(s, o), Some(o.event)))
+                .map(|o| (similarity(s, o, t), Some(o.event)))
                 .fold((0.0, None), |best, cur| if cur.0 > best.0 { cur } else { best });
             let novelty = 1.0 - sim;
-            let merit = (W_ENGAGEMENT * engagement(s) + W_QUALITY * s.quality + W_NOVELTY * novelty)
+            let merit = (t.w_engagement * engagement(s) + t.w_quality * s.quality + t.w_novelty * novelty)
                 * (1.0 - s.utility);
             Scored { s, merit, novelty, nearest, base_rank: k }
         })
@@ -387,7 +423,7 @@ pub fn suggest(stats: &[EventStats], capacity: &Capacity) -> Vec<Suggestion> {
     scored.sort_by(|a, b| b.merit.total_cmp(&a.merit).then(a.s.event.cmp(&b.s.event)));
 
     let of = scored.len();
-    let room = normal_room(of, capacity);
+    let room = normal_room(of, capacity, t);
     let featured_limit = (room / 6).max(1);
     // The Featured bar is the median merit of the events that STAY Normal,
     // not the whole top-`room` set: a candidate must clear a bar set by its
@@ -411,13 +447,13 @@ pub fn suggest(stats: &[EventStats], capacity: &Capacity) -> Vec<Suggestion> {
     let mut featured = 0;
     for (rank, x) in scored.iter().enumerate() {
         let (tier, reason) = if rank < room {
-            if !normal.is_empty() && featured < featured_limit && x.merit >= FEATURED_MARGIN * median {
+            if !normal.is_empty() && featured < featured_limit && x.merit >= t.featured_margin * median {
                 featured += 1;
                 (Tier::Featured, Reason::Standout)
             } else {
                 (Tier::Normal, Reason::Ranked { rank: rank + 1, of })
             }
-        } else if x.novelty < SIMILAR_BELOW && x.base_rank < room {
+        } else if x.novelty < t.similar_below && x.base_rank < room {
             // A proxy for "novelty is what pushed it out": an event with
             // near-zero novelty that would have taken a normal/featured slot
             // by BASE merit (before novelty was applied) lost its place to
@@ -736,9 +772,9 @@ mod tests {
 
     #[test]
     fn normal_room_is_sixty_percent_of_the_slots() {
-        assert_eq!(normal_room(50, &capacity(9, 45)), 6); // 11 slots
-        assert_eq!(normal_room(50, &capacity(19, 85)), 12); // 21 slots
-        assert_eq!(normal_room(3, &capacity(19, 85)), 3);
+        assert_eq!(normal_room(50, &capacity(9, 45), &Tuning::default()), 6); // 11 slots
+        assert_eq!(normal_room(50, &capacity(19, 85), &Tuning::default()), 12); // 21 slots
+        assert_eq!(normal_room(3, &capacity(19, 85), &Tuning::default()), 3);
     }
 
     #[test]
@@ -767,6 +803,62 @@ mod tests {
         for x in &s[0..4] {
             assert!(matches!(x.reason, Reason::OutOfRoom { .. }), "{x:?}");
         }
+    }
+
+    #[test]
+    fn suggest_is_suggest_with_default_tuning() {
+        // The fixture of events_beyond_the_room_are_brief_and_a_standout_is_featured.
+        let mut photos = Vec::new();
+        for e in 0..9 {
+            photos.extend(located(event(e, e as i64, 12, 40 + e as u8), 10.0 + e as f64, 100.0, &["tag"]));
+        }
+        photos.extend(located(event(9, 9, 36, 95), 50.0, 50.0, &["summit"]));
+        let st = stats(&photos, &keepers(&photos));
+        let cap = capacity(9, 45);
+        assert_eq!(suggest(&st, &cap), suggest_with(&st, &cap, &Tuning::default()));
+        let t = Tuning { normal_slot_share: 0.3, ..Tuning::default() };
+        assert_ne!(suggest(&st, &cap), suggest_with(&st, &cap, &t), "the tuning is actually read");
+    }
+
+    /// Each field of `Tuning`, pushed to an extreme, changes the output: none
+    /// of them is silently read from its constant instead.
+    #[test]
+    fn every_tuning_field_is_read() {
+        let mut standout = Vec::new();
+        for e in 0..9 {
+            standout.extend(located(event(e, e as i64, 12, 40 + e as u8), 10.0 + e as f64, 100.0, &["tag"]));
+        }
+        standout.extend(located(event(9, 9, 36, 95), 50.0, 50.0, &["summit"]));
+        let standout = stats(&standout, &keepers(&standout));
+        // Two same-place pool days and a distinct event, room 2: the lower pool
+        // day is Brief as SimilarTo the first.
+        let mut pool = located(event(0, 0, 12, 80), 8.0, 115.0, &["pool"]);
+        pool.extend(located(event(1, 2, 12, 78), 8.0, 115.0, &["pool"]));
+        pool.extend(located(event(2, 4, 12, 70), 30.0, 10.0, &["temple"]));
+        let pool = stats(&pool, &keepers(&pool));
+        let changes = |edit: fn(&mut Tuning)| {
+            let mut t = Tuning::default();
+            edit(&mut t);
+            suggest_with(&standout, &capacity(9, 45), &t) != suggest(&standout, &capacity(9, 45))
+                || suggest_with(&pool, &capacity(2, 16), &t) != suggest(&pool, &capacity(2, 16))
+        };
+        assert!(changes(|t| t.w_engagement = 0.0), "w_engagement");
+        assert!(changes(|t| t.w_quality = 0.0), "w_quality");
+        assert!(changes(|t| t.w_novelty = 0.0), "w_novelty");
+        assert!(changes(|t| t.utility_skip = -1.0), "utility_skip");
+        assert!(changes(|t| t.featured_margin = 10.0), "featured_margin");
+        assert!(changes(|t| t.normal_slot_share = 0.3), "normal_slot_share");
+        assert!(changes(|t| t.novelty_km = 1e6), "novelty_km");
+        assert!(changes(|t| t.similar_below = 0.0), "similar_below");
+    }
+
+    #[test]
+    fn tuning_default_is_the_spec_constants() {
+        let t = Tuning::default();
+        assert_eq!(
+            [t.w_engagement, t.w_quality, t.w_novelty, t.utility_skip, t.featured_margin, t.normal_slot_share, t.novelty_km, t.similar_below],
+            [0.4, 0.4, 0.2, 0.8, 1.3, 0.6, 2.0, 0.3]
+        );
     }
 
     /// Same shape as the standout test above, but the "standout" only edges
