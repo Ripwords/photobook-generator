@@ -5577,6 +5577,116 @@ mod tests {
         assert_eq!(rec_on.options[0].events.len(), 2);
     }
 
+    /// Five chapters, sized so `budget`'s floors trivially fit a 40-page
+    /// book: (40, 10, 40, 10, 30) photos.
+    fn five_events() -> Vec<Photo> {
+        let records: Vec<_> = (0..130)
+            .map(|i| {
+                let event = match i {
+                    0..=39 => 0,
+                    40..=49 => 1,
+                    50..=89 => 2,
+                    90..=99 => 3,
+                    _ => 4,
+                };
+                photo_record(i, false, i as u32, event)
+            })
+            .collect();
+        photos_from_records(&records).unwrap()
+    }
+
+    fn force_tier(tiers: &mut EventTiers, photos: &[Photo], event: u32, tier: Tier) {
+        for p in photos.iter().filter(|p| p.event_cluster == event) {
+            tiers.set(p.hash.clone(), Some(tier));
+        }
+    }
+
+    /// Mutation-check target: `selected_paths` built from `photos[i]`
+    /// instead of `culled[i]`. `three_events()` never gives `cull` anything
+    /// to drop, so the two index spaces coincide there and that mutant
+    /// survives against it -- this test makes the first 10 photos utility
+    /// shots `cull` drops entirely, so `culled[i]` and `photos[i]` name
+    /// different photos for every kept index, and asserts `selected_paths`
+    /// against an independently recomputed `culled`/`budget`.
+    #[test]
+    fn recommend_selects_paths_from_the_culled_list_not_the_raw_photo_list() {
+        let records: Vec<_> = (0..106)
+            .map(|i| {
+                let event = if i < 60 { 0 } else if i < 66 { 1 } else { 2 };
+                photo_record(i, i < 10, i as u32, event)
+            })
+            .collect();
+        let photos = photos_from_records(&records).unwrap();
+        let overrides = Overrides::new();
+        let culled = crate::book::cull::cull(&photos, &overrides);
+        assert_eq!(culled.len(), 96, "the 10 utility photos must be dropped by cull");
+
+        let lib = shipped_library();
+        let rec = recommend(&photos, &lib, &overrides, &EventTiers::new(), BookOptions::default());
+        let twenty = rec.options.iter().find(|o| o.pages == 20).unwrap();
+
+        let capacity = Capacity::from_library(20, &lib);
+        let plan = crate::book::events::plan(&photos, &culled, &EventTiers::new(), &capacity);
+        let budget =
+            crate::book::events::budget(&culled, plan, &capacity, &overrides, &BookOptions::default());
+        let expected: Vec<String> = budget.selected.iter().map(|&i| culled[i].path.clone()).collect();
+
+        assert!(!expected.is_empty());
+        assert_eq!(twenty.selected_paths, expected);
+
+        let utility_paths: std::collections::HashSet<String> =
+            (0..10).map(|i| format!("/photos/p{i:03}.jpg")).collect();
+        assert!(
+            twenty.selected_paths.iter().all(|p| !utility_paths.contains(p)),
+            "a culled utility photo was reported as selected: {:?}",
+            twenty.selected_paths,
+        );
+    }
+
+    /// Mutation-check target: the `Tier::Normal` and `Tier::Brief` arms of
+    /// `events_by_tier`'s increment swapped. Two Normal events and one
+    /// Brief event, so the totals (2 vs 1) are asymmetric: a swap of the two
+    /// arms would report normal=1, brief=2 instead of normal=2, brief=1,
+    /// whereas one-of-each (the shape `recommend_reports_each_event_and_selects_by_tier`
+    /// uses) reports the same totals either way.
+    #[test]
+    fn recommend_counts_every_tier_with_asymmetric_normal_and_brief_totals() {
+        let photos = five_events();
+        let mut tiers = EventTiers::new();
+        force_tier(&mut tiers, &photos, 0, Tier::Featured);
+        force_tier(&mut tiers, &photos, 1, Tier::Normal);
+        force_tier(&mut tiers, &photos, 2, Tier::Normal);
+        force_tier(&mut tiers, &photos, 3, Tier::Brief);
+        force_tier(&mut tiers, &photos, 4, Tier::Skipped);
+
+        let rec = recommend(&photos, &shipped_library(), &Overrides::new(), &tiers, BookOptions::default());
+        let forty = rec.options.iter().find(|o| o.pages == 40).unwrap();
+
+        // Every event's effective tier is exactly what was forced -- the
+        // floors all trivially fit this capacity, so nothing was demoted or
+        // filled, and the counts below are attributable to the tiers above.
+        for row in &forty.events {
+            let expected = match row.plan.event {
+                0 => Tier::Featured,
+                1 | 2 => Tier::Normal,
+                3 => Tier::Brief,
+                4 => Tier::Skipped,
+                other => panic!("unexpected event {other}"),
+            };
+            assert_eq!(row.plan.tier, expected, "event {} was not left at its forced tier", row.plan.event);
+        }
+
+        assert_eq!(
+            (
+                forty.events_by_tier.featured,
+                forty.events_by_tier.normal,
+                forty.events_by_tier.brief,
+                forty.events_by_tier.skipped,
+            ),
+            (1, 2, 1, 1),
+        );
+    }
+
     #[test]
     fn recommend_counts_keepers_after_culling_not_raw_photos() {
         let lib = fixture_library();
@@ -5751,6 +5861,41 @@ mod tests {
     }
 
     // --- `generate_and_save`: generation the user cannot lose -------------
+
+    /// Mutation-check target: `generate_and_save` passing `&EventTiers::new()`
+    /// to `assemble_with` instead of its own `tiers` argument. Forces one of
+    /// three events to Skipped and confirms the saved book places none of
+    /// its photos; the default (empty) tiers this mutant would substitute
+    /// would place every event, so this fails against the mutant.
+    #[test]
+    fn generate_and_save_honours_the_callers_tiers_not_an_empty_default() {
+        let db = Db::open_in_memory().unwrap();
+        let lib = fixture_library();
+        let photos = three_events();
+        let mut tiers = EventTiers::new();
+        force_tier(&mut tiers, &photos, 2, Tier::Skipped);
+
+        let meta = new_project("Skip an event", 20, 7);
+        let generated =
+            generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new(), &tiers)
+                .unwrap();
+        let loaded = db.load_project(generated.project_id).unwrap().expect("saved");
+
+        let placed: std::collections::HashSet<&str> = loaded
+            .book
+            .pages
+            .iter()
+            .flat_map(|p| &p.placements)
+            .map(|pl| photos[pl.photo_index].path.as_str())
+            .collect();
+        let skipped_paths: Vec<&str> =
+            photos.iter().filter(|p| p.event_cluster == 2).map(|p| p.path.as_str()).collect();
+        assert!(!skipped_paths.is_empty());
+        assert!(
+            skipped_paths.iter().all(|p| !placed.contains(p)),
+            "a photo from the Skipped event was placed in the saved book",
+        );
+    }
 
     /// Which town each spread's photos were taken in, for the Places tests.
     fn towns_per_spread(book: &Book, towns: &[&'static str]) -> Vec<BTreeSet<&'static str>> {
