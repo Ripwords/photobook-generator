@@ -26,8 +26,8 @@ import type { PhotoOverrides } from "~/types/features";
 import type { PreviewPhoto } from "~/types/preview";
 
 /**
- * Mirrors `book::pace::BookOptions`: the draft screen's switches for one
- * book. Every option off is the book the app always built.
+ * Mirrors `book::pace::BookOptions`: the draft screen's settings for one
+ * book. `DEFAULT_BOOK_OPTIONS` is the book the app always built.
  */
 export interface BookOptions {
   /** Chapters split where the photos move between towns, not only at a gap in time. */
