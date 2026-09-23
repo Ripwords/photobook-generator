@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { tierReasonText, type EventRow } from "~/types/book";
+import { eventRowNote, TIER_LABELS, type EventRow } from "~/types/book";
 
 /**
  * One row per event at the chosen length, as spec §7 describes: its tier,
@@ -12,7 +12,6 @@ const { rows, title } = defineProps<{
   title: (event: number) => string;
 }>();
 const emit = defineEmits<{ reveal: [event: number] }>();
-const LABELS = { featured: "Featured", normal: "Normal", brief: "Brief", skipped: "Skip" } as const;
 </script>
 
 <template>
@@ -36,14 +35,9 @@ const LABELS = { featured: "Featured", normal: "Normal", brief: "Brief", skipped
           title(row.event)
         }}</span>
         <span class="text-muted">
-          {{ LABELS[row.tier] }} <span class="text-dimmed">({{ row.chosen ? "you" : "auto" }})</span>
+          {{ TIER_LABELS[row.tier] }} <span class="text-dimmed">({{ row.chosen ? "you" : "auto" }})</span>
         </span>
-        <span class="col-span-2 text-xs text-muted tabular-nums">
-          <template v-if="row.tier === 'skipped' || row.selected === 0">{{
-            tierReasonText(row.reason, title)
-          }}</template>
-          <template v-else>{{ row.kept }} kept &rarr; {{ row.selected }} placed</template>
-        </span>
+        <span class="col-span-2 text-xs text-muted tabular-nums">{{ eventRowNote(row, title) }}</span>
       </button>
     </div>
   </div>

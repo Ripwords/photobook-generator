@@ -356,6 +356,49 @@ export function groupByEvent(
 }
 
 /**
+ * Every photo hash belonging to one event, resolved over ALL of `photos` --
+ * never a filtered subset -- with the same chapter override the sheet uses.
+ *
+ * `book::events::resolve` (Rust) tiers an event by ALL its photos, not just
+ * the ones a filter happens to show. Collecting hashes from a filtered list
+ * (e.g. under "In the book") stores a tier for photos the control never
+ * displayed and misses the ones it hid, so setting Auto after Featured could
+ * leave the hidden photos Featured forever, and Skip could make the whole
+ * event vanish out from under its own control.
+ */
+export function eventHashes(
+  photos: AnalyzedPhoto[],
+  chapters: Readonly<Record<string, number>> | null,
+  event: number,
+): string[] {
+  return (
+    groupByEvent(photos, chapters)
+      .find((group) => group.eventCluster === event)
+      ?.photos.map((p) => p.hash) ?? []
+  );
+}
+
+/**
+ * An event's display title: the place name when one exists, else "Event N"
+ * numbered by position among ALL of `photos`' events -- never a filtered
+ * subset, so the number stays the same whether "In the book" is on or off
+ * and matches the events panel, which lists every event regardless of the
+ * sheet's filter. Numbering from a filtered list could show "Event 0" for a
+ * hidden event, shift every number when the filter changes, and make a
+ * "Similar to …" reason name the wrong event entirely.
+ */
+export function eventTitle(
+  photos: AnalyzedPhoto[],
+  chapters: Readonly<Record<string, number>> | null,
+  names: Readonly<Record<number, string>>,
+  event: number,
+): string {
+  const groups = groupByEvent(photos, chapters);
+  const index = groups.findIndex((group) => group.eventCluster === event);
+  return names[event] ?? `Event ${index + 1}`;
+}
+
+/**
  * Counts how many non-utility photos share each near-duplicate cluster, so a
  * surviving photo can be labelled with the size of the burst it came from.
  */

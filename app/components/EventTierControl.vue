@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { tierReasonText, type EventRow } from "~/types/book";
+import { TIER_LABELS, tierTooltipText, type EventRow } from "~/types/book";
 import type { Tier } from "~/types/features";
 
 /**
@@ -25,7 +25,6 @@ const { row, title, titleOf } = defineProps<{
 }>();
 const emit = defineEmits<{ set: [tier: Tier | "auto"] }>();
 
-const LABELS: Record<Tier, string> = { featured: "Featured", normal: "Normal", brief: "Brief", skipped: "Skip" };
 /** Normal has no button of its own: it is what "Auto" resolves to for most events. */
 const CHOICES = ["featured", "auto", "brief", "skipped"] as const satisfies readonly (Tier | "auto")[];
 
@@ -33,16 +32,21 @@ const CHOICES = ["featured", "auto", "brief", "skipped"] as const satisfies read
 const current = computed<Tier | "auto">(() => (row?.chosen ? row.tier : "auto"));
 
 function labelFor(choice: (typeof CHOICES)[number]): string {
-  if (choice !== "auto") return LABELS[choice];
-  return row && !row.chosen ? `Auto: ${LABELS[row.tier]}` : "Auto";
+  if (choice !== "auto") return TIER_LABELS[choice];
+  return row && !row.chosen ? `Auto: ${TIER_LABELS[row.tier]}` : "Auto";
 }
 
-const reason = computed(() => (row ? tierReasonText(row.reason, titleOf) : ""));
+/**
+ * Chosen or auto, per `tierTooltipText` -- never `tierReasonText(row.reason,
+ * ...)` alone, which is always the engine's SUGGESTION reason even once the
+ * user has overridden the tier (see that function's doc).
+ */
+const reason = computed(() => (row ? tierTooltipText(row, titleOf) : ""));
 </script>
 
 <template>
   <UTooltip :text="reason" :disabled="!row" :content="{ side: 'bottom' }">
-    <UFieldGroup size="xs" :aria-label="`Tier for ${title}`">
+    <UFieldGroup size="xs" role="group" :aria-label="`Tier for ${title}`">
       <UButton
         v-for="choice in CHOICES"
         :key="choice"

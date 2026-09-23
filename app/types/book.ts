@@ -154,6 +154,14 @@ export interface BookRecommendation {
   options: PageOption[];
 }
 
+/** Display label for each tier -- shared by the tier control and the events panel. */
+export const TIER_LABELS: Record<Tier, string> = {
+  featured: "Featured",
+  normal: "Normal",
+  brief: "Brief",
+  skipped: "Skip",
+};
+
 /**
  * The sentence shown against an event's tier, explaining why `recommend`
  * suggested it (or, for `demoted`/`filled`, why `budget` overrode it).
@@ -182,6 +190,38 @@ export function tierReasonText(reason: TierReason, title: (event: number) => str
     case "filled":
       return "Raised so the book is not left with empty pages";
   }
+}
+
+/**
+ * The events panel's per-row note (spec §7): why an event got nothing, or
+ * how much of it made it in, such as "6 kept → 4 placed".
+ *
+ * `row.reason` is always the ENGINE's own rationale for its SUGGESTION --
+ * Rust's `book::events::plan` copies `reason: s.reason` straight from the
+ * suggestion and never recomputes it once the user overrides the tier
+ * (`chosen: true`). Showing `tierReasonText(row.reason, ...)` unconditionally
+ * therefore told a user who had just clicked Skip themselves that the event
+ * was skipped for whatever reason the ENGINE would have picked -- true only
+ * by coincidence, and often stale (e.g. "Ranked 9 of 9" against a ranking
+ * that no longer applies once the user chose otherwise). A user-chosen Skip
+ * is called out by name instead, before `row.reason` is ever read for it.
+ */
+export function eventRowNote(row: EventRow, title: (event: number) => string): string {
+  if (row.chosen && row.tier === "skipped") return "You chose Skip";
+  if (row.tier === "skipped" || row.selected === 0) return tierReasonText(row.reason, title);
+  return `${row.kept} kept → ${row.selected} placed`;
+}
+
+/**
+ * The tier control's tooltip text: the engine's own rationale while its
+ * suggestion stands untouched, or, once the user has overridden it, what
+ * the user chose AND what the engine would have suggested instead -- see
+ * `eventRowNote` on why `row.reason` alone cannot be shown as if it still
+ * explained the EFFECTIVE tier once `chosen` is true.
+ */
+export function tierTooltipText(row: EventRow, title: (event: number) => string): string {
+  if (!row.chosen) return tierReasonText(row.reason, title);
+  return `You chose ${TIER_LABELS[row.tier]}. Suggested: ${TIER_LABELS[row.suggested]} (${tierReasonText(row.reason, title)})`;
 }
 
 export interface GeneratedBook {
@@ -466,7 +506,7 @@ export function isPlaced(photo: { path: string; kept: boolean }, option: PageOpt
 /**
  * How many of `photos` land in the book at the chosen length -- the same
  * membership `isPlaced` checks one photo at a time, counted. Drives the
- * contact sheet's toolbar count and its Keepers-only filter, so both agree
+ * contact sheet's toolbar count and its "In the book" filter, so both agree
  * with what the tiles dim instead of drifting back to the cull verdict once
  * a recommendation exists.
  */
@@ -475,16 +515,87 @@ export function placedCount(photos: readonly { path: string; kept: boolean }[], 
 }
 
 /**
- * The `pageItems` label for one length: the page count, how many events get
- * their own place at it (Featured and Normal -- Brief and Skipped events
- * share a spread rather than getting one each), out of every event the book
- * has, and how many photos it places.
+ * Events getting their own place (Featured or Normal -- Brief and Skipped
+ * events share a spread rather than getting one each) out of every event
+ * the book has, at one page length.
+ */
+export function ownEventCount(option: PageOption): number {
+  return option.eventsByTier.featured + option.eventsByTier.normal;
+}
+
+/**
+ * The `pageItems` item label for one length: just the page count. Nuxt UI's
+ * `USelect` truncated a combined "40 pages · 12 of 19 events, 85 photos"
+ * label at the menu's own width, so the events/photos accounting is instead
+ * `pageOptionDescription`'s job, rendered as the item's `description` (a
+ * second line the control doesn't have to compete with for width).
  */
 export function pageOptionLabel(option: PageOption): string {
+  return `${option.pages} pages`;
+}
+
+/**
+ * The `pageItems` item description for one length: how many events get
+ * their own place at it, out of every event the book has, and how many
+ * photos it places.
+ */
+export function pageOptionDescription(option: PageOption): string {
+  const own = ownEventCount(option);
   const t = option.eventsByTier;
-  const own = t.featured + t.normal;
   const all = own + t.brief + t.skipped;
-  return `${option.pages} pages · ${own} of ${all} events, ${option.selectedPaths.length} photos`;
+  return `${own} of ${all} events · ${option.selectedPaths.length} photos`;
+}
+
+/** Whether a tier gets its own page (Featured or Normal) rather than sharing a spread. */
+function ownsPage(tier: Tier): boolean {
+  return tier === "featured" || tier === "normal";
+}
+
+/**
+ * How many events, EVENT BY EVENT, moved from sharing a spread to owning one
+ * between two lengths' options -- not an aggregate delta of `ownEventCount`,
+ * which can read as zero while a whole set of events actually moved and
+ * happened to be offset by others that moved the other way, or read as a
+ * number that names the wrong count of events when the two totals differ
+ * for unrelated reasons (e.g. a length with more events overall). Only
+ * events present in both options are compared; an event absent from
+ * `before` (a chapter split change, say) is not counted as having "risen".
+ */
+export function risenEvents(before: PageOption, after: PageOption): number {
+  const beforeTierByEvent = new Map(before.events.map((row) => [row.event, row.tier]));
+  let rose = 0;
+  for (const row of after.events) {
+    const prevTier = beforeTierByEvent.get(row.event);
+    if (prevTier !== undefined && !ownsPage(prevTier) && ownsPage(row.tier)) rose += 1;
+  }
+  return rose;
+}
+
+/**
+ * "At 40 pages, 3 more events get their own pages" -- or `null` when
+ * choosing `after` over `before` raised none. See `risenEvents` for what
+ * counts as "raised".
+ */
+export function risenLabel(before: PageOption, after: PageOption): string | null {
+  const rose = risenEvents(before, after);
+  if (rose <= 0) return null;
+  return rose === 1
+    ? `At ${after.pages} pages, 1 more event gets its own page.`
+    : `At ${after.pages} pages, ${rose} more events get their own pages.`;
+}
+
+/**
+ * Clamps a stepper's raw input to a whole number within `range`, falling
+ * back to `fallback` for anything else -- most importantly `undefined`,
+ * which is what `UInputNumber` emits when its field is cleared. Passing
+ * that straight to `BookOptions.featuredFloor`/`briefCap` stored `undefined`
+ * on the job (a value neither field's own `min`/`max` can put back), so the
+ * very next `recommend_book` call sent Rust a request it would refuse.
+ */
+export function clampStepper(n: number | undefined, range: { min: number; max: number }, fallback: number): number {
+  return typeof n === "number" && Number.isFinite(n)
+    ? Math.min(range.max, Math.max(range.min, Math.round(n)))
+    : fallback;
 }
 
 /** The option for a given page length, or `undefined` if it was not offered. */

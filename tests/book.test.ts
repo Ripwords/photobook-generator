@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 import {
   applyExportEvent,
   blockingMessages,
+  clampStepper,
   defaultProjectName,
+  eventRowNote,
   folderListLabel,
   folderNotice,
   IMPORTABLE,
@@ -18,6 +20,8 @@ import {
   canGenerateAt,
   includeOverflowLabel,
   isPlaced,
+  ownEventCount,
+  pageOptionDescription,
   pageOptionLabel,
   placedCount,
   projectDetailLabel,
@@ -25,8 +29,12 @@ import {
   recommendedOption,
   resolveExportProjectId,
   revealTarget,
+  risenEvents,
+  risenLabel,
   summarizeExport,
+  TIER_LABELS,
   tierReasonText,
+  tierTooltipText,
   warningMessages,
   withGeneratedBook,
   withOpenedProject,
@@ -34,6 +42,7 @@ import {
   withProjectRenamed,
   type BookRecommendation,
   type BookState,
+  type EventRow,
   type ExportEvent,
   type ExportResult,
   type FolderCheck,
@@ -811,7 +820,7 @@ describe("isPlaced", () => {
 });
 
 describe("placedCount", () => {
-  // The toolbar's "N keepers, M left out" and the Keepers-only toggle must
+  // The toolbar's "N placed, M left out" and the "In the book" toggle must
   // agree with what the tiles dim, or the sheet can say "0 left out" while
   // tiles are visibly grayed out. This pins that they read off the same
   // membership isPlaced does, not the cull verdict.
@@ -831,34 +840,222 @@ describe("placedCount", () => {
   });
 });
 
+/**
+ * A minimal EventRow fixture. Only the fields a given test cares about need
+ * overriding; the rest are filled with values that would fail loudly if a
+ * function under test read them by accident (e.g. a non-zero `kept`/`selected`
+ * so "0 kept -> 0 placed" can't hide a bug that reads the wrong field).
+ */
+function makeEventRow(overrides: Partial<EventRow>): EventRow {
+  return {
+    event: 1,
+    tier: "normal",
+    suggested: "normal",
+    chosen: false,
+    reason: { kind: "standout" },
+    merit: 0.5,
+    moments: 3,
+    kept: 6,
+    photos: 8,
+    selected: 4,
+    ...overrides,
+  };
+}
+
+const title = (event: number) => `Event ${event}`;
+
+function pageOption(overrides: Partial<PageOption>): PageOption {
+  return {
+    pages: 40,
+    capacityPhotos: 90,
+    droppedPhotos: 0,
+    includedOverCapacity: 0,
+    events: [],
+    selectedPaths: Array.from({ length: 85 }, (_, i) => `/p${i}`),
+    tierOverflow: null,
+    eventsByTier: { featured: 2, normal: 10, brief: 5, skipped: 2 },
+    ...overrides,
+  };
+}
+
 describe("pageOptionLabel", () => {
-  it("counts the events that get their own place, and the photos", () => {
-    const option = {
-      pages: 40,
-      // Deliberately different from `selectedPaths.length`: the label must
-      // read the photos actually placed, not the length's raw capacity.
+  // Nuxt UI's USelect truncated a combined "40 pages · 12 of 19 events, 85
+  // photos" label at the menu's own width (O1), so the label is now just the
+  // page count and pageOptionDescription carries the rest as the item's
+  // `description` line.
+  it("is just the page count", () => {
+    expect(pageOptionLabel(pageOption({ pages: 40 }))).toBe("40 pages");
+  });
+});
+
+describe("ownEventCount", () => {
+  it("counts featured and normal events, not brief or skipped", () => {
+    expect(ownEventCount(pageOption({ eventsByTier: { featured: 2, normal: 10, brief: 5, skipped: 2 } }))).toBe(12);
+  });
+
+  it("is zero when nothing owns a page", () => {
+    expect(ownEventCount(pageOption({ eventsByTier: { featured: 0, normal: 0, brief: 3, skipped: 1 } }))).toBe(0);
+  });
+});
+
+describe("pageOptionDescription", () => {
+  it("counts the events that get their own place, out of every event, and the photos", () => {
+    const option = pageOption({
+      // Deliberately different from `selectedPaths.length`: the description
+      // must read the photos actually placed, not the length's raw capacity.
       capacityPhotos: 90,
-      droppedPhotos: 0,
-      includedOverCapacity: 0,
-      events: [],
       selectedPaths: Array.from({ length: 85 }, (_, i) => `/p${i}`),
-      tierOverflow: null,
       eventsByTier: { featured: 2, normal: 10, brief: 5, skipped: 2 },
-    } satisfies PageOption;
-    expect(pageOptionLabel(option)).toBe("40 pages · 12 of 19 events, 85 photos");
+    });
+    expect(pageOptionDescription(option)).toBe("12 of 19 events · 85 photos");
   });
 
   it("counts zero events and zero photos without dividing by them", () => {
-    const option = {
-      pages: 20,
+    const option = pageOption({
       capacityPhotos: 0,
-      droppedPhotos: 0,
-      includedOverCapacity: 0,
-      events: [],
       selectedPaths: [],
-      tierOverflow: null,
       eventsByTier: { featured: 0, normal: 0, brief: 0, skipped: 0 },
-    } satisfies PageOption;
-    expect(pageOptionLabel(option)).toBe("20 pages · 0 of 0 events, 0 photos");
+    });
+    expect(pageOptionDescription(option)).toBe("0 of 0 events · 0 photos");
+  });
+});
+
+describe("eventRowNote", () => {
+  // I2: row.reason is always the ENGINE's suggestion reason, even once the
+  // user has overridden the tier (Rust copies `reason: s.reason` unconditionally).
+  // A chosen Skip must therefore be named explicitly, never read off `reason`.
+  it("names a user-chosen Skip instead of showing the engine's stale reason", () => {
+    const row = makeEventRow({ tier: "skipped", chosen: true, reason: { kind: "ranked", rank: 9, of: 9 } });
+    expect(eventRowNote(row, title)).toBe("You chose Skip");
+  });
+
+  it("shows the reason for an auto-suggested Skip", () => {
+    const row = makeEventRow({ tier: "skipped", chosen: false, reason: { kind: "ranked", rank: 9, of: 9 } });
+    expect(eventRowNote(row, title)).toBe("Ranked 9 of 9");
+  });
+
+  it("shows the reason for an event that placed nothing even though it wasn't skipped", () => {
+    const row = makeEventRow({ tier: "brief", chosen: false, selected: 0, reason: { kind: "nothingKept" } });
+    expect(eventRowNote(row, title)).toBe("No photo here survived culling");
+  });
+
+  it("shows kept -> placed for an event that placed at least one photo", () => {
+    const row = makeEventRow({ tier: "normal", chosen: false, kept: 6, selected: 4 });
+    expect(eventRowNote(row, title)).toBe("6 kept → 4 placed");
+  });
+
+  it("shows kept -> placed even for a user's own non-Skip choice", () => {
+    const row = makeEventRow({ tier: "featured", chosen: true, kept: 6, selected: 4 });
+    expect(eventRowNote(row, title)).toBe("6 kept → 4 placed");
+  });
+});
+
+describe("tierTooltipText", () => {
+  it("shows the engine's reason while its suggestion stands untouched", () => {
+    const row = makeEventRow({ chosen: false, tier: "brief", suggested: "brief", reason: { kind: "standout" } });
+    expect(tierTooltipText(row, title)).toBe("Stands out from the rest of the trip");
+  });
+
+  it("shows what the user chose AND what the engine would have suggested, once overridden", () => {
+    const row = makeEventRow({
+      chosen: true,
+      tier: "skipped",
+      suggested: "featured",
+      reason: { kind: "standout" },
+    });
+    expect(tierTooltipText(row, title)).toBe(
+      `You chose ${TIER_LABELS.skipped}. Suggested: ${TIER_LABELS.featured} (Stands out from the rest of the trip)`,
+    );
+  });
+});
+
+describe("risenEvents / risenLabel", () => {
+  it("counts only events that moved from sharing a spread to owning one", () => {
+    const before = pageOption({
+      events: [
+        makeEventRow({ event: 1, tier: "brief" }),
+        makeEventRow({ event: 2, tier: "skipped" }),
+        makeEventRow({ event: 3, tier: "normal" }),
+      ],
+    });
+    const after = pageOption({
+      events: [
+        makeEventRow({ event: 1, tier: "normal" }), // rose
+        makeEventRow({ event: 2, tier: "featured" }), // rose
+        makeEventRow({ event: 3, tier: "normal" }), // already owned a page
+      ],
+    });
+    expect(risenEvents(before, after)).toBe(2);
+  });
+
+  it("does not count an event moving the other way, and does not let it offset a real rise", () => {
+    const before = pageOption({
+      events: [makeEventRow({ event: 1, tier: "brief" }), makeEventRow({ event: 2, tier: "normal" })],
+    });
+    const after = pageOption({
+      events: [
+        makeEventRow({ event: 1, tier: "normal" }), // rose
+        makeEventRow({ event: 2, tier: "brief" }), // fell
+      ],
+    });
+    // Net aggregate ownEventCount delta is zero (1 up, 1 down), but exactly
+    // one event actually rose -- the per-event count must say 1, not 0.
+    expect(risenEvents(before, after)).toBe(1);
+  });
+
+  it("does not count an event absent from the earlier option", () => {
+    const before = pageOption({ events: [makeEventRow({ event: 1, tier: "brief" })] });
+    const after = pageOption({
+      events: [makeEventRow({ event: 1, tier: "brief" }), makeEventRow({ event: 2, tier: "featured" })],
+    });
+    expect(risenEvents(before, after)).toBe(0);
+  });
+
+  it("risenLabel is null when nothing rose", () => {
+    const before = pageOption({ events: [makeEventRow({ event: 1, tier: "normal" })] });
+    const after = pageOption({ pages: 40, events: [makeEventRow({ event: 1, tier: "brief" })] });
+    expect(risenLabel(before, after)).toBeNull();
+  });
+
+  it("risenLabel singular vs plural phrasing", () => {
+    const before = pageOption({
+      events: [makeEventRow({ event: 1, tier: "brief" }), makeEventRow({ event: 2, tier: "brief" })],
+    });
+    const oneRose = pageOption({
+      pages: 40,
+      events: [makeEventRow({ event: 1, tier: "normal" }), makeEventRow({ event: 2, tier: "brief" })],
+    });
+    const twoRose = pageOption({
+      pages: 60,
+      events: [makeEventRow({ event: 1, tier: "normal" }), makeEventRow({ event: 2, tier: "featured" })],
+    });
+    expect(risenLabel(before, oneRose)).toBe("At 40 pages, 1 more event gets its own page.");
+    expect(risenLabel(before, twoRose)).toBe("At 60 pages, 2 more events get their own pages.");
+  });
+});
+
+describe("clampStepper", () => {
+  const range = { min: 0, max: 10 };
+
+  it("falls back for undefined -- what UInputNumber emits when a field is cleared", () => {
+    expect(clampStepper(undefined, range, 3)).toBe(3);
+  });
+
+  it("falls back for NaN and other non-finite input", () => {
+    expect(clampStepper(Number.NaN, range, 3)).toBe(3);
+    expect(clampStepper(Number.POSITIVE_INFINITY, range, 3)).toBe(3);
+  });
+
+  it("clamps to the range instead of falling back", () => {
+    expect(clampStepper(99, range, 3)).toBe(10);
+    expect(clampStepper(-5, range, 3)).toBe(0);
+  });
+
+  it("rounds a fractional value within range", () => {
+    expect(clampStepper(4.6, range, 3)).toBe(5);
+  });
+
+  it("passes a valid in-range integer through unchanged", () => {
+    expect(clampStepper(7, range, 3)).toBe(7);
   });
 });

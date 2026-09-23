@@ -121,10 +121,23 @@ const visible = computed(() =>
 // tile size changes them without changing any row's key.
 watch([tileWidth, rows], () => virtualizer.value.measure());
 
-/** Scrolls so `event`'s header lands at the top -- the events panel's row click. */
+/**
+ * Scrolls so `event`'s header lands at the top -- the events panel's row
+ * click. `scrollToIndex({ align: "start" })` alone put the header UNDER the
+ * sticky toolbar above this sheet (`stickyTop`'s own height, ~30px): the
+ * virtualizer knows nothing about that toolbar, only about this sheet's own
+ * content. `getOffsetForIndex` gives the same target offset `scrollToIndex`
+ * would use, and subtracting `stickyTop` from it (then scrolling there
+ * directly) leaves that much room above the header for the toolbar to sit
+ * in without covering it. `scrollToOffset` clamps a negative result to 0 on
+ * its own, so an event near the very top is not a special case here.
+ */
 function revealEvent(event: number) {
   const index = rows.value.findIndex((row) => row.kind === "event" && row.event === event);
-  if (index !== -1) virtualizer.value.scrollToIndex(index, { align: "start" });
+  if (index === -1) return;
+  const target = virtualizer.value.getOffsetForIndex(index, "start");
+  if (!target) return;
+  virtualizer.value.scrollToOffset(target[0] - stickyTop, { align: "start" });
 }
 defineExpose({ revealEvent });
 </script>
@@ -145,15 +158,26 @@ defineExpose({ revealEvent });
             : { position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${offset}px)` }
         "
       >
-        <h2
-          class="-mx-6 flex h-9 items-baseline gap-2 bg-default/95 px-6 py-2 text-sm font-semibold text-highlighted backdrop-blur"
+        <div
+          class="-mx-6 flex h-9 items-baseline gap-2 bg-default/95 px-6 py-2 text-sm backdrop-blur"
         >
-          <span class="min-w-0 truncate">{{ row.title }}</span>
-          <span class="shrink-0 font-normal text-muted tabular-nums"
-            >{{ row.count }} {{ row.count === 1 ? "photo" : "photos" }}</span
-          >
-          <span class="ml-auto shrink-0"><slot name="header" :event="row.event" /></span>
-        </h2>
+          <!--
+            The slot's content (the tier control, a11y-wise M5) must NOT be a
+            descendant of the h2: an h2's accessible name is built from every
+            text descendant, including a slotted button's own label, which
+            made the heading announce "Kyoto 5 photos Featured Normal Brief
+            Skip" instead of just its title. Keeping it a sibling in the same
+            flex row leaves the layout unchanged while the heading's name
+            stays just the title and count.
+          -->
+          <h2 class="flex min-w-0 items-baseline gap-2 font-semibold text-highlighted">
+            <span class="min-w-0 truncate">{{ row.title }}</span>
+            <span class="shrink-0 font-normal text-muted tabular-nums"
+              >{{ row.count }} {{ row.count === 1 ? "photo" : "photos" }}</span
+            >
+          </h2>
+          <span class="ml-auto min-w-0"><slot name="header" :event="row.event" /></span>
+        </div>
       </div>
       <div
         v-else

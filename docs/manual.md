@@ -98,40 +98,47 @@ exists.
 The contact sheet dims every photo the book would leave out **at the length you have chosen**. A
 longer book places more, so switching from 20 to 40 pages lights more of them up. Use **+**
 and **−** on a photo to include or exclude it yourself. The bar above the sheet stays pinned
-while you scroll it: **All photos** or **Keepers only**, the keeper count, and the tile
-size. Once a length is chosen, both the count and **Keepers only** switch to that length too,
-so "N keepers" always matches what is undimmed and **Keepers only** hides exactly what the
+while you scroll it: **All photos** or **In the book**, the placed count, and the tile
+size. Once a length is chosen, both the count and **In the book** switch to that length too,
+so "N placed" always matches what is undimmed and **In the book** hides exactly what the
 book would leave out at the length you picked, not just what culling excluded. The panel on the
 right is the book itself: name it, pick a length and, under **Print size**, **Change…** the
 page size (the same panel as in the editor, without the dry run), and below that are the selection
 counts and a key to the marks on the tiles. **Choose different folders** at the top starts
-again from other folders. The app recommends the shortest Pixajoy length that fits the keepers and says
-how many each length would leave out.
+again from other folders. The app recommends the shortest Pixajoy length that fits the keepers; the
+**Length** menu names each option by its page count and, under it, how many events get their own
+page and how many photos that length places.
 
 **Event tiers.** Every event lands in one of four tiers, which decides how much of it the
 book places: **Featured** gets at least your floor (2 to 12 photos, 6 by default), **Normal**
 gets at least 2, **Brief** gets at most your cap (1 to 3, 2 by default), and **Skip** gets
 none. The app suggests a tier for each event and gives a reason, such as "Stands out from the
 rest of the trip" or "Ranked 4 of 9" -- hover the control on the event's header, in the
-contact sheet, to read it. Click **Featured**, **Brief** or **Skip** there to set the tier
-yourself, or **Auto** to hand it back to the app; your own choice shows as **(you)** and is
-saved with the draft and, once you generate, with the book. Marking a photo **+** always
-places it, even in a Skipped event.
+contact sheet, to read it; a Skipped event also shows its reason right in the header, since
+its tiles are dimmed and easy to pass over. Click **Featured**, **Brief** or **Skip** there
+to set the tier yourself, or **Auto** to hand it back to the app; your own choice shows as
+**(you)** and is saved with the draft and, once you generate, with the book. Choosing a tier
+yourself always shows what you chose, even where the control would otherwise have shown why
+the app suggested something else. Marking a photo **+** always places it, even in a Skipped
+event.
 
 **The events panel**, above **Length**, lists every event at the chosen length: its tier and
 who chose it, and either why (a Skipped or empty event) or how many of its photos made it in,
 such as "6 kept → 4 placed". Click a row to scroll the contact sheet to that event. The
-**Length** menu counts the same thing at each length, for example "40 pages · 12 of 19
-events, 85 photos": how many events get a page to themselves (Featured and Normal -- Brief
-and Skipped events share space with others rather than getting one each) out of every event
-the book has, and how many photos that length places. If your tiers ask for more photos than
-a length can hold, the panel says so under the list and gives every event at least one photo
-anyway. Choosing a longer length that earns another event a page of its own says so too, for
-example "At 60 pages, 2 more events get their own pages."
+**Length** menu counts the same thing for each length it offers: its page count, such as "40
+pages", and under that, how many events get a page to themselves (Featured and Normal --
+Brief and Skipped events share space with others rather than getting one each) out of every
+event the book has, and how many photos that length places, such as "12 of 19 events · 85
+photos". If your tiers ask for more photos than a length can hold, the panel says so under the
+list and gives every event at least one photo anyway. Choosing a longer length that earns
+another event a page of its own says so too, for example "At 60 pages, 2 more events get their
+own pages."
 
 **Split chapters by place**, under **Print size**, is off for a new book. The book is laid
-out in chapters, one per event, and with the switch off a chapter ends only at a break of more
-than four hours. With it on, a chapter also ends when you move to another town, so a day in
+out in chapters that follow your events, with two exceptions: a Brief event's photos fold
+into a neighbouring chapter rather than getting one of their own, and a Skipped event places
+nothing, so it has no chapter at all. With the switch off, a chapter otherwise ends only at a
+break of more than four hours. With it on, a chapter also ends when you move to another town, so a day in
 Kyoto and an evening in Osaka are separate chapters on separate spreads. A chapter too small to
 fill a spread of its own, such as one photo taken from a train, still joins its neighbour. Two places count
 as different towns when they are more than 25 km apart, which keeps a whole city as one
@@ -155,9 +162,10 @@ event at every length.
 The book aims for variety over density. It places about four photos per spread, so a
 40-page book places around 85 rather than the 130 its layouts could squeeze in, and it mixes
 sparse spreads with the occasional six-up. Photos taken within two minutes of each other
-count as one moment: the book takes the best photo of every moment before a second from any,
-and never more than two from one moment unless you marked the others **+**. The photos this
-leaves out are still one click away in the editor, under **Choose any photo…**. A length that cannot hold every photo you explicitly
+count as one moment: for an event that places anything, the book takes the best photo of
+every moment before a second from any, and never more than two from one moment unless you
+marked the others **+**. A Skipped event places nothing regardless, moments included. The
+photos this leaves out are still one click away in the editor, under **Choose any photo…**. A length that cannot hold every photo you explicitly
 marked **+** cannot be generated at all, and says so instead of quietly dropping one.
 
 **Generate book** saves the book, opens it in the editor, and removes the draft.
@@ -179,10 +187,12 @@ Arriving here from **Edit photos** on a saved book is the same screen, as a draf
 that book, with its decisions, print size, event tiers and **Split chapters by place**
 restored once the analysis is done (**Edit photos** again reopens the same draft), and the
 generate control becomes two: **Update "<name>"** asks you to confirm, then builds the book
-again from these photos and settings, replacing any changes you made in the editor -- swapped
-photos, layouts and captions -- and clearing its export history; **Save as a new photobook**
-keeps both. Choosing different folders makes it a new book again, since a book built from a
-different source is not an update of the old one.
+again from these photos and settings. Changes you made in the editor -- swapped or replaced
+photos, crops, layouts, moved boxes, the cover, and photos added from disk -- are replaced;
+its undo history, export history and favourite star don't carry over, though files you
+already exported are not touched. **Save as a new photobook** keeps both. Choosing different
+folders makes it a new book again, since a book built from a different source is not an
+update of the old one.
 
 ## 3. Editing the book
 

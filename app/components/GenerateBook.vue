@@ -3,11 +3,14 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   BRIEF_CAP_RANGE,
   canGenerateAt,
+  clampStepper,
   FEATURED_FLOOR_RANGE,
   includeOverflowLabel,
   optionFor,
+  pageOptionDescription,
   pageOptionLabel,
   recommendedOption,
+  risenLabel,
   type BookOptions,
   type PageOption,
 } from "~/types/book";
@@ -107,14 +110,18 @@ const places = computed({
 });
 const featuredFloor = computed({
   get: () => options.value.featuredFloor,
-  set: (n: number) => {
-    options.value = { ...options.value, featuredFloor: n };
+  // `UInputNumber` emits `undefined` when its field is cleared (backspaced
+  // to empty, not yet re-typed): `clampStepper` falls back to the current
+  // value rather than storing `undefined` on the job, which `recommend_book`
+  // would refuse on the very next call.
+  set: (n: number | undefined) => {
+    options.value = { ...options.value, featuredFloor: clampStepper(n, FEATURED_FLOOR_RANGE, options.value.featuredFloor) };
   },
 });
 const briefCap = computed({
   get: () => options.value.briefCap,
-  set: (n: number) => {
-    options.value = { ...options.value, briefCap: n };
+  set: (n: number | undefined) => {
+    options.value = { ...options.value, briefCap: clampStepper(n, BRIEF_CAP_RANGE, options.value.briefCap) };
   },
 });
 
@@ -149,6 +156,10 @@ const isRecommended = computed(
 const pageItems = computed(() =>
   (recommendation.value?.options ?? []).map((option) => ({
     label: pageOptionLabel(option),
+    // A second line under the label -- Nuxt UI's `USelect` item `description`
+    // -- rather than one combined string: "40 pages · 12 of 19 events, 85
+    // photos" truncated at the menu's own width and lost the counts first.
+    description: pageOptionDescription(option),
     value: option.pages,
     // Not merely expensive -- unbuildable. The engine refuses to choose which
     // of the user's own picks to discard, so generating at this length fails
@@ -170,37 +181,36 @@ const tierOverflowMessage = computed(() => {
 });
 
 /**
- * Events getting their own place (Featured or Normal, see `pageOptionLabel`)
- * out of every event, at one page length.
- */
-function ownEventCount(option: PageOption): number {
-  return option.eventsByTier.featured + option.eventsByTier.normal;
-}
-
-/**
  * "At 40 pages, 3 more events get their own pages" -- shown for the one
  * render right after the CHOSEN LENGTH changes, comparing the length just
- * left to the one just picked. Both options are already in `recommendation`
- * (`recommend_book` answers every length at once), so this reads across two
- * already-fetched options rather than awaiting a second call. Reassigning a
- * tier or moving a stepper changes the SAME length's option in place and
- * does not touch `pages`, so it never fires this watcher -- only a length
- * change does.
+ * left to the one just picked, both read from the SAME `recommendation`
+ * (`recommend_book` answers every length at once, so this needs no second
+ * call).
+ *
+ * Cleared whenever `recommendation` itself changes reference -- not only
+ * when `pages` does. A tier override or a stepper change refreshes
+ * `recommendation` in place (see the watcher below) without moving `pages`
+ * at all, so the length-only watch used to leave a stale message on screen
+ * describing a comparison against an option that no longer exists. Compared
+ * event-by-event by `risenLabel`, not by an aggregate count -- see there.
  */
 const risenMessage = ref<string | null>(null);
-watch(pages, (next, prev) => {
-  risenMessage.value = null;
-  if (!recommendation.value || prev === null || next === null || prev === next) return;
-  const before = optionFor(recommendation.value, prev);
-  const after = optionFor(recommendation.value, next);
-  if (!before || !after) return;
-  const rose = ownEventCount(after) - ownEventCount(before);
-  if (rose <= 0) return;
-  risenMessage.value =
-    rose === 1
-      ? `At ${next} pages, 1 more event gets its own page.`
-      : `At ${next} pages, ${rose} more events get their own pages.`;
-});
+watch(
+  [pages, recommendation],
+  ([nextPages, nextRecommendation], [prevPages, prevRecommendation]) => {
+    risenMessage.value = null;
+    // Only a length change WITHIN the same recommendation earns a message: a
+    // fresh recommendation invalidates any before/after comparison even if
+    // `pages` happens to have moved in the same tick (e.g. the recommended
+    // length itself changed).
+    if (!nextRecommendation || nextRecommendation !== prevRecommendation) return;
+    if (prevPages === null || nextPages === null || prevPages === nextPages) return;
+    const before = optionFor(nextRecommendation, prevPages);
+    const after = optionFor(nextRecommendation, nextPages);
+    if (!before || !after) return;
+    risenMessage.value = risenLabel(before, after);
+  },
+);
 
 // A DIFFERENT ANALYSED SET -- not a different array.
 //
@@ -383,9 +393,10 @@ async function confirmedUpdate() {
     >
       <template #body>
         <p class="text-sm text-default">
-          Updating builds the book again from these photos and settings. Any changes you made in
-          the editor, such as swapped photos, layouts and captions, are replaced, and the export
-          history is cleared.
+          Updating builds the book again from these photos and settings. Changes you made in the
+          editor (swapped or replaced photos, crops, layouts, moved boxes, the cover, and photos
+          added from disk) are replaced. Its undo history, export history and favourite star
+          don&rsquo;t carry over. Files you already exported are not touched.
         </p>
       </template>
       <template #footer>

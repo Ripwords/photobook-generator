@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
-import { folderListLabel, isPlaced, placedCount, type PageOption, type PlaceChapters } from "~/types/book";
+import { eventRowNote, folderListLabel, isPlaced, placedCount, type EventRow, type PageOption, type PlaceChapters } from "~/types/book";
 import {
   burstSizes,
+  eventHashes,
+  eventTitle,
   groupByEvent,
   keepers,
   overrideFor,
@@ -81,7 +83,7 @@ const kept = computed(() => keepers(photos.value));
 /**
  * Photos the chosen length actually places -- the same membership `isPlaced`
  * checks per tile. Before a recommendation exists this is the cull verdict,
- * same as `kept`; once one exists it is what "Keepers only" filters to, so
+ * same as `kept`; once one exists it is what "In the book" filters to, so
  * the toggle never disagrees with the dimming.
  */
 const placed = computed(() => photos.value.filter((photo) => isPlaced(photo, chosenOption.value)));
@@ -119,17 +121,49 @@ const placeNames = usePlaceNames(runId, toRef(() => job.options.places));
 
 const eventGroups = computed(() => groupByEvent(visiblePhotos.value, chapterOverride.value));
 
-/** The place name when Places is on, else "Event N" by position among the events currently shown -- what `ContactSheet` titles the same header with. */
+/**
+ * The place name when Places is on, else "Event N" numbered among ALL of the
+ * job's events -- never `eventGroups` above, which is the FILTERED list
+ * "In the book" thins. Numbering from a filtered list shifted the number
+ * every time the toggle changed and could show "Event 0" for a hidden event;
+ * see `eventTitle`. This is what `ContactSheet`'s header, `EventTierControl`
+ * and `EventsPanel` all title events with, so it must agree with all three.
+ */
 function titleOf(event: number): string {
-  const index = eventGroups.value.findIndex((group) => group.eventCluster === event);
-  return placeNames.value[event] ?? `Event ${index + 1}`;
+  return eventTitle(photos.value, chapterOverride.value, placeNames.value, event);
 }
 
-/** Sets (or clears, for "auto") every photo of one event to a tier, written straight onto the job like `decisions` is. */
+/**
+ * Sets (or clears, for "auto") every photo of one event to a tier, written
+ * straight onto the job like `decisions` is. Reads hashes from ALL of the
+ * job's photos via `eventHashes`, never `eventGroups` (the FILTERED list) --
+ * the engine resolves a tier over an event's whole photo set
+ * (`book::events::resolve`), so tiering a filtered subset left photos a
+ * filter hid stuck on a stale tier, or made a Skipped event vanish out from
+ * under its own control.
+ */
 function setEventTier(event: number, tier: Tier | "auto") {
-  const hashes = eventGroups.value.find((group) => group.eventCluster === event)?.photos.map((p) => p.hash) ?? [];
-  job.tiers = withEventTier(job.tiers, hashes, tier);
+  job.tiers = withEventTier(job.tiers, eventHashes(photos.value, chapterOverride.value, event), tier);
 }
+
+/** The event's plan at the chosen length, or `undefined` before one exists. */
+function eventRowFor(event: number): EventRow | undefined {
+  return chosenOption.value?.events.find((row) => row.event === event);
+}
+
+/**
+ * A short, one-line reason shown right in a Skipped event's header (spec
+ * §7: "dimmed with the reason"), not only on the tier control's hover --
+ * `null` for every other tier, where the header stays just the title and
+ * count.
+ */
+function skipNoteFor(event: number): string | null {
+  const row = eventRowFor(event);
+  return row && row.tier === "skipped" ? eventRowNote(row, titleOf) : null;
+}
+
+/** Places on, but the chapters they'd split by haven't loaded yet -- nothing to tier against. */
+const tierControlReady = computed(() => !(job.options.places && !placeChapters.value));
 
 const contactSheet = useTemplateRef("contactSheet");
 /** An events-panel row was clicked: scroll the sheet to that event's header. */
@@ -335,11 +369,11 @@ function onGenerated(projectId: number) {
               :aria-pressed="!showLeftOut"
               @click="showLeftOut = false"
             >
-              Keepers only
+              In the book
             </UButton>
           </UFieldGroup>
           <p class="min-w-0 truncate text-xs text-muted tabular-nums">
-            <span class="font-medium text-highlighted">{{ placedTotal }}</span> keepers,
+            <span class="font-medium text-highlighted">{{ placedTotal }}</span> placed,
             {{ leftOutCount }} left out
           </p>
           <!--
@@ -413,12 +447,19 @@ function onGenerated(projectId: number) {
               />
             </template>
             <template #header="{ event }">
-              <EventTierControl
-                :row="chosenOption?.events.find((row) => row.event === event)"
-                :title="titleOf(event)"
-                :title-of="titleOf"
-                @set="setEventTier(event, $event)"
-              />
+              <div class="flex min-w-0 items-baseline gap-2">
+                <span v-if="skipNoteFor(event)" class="min-w-0 truncate text-xs font-normal text-muted">
+                  {{ skipNoteFor(event) }}
+                </span>
+                <span v-if="tierControlReady" class="shrink-0">
+                  <EventTierControl
+                    :row="eventRowFor(event)"
+                    :title="titleOf(event)"
+                    :title-of="titleOf"
+                    @set="setEventTier(event, $event)"
+                  />
+                </span>
+              </div>
             </template>
           </ContactSheet>
         </div>

@@ -3,6 +3,8 @@ import {
   applyAnalysisEvent,
   basename,
   burstSizes,
+  eventHashes,
+  eventTitle,
   groupByEvent,
   initialStreamState,
   isFailed,
@@ -204,6 +206,67 @@ describe("groupByEvent with place chapters", () => {
   it("keeps a photo the chapters do not name in its own cluster", () => {
     const result = groupByEvent([photo({ path: "/p/new.jpg", eventCluster: 4 })], {});
     expect(result.map((g) => g.eventCluster)).toEqual([4]);
+  });
+});
+
+describe("eventHashes", () => {
+  // The whole reason this function exists (C1): a filtered list must never
+  // reach it, so every test feeds ALL of an event's photos, including ones a
+  // "Keepers only"-style filter would have dropped before this ever runs.
+  it("collects every photo's hash for the event, including one a filter would hide", () => {
+    const all = [
+      photo({ path: "/p/1.jpg", hash: "h1", eventCluster: 1, kept: true }),
+      photo({ path: "/p/2.jpg", hash: "h2", eventCluster: 1, kept: false }),
+      photo({ path: "/p/3.jpg", hash: "h3", eventCluster: 2, kept: true }),
+    ];
+    // Simulates what SelectPhotos's `visiblePhotos` would be under
+    // "Keepers only": /p/2.jpg (kept: false) filtered out before this ran.
+    const onlyKept = all.filter((p) => p.kept);
+    expect(eventHashes(onlyKept, null, 1)).toEqual(["h1"]);
+    // The fix: called over ALL photos, the hidden photo's hash is included.
+    expect(eventHashes(all, null, 1)).toEqual(["h1", "h2"]);
+  });
+
+  it("returns an empty array for an event with no photos", () => {
+    expect(eventHashes([photo({ eventCluster: 1 })], null, 9)).toEqual([]);
+  });
+
+  it("resolves through a chapter override, like groupByEvent", () => {
+    const all = [
+      photo({ path: "/p/osaka.jpg", hash: "ho", eventCluster: 0 }),
+      photo({ path: "/p/kyoto.jpg", hash: "hk", eventCluster: 0 }),
+    ];
+    const chapters = { "/p/osaka.jpg": 1, "/p/kyoto.jpg": 0 };
+    expect(eventHashes(all, chapters, 1)).toEqual(["ho"]);
+    expect(eventHashes(all, chapters, 0)).toEqual(["hk"]);
+  });
+});
+
+describe("eventTitle", () => {
+  // The whole reason this function exists (I3): numbering must come from
+  // ALL of the job's events, not whatever a filter currently shows, so the
+  // same event keeps the same number under any filter.
+  it("numbers the same event the same way whether or not a filter would hide another event", () => {
+    const all = [
+      photo({ path: "/p/1.jpg", eventCluster: 1, kept: true }),
+      photo({ path: "/p/2.jpg", eventCluster: 2, kept: false }),
+      photo({ path: "/p/3.jpg", eventCluster: 3, kept: true }),
+    ];
+    // Event 3 is "Event 3" over the full set...
+    expect(eventTitle(all, null, {}, 3)).toBe("Event 3");
+    // ...and still "Event 3" even fed a list a filter has already thinned,
+    // as long as that thinned list is what's passed. This shows the caller
+    // must pass ALL photos, not that the function itself filters -- so this
+    // asserts the unfiltered call is what SelectPhotos must make.
+    const withoutEvent2 = all.filter((p) => p.kept);
+    expect(eventTitle(withoutEvent2, null, {}, 3)).not.toBe("Event 3");
+    expect(eventTitle(withoutEvent2, null, {}, 3)).toBe("Event 2");
+  });
+
+  it("prefers a place name over the positional number", () => {
+    const all = [photo({ path: "/p/1.jpg", eventCluster: 1 }), photo({ path: "/p/2.jpg", eventCluster: 2 })];
+    expect(eventTitle(all, null, { 2: "Kyoto" }, 2)).toBe("Kyoto");
+    expect(eventTitle(all, null, { 2: "Kyoto" }, 1)).toBe("Event 1");
   });
 });
 
