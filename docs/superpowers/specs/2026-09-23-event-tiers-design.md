@@ -330,6 +330,50 @@ The fixtures must hold real-shaped data: several moments per event, and aestheti
 percentiles that actually differ. A fixture where every photo is its own moment hides the
 bug, as `pack_sweep` shows.
 
+### Baseline (measured 2026-09-23)
+
+Run against a copy of the real database (`~/Library/Application Support/com.jiajingteoh.photobook/photobook.sqlite`),
+never the live file. Project ids 4-8 and 11 are trashed (`deleted_at` set) and
+`load_project_photos` correctly refuses them ("no project N"), so the baseline uses the
+three non-deleted projects instead: **9** (Iceland 25, 2784 photos, 14 events), **10**
+(Vietnam 2026, 81 photos, 5 events) and **12** (Japan 2026, 1133 photos, 11 events). No
+`ERROR` rows in either run.
+
+`cargo run --release --example book_report -- 9 10 12`:
+
+| project | pages | seed | photos | events | events_at_zero | gini | min_chapter | blank_pages | dropped |
+|---|---|---|---|---|---|---|---|---|---|
+| 9 | 20 | 7 | 2784 | 14 | 5 | 0.649 | 1 | 0 | 2739 |
+| 9 | 20 | 1234 | 2784 | 14 | 5 | 0.649 | 1 | 0 | 2739 |
+| 9 | 20 | 99 | 2784 | 14 | 5 | 0.649 | 1 | 0 | 2739 |
+| 9 | 40 | 7 | 2784 | 14 | 3 | 0.547 | 1 | 0 | 2699 |
+| 9 | 40 | 1234 | 2784 | 14 | 3 | 0.547 | 1 | 0 | 2699 |
+| 9 | 40 | 99 | 2784 | 14 | 3 | 0.547 | 1 | 0 | 2699 |
+| 10 | 20 | 7 | 81 | 5 | 1 | 0.516 | 2 | 0 | 50 |
+| 10 | 20 | 1234 | 81 | 5 | 1 | 0.516 | 2 | 0 | 50 |
+| 10 | 20 | 99 | 81 | 5 | 1 | 0.516 | 2 | 0 | 50 |
+| 10 | 40 | 7 | 81 | 5 | 1 | 0.516 | 2 | 11 | 50 |
+| 10 | 40 | 1234 | 81 | 5 | 1 | 0.516 | 2 | 11 | 50 |
+| 10 | 40 | 99 | 81 | 5 | 1 | 0.516 | 2 | 11 | 50 |
+| 12 | 20 | 7 | 1133 | 11 | 2 | 0.567 | 1 | 0 | 1090 |
+| 12 | 20 | 1234 | 1133 | 11 | 2 | 0.567 | 1 | 0 | 1090 |
+| 12 | 20 | 99 | 1133 | 11 | 2 | 0.567 | 1 | 0 | 1090 |
+| 12 | 40 | 7 | 1133 | 11 | 0 | 0.505 | 1 | 0 | 1048 |
+| 12 | 40 | 1234 | 1133 | 11 | 0 | 0.505 | 1 | 0 | 1048 |
+| 12 | 40 | 99 | 1133 | 11 | 0 | 0.505 | 1 | 0 | 1048 |
+
+`cargo run --release --example book_report -- --places 9 10 12`: byte-identical to the
+table above. Confirmed, not a bug: none of the three projects carry any GPS EXIF
+(`exif.latitude`/`exif.longitude` absent from every cached feature record checked), so
+`chapters(photos, true)` has nothing to split on and falls back to the same time-only
+event clusters `finalize_photos` already stamped.
+
+**Gate: not tripped.** `events_at_zero` is 0 on only 3 of the 18 rows (project 12 at 40
+pages); every other row leaves at least one event with zero photos placed, up to 5 of 14
+events on project 9 at 20 pages. The spread problem the spec targets is real on these
+three libraries, at both page lengths and across seeds. Gini ranges 0.505-0.649: even the
+"best" row (project 12, 40 pages) is far from even.
+
 ## 10. Prior work this draws on
 
 Researched 2026-09-23. No public source gives Apple's or any photobook service's

@@ -10,6 +10,7 @@ pub mod cover;
 pub mod crop;
 pub mod cull;
 pub mod edit;
+pub mod events;
 pub mod history;
 pub mod manifest;
 pub mod pace;

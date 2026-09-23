@@ -1309,6 +1309,19 @@ pub(crate) fn photos_from_records(records: &[serde_json::Value]) -> Result<Vec<P
         .collect()
 }
 
+/// A saved project's photos, rebuilt from the features cache exactly as a
+/// fresh analysis would finalise them. For offline tools such as
+/// `examples/book_report.rs`: derived records only, no pixel is read.
+pub fn load_project_photos(db: &Db, project_id: i64) -> Result<Vec<Photo>, String> {
+    let project = db
+        .load_project(project_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no project {project_id}"))?;
+    let records = cached_records(db, &project.photo_hashes)?;
+    let finalized = finalize_photos(records);
+    photos_from_records(&finalized)
+}
+
 /// Rebuilds the exact photo slice a saved book was assembled against, from
 /// the content hashes persisted with it.
 ///
