@@ -1,6 +1,59 @@
 # Changelog
 
 
+## v0.2.2...master
+
+[compare changes](https://github.com/Ripwords/photobook-generator/compare/v0.2.2...master)
+
+### 🚀 Enhancements
+
+- **report:** Measure photos per event on saved projects ([d0c3727](https://github.com/Ripwords/photobook-generator/commit/d0c3727))
+- **report:** Calibrate event look similarity against GPS labels ([4daf9fe](https://github.com/Ripwords/photobook-generator/commit/4daf9fe))
+- **options:** Per-project Featured floor and Brief cap ([87f3394](https://github.com/Ripwords/photobook-generator/commit/87f3394))
+- **events:** Tier type, hash-keyed choices and majority resolution ([ddc9282](https://github.com/Ripwords/photobook-generator/commit/ddc9282))
+- **events:** Per-event merit, novelty and suggested tiers ([c5b7c13](https://github.com/Ripwords/photobook-generator/commit/c5b7c13))
+- **events:** Deal the photo budget per event by tier ([5e0fc23](https://github.com/Ripwords/photobook-generator/commit/5e0fc23))
+- **layout:** Build books from the per-event budget ([758ecff](https://github.com/Ripwords/photobook-generator/commit/758ecff))
+- **recommend:** Per-event tiers and selected photos for each length ([8d56dfd](https://github.com/Ripwords/photobook-generator/commit/8d56dfd))
+- **projects:** Save event tier choices with the book ([ad38a2c](https://github.com/Ripwords/photobook-generator/commit/ad38a2c))
+- **select:** Dim the contact sheet by the chosen length, carry tiers to drafts ([fc69818](https://github.com/Ripwords/photobook-generator/commit/fc69818))
+- **draft:** Event tier control, events panel and a confirmation before Update ([99722dc](https://github.com/Ripwords/photobook-generator/commit/99722dc))
+
+### 🩹 Fixes
+
+- **events:** Measure Featured against the Normal median; pin every suggest rule ([90a9059](https://github.com/Ripwords/photobook-generator/commit/90a9059))
+- **events:** Demote suggested Briefs to Skipped before overflowing the book ([ffc755c](https://github.com/Ripwords/photobook-generator/commit/ffc755c))
+- **events:** Skip demotion candidates whose floor would not shrink ([d7d5a34](https://github.com/Ripwords/photobook-generator/commit/d7d5a34))
+- **select:** Match the toolbar count and Keepers-only to what the tiles dim ([18b779f](https://github.com/Ripwords/photobook-generator/commit/18b779f))
+- **draft:** Tier hashes over all photos, honest update dialog, wording rulings ([520a4a3](https://github.com/Ripwords/photobook-generator/commit/520a4a3))
+- **select:** Filter-invariant sheet header titles, note-first header truncation, toolbar wording ([f33f1a4](https://github.com/Ripwords/photobook-generator/commit/f33f1a4))
+- **select:** Flatten sheet header row so the tier control never overflows ([878d026](https://github.com/Ripwords/photobook-generator/commit/878d026))
+- **sheet:** Pin the header of the row under the toolbar, not the row behind it ([0699452](https://github.com/Ripwords/photobook-generator/commit/0699452))
+- **sheet:** Sub-pixel header pinning, grid header row, reveal clamp order ([941400a](https://github.com/Ripwords/photobook-generator/commit/941400a))
+- **chat:** Never send while a reply is still streaming ([72f6dd4](https://github.com/Ripwords/photobook-generator/commit/72f6dd4))
+- **draft:** Say what a tier overflow really does ([e4ae997](https://github.com/Ripwords/photobook-generator/commit/e4ae997))
+- **events:** Stop per-event budgets printing look-alikes ([da4759f](https://github.com/Ripwords/photobook-generator/commit/da4759f))
+
+### 📖 Documentation
+
+- **readme:** Point the download button at v0.2.2 ([ce50ed2](https://github.com/Ripwords/photobook-generator/commit/ce50ed2))
+- **events:** Event tiers design and implementation plan ([64c3c46](https://github.com/Ripwords/photobook-generator/commit/64c3c46))
+- **options:** Describe BookOptions as settings, not switches ([f9b2516](https://github.com/Ripwords/photobook-generator/commit/f9b2516))
+- **readme:** Real photos in the mock harness and the README screenshots ([308ce0c](https://github.com/Ripwords/photobook-generator/commit/308ce0c))
+
+### ✅ Tests
+
+- **events:** Pin the tier rank across adjacent pairs ([0562f63](https://github.com/Ripwords/photobook-generator/commit/0562f63))
+- **events:** Pin the Featured median and the room-1 guard ([403bae7](https://github.com/Ripwords/photobook-generator/commit/403bae7))
+- **layout:** Pin the Brief fold for a first chapter and consecutive Briefs ([9601684](https://github.com/Ripwords/photobook-generator/commit/9601684))
+- **recommend:** Kill three surviving mutants in events_by_tier and paths ([df221d2](https://github.com/Ripwords/photobook-generator/commit/df221d2))
+- **projects:** Pin project_detail's tiers to the loaded project ([d3192bd](https://github.com/Ripwords/photobook-generator/commit/d3192bd))
+- **events:** Scenario, stability and sensitivity checks for tier suggestions ([79e9e7e](https://github.com/Ripwords/photobook-generator/commit/79e9e7e))
+
+### ❤️ Contributors
+
+- JJ <teohjjteoh@gmail.com>
+
 ## v0.2.1...master
 
 [compare changes](https://github.com/Ripwords/photobook-generator/compare/v0.2.1...master)
