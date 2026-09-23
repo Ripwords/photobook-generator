@@ -149,6 +149,22 @@ export function isRanked(photo: PartialAnalyzedPhoto | AnalyzedPhoto): photo is 
   return "aestheticPct" in photo;
 }
 
+/** Mirrors `book::events::Tier`. "Auto" is the absence of a key, never a token. */
+export type Tier = "featured" | "normal" | "brief" | "skipped";
+export const TIERS: readonly Tier[] = ["featured", "normal", "brief", "skipped"];
+/** Mirrors `book::events::EventTiers`: hash -> the user's tier for that photo's event. */
+export type EventTiers = Record<string, Tier>;
+
+/** The map with every one of an event's photos set to `tier` (or cleared), as a NEW object. */
+export function withEventTier(tiers: EventTiers, hashes: readonly string[], tier: Tier | "auto"): EventTiers {
+  const next = { ...tiers };
+  for (const hash of hashes) {
+    if (tier === "auto") delete next[hash];
+    else next[hash] = tier;
+  }
+  return next;
+}
+
 export interface FailedPhoto {
   status: "failed";
   path: string;

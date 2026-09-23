@@ -39,8 +39,11 @@ import {
 } from "../app/types/book";
 import {
   overrideFor,
+  TIERS,
   toggledOverride,
+  withEventTier,
   withOverride,
+  type EventTiers,
   type PhotoOverrides,
 } from "../app/types/features";
 
@@ -362,6 +365,18 @@ describe("photo override wire shape", () => {
       e5f6a7b8: "exclude",
       c9d0e1f2: "exclude",
     });
+  });
+});
+
+describe("event tiers", () => {
+  it("matches the wire fixture's tokens", () => {
+    const tiers = fixture<EventTiers>("event-tiers.json");
+    expect(Object.values(tiers).toSorted()).toEqual(TIERS.toSorted());
+  });
+  it("sets and clears a tier on every photo of an event", () => {
+    const set = withEventTier({ z: "brief" }, ["a", "b"], "featured");
+    expect(set).toEqual({ z: "brief", a: "featured", b: "featured" });
+    expect(withEventTier(set, ["a", "b"], "auto")).toEqual({ z: "brief" });
   });
 });
 

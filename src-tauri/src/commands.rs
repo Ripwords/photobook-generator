@@ -6235,6 +6235,15 @@ mod tests {
     }
 
     #[test]
+    fn event_tiers_match_the_wire_fixture() {
+        let fixture = wire_fixture("event-tiers.json");
+        let parsed: crate::book::events::EventTiers = serde_json::from_value(fixture.clone()).unwrap();
+        assert_eq!(parsed.get("h-featured"), Some(crate::book::events::Tier::Featured));
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), fixture);
+        assert!(serde_json::from_str::<crate::book::events::EventTiers>(r#"{"h":"auto"}"#).is_err());
+    }
+
+    #[test]
     fn generated_book_serialises_exactly_the_keys_the_webview_reads() {
         let value = GeneratedBook {
             project_id: 7,

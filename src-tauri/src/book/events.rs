@@ -1,6 +1,126 @@
 //! Event tiers: which events of a trip a book shows, and how many photos
 //! each one gets. See docs/superpowers/specs/2026-09-23-event-tiers-design.md.
 
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+use crate::book::pace::BookOptions;
+
+pub const FEATURED_WEIGHT: f64 = 2.0;
+pub const NORMAL_WEIGHT: f64 = 1.0;
+pub const BRIEF_WEIGHT: f64 = 0.5;
+pub const NORMAL_FLOOR: usize = 2;
+const BRIEF_FLOOR: usize = 1;
+
+/// How much of the book an event gets. Declared lowest first, so the derived
+/// `Ord` reads "higher tier" and a tie in `resolve` can take the max.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Tier {
+    Skipped,
+    Brief,
+    Normal,
+    Featured,
+}
+
+impl Tier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Skipped => "skipped",
+            Self::Brief => "brief",
+            Self::Normal => "normal",
+            Self::Featured => "featured",
+        }
+    }
+
+    /// `None` for an unknown token: a stored choice this build cannot honour
+    /// fails the load rather than silently becoming the suggestion.
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "skipped" => Some(Self::Skipped),
+            "brief" => Some(Self::Brief),
+            "normal" => Some(Self::Normal),
+            "featured" => Some(Self::Featured),
+            _ => None,
+        }
+    }
+
+    pub fn weight(self) -> f64 {
+        match self {
+            Self::Featured => FEATURED_WEIGHT,
+            Self::Normal => NORMAL_WEIGHT,
+            Self::Brief => BRIEF_WEIGHT,
+            Self::Skipped => 0.0,
+        }
+    }
+
+    pub fn floor(self, options: &BookOptions) -> usize {
+        match self {
+            Self::Featured => options.featured_floor as usize,
+            Self::Normal => NORMAL_FLOOR,
+            Self::Brief => BRIEF_FLOOR,
+            Self::Skipped => 0,
+        }
+    }
+}
+
+/// The user's tier choices, keyed by photo content hash (§6). Absent means
+/// the event takes its suggestion; there is no stored "auto", the same rule
+/// as `cull::Overrides`. Wire shape `{"<hash>": "featured"}`, pinned in
+/// `tests/fixtures/wire/event-tiers.json`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct EventTiers(BTreeMap<String, Tier>);
+
+impl EventTiers {
+    pub fn new() -> Self {
+        Self(BTreeMap::new())
+    }
+
+    pub fn get(&self, hash: &str) -> Option<Tier> {
+        self.0.get(hash).copied()
+    }
+
+    pub fn set(&mut self, hash: impl Into<String>, tier: Option<Tier>) {
+        let hash = hash.into();
+        match tier {
+            Some(t) => {
+                self.0.insert(hash, t);
+            }
+            None => {
+                self.0.remove(&hash);
+            }
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, Tier)> {
+        self.0.iter().map(|(h, &t)| (h.as_str(), t))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl FromIterator<(String, Tier)> for EventTiers {
+    fn from_iter<I: IntoIterator<Item = (String, Tier)>>(iter: I) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+/// An event's chosen tier: the one held by the most of its photos, ties to
+/// the higher tier; `None` when none of its photos carries a choice (§6).
+pub fn resolve<'a>(hashes: impl IntoIterator<Item = &'a str>, tiers: &EventTiers) -> Option<Tier> {
+    let mut votes: BTreeMap<Tier, usize> = BTreeMap::new();
+    for h in hashes {
+        if let Some(t) = tiers.get(h) {
+            *votes.entry(t).or_default() += 1;
+        }
+    }
+    votes.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0))).map(|(t, _)| t)
+}
+
 /// Gini coefficient of a distribution of counts: 0 when every value is
 /// equal, approaching 1 when one value holds everything. The report's
 /// measure of how evenly a book spreads its photos across events.
@@ -93,5 +213,54 @@ mod tests {
     #[test]
     fn auc_counts_a_tied_distance_as_half_a_win_not_a_whole_or_none() {
         assert_eq!(auc(&[0.5, 0.1], &[0.5, 0.6]), 0.875);
+    }
+
+    // --- Tier, EventTiers and resolution ----------------------------------
+
+    use crate::book::pace::BookOptions;
+
+    #[test]
+    fn tier_resolution_follows_the_majority_of_photos() {
+        let mut tiers = EventTiers::new();
+        for h in ["a", "b", "c", "d", "e", "f", "g"] {
+            tiers.set(h, Some(Tier::Brief));
+        }
+        for h in ["h", "i", "j"] {
+            tiers.set(h, Some(Tier::Featured));
+        }
+        let event = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+        assert_eq!(resolve(event.iter().copied(), &tiers), Some(Tier::Brief));
+        // The FIRST photo is Featured here; a first-photo rule would answer Featured.
+        let reordered = ["h", "a", "b", "c", "d", "e", "f", "g", "i", "j"];
+        assert_eq!(resolve(reordered.iter().copied(), &tiers), Some(Tier::Brief));
+    }
+
+    #[test]
+    fn tier_resolution_ties_go_to_the_higher_tier_and_unset_is_none() {
+        let tiers: EventTiers =
+            [("a".to_string(), Tier::Skipped), ("b".to_string(), Tier::Normal)].into_iter().collect();
+        assert_eq!(resolve(["a", "b"], &tiers), Some(Tier::Normal));
+        assert_eq!(resolve(["x", "y"], &tiers), None);
+    }
+
+    #[test]
+    fn tier_floors_and_weights_follow_the_spec() {
+        let o = BookOptions { featured_floor: 9, ..BookOptions::default() };
+        assert_eq!(
+            [Tier::Featured, Tier::Normal, Tier::Brief, Tier::Skipped].map(|t| t.floor(&o)),
+            [9, 2, 1, 0]
+        );
+        assert_eq!(
+            [Tier::Featured, Tier::Normal, Tier::Brief, Tier::Skipped].map(Tier::weight),
+            [2.0, 1.0, 0.5, 0.0]
+        );
+    }
+
+    #[test]
+    fn event_tiers_set_none_removes_the_choice() {
+        let mut t = EventTiers::new();
+        t.set("a", Some(Tier::Featured));
+        t.set("a", None);
+        assert!(t.is_empty());
     }
 }
