@@ -74,3 +74,36 @@ export function activeEventRow<T>(rows: SheetRow<T>[], top: number): number | un
   }
   return undefined;
 }
+
+/**
+ * The row whose span covers `offset`: the last row that starts at or before
+ * it. `starts` are the rows' top edges in ascending order; an offset above the
+ * first row answers the first row, and one past the end the last.
+ */
+export function rowIndexAtOffset(starts: readonly number[], offset: number): number | undefined {
+  if (starts.length === 0) return undefined;
+  let low = 0;
+  let high = starts.length - 1;
+  while (low < high) {
+    // Rounded up, so `low = middle` always makes progress.
+    const middle = Math.ceil((low + high) / 2);
+    if ((starts[middle] ?? 0) <= offset) low = middle;
+    else high = middle - 1;
+  }
+  return low;
+}
+
+/**
+ * The header that should be pinned when `offset` is the first line visible
+ * below whatever sits above the sheet: the header of the event the row there
+ * belongs to. A header counts from its own top edge, so it takes over the
+ * moment it reaches the offset, not a pixel later.
+ */
+export function pinnedEventRow<T>(
+  rows: SheetRow<T>[],
+  starts: readonly number[],
+  offset: number,
+): number | undefined {
+  const index = rowIndexAtOffset(starts, offset);
+  return index === undefined ? undefined : activeEventRow(rows, index);
+}

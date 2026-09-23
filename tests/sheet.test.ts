@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { activeEventRow, sheetColumns, sheetRows, tileRows } from "~/types/sheet";
+import {
+  activeEventRow,
+  pinnedEventRow,
+  rowIndexAtOffset,
+  sheetColumns,
+  sheetRows,
+  tileRows,
+} from "~/types/sheet";
 
 const photo = (n: number) => ({ path: `/p/${n}.jpg` });
 const photos = (from: number, count: number) =>
@@ -112,5 +119,59 @@ describe("activeEventRow", () => {
 
   it("is undefined when no header precedes the top row", () => {
     expect(activeEventRow(tileRows(photos(0, 4), 2), 1)).toBeUndefined();
+  });
+});
+
+describe("rowIndexAtOffset", () => {
+  // Rows 0..3 spanning [0, 48), [48, 220), [220, 268), [268, 440).
+  const starts = [0, 48, 220, 268];
+
+  it("is the row whose span covers the offset, a row's own start included", () => {
+    expect(rowIndexAtOffset(starts, 0)).toBe(0);
+    expect(rowIndexAtOffset(starts, 47)).toBe(0);
+    expect(rowIndexAtOffset(starts, 48)).toBe(1);
+    expect(rowIndexAtOffset(starts, 219)).toBe(1);
+    expect(rowIndexAtOffset(starts, 220)).toBe(2);
+    expect(rowIndexAtOffset(starts, 267.5)).toBe(2);
+    expect(rowIndexAtOffset(starts, 268)).toBe(3);
+  });
+
+  it("is the first row above the sheet and the last row past its end", () => {
+    expect(rowIndexAtOffset(starts, -30)).toBe(0);
+    expect(rowIndexAtOffset(starts, 10_000)).toBe(3);
+  });
+
+  it("is undefined for a sheet with no rows", () => {
+    expect(rowIndexAtOffset([], 0)).toBeUndefined();
+  });
+});
+
+describe("pinnedEventRow", () => {
+  const rows = sheetRows(
+    [
+      { eventCluster: 1, photos: photos(0, 4) },
+      { eventCluster: 2, photos: photos(4, 4) },
+    ],
+    2,
+  );
+  // [event 1, tiles, tiles, event 2, tiles, tiles]; a header is 48px and a
+  // tile row 172px, the last of an event 192px (its event gap).
+  const starts = [0, 48, 220, 412, 460, 632];
+
+  it("switches to an event exactly when its header reaches the offset, not a pixel before", () => {
+    expect(pinnedEventRow(rows, starts, 411)).toBe(0);
+    expect(pinnedEventRow(rows, starts, 411.5)).toBe(0);
+    expect(pinnedEventRow(rows, starts, 412)).toBe(3);
+  });
+
+  it("stays on an event through all of its tile rows", () => {
+    expect(pinnedEventRow(rows, starts, 0)).toBe(0);
+    expect(pinnedEventRow(rows, starts, 300)).toBe(0);
+    expect(pinnedEventRow(rows, starts, 700)).toBe(3);
+  });
+
+  it("is undefined when no header precedes the offset's row", () => {
+    expect(pinnedEventRow(tileRows(photos(0, 4), 2), [0, 172], 200)).toBeUndefined();
+    expect(pinnedEventRow([], [], 0)).toBeUndefined();
   });
 });

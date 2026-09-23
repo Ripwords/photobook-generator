@@ -1,7 +1,7 @@
 <script setup lang="ts" generic="T extends { path: string }">
 import { defaultRangeExtractor, useVirtualizer, type Range } from "@tanstack/vue-virtual";
 import type { PlaceNames } from "~/types/book";
-import { activeEventRow, sheetColumns, sheetRows, tileRows } from "~/types/sheet";
+import { pinnedEventRow, sheetColumns, sheetRows, tileRows } from "~/types/sheet";
 
 /**
  * A grid of photos, optionally in event chapters, that renders only the rows
@@ -88,26 +88,77 @@ function rowHeight(index: number): number {
   return rows.value[index]?.kind === "event" ? HEADER_ROW : tileWidth.value + rowGap(index);
 }
 
-const virtualizer = useVirtualizer(
-  computed(() => ({
-    count: rows.value.length,
-    getScrollElement: () => scrollElement,
-    estimateSize: rowHeight,
-    getItemKey: (index: number) => rows.value[index]?.key ?? index,
-    overscan: 4,
-    scrollMargin: scrollMargin.value,
-    // The header of the event at the top of the view stays rendered, so it
-    // can stick however far down its event the user has scrolled.
-    rangeExtractor: (range: Range) => {
-      const indexes = defaultRangeExtractor(range);
-      const active = activeEventRow(rows.value, range.startIndex);
-      return active === undefined || indexes.includes(active) ? indexes : [active, ...indexes];
-    },
-  })),
+/** Every row's top edge, from the sheet's own top -- see `pinnedHeader`. */
+const rowStarts = computed(() => {
+  let next = 0;
+  return rows.value.map((_, index) => {
+    const start = next;
+    next += rowHeight(index);
+    return start;
+  });
+});
+
+/**
+ * The scroller's `scrollTop`, kept here because the virtualizer only reports
+ * a scroll when its rendered range changes -- not when a header crosses the
+ * toolbar, which is what `pinnedHeader` follows.
+ */
+const scrollTop = ref(0);
+watch(
+  () => scrollElement,
+  (el, _, onCleanup) => {
+    if (!el) return;
+    const read = () => (scrollTop.value = el.scrollTop);
+    read();
+    el.addEventListener("scroll", read, { passive: true });
+    onCleanup(() => el.removeEventListener("scroll", read));
+  },
+  { immediate: true },
 );
 
-const activeHeader = computed(() =>
-  activeEventRow(rows.value, virtualizer.value.range?.startIndex ?? 0),
+/**
+ * The header of the event whose row is the first one visible BELOW the
+ * sticky toolbar. `range.startIndex` is the wrong row for this: it is the row
+ * at the scroller's very top, which is hidden behind the toolbar, so the
+ * previous event's header stayed pinned for `stickyTop` more pixels -- and
+ * after `revealEvent`, which parks a header exactly at the toolbar's bottom
+ * edge, it sat on top of the one just revealed.
+ *
+ * The arithmetic, all in the scroller's content coordinates: the line just
+ * under the toolbar is `scrollTop + stickyTop`, and the sheet starts
+ * `scrollMargin` into the scroller, so that line is
+ * `scrollTop + stickyTop - scrollMargin` into the sheet. `rowStarts` are from
+ * the sheet's own top, the same as the virtualizer's `item.start` minus
+ * `scrollMargin`: both are the running sum of `rowHeight`, which the
+ * virtualizer takes as each row's exact size (nothing is measured). A header
+ * whose start equals that line is the pinned one -- the position
+ * `revealEvent` scrolls it to.
+ */
+const pinnedHeader = computed(() =>
+  pinnedEventRow(rows.value, rowStarts.value, scrollTop.value + stickyTop - scrollMargin.value),
+);
+
+const virtualizer = useVirtualizer(
+  computed(() => {
+    // Read here, not inside `rangeExtractor`: the virtualizer re-runs its
+    // extractor only when its range or its options change, so a new pinned
+    // header has to arrive as new options or it may never be rendered.
+    const pinned = pinnedHeader.value;
+    return {
+      count: rows.value.length,
+      getScrollElement: () => scrollElement,
+      estimateSize: rowHeight,
+      getItemKey: (index: number) => rows.value[index]?.key ?? index,
+      overscan: 4,
+      scrollMargin: scrollMargin.value,
+      // The pinned header stays rendered, so it can stick however far down
+      // its event the user has scrolled.
+      rangeExtractor: (range: Range) => {
+        const indexes = defaultRangeExtractor(range);
+        return pinned === undefined || indexes.includes(pinned) ? indexes : [pinned, ...indexes];
+      },
+    };
+  }),
 );
 
 const visible = computed(() =>
@@ -124,7 +175,7 @@ watch([tileWidth, rows], () => virtualizer.value.measure());
 /**
  * Scrolls so `event`'s header lands at the top -- the events panel's row
  * click. `scrollToIndex({ align: "start" })` alone put the header UNDER the
- * sticky toolbar above this sheet (`stickyTop`'s own height, ~30px): the
+ * sticky toolbar above this sheet (`stickyTop`'s own height, 44px in `SelectPhotos`): the
  * virtualizer knows nothing about that toolbar, only about this sheet's own
  * content. `getOffsetForIndex` gives the same target offset `scrollToIndex`
  * would use, and subtracting `stickyTop` from it (then scrolling there
@@ -153,7 +204,7 @@ defineExpose({ revealEvent });
       <div
         v-if="row.kind === 'event'"
         :style="
-          item.index === activeHeader
+          item.index === pinnedHeader
             ? { position: 'sticky', top: `${stickyTop}px`, zIndex: 10 }
             : { position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${offset}px)` }
         "

@@ -254,6 +254,7 @@ function mockOptionFor(
   tiers: EventTiers,
   bookOptions: BookOptions,
 ): PageOption {
+  // Keyed by the ORIGINAL event ids even with Places on, unlike the engine, which re-keys per place chapter (`with_chapters`), so with Places on the mock's events panel and the sheet's chapter headers can disagree.
   const clusterIds = [...new Set(photos.map((photo) => photo.eventCluster))].toSorted((a, b) => a - b);
   const suggestedByRank: readonly Tier[] = ["featured", "normal", "brief", "skipped"];
   const REASON_BY_TIER: Record<Tier, EventRow["reason"]> = {
