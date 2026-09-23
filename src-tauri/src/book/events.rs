@@ -1033,6 +1033,23 @@ mod tests {
         );
     }
 
+    /// `from_token`'s first real caller is `Db::load_project` (task 9), which
+    /// trusts it to refuse anything that is not exactly one of the four wire
+    /// tokens -- an unknown token must fail the load rather than silently
+    /// becoming a tier. Round-trips every token through `as_str` and checks
+    /// four near-misses: `"auto"` (never a stored token -- absence IS auto),
+    /// the empty string, a capitalised token (tokens are lowercase, case
+    /// matters), and a plausible-looking word that is not one of the four.
+    #[test]
+    fn tier_from_token_round_trips_the_four_tokens_and_refuses_everything_else() {
+        for tier in [Tier::Skipped, Tier::Brief, Tier::Normal, Tier::Featured] {
+            assert_eq!(Tier::from_token(tier.as_str()), Some(tier), "{tier:?}");
+        }
+        for bad in ["auto", "", "Featured", "hero"] {
+            assert_eq!(Tier::from_token(bad), None, "{bad:?}");
+        }
+    }
+
     #[test]
     fn event_tiers_set_none_removes_the_choice() {
         let mut t = EventTiers::new();

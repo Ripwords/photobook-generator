@@ -1,4 +1,5 @@
 use crate::book::cull::{Override, Overrides};
+use crate::book::events::{EventTiers, Tier};
 use crate::book::history::{HistoryStatus, Step};
 use crate::book::pace::Book;
 use crate::place_names::PlaceKey;
@@ -156,6 +157,12 @@ impl Db {
                  project_id INTEGER NOT NULL REFERENCES projects(id),
                  hash       TEXT NOT NULL,
                  state      TEXT NOT NULL,
+                 PRIMARY KEY (project_id, hash)
+             );
+             CREATE TABLE IF NOT EXISTS project_event_tiers (
+                 project_id INTEGER NOT NULL REFERENCES projects(id),
+                 hash       TEXT NOT NULL,
+                 tier       TEXT NOT NULL,
                  PRIMARY KEY (project_id, hash)
              );
              CREATE TABLE IF NOT EXISTS file_stamps (
@@ -452,11 +459,10 @@ impl Db {
         self.save_project_in(name, &[source_folder.to_string()], book, photo_hashes, overrides)
     }
 
-    /// As `save_project`, for a book drawn from several folders. The first
-    /// folder also lands in `projects.source_folder`, which the list reads
-    /// for its label and which every row saved before `project_folders`
-    /// existed relies on; the full list lives in `project_folders`, in the
-    /// order the user picked them.
+    /// As `save_project`, for a book drawn from several folders. Delegates to
+    /// `save_project_with` with no tier choices: every caller that has not
+    /// been taught about event tiers saves a project with none, which is
+    /// exactly what an absent choice means (see `EventTiers`).
     pub fn save_project_in(
         &self,
         name: &str,
@@ -464,6 +470,29 @@ impl Db {
         book: &Book,
         photo_hashes: &[String],
         overrides: &Overrides,
+    ) -> rusqlite::Result<i64> {
+        self.save_project_with(name, source_folders, book, photo_hashes, overrides, &EventTiers::new())
+    }
+
+    /// As `save_project_in`, also persisting the user's event tier choices.
+    /// The first folder also lands in `projects.source_folder`, which the
+    /// list reads for its label and which every row saved before
+    /// `project_folders` existed relies on; the full list lives in
+    /// `project_folders`, in the order the user picked them.
+    ///
+    /// `tiers` is written in the SAME transaction as the project row and the
+    /// overrides, for the same reason overrides are: a project that reopened
+    /// without them would silently revert every tier choice to the engine's
+    /// own suggestion, which is exactly the failure this table exists to
+    /// avoid.
+    pub fn save_project_with(
+        &self,
+        name: &str,
+        source_folders: &[String],
+        book: &Book,
+        photo_hashes: &[String],
+        overrides: &Overrides,
+        tiers: &EventTiers,
     ) -> rusqlite::Result<i64> {
         let book_json = serde_json::to_string(book)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -499,6 +528,14 @@ impl Db {
             )?;
             for (hash, state) in overrides.iter() {
                 stmt.execute(rusqlite::params![id, hash, state.as_str()])?;
+            }
+        }
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO project_event_tiers (project_id, hash, tier) VALUES (?1, ?2, ?3)",
+            )?;
+            for (hash, tier) in tiers.iter() {
+                stmt.execute(rusqlite::params![id, hash, tier.as_str()])?;
             }
         }
         tx.commit()?;
@@ -566,6 +603,27 @@ impl Db {
             })?
             .collect::<rusqlite::Result<Overrides>>()?;
 
+        let mut stmt = self.conn.prepare("SELECT hash, tier FROM project_event_tiers WHERE project_id = ?1")?;
+        let tiers = stmt
+            .query_map(rusqlite::params![id], |row| {
+                let hash: String = row.get(0)?;
+                let token: String = row.get(1)?;
+                // As with overrides: an unrecognised tier token fails the
+                // LOAD rather than degrading to the engine's own suggestion.
+                // Silently forgetting the user's choice is invisible -- the
+                // project would simply open showing `suggest`'s verdict and
+                // look correct -- which is worse than refusing to open.
+                let tier = Tier::from_token(&token).ok_or_else(|| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        format!("unknown event tier {token:?}").into(),
+                    )
+                })?;
+                Ok((hash, tier))
+            })?
+            .collect::<rusqlite::Result<EventTiers>>()?;
+
         let source_folders = self.project_folders(id, &source_folder)?;
 
         let mut stmt = self.conn.prepare(
@@ -592,6 +650,7 @@ impl Db {
             book,
             photo_hashes,
             overrides,
+            tiers,
             exports,
         }))
     }
@@ -881,14 +940,19 @@ impl Db {
     }
 
     /// Removes a project for good, with every export row recorded against
-    /// it, its photo list, its folder list and the user's overrides for it.
-    /// The child rows go first: `migrate()` turns `PRAGMA foreign_keys` on,
-    /// and no child table declares `ON DELETE CASCADE`.
+    /// it, its photo list, its folder list, the user's overrides for it and
+    /// its event tier choices. The child rows go first: `migrate()` turns
+    /// `PRAGMA foreign_keys` on, and no child table declares `ON DELETE
+    /// CASCADE`.
     pub(crate) fn purge_project(&self, id: i64) -> rusqlite::Result<()> {
         self.conn.execute("DELETE FROM project_exports WHERE project_id = ?1", rusqlite::params![id])?;
         self.conn.execute("DELETE FROM project_photos WHERE project_id = ?1", rusqlite::params![id])?;
         self.conn.execute(
             "DELETE FROM project_photo_overrides WHERE project_id = ?1",
+            rusqlite::params![id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM project_event_tiers WHERE project_id = ?1",
             rusqlite::params![id],
         )?;
         self.conn.execute("DELETE FROM project_folders WHERE project_id = ?1", rusqlite::params![id])?;
@@ -1420,6 +1484,7 @@ mod tests {
     use super::*;
     use crate::print_spec::pixajoy_spec;
     use crate::book::cull::Override;
+    use crate::book::events::{EventTiers, Tier};
     use crate::book::pace::{Book, Page, Placement};
     use crate::geometry::{Rect, Side};
 
@@ -1870,6 +1935,101 @@ mod tests {
 
         assert_eq!(rows(gone), 0);
         assert_eq!(rows(keep), 1, "and only that project's");
+    }
+
+    #[test]
+    fn project_tiers_round_trip_and_an_unknown_token_fails_the_load() {
+        let db = Db::open_in_memory().unwrap();
+        let tiers: EventTiers =
+            [("h1".to_string(), Tier::Featured), ("h2".to_string(), Tier::Skipped)].into_iter().collect();
+        let id = db
+            .save_project_with("T", &["/a".to_string()], &fixture_book(), &fixture_hashes(), &Overrides::new(), &tiers)
+            .unwrap();
+        assert_eq!(db.load_project(id).unwrap().unwrap().tiers, tiers);
+        db.conn.execute("UPDATE project_event_tiers SET tier = 'hero' WHERE hash = 'h1'", []).unwrap();
+        assert!(db.load_project(id).is_err(), "an unknown tier must fail the load, never become Auto");
+    }
+
+    /// `delete_project` is a soft delete (the library's undo): the tiers must
+    /// survive it and come back with `restore_project`, and go only on purge.
+    #[test]
+    fn tiers_survive_a_restore_and_go_with_a_purge() {
+        let db = Db::open_in_memory().unwrap();
+        let tiers: EventTiers = [("h1".to_string(), Tier::Brief)].into_iter().collect();
+        let id = db
+            .save_project_with("T", &["/a".to_string()], &fixture_book(), &fixture_hashes(), &Overrides::new(), &tiers)
+            .unwrap();
+        db.delete_project(id).unwrap();
+        assert_eq!(db.restore_project(id).unwrap(), 1);
+        assert_eq!(db.load_project(id).unwrap().unwrap().tiers, tiers);
+        db.delete_project(id).unwrap();
+        db.purge_project(id).unwrap();
+        let rows: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM project_event_tiers WHERE project_id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    /// A project saved on disk before `project_event_tiers` existed opens
+    /// with an empty `tiers` map, not a missing-table error. `migrate()`
+    /// runs its whole schema, `project_event_tiers` included, on every
+    /// `Db::open` -- `CREATE TABLE IF NOT EXISTS` needs no version flag the
+    /// way the `ALTER TABLE ADD COLUMN` migrations above it do -- so the
+    /// SECOND open (with today's code, against a file written by "yesterday's")
+    /// adds the table before `load_project` ever queries it.
+    #[test]
+    fn a_project_saved_before_tiers_existed_opens_with_an_empty_tiers_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("books.sqlite");
+        let id = {
+            // Stand in for a database written by a build that predates this
+            // table: the same schema, minus `project_event_tiers` and its
+            // index, created by hand rather than through `Db::migrate`.
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 CREATE TABLE projects (
+                     id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                     name          TEXT NOT NULL,
+                     source_folder TEXT NOT NULL,
+                     page_count    INTEGER NOT NULL,
+                     photo_count   INTEGER NOT NULL,
+                     book_json     TEXT NOT NULL,
+                     created_at    INTEGER NOT NULL DEFAULT (unixepoch()),
+                     updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
+                 );
+                 CREATE TABLE project_photos (
+                     project_id INTEGER NOT NULL REFERENCES projects(id),
+                     position   INTEGER NOT NULL,
+                     hash       TEXT NOT NULL,
+                     PRIMARY KEY (project_id, position)
+                 );
+                 CREATE TABLE project_photo_overrides (
+                     project_id INTEGER NOT NULL REFERENCES projects(id),
+                     hash       TEXT NOT NULL,
+                     state      TEXT NOT NULL,
+                     PRIMARY KEY (project_id, hash)
+                 );",
+            )
+            .unwrap();
+            let book_json = serde_json::to_string(&fixture_book()).unwrap();
+            conn.execute(
+                "INSERT INTO projects (name, source_folder, page_count, photo_count, book_json)
+                 VALUES ('Old', '/tmp/old', 2, 4, ?1)",
+                [book_json],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+
+        // Today's code opens the same file. `migrate()` adds
+        // `project_event_tiers` (and the `deleted_at`/`favourite`/
+        // `history_seq` columns, and `project_folders`) before anything reads
+        // from them.
+        let db = Db::open(&path).unwrap();
+        let loaded = db.load_project(id).unwrap().expect("the old row still opens");
+        assert!(loaded.tiers.is_empty(), "a pre-tiers project must load with none chosen, not fail");
     }
 
     #[test]

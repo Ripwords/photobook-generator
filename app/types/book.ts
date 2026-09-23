@@ -22,7 +22,7 @@
  * encodes a decision worth pinning.
  */
 
-import type { PhotoOverrides, Tier } from "~/types/features";
+import type { EventTiers, PhotoOverrides, Tier } from "~/types/features";
 import type { PreviewPhoto } from "~/types/preview";
 
 /**
@@ -279,6 +279,12 @@ export interface ProjectDetail {
    * "auto" -- which would look entirely correct while being wrong.
    */
   overrides: PhotoOverrides;
+  /**
+   * The event tier choices this book was generated with. Restored on reopen
+   * so a saved project does not quietly revert every one of them to the
+   * engine's own suggestion.
+   */
+  tiers: EventTiers;
   exports: ExportSummary[];
 }
 

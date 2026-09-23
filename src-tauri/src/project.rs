@@ -26,6 +26,7 @@
 //! against what Phase 4 actually turns out to require.
 
 use crate::book::cull::Overrides;
+use crate::book::events::EventTiers;
 use crate::book::pace::Book;
 use serde::{Deserialize, Serialize};
 
@@ -82,6 +83,12 @@ pub struct Project {
     /// Unordered, unlike `photo_hashes`: this is a map from hash to state and
     /// nothing indexes into it positionally.
     pub overrides: Overrides,
+    /// The user's own event tier choices, keyed by content hash -- what they
+    /// asked for that differs from what `suggest` would have chosen on its
+    /// own. Persisted for the same reason `overrides` is: it cannot be
+    /// derived, and a project that reopened without it would quietly revert
+    /// every choice to the suggestion while looking entirely correct.
+    pub tiers: EventTiers,
     pub exports: Vec<ExportRecord>,
 }
 

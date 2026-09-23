@@ -15,6 +15,9 @@
     "a1b2c3d4": "include",
     "e5f6a7b8": "exclude"
   },
+  "tiers": {
+    "h1": "featured"
+  },
   "exports": [
     {
       "at": 1755103600,

@@ -1243,6 +1243,10 @@ pub struct ProjectDetail {
     /// reopening a project restores them rather than quietly reverting every
     /// one to `Auto`.
     pub overrides: Overrides,
+    /// The event tier choices this book was generated with, so reopening a
+    /// project restores them rather than quietly reverting every one to the
+    /// engine's own suggestion.
+    pub tiers: EventTiers,
     pub exports: Vec<ExportSummary>,
 }
 
@@ -1642,7 +1646,7 @@ pub(crate) fn generate_and_save(
     // `Project::photo_hashes`.
     let photo_hashes: Vec<String> = photos.iter().map(|p| p.hash.clone()).collect();
     let project_id = db
-        .save_project_in(meta.name, &meta.source_folders, &book, &photo_hashes, overrides)
+        .save_project_with(meta.name, &meta.source_folders, &book, &photo_hashes, overrides, tiers)
         .map_err(|e| e.to_string())?;
     Ok(GeneratedBook {
         project_id,
@@ -2265,6 +2269,7 @@ pub(crate) fn project_detail(project: Project) -> ProjectDetail {
         dropped_photos: project.book.dropped,
         seed: project.book.seed,
         overrides: project.overrides,
+        tiers: project.tiers,
         exports: project
             .exports
             .into_iter()
@@ -6707,6 +6712,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            tiers: [("h1".to_string(), Tier::Featured)].into_iter().collect(),
             exports: vec![ExportSummary {
                 at: 1_755_103_600,
                 output_dir: "/Users/jj/Desktop/photobook-export".into(),
