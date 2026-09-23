@@ -213,17 +213,19 @@ describe("eventHashes", () => {
   // The whole reason this function exists (C1): a filtered list must never
   // reach it, so every test feeds ALL of an event's photos, including ones a
   // "Keepers only"-style filter would have dropped before this ever runs.
-  it("collects every photo's hash for the event, including one a filter would hide", () => {
+  //
+  // This asserts eventHashes' own contract -- it applies no filter of its
+  // own beyond the event -- rather than just that two different inputs give
+  // two different outputs (true of nearly any implementation, including a
+  // buggy one, and so not evidence of anything). A version that re-applies
+  // `kept` internally (the actual C1 bug, reintroduced) drops h2 here and
+  // turns this red; see the mutation-check in task-11-report.md.
+  it("includes every one of an event's photos, not just ones a keepers filter would keep", () => {
     const all = [
       photo({ path: "/p/1.jpg", hash: "h1", eventCluster: 1, kept: true }),
       photo({ path: "/p/2.jpg", hash: "h2", eventCluster: 1, kept: false }),
       photo({ path: "/p/3.jpg", hash: "h3", eventCluster: 2, kept: true }),
     ];
-    // Simulates what SelectPhotos's `visiblePhotos` would be under
-    // "Keepers only": /p/2.jpg (kept: false) filtered out before this ran.
-    const onlyKept = all.filter((p) => p.kept);
-    expect(eventHashes(onlyKept, null, 1)).toEqual(["h1"]);
-    // The fix: called over ALL photos, the hidden photo's hash is included.
     expect(eventHashes(all, null, 1)).toEqual(["h1", "h2"]);
   });
 
@@ -253,20 +255,21 @@ describe("eventTitle", () => {
       photo({ path: "/p/3.jpg", eventCluster: 3, kept: true }),
     ];
     // Event 3 is "Event 3" over the full set...
-    expect(eventTitle(all, null, {}, 3)).toBe("Event 3");
-    // ...and still "Event 3" even fed a list a filter has already thinned,
-    // as long as that thinned list is what's passed. This shows the caller
-    // must pass ALL photos, not that the function itself filters -- so this
-    // asserts the unfiltered call is what SelectPhotos must make.
+    expect(eventTitle(groupByEvent(all, null), {}, 3)).toBe("Event 3");
+    // ...and still "Event 3" even fed groups a filter has already thinned,
+    // as long as those thinned groups are what's passed. This shows the
+    // caller must group ALL photos, not that the function itself filters --
+    // so this asserts the unfiltered call is what SelectPhotos must make.
     const withoutEvent2 = all.filter((p) => p.kept);
-    expect(eventTitle(withoutEvent2, null, {}, 3)).not.toBe("Event 3");
-    expect(eventTitle(withoutEvent2, null, {}, 3)).toBe("Event 2");
+    expect(eventTitle(groupByEvent(withoutEvent2, null), {}, 3)).not.toBe("Event 3");
+    expect(eventTitle(groupByEvent(withoutEvent2, null), {}, 3)).toBe("Event 2");
   });
 
   it("prefers a place name over the positional number", () => {
     const all = [photo({ path: "/p/1.jpg", eventCluster: 1 }), photo({ path: "/p/2.jpg", eventCluster: 2 })];
-    expect(eventTitle(all, null, { 2: "Kyoto" }, 2)).toBe("Kyoto");
-    expect(eventTitle(all, null, { 2: "Kyoto" }, 1)).toBe("Event 1");
+    const groups = groupByEvent(all, null);
+    expect(eventTitle(groups, { 2: "Kyoto" }, 2)).toBe("Kyoto");
+    expect(eventTitle(groups, { 2: "Kyoto" }, 1)).toBe("Event 1");
   });
 });
 

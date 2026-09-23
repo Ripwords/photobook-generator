@@ -589,8 +589,11 @@ export function risenLabel(before: PageOption, after: PageOption): string | null
  * back to `fallback` for anything else -- most importantly `undefined`,
  * which is what `UInputNumber` emits when its field is cleared. Passing
  * that straight to `BookOptions.featuredFloor`/`briefCap` stored `undefined`
- * on the job (a value neither field's own `min`/`max` can put back), so the
- * very next `recommend_book` call sent Rust a request it would refuse.
+ * on the job (a value neither field's own `min`/`max` can put back): Tauri's
+ * IPC drops an `undefined` field entirely, so `recommend_book` never saw a
+ * bad value to refuse -- Rust's own `#[serde(default)]` silently put its
+ * default back in its place, invisibly overriding whatever the user had
+ * typed until the field lost focus, which the clamp fixes.
  */
 export function clampStepper(n: number | undefined, range: { min: number; max: number }, fallback: number): number {
   return typeof n === "number" && Number.isFinite(n)

@@ -170,7 +170,7 @@ defineExpose({ revealEvent });
             flex row leaves the layout unchanged while the heading's name
             stays just the title and count.
           -->
-          <h2 class="flex min-w-0 items-baseline gap-2 font-semibold text-highlighted">
+          <h2 class="flex min-w-0 shrink-0 max-w-[60%] items-baseline gap-2 font-semibold text-highlighted">
             <span class="min-w-0 truncate">{{ row.title }}</span>
             <span class="shrink-0 font-normal text-muted tabular-nums"
               >{{ row.count }} {{ row.count === 1 ? "photo" : "photos" }}</span

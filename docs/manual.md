@@ -100,8 +100,8 @@ longer book places more, so switching from 20 to 40 pages lights more of them up
 and **−** on a photo to include or exclude it yourself. The bar above the sheet stays pinned
 while you scroll it: **All photos** or **In the book**, the placed count, and the tile
 size. Once a length is chosen, both the count and **In the book** switch to that length too,
-so "N placed" always matches what is undimmed and **In the book** hides exactly what the
-book would leave out at the length you picked, not just what culling excluded. The panel on the
+so "N of M in the book" always matches what is undimmed and **In the book** hides exactly what
+the book would leave out at the length you picked, not just what culling excluded. The panel on the
 right is the book itself: name it, pick a length and, under **Print size**, **Change…** the
 page size (the same panel as in the editor, without the dry run), and below that are the selection
 counts and a key to the marks on the tiles. **Choose different folders** at the top starts

@@ -380,20 +380,24 @@ export function eventHashes(
 
 /**
  * An event's display title: the place name when one exists, else "Event N"
- * numbered by position among ALL of `photos`' events -- never a filtered
+ * numbered by position among ALL of the job's events -- never a filtered
  * subset, so the number stays the same whether "In the book" is on or off
  * and matches the events panel, which lists every event regardless of the
  * sheet's filter. Numbering from a filtered list could show "Event 0" for a
  * hidden event, shift every number when the filter changes, and make a
  * "Similar to …" reason name the wrong event entirely.
+ *
+ * Takes `groups` already computed by `groupByEvent`, not raw photos, so a
+ * caller titling every event in a loop (`SelectPhotos`'s `eventTitles`)
+ * groups once and reuses it rather than re-scanning every photo per title.
+ * It is still the caller's job to pass the UNFILTERED groups -- this
+ * function trusts whatever list it is given.
  */
 export function eventTitle(
-  photos: AnalyzedPhoto[],
-  chapters: Readonly<Record<string, number>> | null,
+  groups: EventGroup[],
   names: Readonly<Record<number, string>>,
   event: number,
 ): string {
-  const groups = groupByEvent(photos, chapters);
   const index = groups.findIndex((group) => group.eventCluster === event);
   return names[event] ?? `Event ${index + 1}`;
 }

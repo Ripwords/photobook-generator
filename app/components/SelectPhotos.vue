@@ -1,6 +1,15 @@
 <script setup lang="ts">
 import { invoke } from "@tauri-apps/api/core";
-import { eventRowNote, folderListLabel, isPlaced, placedCount, type EventRow, type PageOption, type PlaceChapters } from "~/types/book";
+import {
+  eventRowNote,
+  folderListLabel,
+  isPlaced,
+  placedCount,
+  type EventRow,
+  type PageOption,
+  type PlaceChapters,
+  type PlaceNames,
+} from "~/types/book";
 import {
   burstSizes,
   eventHashes,
@@ -122,16 +131,36 @@ const placeNames = usePlaceNames(runId, toRef(() => job.options.places));
 const eventGroups = computed(() => groupByEvent(visiblePhotos.value, chapterOverride.value));
 
 /**
+ * Every one of the job's events, grouped once from ALL of `photos` -- never
+ * `eventGroups` above, which is the FILTERED list "In the book" thins.
+ * `titleOf` and `eventTitles` both read this instead of re-grouping per
+ * lookup, so titling every header in the sheet costs one scan of the
+ * photos, not one per event.
+ */
+const allEventGroups = computed(() => groupByEvent(photos.value, chapterOverride.value));
+
+/**
  * The place name when Places is on, else "Event N" numbered among ALL of the
- * job's events -- never `eventGroups` above, which is the FILTERED list
- * "In the book" thins. Numbering from a filtered list shifted the number
- * every time the toggle changed and could show "Event 0" for a hidden event;
- * see `eventTitle`. This is what `ContactSheet`'s header, `EventTierControl`
- * and `EventsPanel` all title events with, so it must agree with all three.
+ * job's events, from `allEventGroups` above -- never `eventGroups`, the
+ * FILTERED list "In the book" thins. Numbering from a filtered list shifted
+ * the number every time the toggle changed and could show "Event 0" for a
+ * hidden event; see `eventTitle`. `EventTierControl` and `EventsPanel` call
+ * this directly; the sheet's own header title comes from `eventTitles`
+ * below, a full map built by calling this once per event, so all three
+ * agree -- the sheet's `names` prop used to be the sparse `placeNames`,
+ * which left its header numbering the filtered list whenever a chapter had
+ * no place name.
  */
 function titleOf(event: number): string {
-  return eventTitle(photos.value, chapterOverride.value, placeNames.value, event);
+  return eventTitle(allEventGroups.value, placeNames.value, event);
 }
+
+/** Every event's title, keyed by cluster id -- see `titleOf`. Passed to `ContactSheet` as `:names` so its own header agrees with `titleOf`'s other callers. */
+const eventTitles = computed<PlaceNames>(() => {
+  const names: Record<number, string> = {};
+  for (const group of allEventGroups.value) names[group.eventCluster] = titleOf(group.eventCluster);
+  return names;
+});
 
 /**
  * Sets (or clears, for "auto") every photo of one event to a tier, written
@@ -373,8 +402,7 @@ function onGenerated(projectId: number) {
             </UButton>
           </UFieldGroup>
           <p class="min-w-0 truncate text-xs text-muted tabular-nums">
-            <span class="font-medium text-highlighted">{{ placedTotal }}</span> placed,
-            {{ leftOutCount }} left out
+            <span class="font-medium text-highlighted">{{ placedTotal }}</span> of {{ photos.length }} in the book
           </p>
           <!--
             Measured, not guessed: the toggle is 164px, the slider group 162px
@@ -431,7 +459,7 @@ function onGenerated(projectId: number) {
             v-else
             ref="contactSheet"
             :groups="eventGroups"
-            :names="placeNames"
+            :names="eventTitles"
             :tile-size
             :scroll-element="scroller"
             :sticky-top="44"
@@ -448,7 +476,10 @@ function onGenerated(projectId: number) {
             </template>
             <template #header="{ event }">
               <div class="flex min-w-0 items-baseline gap-2">
-                <span v-if="skipNoteFor(event)" class="min-w-0 truncate text-xs font-normal text-muted">
+                <span
+                  v-if="skipNoteFor(event)"
+                  class="min-w-0 flex-1 basis-0 truncate text-xs font-normal text-muted"
+                >
                   {{ skipNoteFor(event) }}
                 </span>
                 <span v-if="tierControlReady" class="shrink-0">
