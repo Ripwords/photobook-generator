@@ -108,7 +108,7 @@ the events already ranked above it, and `similarity` is the highest of:
 - **GPS:** `1 − min(1, km / NOVELTY_KM)` between chapter centroids
   (`chapter::centroids`), when both events have locations. `NOVELTY_KM` = 2.
 - **Scene:** Jaccard similarity of the two events' top-10 scene tags.
-- **Look:** a similarity built from the distance between the events' mean feature prints.
+- **Look:** dropped. See below — **LOOK_DROPPED**.
 
 **Risk: feature prints may not separate events.** The calibration of 2026-09-19 measured
 *pairwise* print distances of p50 0.93–0.99 inside an event against 1.02–1.03 across
@@ -116,7 +116,30 @@ events. Those ranges overlap almost completely. Mean prints have never been meas
 plan's first task measures mean-print distance between pairs of events labelled by GPS,
 with no human needed: same place (centroids within 500 m) against different places
 (more than 20 km apart), on Bali and Iceland. If it doesn't separate them, the
-**Look** component is dropped rather than tuned. It is a guess until then.
+**Look** component is dropped rather than tuned.
+
+**Measured 2026-09-23, and not measurable.** `cargo run --release --example book_report --
+--novelty 9 10 12` (and again with `--places`), against the app's real saved libraries
+(projects 9, 10, 12 — Iceland 25, Vietnam 2026, Japan 2026; projects 4, 5, 8, 11 are
+trashed and the loader refuses them). Every run of 3,998 feature records in the database
+was checked directly first: 0 of them carry `exif.latitude`. The two cameras behind these
+libraries are a Sony a6400/a7cII plus a phone shooting DNG without location, so no photo in
+any saved library carries a GPS fix, and hence no same-place/different-place labels exist
+to calibrate against — not "AUC measured below 0.80". Both runs printed the same thing,
+with and without `--places`:
+
+```
+project 9: same n=0 p10/50/90=NaN/NaN/NaN  different n=0 p10/50/90=NaN/NaN/NaN  auc=0.500
+project 10: same n=0 p10/50/90=NaN/NaN/NaN  different n=0 p10/50/90=NaN/NaN/NaN  auc=0.500
+project 12: same n=0 p10/50/90=NaN/NaN/NaN  different n=0 p10/50/90=NaN/NaN/NaN  auc=0.500
+pooled: same n=0 p10/50/90=NaN/NaN/NaN  different n=0 p10/50/90=NaN/NaN/NaN  auc=0.500
+```
+
+Applying the decision rule fixed in advance (§9's plan) to that: fewer than 10 pairs in
+each class, so the decision is **LOOK_DROPPED**. The **Look** similarity term is not
+built. `similarity` for §3.1 is the higher of GPS and Scene alone. This calibration can be
+re-run — `--novelty --places <project ids>` — once a GPS-tagged library exists; nothing
+about the measurement changes, only its input.
 
 ## 4. Suggested tiers
 
