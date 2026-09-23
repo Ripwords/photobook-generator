@@ -169,14 +169,27 @@ defineExpose({ revealEvent });
             Skip" instead of just its title. Keeping it a sibling in the same
             flex row leaves the layout unchanged while the heading's name
             stays just the title and count.
+
+            The slot's own root nodes sit directly in this row rather than
+            inside a wrapping span: a wrapping `<span class="min-w-0">` here
+            (fix2) let the OUTER row's shrink pass squeeze the whole
+            note+control cluster below what the control alone needs, before
+            the control's own `shrink-0` ever got a say -- overflow at
+            1100px with a long title (fix3). With title, note and control as
+            flat siblings of one row, `h2`'s own (default) shrink and the
+            note's much higher one below resolve who gives way first, and
+            `shrink-0` on the control is honoured at the level that actually
+            distributes the row's space, not two flex contexts removed from
+            it. `h2` grows to absorb any slack, keeping the note+control
+            cluster flush right when the title is short, as it was before.
           -->
-          <h2 class="flex min-w-0 shrink-0 max-w-[60%] items-baseline gap-2 font-semibold text-highlighted">
+          <h2 class="flex min-w-0 grow items-baseline gap-2 font-semibold text-highlighted">
             <span class="min-w-0 truncate">{{ row.title }}</span>
             <span class="shrink-0 font-normal text-muted tabular-nums"
               >{{ row.count }} {{ row.count === 1 ? "photo" : "photos" }}</span
             >
           </h2>
-          <span class="ml-auto min-w-0"><slot name="header" :event="row.event" /></span>
+          <slot name="header" :event="row.event" />
         </div>
       </div>
       <div

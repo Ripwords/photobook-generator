@@ -92,15 +92,19 @@ export function mockPlaceChapters(noLocation: boolean, count = 36) {
 
 /**
  * Names for `mockPlaceChapters`' chapters, in chapter order. One chapter is
- * left unnamed, as a lookup Apple could not answer is, and one name is long
- * enough to truncate in the sheet's header.
+ * left unnamed, as a lookup Apple could not answer is, and two names are
+ * long enough to exercise the sheet header's give-way order (fix3):
+ * ~30 chars and ~80 chars, both past the point a short town name would
+ * ever reach, so a header stress-tested only against them would still
+ * have missed the fix3 overflow.
  */
 const MOCK_TOWNS = [
   "Kyoto",
   "Arashiyama",
   null,
   "Osaka",
-  "Llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch",
+  "Llanfairpwllgwyngyll, Anglesey",
+  "Llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch, Isle of Anglesey, Wales",
   "Nara",
 ];
 

@@ -475,22 +475,32 @@ function onGenerated(projectId: number) {
               />
             </template>
             <template #header="{ event }">
-              <div class="flex min-w-0 items-baseline gap-2">
-                <span
-                  v-if="skipNoteFor(event)"
-                  class="min-w-0 flex-1 basis-0 truncate text-xs font-normal text-muted"
-                >
-                  {{ skipNoteFor(event) }}
-                </span>
-                <span v-if="tierControlReady" class="shrink-0">
-                  <EventTierControl
-                    :row="eventRowFor(event)"
-                    :title="titleOf(event)"
-                    :title-of="titleOf"
-                    @set="setEventTier(event, $event)"
-                  />
-                </span>
-              </div>
+              <!--
+                Two root nodes, not one wrapping div: ContactSheet renders
+                this slot as a direct child of its header row (fix3), so a
+                wrapper here would reintroduce the same min-w-0 box the
+                outer row's own shrink pass could squeeze past what the
+                control needs, regardless of the control's own `shrink-0`.
+                `shrink-[999]` on the note (vs. the title's own default
+                shrink inside `ContactSheet`'s `h2`) is what makes the note
+                give way first: its scaled shrink factor swamps the
+                title's, so it is driven to its `min-w-0` floor before the
+                row's shrink math touches the title at all.
+              -->
+              <span
+                v-if="skipNoteFor(event)"
+                class="min-w-0 shrink-[999] truncate text-xs font-normal text-muted"
+              >
+                {{ skipNoteFor(event) }}
+              </span>
+              <span v-if="tierControlReady" class="shrink-0">
+                <EventTierControl
+                  :row="eventRowFor(event)"
+                  :title="titleOf(event)"
+                  :title-of="titleOf"
+                  @set="setEventTier(event, $event)"
+                />
+              </span>
             </template>
           </ContactSheet>
         </div>
