@@ -172,12 +172,12 @@ const overflowMessage = computed(() =>
   chosenOption.value ? includeOverflowLabel(chosenOption.value) : null,
 );
 
-/** The tiers' own floors cannot all fit this length -- `PageOption.tierOverflow`. */
+/** The tier floors and Includes cannot all fit this length -- `PageOption.tierOverflow`. */
 const tierOverflowMessage = computed(() => {
   const option = chosenOption.value;
   const overflow = option?.tierOverflow;
   if (!option || !overflow) return null;
-  return `These tiers need ${overflow.needed} photos but ${option.pages} pages hold ${overflow.capacity}; every event gets at least one.`;
+  return `Your tiers and included photos need ${overflow.needed} photos but ${option.pages} pages hold ${overflow.capacity}; every event you haven't skipped still gets at least one.`;
 });
 
 /**

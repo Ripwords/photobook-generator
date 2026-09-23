@@ -74,7 +74,7 @@ const decisions = computed({
     job.overrides = next;
   },
 });
-/** The job's tier choices, restored on reopen -- no control writes these yet. */
+/** The job's tier choices, restored on reopen and written by each header's tier control. */
 const tiers = computed(() => job.tiers);
 /** The option the user has chosen a length for, so the sheet can dim by what it actually places. */
 const chosenOption = ref<PageOption>();

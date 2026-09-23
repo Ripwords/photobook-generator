@@ -1124,7 +1124,9 @@ pub struct PageOption {
     pub selected_paths: Vec<String>,
     /// Set when the user's own tier floors (or Includes) could not fit this
     /// length even after every suggested event was demoted as far as
-    /// possible. Generating anyway fails with `BookError::TierFloorNotMet`.
+    /// possible. Generating anyway still succeeds: every event you have not
+    /// skipped is cut to at least one photo (never below its Includes) and
+    /// the floor check is skipped.
     pub tier_overflow: Option<TierOverflow>,
 }
 

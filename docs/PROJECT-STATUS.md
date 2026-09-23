@@ -2278,6 +2278,13 @@ beside it. The design calls for the OS keychain, read from Rust.
 - `ResponseResult::Benchmarked` and `RequestKind::Benchmark` (Rust) have no Rust caller —
   `scripts/benchmark.sh` drives the sidecar binary directly. They stay as the pin on the
   Swift wire the script relies on; the unused `Sidecar::benchmark` method itself is gone.
+- An undated Brief event folded into a dated neighbour prints **first** in that chapter:
+  `pack_selected` re-sorts a chapter's members by `captured_at`, and `None` sorts first.
+  This follows from the ruling that undated photos are Brief, and it shows in the book.
+- `EventTierControl` reads the user's choice from the recommendation's `row.chosen`, so a
+  chosen event shows **Auto** until the first recommendation arrives (a restored draft, or
+  a re-run with no option yet). It corrects itself when the recommendation lands. Reading
+  the job's `tiers` as a fallback would fix it.
 
 ---
 

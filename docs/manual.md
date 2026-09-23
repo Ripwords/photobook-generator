@@ -116,8 +116,8 @@ none. The app suggests a tier for each event and gives a reason, such as "Stands
 rest of the trip" or "Ranked 4 of 9" -- hover the control on the event's header, in the
 contact sheet, to read it; a Skipped event also shows its reason right in the header, since
 its tiles are dimmed and easy to pass over. Click **Featured**, **Brief** or **Skip** there
-to set the tier yourself, or **Auto** to hand it back to the app; your own choice shows as
-**(you)** and is saved with the draft and, once you generate, with the book. Choosing a tier
+to set the tier yourself, or **Auto** to hand it back to the app; in the events panel your own
+choice shows as **(you)**. It is saved with the draft and, once you generate, with the book. Choosing a tier
 yourself always shows what you chose, even where the control would otherwise have shown why
 the app suggested something else. Marking a photo **+** always places it, even in a Skipped
 event.
@@ -129,8 +129,9 @@ such as "6 kept → 4 placed". Click a row to scroll the contact sheet to that e
 pages", and under that, how many events get a page to themselves (Featured and Normal --
 Brief and Skipped events share space with others rather than getting one each) out of every
 event the book has, and how many photos that length places, such as "12 of 19 events · 85
-photos". If your tiers ask for more photos than a length can hold, the panel says so under the
-list and gives every event at least one photo anyway. Choosing a longer length that earns
+photos". If your tiers and **+** photos ask for more photos than a length can hold, the panel says so
+under the list; the book still generates, giving every event you haven't skipped at least one
+photo. Choosing a longer length that earns
 another event a page of its own says so too, for example "At 60 pages, 2 more events get their
 own pages."
 

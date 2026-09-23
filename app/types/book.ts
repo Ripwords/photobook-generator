@@ -70,7 +70,6 @@ export interface PreflightFinding {
   message: string;
 }
 
-/** One page length the user can choose, and what choosing it costs. */
 /**
  * Mirrors `book::events::Reason`: why `recommend`'s per-event plan landed on
  * the tier it did. Internally tagged (`kind`) to match Rust's
@@ -121,6 +120,7 @@ export interface TierOverflow {
   capacity: number;
 }
 
+/** One page length the user can choose, and what choosing it costs. */
 export interface PageOption {
   pages: number;
   capacityPhotos: number;
@@ -140,7 +140,9 @@ export interface PageOption {
   /**
    * Set when the user's own tier floors (or Includes) could not fit this
    * length even after every suggested event was demoted as far as possible.
-   * Generating anyway fails with Rust's `BookError::TierFloorNotMet`.
+   * Generating anyway still succeeds: every event the user has not skipped
+   * is cut to at least one photo (never below its Includes) and Rust's floor
+   * check is skipped.
    */
   tierOverflow: TierOverflow | null;
 }
