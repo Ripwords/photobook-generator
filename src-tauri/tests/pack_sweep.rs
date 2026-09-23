@@ -17,7 +17,7 @@
 //! the counts the fixtures happened to use.
 
 use app_lib::book::cull::{Overrides, Photo};
-use app_lib::book::pace::{assemble, Book, BLANK_TEMPLATE_ID};
+use app_lib::book::pace::{assemble, Book, BookError, BLANK_TEMPLATE_ID};
 use app_lib::book::pack::{Buildable, Capacity};
 use app_lib::templates::{Library, Weights};
 use std::path::Path;
@@ -164,6 +164,7 @@ fn pack_sweep_places_every_keeper_the_book_can_hold_and_blanks_only_when_photos_
     let mut total_hollow = 0usize;
     let mut lost_under_capacity: Vec<String> = Vec::new();
     let mut blank_while_full: Vec<String> = Vec::new();
+    let mut floor_misses: Vec<String> = Vec::new();
 
     println!(
         "{:>8} {:>7} {:>5} | {:>6} {:>4} {:>5} {:>6}",
@@ -173,8 +174,17 @@ fn pack_sweep_places_every_keeper_the_book_can_hold_and_blanks_only_when_photos_
         for n in 10..=cap.max_photos + 2 {
             for seed in SEEDS {
                 let photos = shape.photos(n);
-                let book = assemble(&spec, &photos, PAGES, &lib, &w, seed, &Overrides::default())
-                    .expect("no overrides, so nothing can refuse");
+                let book = match assemble(&spec, &photos, PAGES, &lib, &w, seed, &Overrides::default()) {
+                    Ok(book) => book,
+                    // The per-event budget promised every Featured and Normal
+                    // event its floor; a book that broke the promise is
+                    // collected and failed below, with every case named.
+                    Err(BookError::TierFloorNotMet { misses }) => {
+                        floor_misses.push(format!("{}/{n}/seed{seed}: {misses:?}", shape.name()));
+                        continue;
+                    }
+                    Err(e) => panic!("no overrides, so nothing else can refuse: {e}"),
+                };
                 let o = measure(&book);
                 let lost = n.saturating_sub(o.placed);
                 total_lost += lost;
@@ -209,6 +219,11 @@ fn pack_sweep_places_every_keeper_the_book_can_hold_and_blanks_only_when_photos_
         cap.max_photos
     );
 
+    assert!(
+        floor_misses.is_empty(),
+        "books that placed an event below its tier floor:\n{}",
+        floor_misses.join("\n")
+    );
     assert_eq!(
         total_hollow, 0,
         "a page naming a real template must hold a photo"

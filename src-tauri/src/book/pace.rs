@@ -14,7 +14,7 @@ use crate::book::cover::{self, Cover};
 use crate::book::crop::choose_crop;
 use crate::book::cull::{cull, Overrides, Photo};
 use crate::book::edit::OpeningControls;
-use crate::book::pack::{pack, Buildable, Capacity, Group, IncludeOverflow, SlotKind};
+use crate::book::pack::{pack_selected, Buildable, Capacity, Group, IncludeOverflow, SlotKind};
 use crate::book::score::{best_spread, rejects, slot_aspect};
 use crate::geometry::{Rect, Side};
 use crate::print_spec::PrintSpec;
@@ -481,6 +481,65 @@ pub enum BookError {
     /// over the result is one check that covers all of them, present and
     /// future.
     IncludedNotPlaced { paths: Vec<String> },
+    /// A Featured or Normal event reached the packed groups with fewer than
+    /// `min(floor, available)` photos and no `TierOverflow` excused it (spec
+    /// §5, "Invariant"; ruling R10).
+    ///
+    /// Checked on `pack_selected`'s groups, not the placed pages. The tier
+    /// logic can lose a photo only in budget -> select -> pack -> fold, and
+    /// every one of those is upstream of the groups. A photo the layout stage
+    /// rejects afterwards (DPI floor, a clipped face) is a printability
+    /// failure that knows nothing about tiers; R2 already covers it with a
+    /// blank-but-complete book and the photo counted in `book.dropped`.
+    TierFloorNotMet { misses: Vec<FloorMiss> },
+}
+
+/// One event the packed groups shorted: it was promised `floor` photos and
+/// `placed` reached a page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FloorMiss {
+    pub event: u32,
+    pub floor: usize,
+    pub placed: usize,
+}
+
+/// The Featured and Normal events whose placed count is below their floor.
+/// A Brief or Skipped event is never a miss: Brief's floor is a cap the fold
+/// may merge away, and Skipped promises nothing. Pure, so the invariant is
+/// testable without building a book that breaks it.
+pub(crate) fn check_floors(
+    placed: &BTreeMap<u32, usize>,
+    floors: &BTreeMap<u32, usize>,
+    plan: &[crate::book::events::EventPlan],
+) -> Vec<FloorMiss> {
+    use crate::book::events::Tier;
+    plan.iter()
+        .filter(|p| matches!(p.tier, Tier::Featured | Tier::Normal))
+        .filter_map(|p| {
+            let floor = floors.get(&p.event).copied().unwrap_or(0);
+            let got = placed.get(&p.event).copied().unwrap_or(0);
+            (got < floor).then_some(FloorMiss { event: p.event, floor, placed: got })
+        })
+        .collect()
+}
+
+/// The floor misses in `pack_selected`'s output. `groups` index `kept`, the
+/// vector the budget was dealt from, so each photo's `event_cluster` is the
+/// key `budget.floors` uses. Empty when the budget reported a `TierOverflow`:
+/// the user was already told their choices do not fit.
+pub(crate) fn floor_misses(
+    groups: &[Group],
+    kept: &[Photo],
+    budget: &crate::book::events::Budget,
+) -> Vec<FloorMiss> {
+    if budget.overflow.is_some() {
+        return Vec::new();
+    }
+    let mut per_event: BTreeMap<u32, usize> = BTreeMap::new();
+    for &i in groups.iter().flat_map(|g| &g.photos) {
+        *per_event.entry(kept[i].event_cluster).or_default() += 1;
+    }
+    check_floors(&per_event, &budget.floors, &budget.plan)
 }
 
 impl std::fmt::Display for BookError {
@@ -493,6 +552,15 @@ impl std::fmt::Display for BookError {
                  Exclude them, or choose a longer book.",
                 paths.len(),
                 paths.join(", ")
+            ),
+            Self::TierFloorNotMet { misses } => write!(
+                f,
+                "{} event(s) got fewer photos than their tier promises (event {}: {} of {}). \
+                 Choose a longer book or lower an event's tier.",
+                misses.len(),
+                misses[0].event,
+                misses[0].placed,
+                misses[0].floor
             ),
         }
     }
@@ -509,6 +577,9 @@ impl std::fmt::Display for BookError {
 /// through: `cull` honours them, `pack` refuses to trim an `Include` away,
 /// and the post-condition at the bottom of this function refuses to RETURN a
 /// book that lost one by any other route.
+///
+/// This is `assemble_with` with every event on its suggested tier and the
+/// default `BookOptions`.
 pub fn assemble(
     spec: &PrintSpec,
     photos: &[Photo],
@@ -518,13 +589,53 @@ pub fn assemble(
     seed: u64,
     overrides: &Overrides,
 ) -> Result<Book, BookError> {
+    assemble_with(
+        spec,
+        photos,
+        pages,
+        lib,
+        w,
+        seed,
+        overrides,
+        &crate::book::events::EventTiers::new(),
+        BookOptions::default(),
+    )
+}
+
+/// `assemble`, with the user's event tiers and per-book options. The photo
+/// budget is dealt per event (`events::budget`) rather than trimmed book-wide,
+/// Brief events fold into their neighbours, and the finished book is checked
+/// against every Featured and Normal event's floor (`BookError::TierFloorNotMet`,
+/// measured on the packed groups) unless the budget already reported a
+/// `TierOverflow` excusing it.
+///
+/// `photos[i].event_cluster` is the chapter id. A caller that chapters by
+/// place stamps those ids before calling, as `generate_and_save` does.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_with(
+    spec: &PrintSpec,
+    photos: &[Photo],
+    pages: u32,
+    lib: &Library,
+    w: &Weights,
+    seed: u64,
+    overrides: &Overrides,
+    tiers: &crate::book::events::EventTiers,
+    options: BookOptions,
+) -> Result<Book, BookError> {
     let kept = cull(photos, overrides);
     // `from_library`, not `from_sizes`: the latter over-estimates what the two
     // single pages hold by measuring them against the largest whole SPREAD.
     let buildable = Buildable::from_library(lib);
     let cap = Capacity::from_library(pages, lib);
+    let plan = crate::book::events::plan(photos, &kept, tiers, &cap);
+    let budget = crate::book::events::budget(&kept, plan, &cap, overrides, &options);
     let groups =
-        pack(&kept, &cap, &buildable, overrides).map_err(BookError::IncludedExceedCapacity)?;
+        pack_selected(&kept, &budget.selected, &budget.brief_events(), &cap, &buildable, overrides)
+            .map_err(BookError::IncludedExceedCapacity)?;
+    // Measured here, while the groups still index `kept`; reported after the
+    // Include post-condition so that error keeps precedence.
+    let misses = floor_misses(&groups, &kept, &budget);
 
     // `pack` indexes into `kept`; the manifest wants indices into `photos`.
     // Keyed on PATH, not hash: a content hash is not unique within a run --
@@ -617,7 +728,7 @@ pub fn assemble(
         dropped: 0,
         controls: BTreeMap::new(),
         spec: *spec,
-        options: BookOptions::default(),
+        options,
         cover: cover::choose(spec, photos, &candidates),
     };
     repace(&mut book, lib, photos, w, seed);
@@ -646,6 +757,12 @@ pub fn assemble(
     if !missing.is_empty() {
         missing.sort();
         return Err(BookError::IncludedNotPlaced { paths: missing });
+    }
+
+    // The tier post-condition (ruling R10): measured on the packed groups
+    // above, so a layout-time rejection stays R2's blank page and `dropped`.
+    if !misses.is_empty() {
+        return Err(BookError::TierFloorNotMet { misses });
     }
 
     Ok(book)
@@ -1274,6 +1391,10 @@ mod tests {
         photos[5].sharpness_pct = 0;
         photos[5].is_utility = false;
         photos[5].near_dup_cluster = 5000;
+        // In the book's largest event. The trim is per event now
+        // (`events::budget`), and in its own five-photo event this photo is
+        // inside the event's floor and share, so nothing would trim it.
+        photos[5].event_cluster = photos.last().expect("non-empty").event_cluster;
 
         let before = assemble(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 42, &Overrides::new())
             .expect("no overrides");
@@ -2450,6 +2571,129 @@ mod tests {
         let expected =
             std::fs::read_to_string(&golden_path).expect("run with UPDATE_GOLDEN=1 first");
         assert_eq!(actual, expected);
+    }
+
+    use crate::book::events::{EventPlan, EventTiers, Reason, Tier};
+    use crate::book::pack::pack;
+
+    /// `fixture_photos`' varied aspects and faces, regrouped into the given
+    /// (event, count, aesthetic) events: dated, two frames a moment, nothing culled.
+    fn tiered_photos(events: &[(u32, usize, u8)]) -> Vec<Photo> {
+        let total: usize = events.iter().map(|e| e.1).sum();
+        let mut base = fixture_photos(total).into_iter();
+        let mut out = Vec::new();
+        for &(event, count, aes) in events {
+            for n in 0..count {
+                let mut p = base.next().expect("enough fixture photos");
+                p.is_utility = false;
+                p.event_cluster = event;
+                p.aesthetic_pct = aes.saturating_sub((n % 7) as u8);
+                p.captured_at =
+                    Some(event as i64 * 86_400 + (n / 2) as i64 * 600 + (n % 2) as i64 * 60);
+                out.push(p);
+            }
+        }
+        out
+    }
+
+    fn tiers_for(photos: &[Photo], event: u32, tier: Tier) -> EventTiers {
+        photos.iter().filter(|p| p.event_cluster == event).map(|p| (p.hash.clone(), tier)).collect()
+    }
+
+    fn placed_in_event(book: &Book, photos: &[Photo], event: u32) -> usize {
+        placed_indices(book).into_iter().filter(|&i| photos[i].event_cluster == event).count()
+    }
+
+    #[test]
+    fn assemble_with_places_a_normal_events_floor_beside_a_dominant_event() {
+        // The book-wide trim ranks by aesthetic and places none of the dull event.
+        let photos = tiered_photos(&[(0, 200, 95), (1, 6, 8)]);
+        let tiers = tiers_for(&photos, 1, Tier::Normal);
+        let book = assemble_with(&pixajoy_spec(), &photos, 20, &real_library(), &Weights::default(), 7,
+            &Overrides::new(), &tiers, BookOptions::default()).unwrap();
+        let placed = placed_in_event(&book, &photos, 1);
+        assert!(placed >= 2, "placed {placed}");
+    }
+
+    #[test]
+    fn a_two_photo_brief_event_never_owns_a_spread() {
+        let photos = tiered_photos(&[(0, 60, 80), (1, 12, 90), (2, 60, 80)]);
+        let tiers = tiers_for(&photos, 1, Tier::Brief);
+        let book = assemble_with(&pixajoy_spec(), &photos, 20, &real_library(), &Weights::default(), 7,
+            &Overrides::new(), &tiers, BookOptions::default()).unwrap();
+        assert_eq!(placed_in_event(&book, &photos, 1), 2, "the Brief cap");
+        // Per SLOT, not per page: the fold puts the Brief pair in a group with
+        // its neighbour's photos, and the scorer is then free to seat them on
+        // one half of the shared spread. What the fold forbids is a slot --
+        // the opening page, a spread, the closing page -- of the Brief event alone.
+        let last = book.pages.len() - 1;
+        let mut slots: Vec<Vec<&Page>> = vec![vec![&book.pages[0]]];
+        slots.extend(book.pages[1..last].chunks(2).map(|pair| pair.iter().collect()));
+        slots.push(vec![&book.pages[last]]);
+        for slot in &slots {
+            let events: BTreeSet<u32> = slot
+                .iter()
+                .flat_map(|page| page.placements.iter().map(|pl| photos[pl.photo_index].event_cluster))
+                .collect();
+            assert_ne!(events, BTreeSet::from([1]), "page {} starts a slot of only the Brief event", slot[0].number);
+        }
+    }
+
+    /// The options reach both the budget and the saved book: a Featured
+    /// floor of 9 places 9, where the default of 6 would satisfy the budget
+    /// with fewer, and `book.options` is what was asked for, not the default.
+    #[test]
+    fn assemble_with_keeps_the_books_options_and_budgets_by_them() {
+        let photos = tiered_photos(&[(0, 200, 95), (2, 200, 90), (1, 12, 8)]);
+        let tiers = tiers_for(&photos, 1, Tier::Featured);
+        let options = BookOptions { places: true, featured_floor: 9, brief_cap: 3 };
+        let book = assemble_with(&pixajoy_spec(), &photos, 20, &real_library(), &Weights::default(), 7,
+            &Overrides::new(), &tiers, options).unwrap();
+        assert_eq!(book.options, options);
+        let placed = placed_in_event(&book, &photos, 1);
+        assert!(placed >= 9, "placed {placed}");
+        let default = assemble_with(&pixajoy_spec(), &photos, 20, &real_library(), &Weights::default(), 7,
+            &Overrides::new(), &tiers, BookOptions::default()).unwrap();
+        assert!(placed_in_event(&default, &photos, 1) < 9, "fixture: the default floor must place fewer than 9");
+    }
+
+    /// `floor_misses` counts each photo by ITS event, not the group's: a fold
+    /// re-keys a small chapter's photos onto the absorbing cluster, so group
+    /// 1 below is keyed 4 but holds a photo of event 3. It indexes `kept`, and
+    /// a `TierOverflow` silences it.
+    #[test]
+    fn floor_misses_counts_the_packed_groups_by_each_photos_own_event() {
+        use crate::book::events::{Budget, TierOverflow};
+        let kept = tiered_photos(&[(3, 3, 50), (4, 4, 50)]); // kept 0..3 event 3, 3..7 event 4
+        let row = |event, tier| EventPlan {
+            event, tier, suggested: tier, chosen: false, reason: Reason::Ranked { rank: 1, of: 2 },
+            merit: 0.5, moments: 2, kept: 4, photos: 4,
+        };
+        let group = |photos: Vec<usize>, event_cluster| Group { photos, event_cluster, slot: SlotKind::Spread };
+        let mut budget = Budget {
+            selected: (0..7).collect(),
+            plan: vec![row(3, Tier::Normal), row(4, Tier::Normal)],
+            floors: BTreeMap::from([(3, 2), (4, 2)]),
+            overflow: None,
+        };
+        let folded = vec![group(vec![0, 3], 3), group(vec![1, 4, 5], 4)];
+        assert_eq!(floor_misses(&folded, &kept, &budget), vec![]);
+        let short = vec![group(vec![0, 3, 4, 5], 4)];
+        assert_eq!(floor_misses(&short, &kept, &budget), vec![FloorMiss { event: 3, floor: 2, placed: 1 }]);
+        budget.overflow = Some(TierOverflow { needed: 9, capacity: 4 });
+        assert_eq!(floor_misses(&short, &kept, &budget), vec![]);
+    }
+
+    #[test]
+    fn the_output_invariant_reports_a_normal_event_below_its_floor() {
+        let row = |event, tier| EventPlan {
+            event, tier, suggested: tier, chosen: false, reason: Reason::Ranked { rank: 1, of: 3 },
+            merit: 0.5, moments: 4, kept: 8, photos: 8,
+        };
+        let plan = vec![row(3, Tier::Normal), row(4, Tier::Brief), row(5, Tier::Featured)];
+        let floors = BTreeMap::from([(3, 2), (4, 1), (5, 6)]);
+        let placed = BTreeMap::from([(3, 1), (5, 6)]); // Brief 4 placed 0: not a floor miss
+        assert_eq!(check_floors(&placed, &floors, &plan), vec![FloorMiss { event: 3, floor: 2, placed: 1 }]);
     }
 }
 

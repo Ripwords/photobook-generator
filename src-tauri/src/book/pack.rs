@@ -394,6 +394,23 @@ pub fn pack(
     buildable: &Buildable,
     overrides: &Overrides,
 ) -> Result<Vec<Group>, IncludeOverflow> {
+    let selected = select(photos, capacity.target_photos, overrides);
+    pack_selected(photos, &selected, &std::collections::BTreeSet::new(), capacity, buildable, overrides)
+}
+
+/// `pack` with the selection made by the caller: `selected` indexes `photos`
+/// and is laid out as given, and every event in `brief` folds into its
+/// neighbour (`merge_sub_spread_chapters`). `pack` is this with the book-wide
+/// `select` and no Brief events; `assemble_with` passes the per-event
+/// `events::budget`.
+pub fn pack_selected(
+    photos: &[Photo],
+    selected: &[usize],
+    brief: &std::collections::BTreeSet<u32>,
+    capacity: &Capacity,
+    buildable: &Buildable,
+    overrides: &Overrides,
+) -> Result<Vec<Group>, IncludeOverflow> {
     use std::collections::BTreeMap;
 
     if photos.is_empty()
@@ -423,12 +440,12 @@ pub fn pack(
     // Chapters, keyed by cluster id so iteration is chronological regardless
     // of the input slice's order.
     let mut chapters: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
-    for i in select(photos, capacity.target_photos, overrides) {
+    for &i in selected {
         chapters.entry(photos[i].event_cluster).or_default().push(i);
     }
 
     let slots = capacity.spreads as usize + capacity.singles as usize;
-    let chapters = merge_sub_spread_chapters(chapters, spread_minimum(buildable));
+    let chapters = merge_sub_spread_chapters(chapters, spread_minimum(buildable), brief);
     let chapters = merge_chapters_the_slots_cannot_seat(chapters, slots, buildable);
 
     let mut groups = Vec::new();
@@ -643,11 +660,17 @@ fn spread_minimum(buildable: &Buildable) -> usize {
 /// Merging removes the cause of all three rather than papering over any of
 /// them. Chapters are visited in cluster order, which is chronological, and
 /// the fold is forward, so a stray photo joins the chapter it precedes.
+///
+/// A Brief event (`brief`) folds whatever its size. Its cap is small enough
+/// that its photos can meet the spread minimum -- two photos build a spread --
+/// so without this a Brief event would take a whole spread of its own, which
+/// is what Brief exists to prevent (spec §2).
 fn merge_sub_spread_chapters(
     chapters: std::collections::BTreeMap<u32, Vec<usize>>,
     spread_min: usize,
+    brief: &std::collections::BTreeSet<u32>,
 ) -> std::collections::BTreeMap<u32, Vec<usize>> {
-    if spread_min <= 1 {
+    if spread_min <= 1 && brief.is_empty() {
         return chapters;
     }
     let first = match chapters.keys().next() {
@@ -658,7 +681,7 @@ fn merge_sub_spread_chapters(
     let mut carry: Vec<usize> = Vec::new();
     for (cluster, mut members) in chapters {
         members.append(&mut carry);
-        if members.len() < spread_min {
+        if members.len() < spread_min || brief.contains(&cluster) {
             carry = members;
         } else {
             out.insert(cluster, members);
@@ -1874,6 +1897,31 @@ mod tests {
     /// one-photo book. Slot 0 is a single page and can hold exactly this.
     ///
     /// Probed: `placed=1 sizes=[1]` with the arm, `placed=0 sizes=[]` without.
+    /// A Brief event folds into its neighbour whatever its size: its two
+    /// photos meet the spread minimum, so without the fold it takes a whole
+    /// spread of its own (spec §2).
+    #[test]
+    fn a_two_photo_brief_chapter_folds_into_its_neighbour() {
+        use std::collections::{BTreeMap, BTreeSet};
+        let chapters: BTreeMap<u32, Vec<usize>> =
+            [(0, vec![0, 1, 2, 3]), (1, vec![4, 5]), (2, vec![6, 7, 8, 9])].into_iter().collect();
+        let brief: BTreeSet<u32> = [1].into_iter().collect();
+        let out = merge_sub_spread_chapters(chapters.clone(), 2, &brief);
+        assert_eq!(out.keys().copied().collect::<Vec<_>>(), vec![0, 2]);
+        assert_eq!(out[&2].len(), 6, "the Brief pair joins the NEXT chapter");
+        // The last chapter Brief joins the previous one.
+        let brief_last: BTreeSet<u32> = [2].into_iter().collect();
+        let out = merge_sub_spread_chapters(chapters.clone(), 2, &brief_last);
+        assert_eq!(out[&1].len(), 6);
+        // Nothing Brief: unchanged, as before.
+        assert_eq!(merge_sub_spread_chapters(chapters.clone(), 2, &BTreeSet::new()), chapters);
+        // A library whose spreads start at one photo folds nothing by size,
+        // and still folds a Brief event.
+        let out = merge_sub_spread_chapters(chapters.clone(), 1, &brief);
+        assert_eq!(out.keys().copied().collect::<Vec<_>>(), vec![0, 2]);
+        assert_eq!(merge_sub_spread_chapters(chapters.clone(), 1, &BTreeSet::new()), chapters);
+    }
+
     #[test]
     fn pack_places_the_only_photo_in_a_book_too_small_for_a_spread() {
         let photos = vec![photo("/only.jpg", 0, 50)];

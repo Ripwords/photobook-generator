@@ -207,7 +207,11 @@ After that, `pack` is unchanged. Chapters are built from what was selected. Brie
 **Invariant, and the test that guards it:** every Featured and Normal event places at
 least `min(floor, available)` photos in the finished book, or `TierOverflow` was
 reported. It is checked on the output of `assemble`, like `IncludedNotPlaced`, because
-there are several places after `select` where a photo can still be lost.
+there are several places after `select` where a photo can still be lost. **Ruling R10:**
+the check runs on the packed groups (`pack_selected`'s output), where every tier-driven
+loss (budget, select, pack, fold) has already happened; a photo the layout stage rejects
+afterwards (DPI floor, a clipped face) is reported as `dropped` on a blank-but-complete
+book (R2), not as `TierFloorNotMet`.
 
 ## 6. Storage
 
@@ -396,6 +400,24 @@ pages); every other row leaves at least one event with zero photos placed, up to
 events on project 9 at 20 pages. The spread problem the spec targets is real on these
 three libraries, at both page lengths and across seeds. Gini ranges 0.505-0.649: even the
 "best" row (project 12, 40 pages) is far from even.
+
+### After Task 7 (measured 2026-09-23)
+
+The same copy of the database and the same command, now built through `assemble_with`
+(per-event budget, Brief fold, floor invariant on the packed groups, R10). No `ERROR` rows, so no book raised
+`TierFloorNotMet`. `--places` is again byte-identical, for the same reason as the baseline.
+
+| project | pages | seed | photos | events | events_at_zero | gini | min_chapter | blank_pages | dropped |
+|---|---|---|---|---|---|---|---|---|---|
+| 9 | 20 | 7, 1234, 99 | 2784 | 14 | 0 (was 5) | 0.379 (was 0.649) | 1 | 0 | 2739 |
+| 9 | 40 | 7, 1234, 99 | 2784 | 14 | 0 (was 3) | 0.387 (was 0.547) | 1 | 0 | 2699 |
+| 10 | 20 | 7, 1234, 99 | 81 | 5 | 1 | 0.516 | 2 | 0 | 50 |
+| 10 | 40 | 7, 1234, 99 | 81 | 5 | 1 | 0.516 | 2 | 11 | 50 |
+| 12 | 20 | 7, 1234, 99 | 1133 | 11 | 0 (was 2) | 0.509 (was 0.567) | 1 | 0 | 1088 (was 1090) |
+| 12 | 40 | 7, 1234, 99 | 1133 | 11 | 0 | 0.396 (was 0.505) | 2 (was 1) | 0 | 1048 |
+
+All three seeds gave identical rows, as in the baseline. `events_at_zero` and
+`blank_pages` rose on no row.
 
 ## 10. Prior work this draws on
 
