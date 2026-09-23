@@ -1,10 +1,13 @@
 /**
  * Synthetic analysed photos for the browser harness. See `core.ts`.
  *
- * Thumbnails are `data:` SVGs rather than file paths: `convertFileSrc` in the
- * harness returns what it is given, so a data URI renders in an ordinary
- * browser and the contact sheet and the book preview show pictures instead of
- * 36 broken-image icons. A preview judged against empty boxes is not judged.
+ * Thumbnails are picsum.photos URLs rather than file paths: `convertFileSrc` in
+ * the harness returns what it is given, so a URL renders in an ordinary browser
+ * and the contact sheet, the book preview and the README screenshots show real
+ * photographs instead of 36 broken-image icons. A preview judged against empty
+ * boxes is not judged. They are stock images, never the user's, so the harness
+ * needs a network connection but nothing about the privacy rule changes; the
+ * real app's CSP would block them, which is fine because it never sees them.
  */
 import type { AnalyzedPhoto } from "../../app/types/features";
 
@@ -20,17 +23,21 @@ interface EnginePhoto extends AnalyzedPhoto {
   palette: number[][];
 }
 
-const HUES = [18, 42, 96, 152, 196, 232, 268, 312];
+/**
+ * Picsum ids picked by eye to look like one trip: coast, mountains, towns and
+ * food, no laptops or flat lays. Pinned by id so every run, and every
+ * screenshot, shows the same pictures.
+ */
+const PICSUM_IDS = [
+  10, 11, 12, 13, 14, 15, 16, 17, 27, 28, 29, 100, 108, 110, 162, 163, 164, 166, 170, 270, 338, 342, 349,
+  1015, 1016, 1018, 1022, 1026, 1035, 1036, 1039, 1040, 1043, 1044, 1045, 1047, 1049, 1050, 1051, 1052,
+  1057, 1060, 1061, 1065, 1067,
+];
 
-export function thumbnail(index: number, label: string): string {
-  const hue = HUES[index % HUES.length] ?? 0;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
-<rect width="400" height="400" fill="hsl(${hue} 42% ${38 + ((index * 7) % 26)}%)"/>
-<circle cx="${120 + ((index * 53) % 160)}" cy="${130 + ((index * 37) % 140)}" r="${48 + ((index * 11) % 46)}" fill="hsl(${(hue + 40) % 360} 58% 72%)" opacity="0.8"/>
-<rect x="0" y="300" width="400" height="100" fill="hsl(${(hue + 200) % 360} 30% 22%)" opacity="0.65"/>
-<text x="24" y="368" font-family="ui-monospace, monospace" font-size="44" fill="white" opacity="0.92">${label}</text>
-</svg>`;
-  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+/** A real photograph, cropped to the orientation of the photo it stands in for. */
+export function thumbnail(index: number, landscape: boolean): string {
+  const id = PICSUM_IDS[index % PICSUM_IDS.length] ?? PICSUM_IDS[0];
+  return `https://picsum.photos/id/${id}/${landscape ? "400/300" : "300/400"}`;
 }
 
 /**
@@ -61,7 +68,8 @@ export function mockPhotos(count = 36): AnalyzedPhoto[] {
       faceCount: i % 4,
       smileFraction: i % 4 === 0 ? undefined : ((i * 17) % 100) / 100,
       sceneTags: ["outdoor", "beach", "portrait", "food"].slice(0, (i % 3) + 1),
-      thumbnailPath: thumbnail(i, label.slice(-4)),
+      // A burst is the same moment shot again, so it shows the same picture.
+      thumbnailPath: thumbnail(burst ? (i <= 10 ? 8 : 22) : i, landscape),
       aestheticPct: (i * 37) % 100,
       sharpnessPct: (i * 61) % 100,
       nearDupCluster,

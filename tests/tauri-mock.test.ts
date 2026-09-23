@@ -376,3 +376,25 @@ describe("the harness's undo timeline", () => {
     expect(await invoke<BookLayout>("step_book", { step: "redo" })).toEqual(newest);
   });
 });
+
+/** The picsum picture a thumbnail shows, whatever size it is cropped to. */
+function picture(photo: { thumbnailPath: string }): string {
+  return photo.thumbnailPath.replace(/\/\d+\/\d+$/, "");
+}
+
+describe("mock thumbnails", () => {
+  const photos = mockPhotos();
+  it("are real photos from picsum, shaped like the photo they stand in for", () => {
+    for (const photo of photos) {
+      const size = photo.width > photo.height ? "400/300" : "300/400";
+      expect(photo.thumbnailPath).toMatch(new RegExp(`^https://picsum\\.photos/id/\\d+/${size}$`));
+    }
+  });
+  it("show a burst as the same picture and different events as different pictures", () => {
+    const burst = photos.filter((p) => p.nearDupCluster === 900).map(picture);
+    expect(burst.length).toBe(3);
+    expect(new Set(burst).size).toBe(1);
+    const singles = photos.filter((p) => p.nearDupCluster < 900).map(picture);
+    expect(new Set(singles).size).toBe(singles.length);
+  });
+});

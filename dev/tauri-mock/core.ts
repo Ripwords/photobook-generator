@@ -75,7 +75,7 @@ layout.openings[1] = {
 // The fixture's thumbnail paths point at a disk this browser cannot read.
 layout.photos = layout.photos.map((photo, index) => ({
   ...photo,
-  thumbnailPath: thumbnail(index + 3, photo.hash.slice(-4)),
+  thumbnailPath: thumbnail(index + 3, photo.width > photo.height),
 }));
 
 const photos: AnalyzedPhoto[] = mockPhotos();
