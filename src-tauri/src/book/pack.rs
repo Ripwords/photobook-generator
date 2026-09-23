@@ -527,17 +527,12 @@ pub fn moments(photos: &[Photo]) -> Vec<u32> {
     out
 }
 
-/// The photos `pack` places, as sorted indices into `photos`: every
-/// `Include`, then up to `target` in all, taken so that every moment's best
-/// photo comes before any moment's second. Each moment places at most
-/// `MAX_PER_MOMENT` photos the user did not include, however much room is
-/// left, so a burst of one pose cannot fill a spread.
-///
-/// "Best" is aesthetic, then sharpness, then path for determinism.
-pub fn select(photos: &[Photo], target: usize, overrides: &Overrides) -> Vec<usize> {
+/// Every photo the user did not include that `select` may take, best first:
+/// every moment's best before any moment's second, at most `MAX_PER_MOMENT`
+/// per moment. "Best" is aesthetic, then sharpness, then path.
+fn ranked_auto(photos: &[Photo], overrides: &Overrides) -> Vec<usize> {
     let wanted = |i: usize| overrides.get(&photos[i].hash) == Override::Include;
     let moment = moments(photos);
-
     let mut auto: Vec<usize> = (0..photos.len()).filter(|&i| !wanted(i)).collect();
     auto.sort_by(|&a, &b| {
         photos[b]
@@ -559,12 +554,51 @@ pub fn select(photos: &[Photo], target: usize, overrides: &Overrides) -> Vec<usi
         *place += 1;
     }
     ranked.sort_unstable();
+    ranked.into_iter().map(|(_, _, i)| i).collect()
+}
 
+/// The photos `pack` places, as sorted indices into `photos`: every
+/// `Include`, then up to `target` in all, taken so that every moment's best
+/// photo comes before any moment's second. Each moment places at most
+/// `MAX_PER_MOMENT` photos the user did not include, however much room is
+/// left, so a burst of one pose cannot fill a spread.
+pub fn select(photos: &[Photo], target: usize, overrides: &Overrides) -> Vec<usize> {
+    let wanted = |i: usize| overrides.get(&photos[i].hash) == Override::Include;
     let mut kept: Vec<usize> = (0..photos.len()).filter(|&i| wanted(i)).collect();
     let room = target.saturating_sub(kept.len());
-    kept.extend(ranked.into_iter().take(room).map(|(_, _, i)| i));
+    kept.extend(ranked_auto(photos, overrides).into_iter().take(room));
     kept.sort_unstable();
     kept
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventOrder {
+    pub list: Vec<usize>,
+    pub included: usize,
+}
+
+/// Each event's photos ranked ONCE (spec §5 step 5): its Includes, then
+/// `ranked_auto` restricted to the event. A quota takes a prefix, so more
+/// room only ever adds photos to an event, never swaps them.
+pub fn event_order(
+    photos: &[Photo],
+    overrides: &Overrides,
+) -> std::collections::BTreeMap<u32, EventOrder> {
+    let mut out: std::collections::BTreeMap<u32, EventOrder> = std::collections::BTreeMap::new();
+    for (i, p) in photos.iter().enumerate() {
+        let entry =
+            out.entry(p.event_cluster).or_insert_with(|| EventOrder { list: Vec::new(), included: 0 });
+        if overrides.get(&p.hash) == Override::Include {
+            entry.list.push(i);
+            entry.included += 1;
+        }
+    }
+    for i in ranked_auto(photos, overrides) {
+        if let Some(entry) = out.get_mut(&photos[i].event_cluster) {
+            entry.list.push(i);
+        }
+    }
+    out
 }
 
 /// The fewest photos any spread in this library can be built from, floored at
@@ -2042,5 +2076,39 @@ mod tests {
             .flat_map(|g| g.photos.iter().map(|&i| photos[i].path.as_str()))
             .collect();
         assert_eq!(order, ["/d.jpg", "/c.jpg", "/b.jpg", "/a.jpg"]);
+    }
+
+    #[test]
+    fn event_order_is_selects_order_split_by_event() {
+        // Two events, several moments each, varied aesthetics.
+        // Event 0 = indices 0..6, event 1 = 6..12; two frames per moment
+        // (60 s apart), moments 600 s apart; aesthetic varies so ranks differ.
+        let photos: Vec<Photo> = (0..12)
+            .map(|i| {
+                let mut p = photo(&format!("/p{i:02}.jpg"), (i / 6) as u32, ((i * 37) % 100) as u8);
+                p.near_dup_cluster = i as u32;
+                p.captured_at = Some((i / 2) as i64 * 600 + (i % 2) as i64 * 60);
+                p
+            })
+            .collect();
+        let overrides = Overrides::new();
+        let order = event_order(&photos, &overrides);
+        let all = select(&photos, photos.len(), &overrides);
+        for (event, o) in &order {
+            let mut expected: Vec<usize> = all.iter().copied().filter(|&i| photos[i].event_cluster == *event).collect();
+            let mut got = o.list.clone();
+            expected.sort_unstable();
+            got.sort_unstable();
+            assert_eq!(got, expected, "event {event} holds the same photos");
+        }
+        // Moment-first: every moment's best precedes any moment's second.
+        let moment = moments(&photos);
+        for o in order.values() {
+            let firsts = o.list.iter().take_while(|&&i| {
+                o.list.iter().position(|&j| moment[j] == moment[i]) == o.list.iter().position(|&j| j == i)
+            }).count();
+            let distinct = o.list.iter().map(|&i| moment[i]).collect::<std::collections::BTreeSet<_>>().len();
+            assert_eq!(firsts, distinct);
+        }
     }
 }

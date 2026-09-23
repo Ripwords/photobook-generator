@@ -433,6 +433,167 @@ pub fn suggest(stats: &[EventStats], capacity: &Capacity) -> Vec<Suggestion> {
     out
 }
 
+use crate::book::cull::Overrides;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventPlan {
+    pub event: u32,
+    /// Effective: the user's choice, else the suggestion, after `budget`'s adjustments.
+    pub tier: Tier,
+    pub suggested: Tier,
+    pub chosen: bool,
+    pub reason: Reason,
+    pub merit: f64,
+    pub moments: usize,
+    pub kept: usize,
+    pub photos: usize,
+}
+
+/// Every event's effective tier, sorted by event id.
+pub fn plan(photos: &[Photo], kept: &[Photo], tiers: &EventTiers, capacity: &Capacity) -> Vec<EventPlan> {
+    let stats = stats(photos, kept);
+    let suggestions = suggest(&stats, capacity);
+    let mut hashes: BTreeMap<u32, Vec<&str>> = BTreeMap::new();
+    for p in photos {
+        hashes.entry(p.event_cluster).or_default().push(p.hash.as_str());
+    }
+    suggestions
+        .into_iter()
+        .zip(&stats)
+        .map(|(s, st)| {
+            debug_assert_eq!(s.event, st.event);
+            let chosen = resolve(hashes.get(&s.event).into_iter().flatten().copied(), tiers);
+            EventPlan {
+                event: s.event,
+                tier: chosen.unwrap_or(s.tier),
+                suggested: s.tier,
+                chosen: chosen.is_some(),
+                reason: s.reason,
+                merit: s.merit,
+                moments: st.moments,
+                kept: st.keepers,
+                photos: st.photos,
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TierOverflow {
+    pub needed: usize,
+    pub capacity: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Budget {
+    /// Sorted indices into `kept`.
+    pub selected: Vec<usize>,
+    pub plan: Vec<EventPlan>,
+    /// What each event is guaranteed: `min(floor, available)`, never below its Includes.
+    pub floors: BTreeMap<u32, usize>,
+    pub overflow: Option<TierOverflow>,
+}
+
+impl Budget {
+    pub fn brief_events(&self) -> BTreeSet<u32> {
+        self.plan.iter().filter(|p| p.tier == Tier::Brief).map(|p| p.event).collect()
+    }
+
+    pub fn selected_in(&self, kept: &[Photo], event: u32) -> usize {
+        self.selected.iter().filter(|&&i| kept[i].event_cluster == event).count()
+    }
+}
+
+/// Deals the book's `target_photos` out to events by tier (§5).
+pub fn budget(
+    kept: &[Photo],
+    mut plan: Vec<EventPlan>,
+    capacity: &Capacity,
+    overrides: &Overrides,
+    options: &BookOptions,
+) -> Budget {
+    let order = pack::event_order(kept, overrides);
+    let target = capacity.target_photos;
+    let avail = |e: u32| order.get(&e).map_or(0, |o| o.list.len());
+    let included = |e: u32| order.get(&e).map_or(0, |o| o.included);
+    let floor_of = |p: &EventPlan| p.tier.floor(options).min(avail(p.event)).max(included(p.event));
+    let total = |plan: &[EventPlan]| plan.iter().map(floor_of).sum::<usize>();
+
+    // Step 3: floors that do not fit demote SUGGESTIONS, lowest merit first.
+    for (from, to) in [(Tier::Featured, Tier::Normal), (Tier::Normal, Tier::Brief)] {
+        while total(&plan) > target {
+            let Some(p) = plan
+                .iter_mut()
+                .filter(|p| !p.chosen && p.tier == from)
+                .min_by(|a, b| a.merit.total_cmp(&b.merit).then(b.event.cmp(&a.event)))
+            else {
+                break;
+            };
+            p.tier = to;
+            p.reason = Reason::Demoted;
+        }
+    }
+    let mut floors: BTreeMap<u32, usize> = plan.iter().map(|p| (p.event, floor_of(p))).collect();
+    let needed: usize = floors.values().sum();
+    let mut overflow = None;
+    if needed > target {
+        overflow = Some(TierOverflow { needed, capacity: target });
+        for p in &plan {
+            let one = if p.tier == Tier::Skipped { 0 } else { 1.min(avail(p.event)) };
+            floors.insert(p.event, one.max(included(p.event)));
+        }
+    }
+
+    // Step 4: D'Hondt over the remainder, vote = weight x sqrt(moments).
+    // Step 4b: when nothing can take a photo, promote the best suggested Brief.
+    let mut quota = floors.clone();
+    let mut left = target.saturating_sub(quota.values().sum());
+    while left > 0 {
+        let open = |p: &&EventPlan| {
+            let q = quota[&p.event];
+            p.tier != Tier::Skipped
+                && q < avail(p.event)
+                && (p.tier != Tier::Brief || q < options.brief_cap as usize)
+        };
+        let score = |p: &EventPlan| p.tier.weight() * (p.moments as f64).sqrt() / (quota[&p.event] + 1) as f64;
+        let pick = plan
+            .iter()
+            .filter(open)
+            .max_by(|a, b| score(a).total_cmp(&score(b)).then(b.event.cmp(&a.event)))
+            .map(|p| p.event);
+        match pick {
+            Some(e) => {
+                if let Some(q) = quota.get_mut(&e) {
+                    *q += 1;
+                }
+                left -= 1;
+            }
+            None => {
+                let promote = plan
+                    .iter_mut()
+                    .filter(|p| !p.chosen && p.tier == Tier::Brief && avail(p.event) > quota[&p.event])
+                    .max_by(|a, b| a.merit.total_cmp(&b.merit).then(b.event.cmp(&a.event)));
+                match promote {
+                    Some(p) => {
+                        p.tier = Tier::Normal;
+                        p.reason = Reason::Filled;
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+
+    let mut selected: Vec<usize> = order
+        .iter()
+        .flat_map(|(e, o)| o.list.iter().take(quota.get(e).copied().unwrap_or(0)).copied())
+        .collect();
+    selected.sort_unstable();
+    Budget { selected, plan, floors, overflow }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -895,5 +1056,265 @@ mod tests {
     fn tier_resolution_ignores_untiered_hashes_when_counting_votes() {
         let tiers: EventTiers = [("a".to_string(), Tier::Brief)].into_iter().collect();
         assert_eq!(resolve(["a", "x", "y", "z"], &tiers), Some(Tier::Brief));
+    }
+
+    // --- plan and budget -----------------------------------------------
+
+    use crate::book::cull::{Override, Overrides};
+
+    fn plan_of(photos: &[Photo], tiers: &EventTiers, cap: &Capacity) -> Vec<EventPlan> {
+        plan(photos, &keepers(photos), tiers, cap)
+    }
+
+    fn placed(b: &Budget, kept: &[Photo], event: u32) -> usize {
+        b.selected_in(kept, event)
+    }
+
+    #[test]
+    fn budget_gives_a_small_dull_normal_event_its_floor_beside_a_huge_bright_one() {
+        // Event 0's 400 photos, 2 per moment 600 s apart, span ~33 hours --
+        // longer than one day -- so event 1 sits on day 2, not day 1, or its
+        // "later" timestamps actually fall chronologically INSIDE event 0's
+        // span. `pack::moments` (and so `event_order`'s per-moment cap) is
+        // computed over the whole kept slice regardless of event, so photos
+        // from two events that share a moment window compete for the same
+        // MAX_PER_MOMENT slots -- and event 0's far brighter photos would
+        // win every one of them, starving event 1 down to zero available
+        // before its floor is ever applied.
+        let mut photos = event(0, 0, 400, 95);
+        photos.extend(event(1, 2, 6, 20));
+        let kept = keepers(&photos);
+        let tiers: EventTiers = photos[400..].iter().map(|p| (p.hash.clone(), Tier::Normal)).collect();
+        let cap = capacity(9, 45);
+        let b = budget(&kept, plan_of(&photos, &tiers, &cap), &cap, &Overrides::new(), &BookOptions::default());
+        assert!(placed(&b, &kept, 1) >= 2, "got {}", placed(&b, &kept, 1));
+        assert_eq!(b.selected.len(), 45);
+    }
+
+    #[test]
+    fn the_remainder_vote_uses_the_square_root_of_moments() {
+        // 400 moments against 25: sqrt gives a 4:1 vote, a linear vote 16:1.
+        // Event 0's 800 photos span ~66.5 hours (2.77 days), so event 1 sits
+        // on day 3 -- otherwise its "later" timestamps land chronologically
+        // inside event 0's span and the two compete for the same global
+        // per-moment cap (see the comment on the previous test).
+        let mut photos = event(0, 0, 800, 70);
+        photos.extend(event(1, 3, 50, 70));
+        let kept = keepers(&photos);
+        let tiers: EventTiers = photos.iter().map(|p| (p.hash.clone(), Tier::Normal)).collect();
+        let cap = capacity(19, 85);
+        let b = budget(&kept, plan_of(&photos, &tiers, &cap), &cap, &Overrides::new(), &BookOptions::default());
+        let (big, small) = (placed(&b, &kept, 0), placed(&b, &kept, 1));
+        assert!(big <= 5 * small, "big {big} small {small}: more than 5x means the vote is not sqrt");
+    }
+
+    #[test]
+    fn a_skipped_event_places_nothing_but_its_includes() {
+        let mut photos = event(0, 0, 30, 60);
+        photos.extend(event(1, 1, 30, 99));
+        let kept = keepers(&photos);
+        let tiers: EventTiers = photos[30..].iter().map(|p| (p.hash.clone(), Tier::Skipped)).collect();
+        let cap = capacity(9, 45);
+        let none = budget(&kept, plan_of(&photos, &tiers, &cap), &cap, &Overrides::new(), &BookOptions::default());
+        assert_eq!(placed(&none, &kept, 1), 0);
+        let mut overrides = Overrides::new();
+        overrides.set(photos[40].hash.clone(), Override::Include);
+        let one = budget(&kept, plan_of(&photos, &tiers, &cap), &cap, &overrides, &BookOptions::default());
+        let idx = kept.iter().position(|p| p.hash == photos[40].hash).unwrap();
+        assert!(one.selected.contains(&idx), "the Include in a Skipped event is selected");
+        assert_eq!(placed(&one, &kept, 1), 1);
+    }
+
+    #[test]
+    fn a_brief_event_stops_at_the_brief_cap_with_room_to_spare() {
+        let mut photos = event(0, 0, 8, 60);
+        photos.extend(event(1, 1, 20, 99)); // 10 moments
+        let kept = keepers(&photos);
+        let mut tiers: EventTiers = photos[8..].iter().map(|p| (p.hash.clone(), Tier::Brief)).collect();
+        for p in &photos[..8] {
+            tiers.set(p.hash.clone(), Some(Tier::Normal));
+        }
+        let cap = capacity(19, 85);
+        for brief_cap in 1..=3u8 {
+            let o = BookOptions { brief_cap, ..BookOptions::default() };
+            let b = budget(&kept, plan_of(&photos, &tiers, &cap), &cap, &Overrides::new(), &o);
+            assert_eq!(placed(&b, &kept, 1), brief_cap as usize);
+        }
+    }
+
+    #[test]
+    fn a_featured_event_gets_the_projects_featured_floor() {
+        let mut photos = event(0, 0, 200, 95);
+        photos.extend(event(1, 1, 30, 10));
+        let kept = keepers(&photos);
+        let tiers: EventTiers = photos[200..].iter().map(|p| (p.hash.clone(), Tier::Featured)).collect();
+        let cap = capacity(9, 45);
+        let o = BookOptions { featured_floor: 9, ..BookOptions::default() };
+        let b = budget(&kept, plan_of(&photos, &tiers, &cap), &cap, &Overrides::new(), &o);
+        assert!(placed(&b, &kept, 1) >= 9, "got {}", placed(&b, &kept, 1));
+        // Assert the floor itself, not just the post-D'Hondt count: event 1's
+        // Featured weight (2.0, highest of any tier) dominates the remainder
+        // vote regardless of its floor, so `placed >= 9` alone still holds
+        // even if `floor()` silently ignored `options.featured_floor`.
+        assert_eq!(b.floors[&1], 9, "the floor itself must come from options.featured_floor");
+    }
+
+    #[test]
+    fn floors_that_do_not_fit_demote_suggestions_but_never_the_users_choice() {
+        // 12 Normal events at floor 2 = 24 > target 20. Event 0 is the user's.
+        let mut photos = Vec::new();
+        for e in 0..12u32 {
+            photos.extend(event(e, e as i64, 8, 50 + e as u8));
+        }
+        let kept = keepers(&photos);
+        let tiers: EventTiers = photos[..8].iter().map(|p| (p.hash.clone(), Tier::Normal)).collect();
+        let cap = capacity(20, 20); // room = 13, so all 12 are suggested Normal/Featured
+        let b = budget(&kept, plan_of(&photos, &tiers, &cap), &cap, &Overrides::new(), &BookOptions::default());
+        assert!(b.overflow.is_none());
+        assert_eq!(b.plan[0].tier, Tier::Normal, "the user's choice is kept");
+        assert!(b.plan.iter().any(|p| p.reason == Reason::Demoted));
+        assert!(b.floors.values().sum::<usize>() <= 20);
+    }
+
+    #[test]
+    fn users_floors_that_cannot_fit_report_tier_overflow_and_drop_to_one() {
+        let mut photos = Vec::new();
+        for e in 0..6u32 {
+            photos.extend(event(e, e as i64, 20, 60));
+        }
+        let kept = keepers(&photos);
+        let tiers: EventTiers = photos.iter().map(|p| (p.hash.clone(), Tier::Featured)).collect();
+        let cap = capacity(9, 20); // 6 x 6 = 36 > 20
+        let b = budget(&kept, plan_of(&photos, &tiers, &cap), &cap, &Overrides::new(), &BookOptions::default());
+        assert_eq!(b.overflow, Some(TierOverflow { needed: 36, capacity: 20 }));
+        assert!(b.floors.values().all(|&f| f == 1));
+        assert_eq!(b.selected.len(), 20, "the rest is still dealt out");
+    }
+
+    #[test]
+    fn a_book_whose_normal_events_run_dry_promotes_a_suggested_brief_rather_than_underfill() {
+        // 12 events of 4 photos each (2 moments apiece, so every event ties
+        // on engagement and merit ranks purely by aesthetic): room 1 at 3
+        // slots picks exactly one Normal event, the rest sit Brief and cap
+        // at `brief_cap` (2). Brief-capped total is 2 + 11*2 = 24, and even
+        // the Normal event's own pool is only 4 photos, so the un-promoted
+        // ceiling is 4 + 11*2 = 26 -- short of the 40-photo target. Filling
+        // the rest requires rule 4b to promote suggested-Brief events to
+        // Normal (lifting their cap from `brief_cap` to their own pool of 4)
+        // until the target is met, rather than leaving the book underfull.
+        let mut photos = Vec::new();
+        for e in 0..12u32 {
+            photos.extend(event(e, e as i64, 4, 90 - e as u8));
+        }
+        let kept = keepers(&photos);
+        let cap = capacity(1, 40); // 3 slots -> room 1
+        let b = budget(&kept, plan_of(&photos, &EventTiers::new(), &cap), &cap, &Overrides::new(), &BookOptions::default());
+        assert_eq!(b.selected.len(), 40);
+        assert!(b.plan.iter().any(|p| p.reason == Reason::Filled));
+    }
+
+    #[test]
+    fn more_room_only_adds_photos_to_an_event() {
+        let mut photos = event(0, 0, 60, 80);
+        photos.extend(event(1, 1, 40, 70));
+        let kept = keepers(&photos);
+        let small = capacity(9, 45);
+        let large = capacity(19, 85);
+        let a = budget(&kept, plan_of(&photos, &EventTiers::new(), &small), &small, &Overrides::new(), &BookOptions::default());
+        let b = budget(&kept, plan_of(&photos, &EventTiers::new(), &large), &large, &Overrides::new(), &BookOptions::default());
+        assert!(a.selected.iter().all(|i| b.selected.contains(i)), "a prefix, never a swap");
+    }
+
+    #[test]
+    fn floors_that_do_not_fit_demote_featured_before_normal() {
+        // A hand-built plan (bypassing suggest, so the tiers are exact):
+        // one Featured event (floor 6) and one Normal event (floor 2),
+        // both unchosen, with a target that only fits one demotion step
+        // (6 + 2 = 8 > 5, but 2 + 2 = 4 <= 5). Demoting Featured -> Normal
+        // first satisfies the target after a single step and never touches
+        // the Normal event. Demoting Normal -> Brief first does not (7 still
+        // > 5), so it falls through to also demote the Featured event,
+        // leaving the Normal event wrongly knocked down to Brief.
+        let mut photos = event(0, 0, 10, 90);
+        photos.extend(event(1, 1, 10, 80));
+        let kept = keepers(&photos);
+        let cap = capacity(1, 5);
+        let plan = vec![
+            EventPlan {
+                event: 0,
+                tier: Tier::Featured,
+                suggested: Tier::Featured,
+                chosen: false,
+                reason: Reason::Standout,
+                merit: 1.0,
+                moments: 5,
+                kept: 10,
+                photos: 10,
+            },
+            EventPlan {
+                event: 1,
+                tier: Tier::Normal,
+                suggested: Tier::Normal,
+                chosen: false,
+                reason: Reason::Ranked { rank: 1, of: 2 },
+                merit: 0.5,
+                moments: 5,
+                kept: 10,
+                photos: 10,
+            },
+        ];
+        let b = budget(&kept, plan, &cap, &Overrides::new(), &BookOptions::default());
+        let tier_of = |e: u32| b.plan.iter().find(|p| p.event == e).unwrap().tier;
+        assert_eq!(tier_of(0), Tier::Normal, "the Featured event is the one demoted");
+        assert_eq!(tier_of(1), Tier::Normal, "a Normal event must not be demoted while a Featured one still can be");
+    }
+
+    #[test]
+    fn the_remainder_vote_uses_the_true_dhondt_divisor_quota_plus_one() {
+        // Two hand-built Normal events (real avail 10 each, so avail never
+        // constrains either), differing only in a *fake* `moments` field
+        // (1 vs 2) chosen so that D'Hondt's genuine divisor sequence
+        // (weight*sqrt(moments) / (quota+1)) and an off-by-one variant
+        // (.../quota) provably disagree after exactly 2 remainder seats:
+        // continuing the true divisor from floor 2 each, event 1 (sqrt 2)
+        // outscores event 0 (sqrt 1) on both remaining seats (0.471 then
+        // 0.354, against 0.333 flat), so it takes both: (2, 4). The
+        // off-by-one divisor gives event 0 a first-seat score of 0.5 (vs
+        // 0.707), event 1 wins seat one (-> 3), but then event 0's second
+        // score rises to 0.5 while event 1's falls to 0.471, so event 0
+        // takes the second seat instead: (3, 3). The two rules must not
+        // agree here, or this mutation is not actually pinned by the test.
+        let mut photos = event(0, 0, 10, 90);
+        photos.extend(event(1, 1, 10, 80));
+        let kept = keepers(&photos);
+        let cap = capacity(1, 6); // 2 (floor) + 2 (floor) + 2 remainder seats
+        let plan = vec![
+            EventPlan {
+                event: 0,
+                tier: Tier::Normal,
+                suggested: Tier::Normal,
+                chosen: false,
+                reason: Reason::Ranked { rank: 1, of: 2 },
+                merit: 0.6,
+                moments: 1,
+                kept: 10,
+                photos: 10,
+            },
+            EventPlan {
+                event: 1,
+                tier: Tier::Normal,
+                suggested: Tier::Normal,
+                chosen: false,
+                reason: Reason::Ranked { rank: 2, of: 2 },
+                merit: 0.5,
+                moments: 2,
+                kept: 10,
+                photos: 10,
+            },
+        ];
+        let b = budget(&kept, plan, &cap, &Overrides::new(), &BookOptions::default());
+        assert_eq!(b.selected.len(), 6);
+        assert_eq!(placed(&b, &kept, 0), 2, "event 0's own divisor never overtakes event 1's");
+        assert_eq!(placed(&b, &kept, 1), 4, "both remainder seats go to the higher-moments event");
     }
 }
