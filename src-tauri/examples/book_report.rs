@@ -27,6 +27,16 @@
 //! first project's real cached records (re-timed and re-tagged copies) and
 //! check the suggested tiers against answers that are not in dispute.
 //!
+//! `--roles` prints every photo's story role (`book::story::shot_role`) as
+//! CSV and writes a contact sheet, `roles-<project>.html`, grouped by role,
+//! into `--out DIR` (default: the system temp dir), so the classifier can be
+//! checked by eye. The sheet links the original files; nothing is copied or
+//! uploaded.
+//!
+//! ```sh
+//! cd src-tauri && cargo run --release --example book_report -- --roles 14
+//! ```
+//!
 //! Arguments are project ids in the app's database. `--db PATH` points at
 //! another database. The database is COPIED to a temp dir first, because
 //! `Db::open` migrates, and a report must never write to the user's data.
@@ -40,6 +50,7 @@ use app_lib::book::cull::{cull, Overrides, Photo};
 use app_lib::book::events::{self, gini, EventTiers, Suggestion, Tier, Tuning};
 use app_lib::book::pace::{assemble_with, Book, BookOptions};
 use app_lib::book::pack::Capacity;
+use app_lib::book::story::{self, ShotRole};
 use app_lib::commands::load_project_photos;
 use app_lib::db::Db;
 use app_lib::print_spec::PrintSpec;
@@ -92,6 +103,7 @@ fn main() {
     let mut places = false;
     let mut mode = "books";
     let mut projects: Vec<i64> = Vec::new();
+    let mut out = std::env::temp_dir();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--db" => db_path = PathBuf::from(args.next().expect("--db PATH")),
@@ -100,6 +112,8 @@ fn main() {
             "--scenarios" => mode = "scenarios",
             "--stability" => mode = "stability",
             "--sensitivity" => mode = "sensitivity",
+            "--roles" => mode = "roles",
+            "--out" => out = PathBuf::from(args.next().expect("--out DIR")),
             id => projects.push(id.parse().expect("project id")),
         }
     }
@@ -142,13 +156,18 @@ fn main() {
             }
         }
         "sensitivity" => sensitivity(&scenarios(&load(*projects.first().expect("--sensitivity PROJECT"))), &lib),
+        "roles" => {
+            for &id in &projects {
+                roles(id, &load(id), &out);
+            }
+        }
         _ => books(&projects, &load, &spec, &lib, &weights),
     }
 }
 
 fn books(projects: &[i64], load: &dyn Fn(i64) -> Vec<Photo>, spec: &PrintSpec, lib: &Library, weights: &Weights) {
     println!(
-        "project,pages,seed,photos,events,events_at_zero,gini,min_chapter,blank_pages,dropped,featured,normal,brief,skipped,floor_misses"
+        "project,pages,seed,photos,events,events_at_zero,gini,min_chapter,blank_pages,dropped,featured,normal,brief,skipped,floor_misses,opener_hit,closer_hit,chrono_inv,event_inv,mixed_spreads,role_cov"
     );
     let overrides = Overrides::new();
     let options = BookOptions::default();
@@ -193,8 +212,9 @@ fn books(projects: &[i64], load: &dyn Fn(i64) -> Vec<Photo>, spec: &PrintSpec, l
                     .filter(|p| matches!(p.tier, Tier::Featured | Tier::Normal) && budget.overflow.is_none())
                     .filter(|p| per.get(&p.event).copied().unwrap_or(0) < budget.floors.get(&p.event).copied().unwrap_or(0))
                     .count();
+                let m = story::story_metrics(&book, &photos);
                 println!(
-                    "{id},{pages},{seed},{},{},{zero},{:.3},{min_chapter},{blank},{},{},{},{},{},{floor_misses}",
+                    "{id},{pages},{seed},{},{},{zero},{:.3},{min_chapter},{blank},{},{},{},{},{},{floor_misses},{},{},{},{},{},{}",
                     photos.len(),
                     per.len(),
                     gini(&counts),
@@ -203,10 +223,65 @@ fn books(projects: &[i64], load: &dyn Fn(i64) -> Vec<Photo>, spec: &PrintSpec, l
                     tier_count(Tier::Normal),
                     tier_count(Tier::Brief),
                     tier_count(Tier::Skipped),
+                    share(m.opener_hit),
+                    share(m.closer_hit),
+                    m.chrono_inv,
+                    m.event_inv,
+                    m.mixed_spreads,
+                    share(m.role_cov),
                 );
             }
         }
     }
+}
+
+/// A rate to two places, or `-` when the question had no cases.
+fn share(v: Option<f64>) -> String {
+    v.map_or_else(|| "-".into(), |v| format!("{v:.2}"))
+}
+
+const ROLES: [ShotRole; 4] = [ShotRole::Establishing, ShotRole::People, ShotRole::Detail, ShotRole::Moment];
+/// Photos per role on the contact sheet: enough to judge, few enough to look at.
+const SHEET_PER_ROLE: usize = 24;
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+fn roles(id: i64, photos: &[Photo], out: &Path) {
+    println!("path,role,face_area,tags");
+    let mut by_role: BTreeMap<ShotRole, Vec<&Photo>> = BTreeMap::new();
+    for p in photos.iter().filter(|p| !p.is_utility) {
+        let role = story::shot_role(p);
+        println!("{},{},{:.4},{}", p.path, role.as_str(), p.face_area_fraction, p.scene_tags.join(" "));
+        by_role.entry(role).or_default().push(p);
+    }
+    let mut html = String::from(
+        "<!doctype html><meta charset=utf-8><title>Shot roles</title><style>\
+         body{font:14px system-ui;margin:24px}figure{display:inline-block;width:220px;margin:6px;vertical-align:top}\
+         img{width:220px;height:160px;object-fit:cover;background:#eee}figcaption{font-size:14px;color:#444}</style>",
+    );
+    for role in ROLES {
+        let list = by_role.get(&role).map(Vec::as_slice).unwrap_or(&[]);
+        html.push_str(&format!("<h2>{} ({})</h2>", role.as_str(), list.len()));
+        // An even stride across the set, so the sample spans the trip
+        // instead of showing its first hour.
+        let step = (list.len() / SHEET_PER_ROLE).max(1);
+        for p in list.iter().step_by(step).take(SHEET_PER_ROLE) {
+            let path = html_escape(&p.path);
+            html.push_str(&format!(
+                "<figure><img loading=lazy src=\"file://{path}\"><figcaption>{}</figcaption></figure>",
+                html_escape(&p.scene_tags.join(" "))
+            ));
+        }
+    }
+    let file = out.join(format!("roles-{id}.html"));
+    std::fs::write(&file, html).expect("write contact sheet");
+    let counts: Vec<String> = ROLES
+        .iter()
+        .map(|r| format!("{}={}", r.as_str(), by_role.get(r).map_or(0, Vec::len)))
+        .collect();
+    eprintln!("project {id}: {} -> {}", counts.join(" "), file.display());
 }
 
 fn novelty(projects: &[i64], load: &dyn Fn(i64) -> Vec<Photo>) {
