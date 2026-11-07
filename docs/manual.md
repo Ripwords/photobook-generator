@@ -175,7 +175,12 @@ every moment before a second from any, and never more than two from one moment u
 marked the others **+**. A photo that looks like one the book already takes -- the same shot
 retaken minutes later, or a time-lapse of one sky -- waits until every event has run out of
 different pictures, and a tier's floor counts different pictures only: an event of twenty
-frames of one star field is owed that picture once, not six times. A Skipped event places
+frames of one star field is owed that picture once, not six times. Within an event, the
+book also looks for different kinds of shot: a wide view of the place, people you can
+recognise, and a close look at something (food, a sign, a flower). When an event places
+three or more photos and its best few are all one kind, the best decent photo of a missing
+kind takes the third place (and the second, if two kinds are missing). The event's best
+photo always keeps first place. A Skipped event places
 nothing regardless, moments included. The
 photos this leaves out are still one click away in the editor, under **Choose any photo…**. A length that cannot hold every photo you explicitly
 marked **+** cannot be generated at all, and says so instead of quietly dropping one.

@@ -85,6 +85,58 @@ pub fn shot_role(photo: &Photo) -> ShotRole {
     ShotRole::Moment
 }
 
+/// Places after an event's best automatic pick that `cover_roles` may fill:
+/// an event printed with three photos shows three different kinds of shot
+/// when it has them.
+pub const ROLE_WINDOW: usize = 2;
+
+/// The roles a chapter owes, in the order they are promoted when there is
+/// room for fewer than all.
+const OWED: [ShotRole; 3] = [ShotRole::Establishing, ShotRole::People, ShotRole::Detail];
+
+/// Reorders one event's ranked list so its first few picks cover the kinds
+/// of shot the event has. `list` is `pack::EventOrder::list`: `included`
+/// Includes, then the automatic picks best first, the first `distinct` of
+/// them different pictures.
+///
+/// Only `list[included + 1..distinct]` moves, so the event's best pick, the
+/// Includes and the deferred look-alikes stay where they were, and so does
+/// `distinct`. A role missing from the first `included + 1 + ROLE_WINDOW`
+/// places is filled from further down the distinct run, by its best photo
+/// at or above `ROLE_FLOOR_PCT`; the window keeps its best picks in front
+/// of the promoted ones. A budget still takes a prefix, so more room only
+/// ever adds photos.
+pub fn cover_roles(photos: &[Photo], list: &mut Vec<usize>, included: usize, distinct: usize) {
+    let start = included + 1;
+    let end = (start + ROLE_WINDOW).min(distinct);
+    if end <= start || distinct <= end {
+        return;
+    }
+    let present: BTreeSet<ShotRole> = list[..end].iter().map(|&i| shot_role(&photos[i])).collect();
+    let mut promoted: Vec<usize> = Vec::new();
+    for role in OWED {
+        if promoted.len() == end - start {
+            break;
+        }
+        if present.contains(&role) {
+            continue;
+        }
+        let found = list[end..distinct]
+            .iter()
+            .copied()
+            .find(|&i| shot_role(&photos[i]) == role && photos[i].aesthetic_pct >= ROLE_FLOOR_PCT);
+        promoted.extend(found);
+    }
+    if promoted.is_empty() {
+        return;
+    }
+    let keep = end - start - promoted.len();
+    let mut middle: Vec<usize> = list[start..start + keep].to_vec();
+    middle.extend(&promoted);
+    middle.extend(list[start + keep..distinct].iter().copied().filter(|i| !promoted.contains(i)));
+    list.splice(start..distinct, middle);
+}
+
 /// How well a photo closes a chapter, 0..1: a wide, warm, evenly exposed
 /// frame settles; a clipped close-up does not. Night is not a signal --
 /// half of one real library is aurora.
@@ -284,6 +336,64 @@ mod tests {
         assert!(calm_score(&wide) > calm_score(&clipped));
         assert!(calm_score(&wide) > calm_score(&cool));
         assert!(calm_score(&cool) > calm_score(&close));
+    }
+
+    mod covering {
+        use super::*;
+
+        fn set(roles: &[&[&str]]) -> Vec<Photo> {
+            roles.iter().map(|t| photo(t)).collect()
+        }
+
+        #[test]
+        fn a_missing_role_is_promoted_into_the_window_behind_the_best_picks() {
+            // 0 best, 1 and 2 moments, 3 another moment, 4 a lake.
+            let photos = set(&[&["outdoor"], &["outdoor"], &["outdoor"], &["outdoor"], &["lake"]]);
+            let mut list = vec![0, 1, 2, 3, 4];
+            cover_roles(&photos, &mut list, 0, 5);
+            assert_eq!(list, vec![0, 1, 4, 2, 3]);
+        }
+
+        #[test]
+        fn two_missing_roles_fill_the_window_in_owed_order() {
+            let mut photos = set(&[&["outdoor"], &["outdoor"], &["outdoor"], &["food"], &["lake"]]);
+            photos.push(faced(&["people"], 0.05));
+            let mut list = vec![0, 1, 2, 3, 4, 5];
+            cover_roles(&photos, &mut list, 0, 6);
+            // Establishing then People win the two places; Detail waits.
+            assert_eq!(list, vec![0, 4, 5, 1, 2, 3]);
+        }
+
+        #[test]
+        fn the_best_pick_includes_and_look_alikes_never_move() {
+            let mut photos = set(&[&["food"], &["outdoor"], &["outdoor"], &["outdoor"], &["outdoor"], &["outdoor"], &["mountain"]]);
+            photos[5] = faced(&["people"], 0.05);
+            // 0 is an Include, 1 the best auto pick; 6, the only wide shot,
+            // is a deferred look-alike and so is not owed a place.
+            let mut list = vec![0, 1, 2, 3, 4, 5, 6];
+            cover_roles(&photos, &mut list, 1, 6);
+            assert_eq!(&list[..2], &[0, 1]);
+            assert_eq!(list[6], 6);
+            assert_eq!(list, vec![0, 1, 2, 5, 3, 4, 6]);
+        }
+
+        #[test]
+        fn a_role_already_shown_or_too_weak_is_not_promoted() {
+            let mut photos = set(&[&["lake"], &["outdoor"], &["outdoor"], &["outdoor"], &["food"]]);
+            photos[4].aesthetic_pct = ROLE_FLOOR_PCT - 1;
+            photos.push(photo(&["mountain"]));
+            let mut list = vec![0, 1, 2, 3, 4, 5];
+            cover_roles(&photos, &mut list, 0, 6);
+            assert_eq!(list, vec![0, 1, 2, 3, 4, 5]);
+        }
+
+        #[test]
+        fn a_list_too_short_to_have_a_tail_is_left_alone() {
+            let photos = set(&[&["outdoor"], &["outdoor"], &["lake"]]);
+            let mut list = vec![0, 1, 2];
+            cover_roles(&photos, &mut list, 0, 3);
+            assert_eq!(list, vec![0, 1, 2]);
+        }
     }
 
     mod metrics {

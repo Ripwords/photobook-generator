@@ -599,7 +599,8 @@ pub struct EventOrder {
 
 /// Each event's photos ranked ONCE (spec §5 step 5): its Includes, then
 /// `ranked_auto` restricted to the event, with look-alikes moved behind the
-/// rest (`defer_look_alikes`). A quota takes a prefix, so more
+/// rest (`defer_look_alikes`), then with a missing kind of shot lifted into
+/// the first few places (`story::cover_roles`). A quota takes a prefix, so more
 /// room only ever adds photos to an event, never swaps them.
 ///
 /// `moments` (and so `MAX_PER_MOMENT`) is computed over the whole `photos`
@@ -631,6 +632,7 @@ pub fn event_order(
             let (list, fresh) = defer_look_alikes(photos, &entry.list, ranked);
             entry.list.extend(list);
             entry.distinct += fresh;
+            crate::book::story::cover_roles(photos, &mut entry.list, entry.included, entry.distinct);
         }
     }
     out
@@ -2299,5 +2301,28 @@ mod tests {
         let order = event_order(&photos, &include(&["/kept.jpg"]));
         let list: Vec<&str> = order[&0].list.iter().map(|&i| photos[i].path.as_str()).collect();
         assert_eq!(list, ["/kept.jpg", "/other.jpg", "/just-past.jpg", "/like-kept.jpg"]);
+    }
+
+    /// An event printed with three photos should not be three crowd shots
+    /// when it also has a good wide one: the lake, ranked last, moves up to
+    /// the third place, behind the two best picks, and the count of
+    /// different pictures does not change.
+    #[test]
+    fn event_order_lifts_a_missing_kind_of_shot_into_the_first_three() {
+        let tagged = |path: &str, aesthetic: u8, at: i64, axis: usize, tag: &str| Photo {
+            scene_tags: vec![tag.into()],
+            ..printed(path, aesthetic, at, axis, 0.0)
+        };
+        let photos = vec![
+            tagged("/a.jpg", 90, 0, 0, "outdoor"),
+            tagged("/b.jpg", 80, 3_600, 2, "outdoor"),
+            tagged("/c.jpg", 70, 7_200, 4, "outdoor"),
+            tagged("/d.jpg", 60, 10_800, 6, "outdoor"),
+            tagged("/lake.jpg", 45, 14_400, 1, "lake"),
+        ];
+        let order = event_order(&photos, &Overrides::new());
+        let list: Vec<&str> = order[&0].list.iter().map(|&i| photos[i].path.as_str()).collect();
+        assert_eq!(list, ["/a.jpg", "/b.jpg", "/lake.jpg", "/c.jpg", "/d.jpg"]);
+        assert_eq!(order[&0].distinct, 5);
     }
 }
