@@ -354,7 +354,7 @@ fn palette_distance(a: &Photo, b: &Photo) -> f64 {
 /// chapters.
 fn capture_gap_distance(a: &Photo, b: &Photo) -> f64 {
     const SATURATE_SECONDS: f64 = 3600.0;
-    let (Some(ta), Some(tb)) = (a.captured_at, b.captured_at) else {
+    let (Some(ta), Some(tb)) = (a.instant(), b.instant()) else {
         return 0.5;
     };
     let gap = (ta - tb).abs() as f64;
@@ -574,6 +574,9 @@ mod tests {
             scene_tags: Vec::new(), captured_at: None,
             clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
             location: None,
+            utc_offset: None,
+            warmth: None,
+            horizon_tilt_deg: None,
         }
     }
 
@@ -1659,6 +1662,9 @@ mod spec_reading_tests {
             scene_tags: Vec::new(), captured_at: None,
             clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
             location: None,
+            utc_offset: None,
+            warmth: None,
+            horizon_tilt_deg: None,
         }
     }
 

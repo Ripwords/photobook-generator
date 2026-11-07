@@ -139,7 +139,7 @@ pub fn agent_view(book: &Book, lib: &Library, photos: &[SourcePhoto]) -> AgentVi
         .iter()
         .flat_map(|p| p.placements.iter().map(|pl| pl.photo_index))
         .collect();
-    let times: Vec<Option<i64>> = photos.iter().map(|p| p.photo.captured_at).collect();
+    let times: Vec<Option<i64>> = photos.iter().map(|p| p.photo.instant()).collect();
     let earliest = times.iter().flatten().min().copied();
     let locations: Vec<_> = photos.iter().map(|p| p.photo.location).collect();
     let split_km = book.options.places.then_some(PLACE_SPLIT_KM);
@@ -585,6 +585,9 @@ pub(crate) mod tests {
                 captured_at: Some(T0 + i as i64 * 600),
                 clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
                 location: None,
+                utc_offset: None,
+                warmth: None,
+                horizon_tilt_deg: None,
             },
             aesthetic_score: i as f64,
             sharpness: 1.0,

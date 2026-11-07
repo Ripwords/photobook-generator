@@ -160,6 +160,49 @@ pub fn event_clusters(timestamps: &[Option<i64>], gap_seconds: i64) -> Vec<usize
     ids
 }
 
+/// Each photo's UTC offset in seconds east of UTC, indexed like `wall`.
+///
+/// `wall` is the camera's wall clock stored as if it were UTC (what
+/// `exif.captureDate` holds); `offsets` is what the file itself said
+/// (`OffsetTimeOriginal`), usually present on phones and absent on cameras.
+/// A dated photo with no offset of its own borrows the offset of the
+/// nearest-in-wall-clock photo that has one on the SAME local day, on the
+/// theory that a camera and a phone carried together on one day share a
+/// time zone. Nothing is borrowed across a day boundary, where a
+/// traveller's clock most often changes. Otherwise `None`, which `instants`
+/// reads as "the wall clock is the best we know".
+pub fn resolve_offsets(wall: &[Option<i64>], offsets: &[Option<i32>]) -> Vec<Option<i32>> {
+    const DAY: i64 = 86_400;
+    let known: Vec<(i64, i32)> = wall
+        .iter()
+        .zip(offsets)
+        .filter_map(|(t, o)| t.zip(*o))
+        .collect();
+    wall.iter()
+        .zip(offsets)
+        .map(|(t, own)| {
+            let t = (*t)?;
+            own.or_else(|| {
+                known
+                    .iter()
+                    .filter(|(k, _)| k.div_euclid(DAY) == t.div_euclid(DAY))
+                    .min_by_key(|(k, _)| (k - t).abs())
+                    .map(|&(_, o)| o)
+            })
+        })
+        .collect()
+}
+
+/// The real moment each photo was taken, seconds since the epoch: the wall
+/// clock minus its resolved offset, or the wall clock itself when no offset
+/// is known. Ordering and gaps read this; labels read the wall clock.
+pub fn instants(wall: &[Option<i64>], offsets: &[Option<i32>]) -> Vec<Option<i64>> {
+    wall.iter()
+        .zip(offsets)
+        .map(|(t, o)| t.map(|t| t - i64::from(o.unwrap_or(0))))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -344,5 +387,55 @@ mod tests {
         // (true under `>=`, which would incorrectly split this pair).
         let ids = event_clusters(&[Some(0), Some(86_400)], 86_400);
         assert_eq!(ids[0], ids[1]);
+    }
+    // --- resolve_offsets / instants: wall clock plus UTC offset -----------
+
+    const DAY: i64 = 86_400;
+    /// 2026-03-12 00:00 on the wall clock.
+    const MAR12: i64 = 1_773_273_600;
+
+    #[test]
+    fn a_photo_keeps_its_own_offset() {
+        let resolved = resolve_offsets(&[Some(MAR12), Some(MAR12 + 60)], &[Some(32_400), Some(0)]);
+        assert_eq!(resolved, vec![Some(32_400), Some(0)]);
+    }
+
+    /// A camera photo with no offset borrows the offset of the NEAREST
+    /// offset-carrying photo on the same local day: the phone shot ten
+    /// minutes away in Tokyo, not the one seven hours later in London.
+    #[test]
+    fn a_photo_without_an_offset_inherits_the_nearest_on_the_same_day() {
+        let wall = [Some(MAR12 + 22 * 3600), Some(MAR12 + 15 * 3600), Some(MAR12 + 21 * 3600 + 50 * 60)];
+        let offsets = [Some(32_400), Some(0), None];
+        assert_eq!(resolve_offsets(&wall, &offsets)[2], Some(32_400));
+    }
+
+    /// Two hours away on the same day beats one minute away on the next one:
+    /// a day boundary is where a traveller's clock most often changes.
+    #[test]
+    fn an_offset_is_never_inherited_across_a_local_day() {
+        let wall = [Some(MAR12 + DAY - 60), Some(MAR12 + DAY + 60)];
+        let resolved = resolve_offsets(&wall, &[Some(32_400), None]);
+        assert_eq!(resolved[1], None, "the next day's photo must not borrow");
+        let wall = [Some(MAR12 + 2 * 3600), Some(MAR12 + DAY + 60), Some(MAR12 + DAY + 3 * 3600)];
+        let resolved = resolve_offsets(&wall, &[Some(32_400), None, Some(0)]);
+        assert_eq!(resolved[1], Some(0));
+    }
+
+    #[test]
+    fn undated_photos_resolve_to_no_offset_and_no_instant() {
+        let resolved = resolve_offsets(&[None, Some(MAR12)], &[None, Some(3600)]);
+        assert_eq!(resolved, vec![None, Some(3600)]);
+        assert_eq!(instants(&[None, Some(MAR12)], &resolved), vec![None, Some(MAR12 - 3600)]);
+    }
+
+    /// The instant is the wall clock MINUS the offset (east of UTC is
+    /// positive): 22:00 in Tokyo (+09:00) is 13:00 UTC.
+    #[test]
+    fn an_instant_is_the_wall_clock_minus_its_offset() {
+        let wall = [Some(MAR12 + 22 * 3600), Some(MAR12 + 15 * 3600)];
+        let at = instants(&wall, &[Some(32_400), Some(0)]);
+        assert_eq!(at, vec![Some(MAR12 + 13 * 3600), Some(MAR12 + 15 * 3600)]);
+        assert_eq!(instants(&wall, &[None, None]), wall.to_vec(), "no offset means the wall clock");
     }
 }

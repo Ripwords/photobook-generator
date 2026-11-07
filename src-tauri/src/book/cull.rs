@@ -62,12 +62,28 @@ pub struct Photo {
     pub feature_print: Option<Vec<f32>>,
     /// EXIF GPS fix. `None` when the photo has none, which is ordinary.
     pub location: Option<LatLon>,
+    /// Seconds east of UTC that `captured_at` is in, as resolved by
+    /// `cluster::resolve_offsets` over the whole set. `None` when nothing
+    /// says, which is every photo from a camera that writes no offset.
+    pub utc_offset: Option<i32>,
+    /// Swift's palette warmth, 0 cool to 1 warm. Optional so a record from
+    /// before the field existed still loads.
+    pub warmth: Option<f64>,
+    /// Vision's horizon angle in degrees, `None` when it found no horizon.
+    pub horizon_tilt_deg: Option<f64>,
 }
 
 impl Photo {
     /// Real-world aspect ratio of the photo itself, width over height.
     pub fn aspect(&self) -> f64 {
         self.width as f64 / self.height as f64
+    }
+
+    /// When the photo was really taken, for ORDERING and gaps:
+    /// `captured_at` (the wall clock) less its UTC offset. Equal to
+    /// `captured_at` when no offset is known. Labels keep `captured_at`.
+    pub fn instant(&self) -> Option<i64> {
+        self.captured_at.map(|t| t - i64::from(self.utc_offset.unwrap_or(0)))
     }
 }
 
@@ -287,6 +303,14 @@ fn parse_features(v: &serde_json::Value, derived: Derived) -> Option<Photo> {
             .as_f64()
             .zip(v["exif"]["longitude"].as_f64())
             .and_then(|(lat, lon)| LatLon::new(lat, lon)),
+        // `finalize_photos` stamps the RESOLVED offset; a record that never
+        // went through it falls back to the file's own.
+        utc_offset: v["utcOffsetSec"]
+            .as_i64()
+            .or_else(|| v["exif"]["captureOffsetSec"].as_i64())
+            .and_then(|o| i32::try_from(o).ok()),
+        warmth: v["warmth"].as_f64(),
+        horizon_tilt_deg: v["horizonTiltDeg"].as_f64(),
     })
 }
 
@@ -554,6 +578,9 @@ mod tests {
             captured_at: None,
             clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
             location: None,
+            utc_offset: None,
+            warmth: None,
+            horizon_tilt_deg: None,
         }
     }
 

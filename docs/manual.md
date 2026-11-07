@@ -148,6 +148,13 @@ too. The contact sheet regroups as soon as you switch it on. It uses the locatio
 or phone recorded in each photo. Photos with no location stay in the chapter they were taken
 in. When none of the photos has a location, the switch is disabled and says so.
 
+Photos are put in the order they were really taken, even across time zones. A phone records
+the time zone with each photo, so an evening in Tokyo comes before the next afternoon in
+London even when the clock times say otherwise. A camera that records no time zone takes the
+zone of the nearest phone photo from the same day. When nothing on that day records a time
+zone, the camera's own clock decides the order, so set the camera to local time when you
+travel.
+
 With the switch on, the contact sheet titles each chapter with its town, such as **Kyoto
 5 photos**. To find the town, the app sends the centre of each chapter, as a latitude and
 longitude, to Apple's map service. It never sends a photo, and it sends nothing while the

@@ -461,7 +461,7 @@ pub fn pack_selected(
         // Capture order, so a group reads as a stretch of the trip. Path
         // breaks ties and orders photos with no capture time.
         members.sort_by(|&a, &b| {
-            photos[a].captured_at.cmp(&photos[b].captured_at).then(photos[a].path.cmp(&photos[b].path))
+            photos[a].instant().cmp(&photos[b].instant()).then(photos[a].path.cmp(&photos[b].path))
         });
 
         let mut i = 0;
@@ -522,7 +522,7 @@ pub fn pack_selected(
 /// time is a moment of its own.
 pub fn moments(photos: &[Photo]) -> Vec<u32> {
     let mut timed: Vec<(i64, usize)> =
-        photos.iter().enumerate().filter_map(|(i, p)| p.captured_at.map(|t| (t, i))).collect();
+        photos.iter().enumerate().filter_map(|(i, p)| p.instant().map(|t| (t, i))).collect();
     timed.sort_unstable();
     let mut out = vec![0u32; photos.len()];
     let mut next = 0u32;
@@ -1221,6 +1221,9 @@ mod tests {
             scene_tags: Vec::new(), captured_at: None,
             clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
             location: None,
+            utc_offset: None,
+            warmth: None,
+            horizon_tilt_deg: None,
         }
     }
 
@@ -2073,6 +2076,32 @@ mod tests {
 
     fn timed(path: &str, aesthetic: u8, at: Option<i64>) -> Photo {
         Photo { captured_at: at, ..photo(path, 0, aesthetic) }
+    }
+
+    /// Noon in Tokyo and five past noon in London read one minute apart on
+    /// their wall clocks, but are nine hours apart in fact: two moments.
+    #[test]
+    fn moments_follow_the_real_instant() {
+        let tokyo = Photo { utc_offset: Some(32_400), ..timed("a", 50, Some(1_773_316_800)) };
+        let london = Photo { utc_offset: Some(0), ..timed("b", 50, Some(1_773_316_860)) };
+        let m = moments(&[tokyo, london]);
+        assert_ne!(m[0], m[1], "nine hours apart is not one moment: {m:?}");
+    }
+
+    /// Within a chapter the order is the real instant: the Tokyo evening
+    /// shot (13:00 UTC) comes before the London afternoon one (15:30 UTC)
+    /// even though its wall clock says 22:00.
+    #[test]
+    fn a_chapter_is_ordered_by_the_real_instant() {
+        let photos = vec![
+            Photo { utc_offset: Some(0), ..timed("b-london", 50, Some(1_773_329_400)) },
+            Photo { utc_offset: Some(32_400), ..timed("a-tokyo", 60, Some(1_773_352_800)) },
+        ];
+        let groups = pack(&photos, &capacity_for(20, &sizes()), &buildable_for(&sizes()), &Overrides::new())
+            .expect("two photos fit");
+        let order: Vec<&str> =
+            groups.iter().flat_map(|g| g.photos.iter()).map(|&i| photos[i].path.as_str()).collect();
+        assert_eq!(order, vec!["a-tokyo", "b-london"]);
     }
 
     fn kept_paths(photos: &[Photo], kept: &[usize]) -> Vec<String> {

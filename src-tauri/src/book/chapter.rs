@@ -91,7 +91,7 @@ pub const PLACE_SPLIT_KM: f64 = 25.0;
 /// the chapters `finalize_photos` already stamped. With it on, see
 /// `split_chapters`.
 pub fn chapters(photos: &[Photo], places: bool) -> Vec<u32> {
-    let times: Vec<Option<i64>> = photos.iter().map(|p| p.captured_at).collect();
+    let times: Vec<Option<i64>> = photos.iter().map(Photo::instant).collect();
     let locations: Vec<Option<LatLon>> = photos.iter().map(|p| p.location).collect();
     split_chapters(&times, &locations, places.then_some(PLACE_SPLIT_KM))
 }

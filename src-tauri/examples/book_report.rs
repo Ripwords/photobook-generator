@@ -295,6 +295,9 @@ fn copy_event(tag: &str, src: &[&Photo], id: u32, start: i64) -> Vec<Photo> {
                 near_dup_cluster: id * 100_000 + p.near_dup_cluster,
                 captured_at: Some(start + p.captured_at.unwrap_or(first) - first),
                 location: None,
+                utc_offset: None,
+                warmth: None,
+                horizon_tilt_deg: None,
                 ..(*p).clone()
             }
         })

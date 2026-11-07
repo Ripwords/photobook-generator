@@ -373,10 +373,19 @@ pub(crate) fn finalize_photos(mut ok: Vec<serde_json::Value>) -> Vec<serde_json:
         .iter()
         .map(|f| f["phash"].as_u64().unwrap_or(0))
         .collect();
-    let times: Vec<Option<i64>> = ok
+    let wall: Vec<Option<i64>> = ok
         .iter()
         .map(|f| f["exif"]["captureDate"].as_f64().map(|t| t as i64))
         .collect();
+    let offsets = cluster::resolve_offsets(
+        &wall,
+        &ok.iter()
+            .map(|f| f["exif"]["captureOffsetSec"].as_i64().and_then(|o| i32::try_from(o).ok()))
+            .collect::<Vec<_>>(),
+    );
+    // Gaps and order read the real instant; `exif.captureDate` stays the
+    // wall clock for labels.
+    let times = cluster::instants(&wall, &offsets);
     // An undecodable print is left to `from_features`, which refuses the
     // whole record; here it only means the photo links by pHash alone.
     let prints: Vec<Option<Vec<f32>>> = ok
@@ -409,6 +418,7 @@ pub(crate) fn finalize_photos(mut ok: Vec<serde_json::Value>) -> Vec<serde_json:
         features["aestheticPct"] = aesthetic[i].into();
         features["sharpnessPct"] = sharpness[i].into();
         features["faceCount"] = features["faces"].as_array().map_or(0, Vec::len).into();
+        features["utcOffsetSec"] = offsets[i].into();
         features["status"] = "ok".into();
 
         // phash is a full 64-bit value and JavaScript numbers lose precision
@@ -3697,6 +3707,9 @@ mod tests {
             captured_at: None,
             clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
             location: None,
+            utc_offset: None,
+            warmth: None,
+            horizon_tilt_deg: None,
         }
     }
 
@@ -4542,6 +4555,31 @@ mod tests {
             "exif": { "captureDate": capture },
             "faces": vec![serde_json::json!({}); face_count],
         })
+    }
+
+    /// Tokyo 22:00 (+09:00) is 13:00 UTC; the same evening in London,
+    /// 15:30 (+00:00), is two and a half hours LATER, after a flight. Read
+    /// as wall clocks they look six and a half hours apart in the wrong
+    /// order, which splits one travel day into two events. A camera shot at
+    /// 21:50 with no offset of its own sits with the Tokyo phone shot.
+    #[test]
+    fn events_follow_the_real_instant_not_the_wall_clock() {
+        const MAR12: f64 = 1_773_273_600.0;
+        let with_offset = |mut v: serde_json::Value, offset: i64| {
+            v["exif"]["captureOffsetSec"] = offset.into();
+            v
+        };
+        let finalized = finalize_photos(vec![
+            with_offset(feat("/t/a-tokyo.jpg", 1, 0.5, 0.5, Some(MAR12 + 22.0 * 3600.0), 0), 32_400),
+            with_offset(feat("/t/b-london.jpg", 2, 0.5, 0.5, Some(MAR12 + 15.5 * 3600.0), 0), 0),
+            feat("/t/c-camera.jpg", 3, 0.5, 0.5, Some(MAR12 + 21.0 * 3600.0 + 50.0 * 60.0), 0),
+        ]);
+        let cluster: Vec<u64> = finalized.iter().map(|f| f["eventCluster"].as_u64().unwrap()).collect();
+        assert_eq!(cluster, vec![0, 0, 0], "one travel day, one event: {cluster:?}");
+        assert_eq!(finalized[2]["utcOffsetSec"], 32_400, "the camera borrows Tokyo's offset");
+        assert_eq!(finalized[1]["utcOffsetSec"], 0);
+        // The wall clock itself is untouched: titles read it as local time.
+        assert_eq!(finalized[0]["exif"]["captureDate"], MAR12 + 22.0 * 3600.0);
     }
 
     fn with_print(mut value: serde_json::Value, print: &[f32]) -> serde_json::Value {
@@ -5414,6 +5452,9 @@ mod tests {
             captured_at: None,
             clipped_low: 0.0, clipped_high: 0.0, feature_print: None,
             location: None,
+            utc_offset: None,
+            warmth: None,
+            horizon_tilt_deg: None,
         }
     }
 

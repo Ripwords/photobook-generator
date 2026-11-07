@@ -249,6 +249,9 @@ mod tests {
             clipped_high: 0.0,
             feature_print: None,
             location: None,
+            utc_offset: None,
+            warmth: None,
+            horizon_tilt_deg: None,
         }
     }
 
