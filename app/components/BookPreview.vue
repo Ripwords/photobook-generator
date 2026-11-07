@@ -21,6 +21,7 @@ import {
   type PlacementRef,
   type PreviewGeometry,
   type PreviewRect,
+  escapeDeselects,
 } from "~/types/preview";
 
 const {
@@ -104,6 +105,23 @@ const editSlots = defineModel<boolean>("editSlots", { default: false });
 watch(editSlots, () => {
   selected.value = null;
 });
+
+/**
+ * Esc drops the selection. On the window rather than on the book, because
+ * WebKit does not focus a clicked button, so the key never reaches the book.
+ */
+function onEscape(event: KeyboardEvent) {
+  if (!selected.value) return;
+  const target = event.target instanceof Element ? event.target : null;
+  const press = {
+    key: event.key,
+    inField: !!target?.closest("input, textarea, select, [contenteditable]"),
+    inOverlay: !!target?.closest('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]'),
+  };
+  if (escapeDeselects(press)) selected.value = null;
+}
+onMounted(() => window.addEventListener("keydown", onEscape));
+onBeforeUnmount(() => window.removeEventListener("keydown", onEscape));
 
 function onSelect(placement: PlacementRef) {
   const step = nextSwapStep(selected.value, placement);
@@ -207,7 +225,7 @@ const leftOut = computed(() =>
 </script>
 
 <template>
-  <section class="@container" @keydown.esc="selected = null">
+  <section class="@container">
     <!-- The book's own toolbar, pinned over the desk while the spreads scroll under it. -->
     <div
       class="sticky top-0 z-20 flex h-11 items-center gap-3 border-b border-default bg-default/95 px-6 backdrop-blur"

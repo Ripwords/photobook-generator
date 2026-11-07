@@ -483,6 +483,17 @@ export function viewerStep(index: number, delta: number, count: number): number 
   return Math.min(Math.max(index + delta, 0), Math.max(count - 1, 0));
 }
 
+/**
+ * Whether an Esc keypress should clear the editor's photo selection.
+ *
+ * It listens on the window, not on the book: WebKit never focuses a clicked
+ * `<button>`, so after clicking a photo the key lands on `<body>`. An open
+ * dialog or menu, or a text field, owns its own Esc and is left alone.
+ */
+export function escapeDeselects(press: { key: string; inField: boolean; inOverlay: boolean }): boolean {
+  return (press.key === "Escape" || press.key === "Esc") && !press.inField && !press.inOverlay;
+}
+
 /** The chapter whose first page is on this spread, which the editor heads with it. */
 export function chapterOpening(layout: BookLayout, opening: PreviewSpread): PreviewChapter | null {
   const pages = [opening.left?.number, opening.right?.number];

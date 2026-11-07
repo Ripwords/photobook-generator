@@ -6,6 +6,7 @@ import {
   chapterOpening,
   pageTitle,
   viewerStep,
+  escapeDeselects,
   titleEdit,
   releaseAction,
   cropMoved,
@@ -1577,5 +1578,28 @@ describe("cropSubject", () => {
       expect(subject).toBeNull();
     }
     expect(cropSubject(layout, { kind: "slot", placement: { page: 9999, z: 0 } })).toBeNull();
+  });
+});
+
+describe("escapeDeselects", () => {
+  const key = { key: "Escape", inField: false, inOverlay: false };
+
+  it("clears the selection on Esc wherever focus is, even on the page itself", () => {
+    // WebKit never focuses a clicked <button>, so in the app the key lands on
+    // <body>, outside the book. Esc must still clear the selection there.
+    expect(escapeDeselects(key)).toBe(true);
+  });
+
+  it("leaves other keys alone", () => {
+    expect(escapeDeselects({ ...key, key: "Enter" })).toBe(false);
+    expect(escapeDeselects({ ...key, key: "Esc" })).toBe(true);
+  });
+
+  it("lets an open dialog or menu take the Esc instead", () => {
+    expect(escapeDeselects({ ...key, inOverlay: true })).toBe(false);
+  });
+
+  it("lets a text field take the Esc, so renaming a chapter can be cancelled", () => {
+    expect(escapeDeselects({ ...key, inField: true })).toBe(false);
   });
 });
