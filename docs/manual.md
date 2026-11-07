@@ -199,10 +199,12 @@ event at every length.
 
 The book aims for variety over density. It places about four photos per spread, so a
 40-page book places around 85 rather than the 130 its layouts could squeeze in, and it mixes
-sparse spreads with the occasional six-up. Photos taken within two minutes of each other
-count as one moment: for an event that places anything, the book takes the best photo of
-every moment before a second from any, and never more than two from one moment unless you
-marked the others **+**. A photo that looks like one the book already takes -- the same shot
+sparse spreads with the occasional six-up. Photos on a page never touch: even a layout that
+bleeds off the page edge keeps a thin white gutter (0.2") between its photos. Photos taken
+within two minutes of each other count as one moment: for an event that places anything,
+the book takes the best photo of every moment before a second from any, and never more than
+two from one moment unless you marked the others **+**.
+A photo that looks like one the book already takes -- the same shot
 retaken minutes later, or a time-lapse of one sky -- waits until every event has run out of
 different pictures, and a tier's floor counts different pictures only: an event of twenty
 frames of one star field is owed that picture once, not six times. Within an event, the

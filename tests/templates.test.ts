@@ -187,6 +187,28 @@ function realAspectRatio(rect: Rect): number {
   return (w * CANVAS_WIDTH_IN) / (h * CANVAS_HEIGHT_IN);
 }
 
+/** The white gutter between two photos on one page, the margin layouts' own spacing. */
+const MIN_SLOT_GAP_IN = 0.2;
+
+function onLeftPage(rect: Rect): boolean {
+  return rect[0] + rect[2] <= FOLD_X + EPS;
+}
+
+/**
+ * Inches of white between two slots that face each other across a vertical
+ * or horizontal line, or null when they share no row or column (diagonal
+ * neighbours have no gutter to measure).
+ */
+function slotGapIn(a: Rect, b: Rect): number | null {
+  const [ax, ay, aw, ah] = a;
+  const [bx, by, bw, bh] = b;
+  const shareRows = Math.min(ay + ah, by + bh) - Math.max(ay, by) > EPS;
+  const shareCols = Math.min(ax + aw, bx + bw) - Math.max(ax, bx) > EPS;
+  if (shareRows) return Math.max(bx - (ax + aw), ax - (bx + bw)) * CANVAS_WIDTH_IN;
+  if (shareCols) return Math.max(by - (ay + ah), ay - (by + bh)) * CANVAS_HEIGHT_IN;
+  return null;
+}
+
 const loaded = loadTemplates();
 
 describe("template library", () => {
@@ -397,6 +419,24 @@ describe("template library", () => {
               `${filename}: slots[${i}] rect=[${a.rect.join(", ")}] overlaps ` +
                 `slots[${j}] rect=[${b.rect.join(", ")}]`,
             ).toBe(false);
+          }
+        }
+      });
+
+      it(`neighbouring slots on a page sit at least ${MIN_SLOT_GAP_IN}" apart`, () => {
+        // Photos butting edge to edge read as one crowded collage. The fold is
+        // not a neighbour: two pages meet there, and a bleed slot may reach it.
+        for (let i = 0; i < template.slots.length; i++) {
+          for (let j = i + 1; j < template.slots.length; j++) {
+            const a = template.slots[i]!.rect;
+            const b = template.slots[j]!.rect;
+            if (onLeftPage(a) !== onLeftPage(b)) continue;
+            const gap = slotGapIn(a, b);
+            if (gap === null) continue;
+            expect(
+              gap,
+              `${filename}: slots[${i}] and slots[${j}] are ${gap.toFixed(3)}" apart`,
+            ).toBeGreaterThanOrEqual(MIN_SLOT_GAP_IN - 0.001);
           }
         }
       });

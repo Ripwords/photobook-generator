@@ -27,7 +27,7 @@ reproduced exactly — do not re-derive or round them differently. `tests/templa
 hardcodes the same values and is the source of truth if this file and the test ever
 disagree.
 
-## The three geometric rules
+## The four geometric rules
 
 1. **Text zones must lie entirely inside the safe area.** Anything outside gets trimmed
    off the printed page.
@@ -45,6 +45,10 @@ disagree.
    stopping short leaves a white sliver after trimming. Every edge named in a slot's
    `bleed` array must actually reach the canvas boundary on that side; every edge *not*
    named must stay inside `[0, 1]` on that side.
+4. **Two photos on one page never touch.** Neighbouring slots on a page sit at least
+   0.2" apart (`0.008931` across, `0.022487` down), the margin layouts' own spacing. A
+   bleed layout bleeds only at the page's outer edges; photos butted edge to edge read as
+   one crowded collage. The fold is not a neighbour: a bleed slot may still run to `0.5`.
 
 ## Subdivide the PAGE, never the spread
 
@@ -145,7 +149,7 @@ letterbox failure above is obvious on the sheet and invisible in the rect arrays
    a known-good layout.
 2. Name the file `NN-slug.json` where `NN` is the next unused two-digit number and `slug`
    is a short, descriptive, kebab-case name. Set `"id"` to exactly that filename stem.
-3. Respect the three rules above. In particular: if a photo slot is meant to bleed, set
+3. Respect the four rules above. In particular: if a photo slot is meant to bleed, set
    the relevant edge to exactly `0` or `1` (never a near-boundary value like `0.002`); if
    it isn't meant to bleed, keep it inside `[0, 1]` on that edge.
 4. Run `bun run test` (which runs `tests/templates.test.ts` against every file in this
