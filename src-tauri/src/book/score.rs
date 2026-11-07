@@ -10,7 +10,7 @@ use crate::book::cull::Photo;
 use crate::geometry::{
     clear_of_gutter, gutter_overlap_area, in_safe_margin, Rect, Side,
 };
-use crate::templates::{Role, Slot, SpreadTemplate, Weights};
+use crate::templates::{PageLayout, Role, Slot, SpreadTemplate, Weights};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -497,26 +497,103 @@ pub fn best_spread<'a>(
     w: &Weights,
     seed: u64,
 ) -> Option<(&'a SpreadTemplate, Vec<usize>, f64)> {
-    let mut best = f64::NEG_INFINITY;
+    best_spread_ordered(spec, templates, photos, previous, w, seed, SpreadOrder::default())
+}
+
+/// What a spread owes the story, as indices into the photos it is laid out
+/// from: the chapter's opening photo, if this spread opens a chapter, and
+/// its closing one, if it closes one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SpreadOrder {
+    pub lead: Option<usize>,
+    pub tail: Option<usize>,
+}
+
+/// Slot positions (into `ordered_slots`) in the order a reader meets them:
+/// the left page before the right, each page left to right, then top down.
+fn reading_slots(t: &SpreadTemplate) -> Vec<usize> {
+    let left = t.left.slots.len();
+    page_reading_order(&t.left)
+        .into_iter()
+        .chain(page_reading_order(&t.right).into_iter().map(|i| i + left))
+        .collect()
+}
+
+/// Slot indices of one page in the order a reader meets them: left to
+/// right, then top down.
+pub(crate) fn page_reading_order(layout: &PageLayout) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..layout.slots.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (ra, rb) = (&layout.slots[a].rect, &layout.slots[b].rect);
+        ra.x.total_cmp(&rb.x).then(ra.y.total_cmp(&rb.y))
+    });
+    order
+}
+
+/// How well an assignment tells the story, compared BEFORE the score:
+/// photos of different events read in time order; the lead sits first or in
+/// the largest slot; the tail sits last. Each is a preference, so an order
+/// no assignment honours still lays the spread out.
+fn order_rank(
+    t: &SpreadTemplate,
+    reading: &[usize],
+    photos: &[&Photo],
+    assignment: &[usize],
+    order: SpreadOrder,
+) -> (bool, bool, bool) {
+    let read: Vec<&Photo> = reading.iter().map(|&s| photos[assignment[s]]).collect();
+    let in_time = read.iter().enumerate().all(|(i, a)| {
+        read[i + 1..].iter().all(|b| {
+            a.event_cluster == b.event_cluster
+                || !matches!((a.instant(), b.instant()), (Some(x), Some(y)) if y < x)
+        })
+    });
+    let slot_of = |photo: usize| assignment.iter().position(|&p| p == photo);
+    let slots = ordered_slots(t);
+    let largest = slots.iter().map(|(s, _)| s.rect.area()).fold(0.0, f64::max);
+    let lead = order
+        .lead
+        .and_then(slot_of)
+        .map_or(true, |s| reading.first() == Some(&s) || slots[s].0.rect.area() >= largest);
+    let tail = order.tail.and_then(slot_of).map_or(true, |s| reading.last() == Some(&s));
+    (in_time, lead, tail)
+}
+
+/// `best_spread`, with the story's order preferred over the score.
+#[allow(clippy::too_many_arguments)]
+pub fn best_spread_ordered<'a>(
+    spec: &PrintSpec,
+    templates: &[&'a SpreadTemplate],
+    photos: &[&Photo],
+    previous: Option<&str>,
+    w: &Weights,
+    seed: u64,
+    order: SpreadOrder,
+) -> Option<(&'a SpreadTemplate, Vec<usize>, f64)> {
+    let mut best: Option<((bool, bool, bool), f64)> = None;
     let mut tied: Vec<(&SpreadTemplate, Vec<usize>)> = Vec::new();
 
     for t in templates {
         if t.photo_count() != photos.len() {
             continue;
         }
+        let reading = reading_slots(t);
         for assignment in permutations(photos.len()) {
             let Some(score) = score_spread(spec, t, photos, &assignment, previous, w) else {
                 continue;
             };
-            if score > best {
-                best = score;
+            let key = (order_rank(t, &reading, photos, &assignment, order), score);
+            let better = best.map_or(true, |(r, s)| key.0 > r || (key.0 == r && key.1 > s));
+            if better {
+                best = Some(key);
                 tied.clear();
                 tied.push((t, assignment));
-            } else if score == best {
+            } else if best == Some(key) {
                 tied.push((t, assignment));
             }
         }
     }
+    let best = best.map_or(f64::NEG_INFINITY, |(_, s)| s);
 
     if tied.is_empty() {
         return None;
@@ -1387,6 +1464,61 @@ mod tests {
         let ia = score_spread(&pixajoy_spec(), &t, &[&clear], &[0], None, &inert).expect("scores");
         let ib = score_spread(&pixajoy_spec(), &t, &[&in_gutter], &[0], None, &inert).expect("scores");
         assert_eq!(ia, ib, "the term must be inert at its shipped weight of 0.0");
+    }
+
+    /// The fixture's left slot is wide and the right one tall, so on fit
+    /// alone the wide photo goes left. When the wide photo is from the
+    /// LATER event, that printed the next chapter before the end of this
+    /// one; time order between events wins over fit.
+    #[test]
+    fn score_best_spread_keeps_two_events_in_time_order_across_the_spread() {
+        let lib = fixture_library();
+        let refs: Vec<&SpreadTemplate> = lib.iter().collect();
+        let tall = Photo { captured_at: Some(0), event_cluster: 0, ..photo(3000, 6000) };
+        let wide = Photo { captured_at: Some(100), event_cluster: 1, ..photo(6000, 3000) };
+        let w = Weights::default();
+        let (_, assignment, _) = best_spread(&pixajoy_spec(), &refs, &[&tall, &wide], None, &w, 0).unwrap();
+        assert_eq!(assignment, vec![0, 1], "the earlier event's photo reads first");
+
+        // One event: fit decides, as before.
+        let wide_same = Photo { event_cluster: 0, ..wide.clone() };
+        let (_, assignment, _) = best_spread(&pixajoy_spec(), &refs, &[&tall, &wide_same], None, &w, 0).unwrap();
+        assert_eq!(assignment, vec![1, 0]);
+    }
+
+    #[test]
+    fn score_best_spread_opens_on_the_lead_and_ends_on_the_tail() {
+        let lib = fixture_library();
+        let refs: Vec<&SpreadTemplate> = lib.iter().collect();
+        let wide = photo(6000, 3000);
+        let tall = photo(3000, 6000);
+        let w = Weights::default();
+        let spec = pixajoy_spec();
+        let free = best_spread(&spec, &refs, &[&wide, &tall], None, &w, 0).unwrap().1;
+        assert_eq!(free, vec![0, 1], "fit alone puts the wide photo left");
+
+        let lead_tall = SpreadOrder { lead: Some(1), tail: None };
+        let led = best_spread_ordered(&spec, &refs, &[&wide, &tall], None, &w, 0, lead_tall).unwrap().1;
+        assert_eq!(led, vec![1, 0], "the lead takes the first and largest slot");
+
+        let tail_wide = SpreadOrder { lead: None, tail: Some(0) };
+        let tailed = best_spread_ordered(&spec, &refs, &[&wide, &tall], None, &w, 0, tail_wide).unwrap().1;
+        assert_eq!(tailed, vec![1, 0], "the tail takes the last slot");
+    }
+
+    /// An order nothing can satisfy (one photo asked to be both first and
+    /// last) still lays the spread out: order is a preference, and a blank
+    /// spread is worse than any order.
+    #[test]
+    fn score_best_spread_still_lays_out_an_order_it_cannot_honour() {
+        let lib = fixture_library();
+        let refs: Vec<&SpreadTemplate> = lib.iter().collect();
+        let wide = photo(6000, 3000);
+        let tall = photo(3000, 6000);
+        let both = SpreadOrder { lead: Some(1), tail: Some(1) };
+        let w = Weights::default();
+        let got = best_spread_ordered(&pixajoy_spec(), &refs, &[&wide, &tall], None, &w, 0, both);
+        assert!(got.is_some());
     }
 
     #[test]

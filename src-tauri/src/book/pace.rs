@@ -15,7 +15,7 @@ use crate::book::crop::choose_crop;
 use crate::book::cull::{cull, Overrides, Photo};
 use crate::book::edit::OpeningControls;
 use crate::book::pack::{pack_selected, Buildable, Capacity, Group, IncludeOverflow, SlotKind};
-use crate::book::score::{best_spread, rejects, slot_aspect};
+use crate::book::score::{best_spread, page_reading_order, rejects, slot_aspect};
 use crate::geometry::{Rect, Side};
 use crate::print_spec::PrintSpec;
 use crate::templates::{EdgeTreatment, Library, PageLayout, SpreadTemplate, Weights};
@@ -293,25 +293,37 @@ fn best_single<'a>(
 
     for capacity in sizes.into_iter().rev() {
         let indices = strongest(group, photos, capacity);
-        let mut scored: Vec<(f64, &str, &PageLayout)> = pool
+        let mut scored: Vec<(f64, &str, &PageLayout, Vec<usize>)> = pool
             .iter()
             .filter(|(_, l)| fits(l) && l.slots.len() == capacity)
             .filter_map(|(id, l)| {
-                single_fit(spec, l, &indices, photos).map(|fit| (fit, *id, *l))
+                let seated = seat_in_reading_order(l, &indices);
+                single_fit(spec, l, &seated, photos).map(|fit| (fit, *id, *l, seated))
             })
             .collect();
         if scored.is_empty() {
             continue; // nothing at this size survived; try a smaller half
         }
-        let best = scored.iter().fold(f64::NEG_INFINITY, |m, (fit, _, _)| m.max(*fit));
+        let best = scored.iter().fold(f64::NEG_INFINITY, |m, (fit, ..)| m.max(*fit));
         // Exact equality is the definition of the tie the seed exists to
         // break; anything looser would let the seed override a real
         // preference.
-        scored.retain(|(fit, _, _)| *fit == best);
-        let (_, id, layout) = scored[tie_break(seed, scored.len())];
-        return Some((id, layout, indices));
+        scored.retain(|(fit, ..)| *fit == best);
+        let (_, id, layout, seated) = scored.swap_remove(tie_break(seed, scored.len()));
+        return Some((id, layout, seated));
     }
     None
+}
+
+/// `indices`, in group order, re-ordered so the k-th photo lands in the k-th
+/// slot a reader meets. `place` zips photos to slots in z order, which is
+/// not reading order, and a page shared by two events must read in time.
+fn seat_in_reading_order(layout: &PageLayout, indices: &[usize]) -> Vec<usize> {
+    let mut seated = indices.to_vec();
+    for (k, slot) in page_reading_order(layout).into_iter().enumerate().take(indices.len()) {
+        seated[slot] = indices[k];
+    }
+    seated
 }
 
 /// The `capacity` strongest photos of a group, in group order.
@@ -1900,6 +1912,37 @@ mod tests {
             largest_half,
             "the page must hold what the largest half can, not nothing"
         );
+    }
+
+    /// A single page seats its group in the order a reader meets the slots
+    /// (left to right, then top down), not in the template's z order, so two
+    /// events sharing page 1 still read in time order. The fixture half is
+    /// reversed so z order and reading order disagree.
+    #[test]
+    fn pace_single_page_seats_photos_in_reading_order() {
+        let lib = fixture_library();
+        let mut half = lib
+            .spreads
+            .iter()
+            .map(|t| t.right.clone())
+            .find(|h| h.slots.len() == 2)
+            .expect("fixture has a two-slot right half");
+        half.slots.reverse();
+        let pool = vec![("rev", &half)];
+        let mut photos = fixture_photos(2);
+        for (i, p) in photos.iter_mut().enumerate() {
+            p.event_cluster = i as u32;
+            p.captured_at = Some(1_000 * i as i64);
+        }
+        let group = Group { photos: vec![0, 1], event_cluster: 0, slot: SlotKind::Single(Side::Right) };
+        let page = single_page(&pixajoy_spec(), Side::Right, Some(&group), &pool, &photos, 0);
+        assert_eq!(page.placements.len(), 2);
+        let first = page
+            .placements
+            .iter()
+            .min_by(|a, b| a.slot_rect.x.total_cmp(&b.slot_rect.x).then(a.slot_rect.y.total_cmp(&b.slot_rect.y)))
+            .unwrap();
+        assert_eq!(first.photo_index, 0, "the earlier photo must be read first");
     }
 
     /// A photo whose two faces sit far apart vertically. Every 2-slot half in
