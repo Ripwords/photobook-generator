@@ -195,8 +195,10 @@ With the switch on, the contact sheet titles each chapter with its town, such as
 5 photos**. To find the town, the app sends the centre of each chapter, as a latitude and
 longitude, to Apple's map service. It never sends a photo, and it sends nothing while the
 switch is off. Names are kept on this Mac, so reopening a draft asks Apple nothing new. A
-chapter Apple cannot name, or any chapter while this Mac is offline, keeps its number, such
-as **Event 3**.
+chapter Apple cannot name, or any chapter while this Mac is offline, is titled by the dates
+its photos were taken, such as **12–14 Mar 2026**, the same title the book prints for it. A
+chapter whose photos carry no date keeps its number, such as **Event 3**. With the switch
+off, every chapter is titled by its dates.
 
 **Featured events get at least** and **Brief events get at most**, the two steppers in the
 closed **Advanced** section under **Split chapters by place**, set the floor and cap the tiers above use: Featured from 2 to 12

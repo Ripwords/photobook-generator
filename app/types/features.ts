@@ -1,3 +1,5 @@
+import { dateRange } from "./dates";
+
 /**
  * Everything intrinsic to a single photo: derivable the instant that ONE
  * photo has been analyzed, with no knowledge of the rest of the folder.
@@ -38,6 +40,12 @@ export interface PartialAnalyzedPhoto {
    * and `""` are all falsy), but typed accurately here regardless.
    */
   thumbnailPath?: string | null;
+  /**
+   * The capture time as the camera's wall clock, Unix seconds (Swift encodes
+   * `secondsSince1970`). Optional for the same `encodeIfPresent` reason, and
+   * absent from records built by hand in tests and the mock.
+   */
+  exif?: { captureDate?: number | null };
 }
 
 /**
@@ -379,7 +387,9 @@ export function eventHashes(
 }
 
 /**
- * An event's display title: the place name when one exists, else "Event N"
+ * An event's display title: the place name when one exists, else the date
+ * range its photos were taken over (as the printed chapter title falls back
+ * to, `book::titles::auto_title`), else "Event N"
  * numbered by position among ALL of the job's events -- never a filtered
  * subset, so the number stays the same whether "In the book" is on or off
  * and matches the events panel, which lists every event regardless of the
@@ -399,7 +409,11 @@ export function eventTitle(
   event: number,
 ): string {
   const index = groups.findIndex((group) => group.eventCluster === event);
-  return names[event] ?? `Event ${index + 1}`;
+  const named = names[event];
+  if (named !== undefined) return named;
+  const times = (groups[index]?.photos ?? []).flatMap((p) => p.exif?.captureDate ?? []);
+  if (times.length > 0) return dateRange(Math.min(...times), Math.max(...times));
+  return `Event ${index + 1}`;
 }
 
 /**

@@ -271,6 +271,22 @@ describe("eventTitle", () => {
     expect(eventTitle(groups, { 2: "Kyoto" }, 2)).toBe("Kyoto");
     expect(eventTitle(groups, { 2: "Kyoto" }, 1)).toBe("Event 1");
   });
+
+  // The printed chapter title falls back to a date range (`titles::auto_title`),
+  // so the sheet's header has to say the same thing rather than "Event 1".
+  it("falls back to the event's capture dates, read as the wall clock", () => {
+    const mar12 = 1773273600;
+    const all = [
+      photo({ path: "/p/1.jpg", eventCluster: 1, exif: { captureDate: mar12 + 2 * 86400 + 50 } }),
+      photo({ path: "/p/2.jpg", eventCluster: 1, exif: { captureDate: mar12 } }),
+      photo({ path: "/p/3.jpg", eventCluster: 1 }),
+      photo({ path: "/p/4.jpg", eventCluster: 2, exif: { captureDate: null } }),
+    ];
+    const groups = groupByEvent(all, null);
+    expect(eventTitle(groups, {}, 1)).toBe("12\u201314 Mar 2026");
+    expect(eventTitle(groups, { 1: "Kyoto" }, 1)).toBe("Kyoto");
+    expect(eventTitle(groups, {}, 2)).toBe("Event 2");
+  });
 });
 
 describe("burstSizes", () => {

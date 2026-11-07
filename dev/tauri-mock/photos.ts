@@ -34,6 +34,11 @@ const PICSUM_IDS = [
   1057, 1060, 1061, 1065, 1067,
 ];
 
+const HOUR = 3600;
+const DAY = 24 * HOUR;
+/** 12 Mar 2026 00:00 on the camera's wall clock. */
+const MAR12 = 1_773_273_600;
+
 /** A real photograph, cropped to the orientation of the photo it stands in for. */
 export function thumbnail(index: number, landscape: boolean): string {
   const id = PICSUM_IDS[index % PICSUM_IDS.length] ?? PICSUM_IDS[0];
@@ -74,6 +79,9 @@ export function mockPhotos(count = 36): AnalyzedPhoto[] {
       sharpnessPct: (i * 61) % 100,
       nearDupCluster,
       eventCluster: Math.floor(i / 9),
+      // One trip from 12 Mar 2026: each event starts three days after the last
+      // and runs over a day and a half, so the sheet titles them by date.
+      exif: { captureDate: MAR12 + Math.floor(i / 9) * 3 * DAY + 8 * HOUR + (i % 9) * 4 * HOUR },
       kept: !isUtility && (!burst || winner),
       faces: Array.from({ length: i % 4 }, () => ({ captureQuality: 0.6 })),
       faceAreaFraction: (i % 4) * 0.04,
