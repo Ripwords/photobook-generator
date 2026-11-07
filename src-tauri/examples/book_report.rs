@@ -167,7 +167,7 @@ fn main() {
 
 fn books(projects: &[i64], load: &dyn Fn(i64) -> Vec<Photo>, spec: &PrintSpec, lib: &Library, weights: &Weights) {
     println!(
-        "project,pages,seed,photos,events,events_at_zero,gini,min_chapter,blank_pages,dropped,featured,normal,brief,skipped,floor_misses,opener_hit,closer_hit,chrono_inv,event_inv,mixed_spreads,role_cov"
+        "project,pages,seed,photos,events,events_at_zero,gini,min_chapter,blank_pages,dropped,featured,normal,brief,skipped,floor_misses,opener_hit,closer_hit,chrono_inv,event_inv,mixed_spreads,role_cov,arc_fit"
     );
     let overrides = Overrides::new();
     let options = BookOptions::default();
@@ -214,7 +214,7 @@ fn books(projects: &[i64], load: &dyn Fn(i64) -> Vec<Photo>, spec: &PrintSpec, l
                     .count();
                 let m = story::story_metrics(&book, &photos);
                 println!(
-                    "{id},{pages},{seed},{},{},{zero},{:.3},{min_chapter},{blank},{},{},{},{},{},{floor_misses},{},{},{},{},{},{}",
+                    "{id},{pages},{seed},{},{},{zero},{:.3},{min_chapter},{blank},{},{},{},{},{},{floor_misses},{},{},{},{},{},{},{}",
                     photos.len(),
                     per.len(),
                     gini(&counts),
@@ -229,6 +229,7 @@ fn books(projects: &[i64], load: &dyn Fn(i64) -> Vec<Photo>, spec: &PrintSpec, l
                     m.event_inv,
                     m.mixed_spreads,
                     share(m.role_cov),
+                    share(m.arc_fit),
                 );
             }
         }

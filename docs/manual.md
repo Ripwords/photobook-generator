@@ -172,10 +172,16 @@ Each event that prints four or more photos is told with a beginning and an end. 
 on its best wide shot (a landscape, a street, a skyline) from the first half of the event,
 and closes on its calmest photo from the last part: a wide, warm, evenly exposed frame. At
 most those two photos move; the rest stay in the order they were taken. The opening photo
-takes the first or the largest box on its pages, and the closing photo the last. A spread
+takes the first or the largest box on its pages, and the closing photo the last. When two
+boxes are the same size, the opening photo takes the one you read first. A spread
 that holds two events reads left to right in the order they happened. **Regenerate**,
 **Shuffle** and the other layout changes keep all of this, so trying another layout never
 buries an event's opening photo in a small box.
+
+An event told over several spreads also has a rhythm. It starts on a spread with fewer
+photos, fills up through the middle, and ends on a quieter spread again. A Featured event
+starts sparser still, so its opening photo has room. This only steers how photos are shared
+between spreads: it never leaves a page blank or a photo out to keep the rhythm.
 
 With the switch on, the contact sheet titles each chapter with its town, such as **Kyoto
 5 photos**. To find the town, the app sends the centre of each chapter, as a latitude and

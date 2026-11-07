@@ -534,7 +534,15 @@ pub struct Budget {
 
 impl Budget {
     pub fn brief_events(&self) -> BTreeSet<u32> {
-        self.plan.iter().filter(|p| p.tier == Tier::Brief).map(|p| p.event).collect()
+        self.events_of(Tier::Brief)
+    }
+
+    pub fn featured_events(&self) -> BTreeSet<u32> {
+        self.events_of(Tier::Featured)
+    }
+
+    fn events_of(&self, tier: Tier) -> BTreeSet<u32> {
+        self.plan.iter().filter(|p| p.tier == tier).map(|p| p.event).collect()
     }
 
     pub fn selected_in(&self, kept: &[Photo], event: u32) -> usize {

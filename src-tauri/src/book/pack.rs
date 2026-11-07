@@ -57,7 +57,7 @@ pub struct Capacity {
     pub target_photos: usize,
 }
 
-/// The average number of photos a spread aims for. `DENSITY_RHYTHM` swings
+/// The average number of photos a spread aims for. `story::arc_swing` swings
 /// individual spreads either side of it.
 pub const TARGET_PER_SPREAD: usize = 4;
 
@@ -74,12 +74,6 @@ pub const MOMENT_GAP_SECONDS: i64 = 120;
 
 /// The most photos one moment may place, unless the user included more.
 pub const MAX_PER_MOMENT: usize = 2;
-
-/// Offsets from the fair share, cycled slot by slot across the whole book.
-/// With a share of 4 this reads 3, 6, 2, 5, 4: a mix of sparse and dense
-/// spreads in which a six-up is one spread in five. Sums to zero so the
-/// rhythm does not drift the book's average away from the share.
-const DENSITY_RHYTHM: [i64; 5] = [-1, 2, -2, 1, 0];
 
 impl Capacity {
     /// A book is 2 single pages facing the inside covers plus (N-2)/2
@@ -395,18 +389,21 @@ pub fn pack(
     overrides: &Overrides,
 ) -> Result<Vec<Group>, IncludeOverflow> {
     let selected = select(photos, capacity.target_photos, overrides);
-    pack_selected(photos, &selected, &std::collections::BTreeSet::new(), capacity, buildable, overrides)
+    let none = std::collections::BTreeSet::new();
+    pack_selected(photos, &selected, &none, &none, capacity, buildable, overrides)
 }
 
 /// `pack` with the selection made by the caller: `selected` indexes `photos`
 /// and is laid out as given, and every event in `brief` folds into its
-/// neighbour (`merge_sub_spread_chapters`). `pack` is this with the book-wide
-/// `select` and no Brief events; `assemble_with` passes the per-event
-/// `events::budget`.
+/// neighbour (`merge_sub_spread_chapters`). A chapter keyed by an event in
+/// `featured` opens sparser (`story::arc_swing`). `pack` is this with the
+/// book-wide `select` and no Brief or Featured events; `assemble_with` passes
+/// the per-event `events::budget`.
 pub fn pack_selected(
     photos: &[Photo],
     selected: &[usize],
     brief: &std::collections::BTreeSet<u32>,
+    featured: &std::collections::BTreeSet<u32>,
     capacity: &Capacity,
     buildable: &Buildable,
     overrides: &Overrides,
@@ -467,6 +464,8 @@ pub fn pack_selected(
         });
         crate::book::story::sequence(photos, &mut members);
 
+        let allowance = slots_left;
+        let featured = featured.contains(&cluster);
         let mut i = 0;
         while i < members.len() && slots_left > 0 {
             let remaining = members.len() - i;
@@ -475,18 +474,12 @@ pub fn pack_selected(
             // this library density is a strict function of slot count
             // (1 -> sparse, 2..4 -> medium, 6 -> dense) -- so a book of
             // identically sized groups has ONE density, and `repace` cannot
-            // vary an axis the packer has flattened. `DENSITY_RHYTHM` swings
-            // each slot either side of the share, restoring the variation
-            // `repace` operates on. It is a preference, not a licence: the feasible
-            // band inside `choose_group_size` overrides it whenever obeying
-            // it would strand a photo or leave a later slot unfillable.
-            //
-            // The phase runs on the whole book's group count rather than the
-            // chapter's, so the rhythm carries across a chapter boundary
-            // instead of resetting at every one. Starting SPARSE puts the
-            // smaller group on the opening single page, which holds only a
-            // page-half's worth anyway.
-            let swing = DENSITY_RHYTHM[groups.len() % DENSITY_RHYTHM.len()];
+            // vary an axis the packer has flattened. The swing follows the
+            // chapter's arc: a sparse opener, a dense middle, an easier
+            // close. It is a preference, not a licence: the feasible band
+            // inside `choose_group_size` overrides it whenever obeying it
+            // would strand a photo or leave a later slot unfillable.
+            let swing = crate::book::story::arc_swing(allowance - slots_left, allowance, featured);
             // `groups.len()` is the GLOBAL slot index -- it counts across
             // chapters, not within one -- which is exactly what the swing
             // above already relies on. Slot 0 and slot `slots - 1` are the
@@ -1343,6 +1336,27 @@ mod tests {
         assert_eq!(read[0], "/p2.jpg", "the wide shot opens the chapter: {read:?}");
     }
 
+    /// **A featured chapter opens on its sparsest spread.**
+    ///
+    /// Two chapters of 24 that fill a 20-page book. The second one is
+    /// Featured, so its opening spread aims two photos under the share and
+    /// sits below every other spread of the chapter -- a breath before the
+    /// chapter's dense middle -- while no slot or photo is lost to it.
+    #[test]
+    fn pack_opens_a_featured_chapter_on_its_sparsest_spread() {
+        let mut photos: Vec<Photo> = (0..24).map(|i| photo(&format!("/a{i:02}.jpg"), 1, 50)).collect();
+        photos.extend((0..24).map(|i| photo(&format!("/b{i:02}.jpg"), 2, 50)));
+        let selected: Vec<usize> = (0..photos.len()).collect();
+        let c = capacity_for(20, &full());
+        let featured = std::collections::BTreeSet::from([2]);
+        let groups = pack_selected(&photos, &selected, &Default::default(), &featured, &c, &buildable_for(&full()), &Overrides::new())
+            .expect("the fixture fits");
+        assert_eq!(groups.len(), 11, "the arc must not cost a slot: {:?}", group_sizes(&groups));
+        let b: Vec<usize> = groups.iter().filter(|g| g.event_cluster == 2 && g.slot == SlotKind::Spread).map(|g| g.photos.len()).collect();
+        assert!(b.len() >= 3, "fixture: the featured chapter needs a middle: {b:?}");
+        assert!(b[1..].iter().all(|&n| n > b[0]), "the featured chapter opens on {} of {b:?}", b[0]);
+    }
+
     // --- overrides: an explicit choice is never traded away silently ------
 
     /// **An `Include` is not droppable by capacity trimming.**
@@ -1791,7 +1805,7 @@ mod tests {
         let s = group_sizes(&groups);
         assert_eq!(groups.len(), slots, "{} slots but only {} groups: {s:?}", slots, groups.len());
         assert_eq!(s.iter().sum::<usize>(), 30, "every photo must be placed: {s:?}");
-        // 30 photos over 11 slots is 2.7 each. `DENSITY_RHYTHM` reaches two
+        // 30 photos over 11 slots is 2.7 each. `story::arc_swing` reaches two
         // photos above that, so 5 is the ceiling -- and no slot may run at
         // the library's maximum, which is what the greedy packer did with all
         // five of its groups.

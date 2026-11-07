@@ -550,11 +550,14 @@ fn order_rank(
     });
     let slot_of = |photo: usize| assignment.iter().position(|&p| p == photo);
     let slots = ordered_slots(t);
+    // The lead reads first, or takes the largest slot. When several slots
+    // tie for largest, only the first of them read singles it out.
     let largest = slots.iter().map(|(s, _)| s.rect.area()).fold(0.0, f64::max);
+    let first_largest = reading.iter().copied().find(|&s| slots[s].0.rect.area() >= largest);
     let lead = order
         .lead
         .and_then(slot_of)
-        .map_or(true, |s| reading.first() == Some(&s) || slots[s].0.rect.area() >= largest);
+        .map_or(true, |s| reading.first() == Some(&s) || first_largest == Some(s));
     let tail = order.tail.and_then(slot_of).map_or(true, |s| reading.last() == Some(&s));
     (in_time, lead, tail)
 }
@@ -1504,6 +1507,23 @@ mod tests {
         let tail_wide = SpreadOrder { lead: None, tail: Some(0) };
         let tailed = best_spread_ordered(&spec, &refs, &[&wide, &tall], None, &w, 0, tail_wide).unwrap().1;
         assert_eq!(tailed, vec![1, 0], "the tail takes the last slot");
+    }
+
+    /// Two slots of equal area: being "as large as the largest" no longer
+    /// singles the lead out, so it must also read first. Without that, a
+    /// chapter opening on a symmetric two-up put its wide shot on the right
+    /// page behind a detail on half the seeds.
+    #[test]
+    fn score_best_spread_reads_the_lead_first_when_slots_tie_for_largest() {
+        let t = two_slot_template();
+        let refs = [&t];
+        let (a, b) = (photo(4000, 3000), photo(4000, 3000));
+        let lead = SpreadOrder { lead: Some(1), tail: None };
+        let w = Weights::default();
+        for seed in 0..8 {
+            let got = best_spread_ordered(&pixajoy_spec(), &refs, &[&a, &b], None, &w, seed, lead).unwrap().1;
+            assert_eq!(got[0], 1, "seed {seed}: the lead reads second on an equal two-up: {got:?}");
+        }
     }
 
     /// An order nothing can satisfy (one photo asked to be both first and

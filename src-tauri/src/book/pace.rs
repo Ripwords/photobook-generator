@@ -656,7 +656,15 @@ pub fn assemble_with(
     let plan = crate::book::events::plan(photos, &kept, tiers, &cap);
     let budget = crate::book::events::budget(&kept, plan, &cap, overrides, &options);
     let groups =
-        pack_selected(&kept, &budget.selected, &budget.brief_events(), &cap, &buildable, overrides)
+        pack_selected(
+            &kept,
+            &budget.selected,
+            &budget.brief_events(),
+            &budget.featured_events(),
+            &cap,
+            &buildable,
+            overrides,
+        )
             .map_err(BookError::IncludedExceedCapacity)?;
     // Measured here, while the groups still index `kept`; reported after the
     // Include post-condition so that error keeps precedence.

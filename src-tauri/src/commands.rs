@@ -5963,7 +5963,9 @@ mod tests {
     fn places_keeps_two_towns_off_each_others_spreads() {
         let db = Db::open_in_memory().unwrap();
         let lib = fixture_library();
-        let towns: Vec<&'static str> = (0..24).map(|i| if i < 12 { "kyoto" } else { "osaka" }).collect();
+        // Uneven on purpose: at 12/12 the chapter's arc happens to end a group
+        // exactly on the boundary, and the guard below has nothing to catch.
+        let towns: Vec<&'static str> = (0..24).map(|i| if i < 11 { "kyoto" } else { "osaka" }).collect();
         let records: Vec<serde_json::Value> = (0..24)
             .map(|i| {
                 let mut record = photo_record(i, false, i as u32, 0);

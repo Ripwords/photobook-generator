@@ -227,6 +227,28 @@ pub fn anchors(order: &[usize], photos: &[Photo]) -> Anchors {
     out
 }
 
+/// The middle of a chapter, after its opener and before its closer: one
+/// spread over the share, one further over, one at it, repeating.
+const ARC_MIDDLE: [i64; 3] = [1, 2, 0];
+
+/// How far the `k`-th of a chapter's `allowance` slots aims from the fair
+/// share. A chapter opens sparse (sparser still when Featured, so its lead
+/// has room), swings dense through its middle and eases out on its closer.
+/// Only an aim: `pack::choose_group_size` ranks it below every feasibility
+/// rule, so the arc never costs a slot or a photo.
+pub fn arc_swing(k: usize, allowance: usize, featured: bool) -> i64 {
+    if allowance <= 1 {
+        return 0;
+    }
+    if k == 0 {
+        return if featured { -2 } else { -1 };
+    }
+    if k + 1 >= allowance {
+        return -1;
+    }
+    ARC_MIDDLE[(k - 1) % ARC_MIDDLE.len()]
+}
+
 /// A photo counts toward what a chapter *could* show only if it is good
 /// enough that the engine might reasonably pick it.
 pub const ROLE_FLOOR_PCT: u8 = 40;
@@ -254,6 +276,9 @@ pub struct StoryMetrics {
     /// Mean over chapters of roles printed / roles available among that
     /// event's photos at or above `ROLE_FLOOR_PCT`.
     pub role_cov: Option<f64>,
+    /// Of chapters told over 3+ spreads of their own, the share whose first
+    /// and last spread each hold fewer photos than its busiest one.
+    pub arc_fit: Option<f64>,
 }
 
 /// Photo indices in reading order: page by page, then left to right, top
@@ -327,14 +352,29 @@ pub fn story_metrics(book: &Book, photos: &[Photo]) -> StoryMetrics {
         .count();
 
     let mut by_opening: BTreeMap<usize, BTreeSet<u32>> = BTreeMap::new();
+    // Photo counts of the spreads each event has to itself, in book order.
+    let mut spreads_of: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
     for o in 0..crate::book::edit::opening_count(book) {
         let pages = crate::book::edit::opening_pages(book, o).unwrap_or_default();
         let events = by_opening.entry(o).or_default();
-        for p in pages {
+        let mut count = 0;
+        for &p in &pages {
             events.extend(book.pages[p].placements.iter().map(|pl| photos[pl.photo_index].event_cluster));
+            count += book.pages[p].placements.len();
+        }
+        if let (2, Some(&event), 1) = (pages.len(), events.first(), events.len()) {
+            spreads_of.entry(event).or_default().push(count);
         }
     }
     let mixed_spreads = by_opening.values().filter(|e| e.len() > 1).count();
+    let arcs: Vec<bool> = spreads_of
+        .values()
+        .filter(|c| c.len() >= 3)
+        .map(|c| {
+            let busiest = c.iter().copied().max().unwrap_or(0);
+            c[0] < busiest && c[c.len() - 1] < busiest
+        })
+        .collect();
 
     StoryMetrics {
         chapters: runs.len(),
@@ -344,6 +384,7 @@ pub fn story_metrics(book: &Book, photos: &[Photo]) -> StoryMetrics {
         event_inv,
         mixed_spreads,
         role_cov: (!coverage.is_empty()).then(|| coverage.iter().sum::<f64>() / coverage.len() as f64),
+        arc_fit: rate(arcs.iter().filter(|&&a| a).count(), arcs.len()),
     }
 }
 
@@ -573,6 +614,60 @@ mod tests {
             assert_eq!(story_metrics(&book, &photos).mixed_spreads, 1);
         }
 
+        /// Pages holding the given photos, one inner slice per page.
+        fn book_with(pages: &[&[usize]]) -> Book {
+            let mut book = book_of(&[]);
+            book.pages = pages
+                .iter()
+                .enumerate()
+                .map(|(n, photos)| Page {
+                    number: n as u32 + 1,
+                    side: if n % 2 == 0 { Side::Right } else { Side::Left },
+                    template_id: "t".into(),
+                    placements: photos
+                        .iter()
+                        .enumerate()
+                        .map(|(k, &i)| Placement {
+                            photo_index: i,
+                            slot_rect: Rect { x: 0.1 * k as f64, y: 0.1, w: 0.1, h: 0.8 },
+                            crop: Rect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 },
+                            z: 0,
+                        })
+                        .collect(),
+                })
+                .collect();
+            book
+        }
+
+        #[test]
+        fn an_arc_starts_and_ends_quieter_than_its_busiest_spread() {
+            // Event 0 over spreads of 2, 5, 2 photos: an arc. Event 1 over
+            // 4, 2, 3: it opens on its busiest spread, so not an arc. The
+            // single pages hold event 2 and are never part of an arc.
+            let mut photos: Vec<Photo> = (0..9).map(|t| timed(&[], 0, t)).collect();
+            photos.extend((0..9).map(|t| timed(&[], 1, 100 + t)));
+            photos.push(timed(&[], 2, 0));
+            photos.push(timed(&[], 2, 999));
+            let book = book_with(&[
+                &[18],
+                &[0, 1], &[],
+                &[2, 3, 4], &[5, 6],
+                &[7], &[8],
+                &[9, 10], &[11, 12],
+                &[13], &[14],
+                &[15, 16], &[17],
+                &[19],
+            ]);
+            assert_eq!(story_metrics(&book, &photos).arc_fit, Some(0.5));
+        }
+
+        #[test]
+        fn a_chapter_over_two_spreads_has_no_arc_to_judge() {
+            let photos: Vec<Photo> = (0..6).map(|t| timed(&[], 0, t)).collect();
+            let book = book_with(&[&[0], &[1], &[2, 3], &[4], &[], &[5]]);
+            assert_eq!(story_metrics(&book, &photos).arc_fit, None);
+        }
+
         #[test]
         fn coverage_counts_only_roles_worth_printing() {
             let mut photos = chapter();
@@ -586,6 +681,16 @@ mod tests {
             let m = story_metrics(&book_of(&[0, 2]), &photos);
             assert!((m.role_cov.unwrap() - 2.0 / 3.0).abs() < 1e-9);
         }
+    }
+
+    #[test]
+    fn arc_opens_sparse_swings_dense_and_eases_out() {
+        let normal: Vec<i64> = (0..6).map(|k| arc_swing(k, 6, false)).collect();
+        assert_eq!(normal, [-1, 1, 2, 0, 1, -1]);
+        assert_eq!(arc_swing(0, 6, true), -2, "a featured chapter opens sparser still");
+        assert_eq!(arc_swing(5, 6, true), -1);
+        assert_eq!((arc_swing(0, 2, false), arc_swing(1, 2, false)), (-1, -1));
+        assert_eq!(arc_swing(0, 1, true), 0, "a one-slot chapter has no arc");
     }
 
     mod sequencing {

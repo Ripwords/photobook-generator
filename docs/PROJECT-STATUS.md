@@ -647,7 +647,7 @@ largest template. And it ordered each chapter by file name, so a burst stayed to
   20 pages and 85 for 40, against maxima of 63 and 132. `IncludeOverflow` and
   `recommend_pages` still use `max_photos`. `DENSITY_RHYTHM = [-1, 2, -2, 1, 0]` replaces the
   ±1 swing, so six-ups still happen, about one spread in four, and `feasible_band` still
-  overrides it.
+  overrides it. (Since replaced by the per-chapter `story::arc_swing`; see the story round.)
 - **Order**. Each chapter is sorted by `(captured_at, path)`.
 - **`recommend`** reports `target_photos` as `capacityPhotos`. It counts `droppedPhotos` from
   `select`, so a burst's surplus frames count as left out even in a book with room for
@@ -928,7 +928,7 @@ file per placement.
 | Stage | Where | What it does |
 |---|---|---|
 | Cull | `book::cull::cull` | Drops utility images, keeps one winner per near-duplicate cluster. **The single authority** — see below. |
-| Pack | `book::pack` | Chapter-aware grouping into buildable group sizes, **distributed over the available slots rather than front-loaded** and **sized against the kind of slot each group will land on** (a single page holds a page half's worth, a spread does not); selects **one photo per moment before a second from any, at most `MAX_PER_MOMENT` per moment**, down to `Capacity::target_photos` (about four per spread), then varies spread density with `DENSITY_RHYTHM`. See "Selection variety" below. |
+| Pack | `book::pack` | Chapter-aware grouping into buildable group sizes, **distributed over the available slots rather than front-loaded** and **sized against the kind of slot each group will land on** (a single page holds a page half's worth, a spread does not); selects **one photo per moment before a second from any, at most `MAX_PER_MOMENT` per moment**, down to `Capacity::target_photos` (about four per spread), then varies spread density along each chapter with `story::arc_swing` (a sparse opener, sparser for Featured; a dense middle; a quieter close). See "Selection variety" below. |
 | Score | `book::score` | Scores each template against a group: aspect fit, saliency and face-area retention, hero match, resolution headroom, palette harmony, variety — plus `face_quality`, `spread_diversity`, `gutter_saliency` and `hero_prominence`, **all four at weight `0.0`**. Hard rejections for a face in the gutter, a face outside the safe margin, and resolution below the book's `min_dpi`. |
 | Crop | `book::crop::choose_crop` | Deterministic saliency- and face-aware crop window, normalised 0…1 of the photo's **oriented** frame. |
 | Pace | `book::pace::assemble` | Lays groups into pages, keeps both halves of a spread on one template, and falls back rather than blanking — to a smaller page half on a single page, and by shedding the least seatable photo one at a time on a spread. A blank page now means nothing in the group could be printed at all. |
