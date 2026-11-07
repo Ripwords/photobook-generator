@@ -258,6 +258,10 @@ pub struct Buildable {
     pub single_right: Vec<usize>,
     /// Sizes for the (N-2)/2 spreads: the library's spread counts, less 1.
     pub spread: Vec<usize>,
+    /// Whether the library has a titled one-photo spread
+    /// (`SpreadTemplate::is_titled_opener`). Only then may a Featured
+    /// chapter open on a group of one; see `hero_opener_fits`.
+    pub hero_opener: bool,
 }
 
 impl Buildable {
@@ -296,6 +300,7 @@ impl Buildable {
                 .into_iter()
                 .filter(|&s| s >= SPREAD_MIN_PHOTOS)
                 .collect(),
+            hero_opener: lib.spreads.iter().any(|t| t.is_titled_opener()),
         }
     }
 
@@ -313,6 +318,7 @@ impl Buildable {
             single_left: singles.clone(),
             single_right: singles,
             spread: spread_sizes.iter().copied().filter(|&s| s >= SPREAD_MIN_PHOTOS).collect(),
+            hero_opener: false,
         }
     }
 
@@ -487,8 +493,18 @@ pub fn pack_selected(
             let index = groups.len();
             let kind = slot_kind_at(index, slots);
             let look = lookahead(index, slots_left, slots, buildable);
-            match choose_group_size(remaining, buildable.for_kind(kind), &look, slots_left, swing)
-            {
+            // A Featured chapter with room opens on its lead alone, the title
+            // on the facing page. Never where it would cost a photo or a slot.
+            let hero = featured
+                && slots_left == allowance
+                && kind == SlotKind::Spread
+                && hero_opener_fits(remaining, &look, buildable);
+            let take = if hero {
+                Some(1)
+            } else {
+                choose_group_size(remaining, buildable.for_kind(kind), &look, slots_left, swing)
+            };
+            match take {
                 Some(take) => {
                     groups.push(Group {
                         photos: members[i..i + take].to_vec(),
@@ -1193,6 +1209,22 @@ fn choose_group_size(
     })
 }
 
+/// Whether a chapter's opening spread can take one photo -- a hero opener --
+/// without stranding a photo: the slots after it must hold the rest at their
+/// largest (the band's `lo`), and the rest has to decompose into what they
+/// build, because the spread set has no 1 and `choose_group_size`'s own
+/// stranding guard never sees this candidate.
+///
+/// The band's `hi` is deliberately not checked. It falls below 1 only when
+/// the chapter has fewer photos than its slots need, where every size is
+/// already outside the band and `choose_group_size` falls back to the
+/// smallest it may build, 2. One is smaller still: it fills one more spread,
+/// and a chapter down to its last photo keeps it rather than dropping it.
+fn hero_opener_fits(remaining: usize, look: &Lookahead, buildable: &Buildable) -> bool {
+    let (lo, _) = feasible_band(remaining, look);
+    buildable.hero_opener && lo <= 1 && is_decomposable(remaining - 1, &look.sizes)
+}
+
 /// Whether `n` can be written as a sum of (repeated) values from
 /// `buildable`. `0` is trivially decomposable (the empty sum).
 fn is_decomposable(n: usize, buildable: &[usize]) -> bool {
@@ -1256,6 +1288,7 @@ mod tests {
             single_left: singles.clone(),
             single_right: singles,
             spread: sizes.iter().copied().filter(|&s| s >= SPREAD_MIN_PHOTOS).collect(),
+            hero_opener: false,
         }
     }
 
@@ -1355,6 +1388,112 @@ mod tests {
         let b: Vec<usize> = groups.iter().filter(|g| g.event_cluster == 2 && g.slot == SlotKind::Spread).map(|g| g.photos.len()).collect();
         assert!(b.len() >= 3, "fixture: the featured chapter needs a middle: {b:?}");
         assert!(b[1..].iter().all(|&n| n > b[0]), "the featured chapter opens on {} of {b:?}", b[0]);
+    }
+
+    /// Three chapters of eight, the middle one Featured, into a 20-page book
+    /// with room to spare.
+    fn three_chapters() -> Vec<Photo> {
+        (0..3u32)
+            .flat_map(|e| (0..8).map(move |i| photo(&format!("/e{e}/{i}.jpg"), e, 50)))
+            .collect()
+    }
+
+    fn pack_three(photos: &[Photo], featured: &[u32], c: &Capacity, b: &Buildable) -> Vec<Group> {
+        let selected: Vec<usize> = (0..photos.len()).collect();
+        let featured: std::collections::BTreeSet<u32> = featured.iter().copied().collect();
+        pack_selected(photos, &selected, &Default::default(), &featured, c, b, &Overrides::new())
+            .expect("the fixture fits")
+    }
+
+    fn with_opener(sizes: &[usize]) -> Buildable {
+        Buildable { hero_opener: true, ..buildable_for(sizes) }
+    }
+
+    fn one_photo_spreads(groups: &[Group]) -> Vec<u32> {
+        groups.iter().filter(|g| g.slot == SlotKind::Spread && g.photos.len() == 1).map(|g| g.event_cluster).collect()
+    }
+
+    /// **A Featured chapter with room opens on one photo.** The library has
+    /// a one-photo spread whose other half is a title page, so the chapter's
+    /// strongest frame gets a spread to itself beside its title -- and no
+    /// photo is lost to it.
+    #[test]
+    fn pack_opens_a_featured_chapter_with_room_on_a_hero_spread() {
+        let photos = three_chapters();
+        let groups = pack_three(&photos, &[1], &capacity_for(20, &full()), &with_opener(&full()));
+        assert_eq!(one_photo_spreads(&groups), vec![1], "{:?}", group_sizes(&groups));
+        let first = groups.iter().find(|g| g.event_cluster == 1).unwrap();
+        assert_eq!(first.photos.len(), 1, "the opener is the chapter's first slot");
+        assert_eq!(placed_paths(&photos, &groups).len(), 24, "the opener cost a photo");
+    }
+
+    /// Only a Featured chapter earns one: a Normal chapter in the same book
+    /// keeps a spread of two or more.
+    #[test]
+    fn pack_gives_no_hero_spread_to_a_normal_chapter() {
+        let photos = three_chapters();
+        let groups = pack_three(&photos, &[], &capacity_for(20, &full()), &with_opener(&full()));
+        assert_eq!(one_photo_spreads(&groups), Vec::<u32>::new(), "{:?}", group_sizes(&groups));
+    }
+
+    /// Nor without the template: a library with no titled one-photo spread
+    /// would print the other half white.
+    #[test]
+    fn pack_gives_no_hero_spread_without_a_titled_template() {
+        let photos = three_chapters();
+        let groups = pack_three(&photos, &[1], &capacity_for(20, &full()), &buildable_for(&full()));
+        assert_eq!(one_photo_spreads(&groups), Vec::<u32>::new(), "{:?}", group_sizes(&groups));
+    }
+
+    /// Nor when the chapter is full: its 24 photos need all four of its
+    /// slots at six, so one photo on the opener would strand five. Chapters
+    /// of 24, 24 and 18 fill the eleven slots exactly without a fold.
+    #[test]
+    fn pack_gives_no_hero_spread_when_the_chapter_has_no_room() {
+        let photos: Vec<Photo> = [(0u32, 24usize), (1, 24), (2, 18)]
+            .into_iter()
+            .flat_map(|(e, n)| (0..n).map(move |i| photo(&format!("/e{e}/{i:02}.jpg"), e, 50)))
+            .collect();
+        let groups = pack_three(&photos, &[1], &full_density(20, &full()), &with_opener(&full()));
+        let events: std::collections::BTreeSet<u32> = groups.iter().map(|g| g.event_cluster).collect();
+        assert_eq!(events.len(), 3, "fixture: no chapter is folded: {:?}", group_sizes(&groups));
+        assert_eq!(one_photo_spreads(&groups), Vec::<u32>::new(), "{:?}", group_sizes(&groups));
+        assert_eq!(placed_paths(&photos, &groups).len(), photos.len(), "{:?}", group_sizes(&groups));
+    }
+
+    /// A Featured FIRST chapter opens on the book's opening page, a single:
+    /// there is no facing half for a title, so it packs exactly as it would
+    /// without a titled template. Thirty photos, so the opening page's own
+    /// aim is above one and the two cannot agree by accident.
+    #[test]
+    fn pack_gives_no_hero_opener_to_the_opening_page() {
+        let photos: Vec<Photo> = [(0u32, 30usize), (1, 8), (2, 8)]
+            .into_iter()
+            .flat_map(|(e, n)| (0..n).map(move |i| photo(&format!("/e{e}/{i:02}.jpg"), e, 50)))
+            .collect();
+        let c = capacity_for(20, &full());
+        let with = pack_three(&photos, &[0], &c, &with_opener(&full()));
+        let without = pack_three(&photos, &[0], &c, &buildable_for(&full()));
+        assert!(without[0].photos.len() > 1, "fixture: the page aims above one: {:?}", group_sizes(&without));
+        assert_eq!(group_sizes(&with), group_sizes(&without));
+    }
+
+    /// The two guards on a hero opener, on a library that builds only 2s
+    /// and 4s so they come apart. Five photos before one more spread: one
+    /// leaves four, which that spread builds. Four: one leaves three, inside
+    /// the band but buildable from nothing -- the decomposability guard.
+    /// Eight: one leaves seven, more than the spread holds -- the band.
+    /// Three before two spreads is starved either way, and one then two
+    /// fills both where two then one could fill only the first.
+    #[test]
+    fn pack_hero_opener_fits_only_where_the_rest_still_packs() {
+        let b = with_opener(&[2, 4]);
+        let next = later(&[2, 4], 1);
+        assert!(hero_opener_fits(5, &next, &b));
+        assert!(!hero_opener_fits(4, &next, &b), "three photos left for a 2-or-4 spread");
+        assert!(!hero_opener_fits(8, &next, &b), "seven photos left for one spread");
+        assert!(!hero_opener_fits(5, &next, &buildable_for(&[2, 4])), "no titled template");
+        assert!(hero_opener_fits(3, &later(&[2, 4], 2), &b), "a starved chapter still opens on one");
     }
 
     // --- overrides: an explicit choice is never traded away silently ------

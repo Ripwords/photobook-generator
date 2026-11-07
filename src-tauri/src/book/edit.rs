@@ -189,6 +189,9 @@ pub enum EditError {
         photos: usize,
     },
     UnknownTemplate(String),
+    /// A one-photo spread template whose empty half has no title space, so
+    /// that half would print white.
+    LeavesAPageBlank(String),
     /// The template exists but holds a different number of photos.
     WrongPhotoCount {
         template_id: String,
@@ -257,6 +260,10 @@ impl std::fmt::Display for EditError {
                 if *photos == 1 { "" } else { "s" }
             ),
             Self::UnknownTemplate(id) => write!(f, "no template is called {id:?}"),
+            Self::LeavesAPageBlank(id) => write!(
+                f,
+                "{id} would print one page of this spread blank; choose a layout with room for the chapter title"
+            ),
             Self::WrongPhotoCount {
                 template_id,
                 holds,
@@ -631,10 +638,12 @@ fn set_template(
                 }
             })
     } else {
-        lib.spreads
-            .iter()
-            .find(|t| t.id == template_id)
-            .map(|t| t.photo_count())
+        match lib.spreads.iter().find(|t| t.id == template_id) {
+            Some(t) if t.photo_count() == 1 && !t.is_titled_opener() => {
+                return Err(EditError::LeavesAPageBlank(template_id.to_string()));
+            }
+            t => t.map(|t| t.photo_count()),
+        }
     };
     let holds = holds.ok_or_else(|| EditError::UnknownTemplate(template_id.to_string()))?;
     if holds != indices.len() {
@@ -1424,6 +1433,55 @@ mod tests {
         );
         assert_eq!(err, Err(EditError::UnknownTemplate("nope".into())));
         assert_eq!(b, before);
+    }
+
+    /// A book on the real library whose middle chapter is Featured and has
+    /// room, so it opens on a one-photo spread; and that opening.
+    fn hero_book() -> (Vec<Photo>, Book, Library, usize) {
+        let ps: Vec<Photo> = (0..30)
+            .map(|i| {
+                let mut p = photo(i);
+                p.event_cluster = (i / 10) as u32;
+                p.captured_at = Some(i as i64 * 600);
+                p
+            })
+            .collect();
+        let tiers: crate::book::events::EventTiers = ps
+            .iter()
+            .filter(|p| p.event_cluster == 1)
+            .map(|p| (p.hash.clone(), crate::book::events::Tier::Featured))
+            .collect();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../templates");
+        let lib = Library::load(&dir).unwrap();
+        let b = crate::book::pace::assemble_with(&pixajoy_spec(), &ps, 20, &lib, &Weights::default(), 7,
+            &Overrides::new(), &tiers, Default::default()).unwrap();
+        let o = spread_with(&b, 1);
+        (ps, b, lib, o)
+    }
+
+    /// Only a titled one-photo template may take a one-photo spread: 05
+    /// holds one photo too, but it would print the other half white.
+    #[test]
+    fn edit_set_template_refuses_a_one_photo_spread_with_no_title_page() {
+        let (ps, mut b, lib, o) = hero_book();
+        let before = b.clone();
+        let err = apply(&mut b, &BookEdit::SetTemplate { opening: o, template_id: "05-hero-left-whitespace-right".into() },
+            &lib, &ps, &Weights::default());
+        assert_eq!(err, Err(EditError::LeavesAPageBlank("05-hero-left-whitespace-right".into())));
+        assert_eq!(b, before);
+        apply(&mut b, &BookEdit::SetTemplate { opening: o, template_id: "04-hero-right-text-left".into() },
+            &lib, &ps, &Weights::default()).expect("a titled opener is accepted");
+    }
+
+    #[test]
+    fn edit_alternatives_for_a_hero_spread_are_titled_openers_only() {
+        let (_, b, lib, o) = hero_book();
+        let alts = alternatives(&b, &lib, o);
+        assert!(!alts.is_empty());
+        for id in &alts {
+            let t = lib.spreads.iter().find(|t| &t.id == id).unwrap();
+            assert!(t.is_titled_opener(), "offered {id}");
+        }
     }
 
     #[test]

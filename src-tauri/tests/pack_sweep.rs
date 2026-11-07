@@ -125,10 +125,18 @@ struct Outcome {
     placed: usize,
     blank_pages: usize,
     /// Pages naming a real template and holding nothing -- must always be 0.
+    /// A hero opener's title page holds no photo but prints the chapter's
+    /// title, so it is not hollow.
     hollow_pages: usize,
+    title_pages: usize,
 }
 
-fn measure(book: &Book) -> Outcome {
+fn measure(book: &Book, photos: &[Photo], lib: &Library) -> Outcome {
+    let titled: std::collections::BTreeSet<usize> =
+        app_lib::book::titles::chapters(book, photos, lib, &Default::default())
+            .iter()
+            .filter_map(|c| c.title_box.as_ref().map(|b| b.page))
+            .collect();
     let placed: std::collections::BTreeSet<usize> = book
         .pages
         .iter()
@@ -144,7 +152,16 @@ fn measure(book: &Book) -> Outcome {
         hollow_pages: book
             .pages
             .iter()
-            .filter(|p| p.template_id != BLANK_TEMPLATE_ID && p.placements.is_empty())
+            .enumerate()
+            .filter(|(i, p)| {
+                p.template_id != BLANK_TEMPLATE_ID && p.placements.is_empty() && !titled.contains(i)
+            })
+            .count(),
+        title_pages: book
+            .pages
+            .iter()
+            .enumerate()
+            .filter(|(i, p)| p.placements.is_empty() && titled.contains(i))
             .count(),
     }
 }
@@ -165,6 +182,7 @@ fn pack_sweep_places_every_keeper_the_book_can_hold_and_blanks_only_when_photos_
     let mut total_lost = 0usize;
     let mut total_blank = 0usize;
     let mut total_hollow = 0usize;
+    let mut total_title_pages = 0usize;
     let mut lost_under_capacity: Vec<String> = Vec::new();
     let mut blank_while_full: Vec<String> = Vec::new();
     let mut floor_misses: Vec<String> = Vec::new();
@@ -188,11 +206,12 @@ fn pack_sweep_places_every_keeper_the_book_can_hold_and_blanks_only_when_photos_
                     }
                     Err(e) => panic!("no overrides, so nothing else can refuse: {e}"),
                 };
-                let o = measure(&book);
+                let o = measure(&book, &photos, &lib);
                 let lost = n.saturating_sub(o.placed);
                 total_lost += lost;
                 total_blank += o.blank_pages;
                 total_hollow += o.hollow_pages;
+                total_title_pages += o.title_pages;
                 if lost > 0 && n <= cap.target_photos {
                     lost_under_capacity
                         .push(format!("{}/{n}/seed{seed}: lost {lost}", shape.name()));
@@ -218,7 +237,7 @@ fn pack_sweep_places_every_keeper_the_book_can_hold_and_blanks_only_when_photos_
         }
     }
     println!(
-        "capacity {} | total lost {total_lost} | total blank pages {total_blank} | hollow {total_hollow}",
+        "capacity {} | total lost {total_lost} | total blank pages {total_blank} | hollow {total_hollow} | title pages {total_title_pages}",
         cap.max_photos
     );
 
@@ -229,8 +248,10 @@ fn pack_sweep_places_every_keeper_the_book_can_hold_and_blanks_only_when_photos_
     );
     assert_eq!(
         total_hollow, 0,
-        "a page naming a real template must hold a photo"
+        "a page naming a real template must hold a photo or a chapter title"
     );
+    // Otherwise the exemption above is never exercised and guards nothing.
+    assert!(total_title_pages > 0, "no book in the sweep opened a chapter on a hero spread");
     assert!(
         lost_under_capacity.is_empty(),
         "photos lost below the book's density target ({}):\n{}",

@@ -99,6 +99,14 @@ impl SpreadTemplate {
     pub fn photo_count(&self) -> usize {
         self.left.slots.len() + self.right.slots.len()
     }
+
+    /// A one-photo spread whose empty half has a text zone: a chapter's
+    /// photo on one page and its title on the other. Any other one-photo
+    /// spread prints a page white.
+    pub fn is_titled_opener(&self) -> bool {
+        let empty = if self.left.slots.is_empty() { &self.left } else { &self.right };
+        self.photo_count() == 1 && !empty.text.is_empty()
+    }
 }
 
 #[derive(Debug)]
@@ -189,8 +197,13 @@ impl Library {
     }
 
     /// Templates are exact-count, so eligibility is equality, not a range.
+    /// One photo is offered only the titled openers, because every other
+    /// one-photo spread prints its second page white.
     pub fn spreads_with(&self, n: usize) -> Vec<&SpreadTemplate> {
-        self.spreads.iter().filter(|t| t.photo_count() == n).collect()
+        self.spreads
+            .iter()
+            .filter(|t| t.photo_count() == n && (n != 1 || t.is_titled_opener()))
+            .collect()
     }
 
     /// Every half of every template. Pages 1 and N draw from this: a half is
@@ -514,6 +527,27 @@ mod tests {
         assert_eq!(lib.spreads_with(3).len(), 0);
         // The gap that matters: no 5-photo template exists yet (spec 6.3).
         assert_eq!(lib.spreads_with(5).len(), 0);
+    }
+
+    /// A one-photo spread prints one half white unless that half carries a
+    /// title, so only the titled ones are offered for one photo: 05 and 06
+    /// have no text zone, and 30's zone sits on the photo's own half.
+    #[test]
+    fn templates_offers_only_titled_openers_for_one_photo() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../templates");
+        let lib = Library::load(&dir).expect("the real library must decompose");
+        let ids: Vec<&str> = lib.spreads_with(1).iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "03-hero-left-text-right",
+                "04-hero-right-text-left",
+                "28-text-forward-hero-side-quote",
+                "36-portrait-single-text-right",
+                "41-single-fold-flush-bleed",
+            ]
+        );
+        assert!(lib.spreads.iter().filter(|t| t.photo_count() == 1).count() > ids.len(), "fixture: some are not");
     }
 
     #[test]

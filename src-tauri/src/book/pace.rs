@@ -2869,6 +2869,33 @@ mod tests {
         assert!(placed_in_event(&default, &photos, 1) < 9, "fixture: the default floor must place fewer than 9");
     }
 
+    /// **A Featured chapter opens on a hero spread with its title opposite.**
+    /// Assembled end to end on the real library: the chapter's opening spread
+    /// is one photo on a titled template, and the title lands in that
+    /// template's text zone on the half the photo left empty, clear of it.
+    #[test]
+    fn assemble_with_opens_a_featured_chapter_on_its_photo_and_title() {
+        let photos = tiered_photos(&[(0, 10, 80), (1, 10, 80), (2, 10, 80)]);
+        let tiers = tiers_for(&photos, 1, Tier::Featured);
+        let lib = real_library();
+        let book = assemble_with(&pixajoy_spec(), &photos, 20, &lib, &Weights::default(), 7,
+            &Overrides::new(), &tiers, BookOptions::default()).unwrap();
+        let chapters = crate::book::titles::chapters(&book, &photos, &lib, &BTreeMap::new());
+        let c = chapters.iter().find(|c| c.event == 1).expect("the featured chapter prints");
+        let opening = crate::book::edit::opening_pages(&book, c.opening).unwrap();
+        assert_eq!(opening.len(), 2, "the chapter opens on a spread");
+        let template = lib.spreads.iter().find(|t| t.id == book.pages[opening[0]].template_id).unwrap();
+        assert!(template.is_titled_opener(), "opens on {}", template.id);
+        let held: Vec<usize> = opening.iter().map(|&p| book.pages[p].placements.len()).collect();
+        let empty = opening[held.iter().position(|&n| n == 0).expect("one half is the title page")];
+        let b = c.title_box.as_ref().expect("the chapter is titled");
+        assert_eq!(b.page, empty, "the title prints on the half the photo left");
+        assert!(!b.overlaps_photo);
+        let zone = &lib.half(&book.pages[empty].template_id, book.pages[empty].side).unwrap().text[0];
+        assert_eq!(b.rect, zone.rect, "in the template's own text zone");
+        assert_eq!(placed_indices(&book).len(), 30, "the opener cost a photo");
+    }
+
     /// `floor_misses` counts each photo by ITS event, not the group's: a fold
     /// re-keys a small chapter's photos onto the absorbing cluster, so group
     /// 1 below is keyed 4 but holds a photo of event 3. It indexes `kept`, and
