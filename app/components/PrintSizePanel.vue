@@ -149,7 +149,7 @@ function onApply() {
   <div class="space-y-6">
     <div class="flex items-start justify-between gap-4">
       <p class="text-sm text-muted">New books start at Pixajoy's 11 x 8.5 inch landscape book.</p>
-      <UFieldGroup size="xs">
+      <UFieldGroup>
         <UButton
           v-for="option in ['in', 'mm'] as const"
           :key="option"
@@ -177,22 +177,22 @@ function onApply() {
       <div>
         <p class="mb-1.5 text-sm text-default">Book size</p>
         <div class="grid grid-cols-2 gap-3">
-          <UFormField label="Width" :error="fieldError('trimW')" size="sm">
+          <UFormField label="Width" :error="fieldError('trimW')">
             <UInput v-model="fields.trimW" inputmode="decimal" :disabled="busy" class="w-full" @focus="active = 'trimW'" @blur="onBlur('trimW')">
-              <template #trailing><span class="text-xs text-muted">{{ unit }}</span></template>
+              <template #trailing><span class="text-sm text-muted">{{ unit }}</span></template>
             </UInput>
           </UFormField>
-          <UFormField label="Height" :error="fieldError('trimH')" size="sm">
+          <UFormField label="Height" :error="fieldError('trimH')">
             <UInput v-model="fields.trimH" inputmode="decimal" :disabled="busy" class="w-full" @focus="active = 'trimH'" @blur="onBlur('trimH')">
-              <template #trailing><span class="text-xs text-muted">{{ unit }}</span></template>
+              <template #trailing><span class="text-sm text-muted">{{ unit }}</span></template>
             </UInput>
           </UFormField>
         </div>
-        <p class="mt-1.5 text-xs text-muted">The finished page, after trimming.</p>
+        <p class="mt-1.5 text-sm text-muted">The finished page, after trimming.</p>
       </div>
-      <UFormField label="Bleed" :error="fieldError('bleed')" size="sm">
+      <UFormField label="Bleed" :error="fieldError('bleed')">
         <UInput v-model="fields.bleed" inputmode="decimal" :disabled="busy" class="w-full" @focus="active = 'bleed'" @blur="onBlur('bleed')">
-          <template #trailing><span class="text-xs text-muted">{{ unit }}</span></template>
+          <template #trailing><span class="text-sm text-muted">{{ unit }}</span></template>
         </UInput>
         <template #help>
           On the three outer edges, trimmed off after printing.
@@ -207,7 +207,6 @@ function onApply() {
         label="Safe margin"
         help="Inside the trim. Faces and text stay clear of it."
         :error="fieldError('safeMargin')"
-        size="sm"
       >
         <UInput
           v-model="fields.safeMargin"
@@ -216,17 +215,16 @@ function onApply() {
           class="w-full"
           @focus="active = 'safeMargin'" @blur="onBlur('safeMargin')"
         >
-          <template #trailing><span class="text-xs text-muted">{{ unit }}</span></template>
+          <template #trailing><span class="text-sm text-muted">{{ unit }}</span></template>
         </UInput>
       </UFormField>
       <UFormField
         label="Fold"
         help="Measured in from the binding. No face lands in it."
         :error="fieldError('fold')"
-        size="sm"
       >
         <UInput v-model="fields.fold" inputmode="decimal" :disabled="busy" class="w-full" @focus="active = 'fold'" @blur="onBlur('fold')">
-          <template #trailing><span class="text-xs text-muted">{{ unit }}</span></template>
+          <template #trailing><span class="text-sm text-muted">{{ unit }}</span></template>
         </UInput>
       </UFormField>
     </section>
@@ -234,14 +232,14 @@ function onApply() {
     <section class="space-y-3" aria-labelledby="print-size-resolution">
       <h3 id="print-size-resolution" class="text-sm font-medium text-highlighted">Resolution</h3>
       <div class="grid grid-cols-2 gap-3">
-        <UFormField label="Lowest" help="Below this, export stops." :error="fieldError('minDpi')" size="sm">
+        <UFormField label="Lowest" help="Below this, export stops." :error="fieldError('minDpi')">
           <UInput v-model="fields.minDpi" inputmode="numeric" :disabled="busy" class="w-full" @focus="active = 'minDpi'" @blur="onBlur('minDpi')">
-            <template #trailing><span class="text-xs text-muted">DPI</span></template>
+            <template #trailing><span class="text-sm text-muted">DPI</span></template>
           </UInput>
         </UFormField>
-        <UFormField label="Target" help="Below this, export warns." :error="fieldError('warnDpi')" size="sm">
+        <UFormField label="Target" help="Below this, export warns." :error="fieldError('warnDpi')">
           <UInput v-model="fields.warnDpi" inputmode="numeric" :disabled="busy" class="w-full" @focus="active = 'warnDpi'" @blur="onBlur('warnDpi')">
-            <template #trailing><span class="text-xs text-muted">DPI</span></template>
+            <template #trailing><span class="text-sm text-muted">DPI</span></template>
           </UInput>
         </UFormField>
       </div>
@@ -253,15 +251,14 @@ function onApply() {
         label="Cover wrap"
         help="How far the cover photo folds around the board, on every edge but the spine."
         :error="fieldError('coverWrap')"
-        size="sm"
       >
         <UInput v-model="fields.coverWrap" inputmode="decimal" :disabled="busy" class="w-full" @focus="active = 'coverWrap'" @blur="onBlur('coverWrap')">
-          <template #trailing><span class="text-xs text-muted">{{ unit }}</span></template>
+          <template #trailing><span class="text-sm text-muted">{{ unit }}</span></template>
         </UInput>
       </UFormField>
     </section>
 
-    <ul v-if="notes.length > 0" class="space-y-1 text-xs text-muted">
+    <ul v-if="notes.length > 0" class="space-y-1 text-sm text-muted">
       <li v-for="note in notes" :key="note" class="flex gap-1.5">
         <UIcon name="i-lucide-info" class="mt-0.5 size-3.5 shrink-0" />
         <span>{{ note }}</span>
@@ -271,7 +268,7 @@ function onApply() {
     <!-- What applying would do to this book, from Rust's dry run. -->
     <div v-if="projectId !== null && summary" class="space-y-3 border-t border-default pt-4" :class="{ 'opacity-60': state.status === 'checking' }">
       <p class="text-sm text-default">{{ summary.text }}</p>
-      <p v-if="summary.recropNote" class="text-xs text-muted">{{ summary.recropNote }}</p>
+      <p v-if="summary.recropNote" class="text-sm text-muted">{{ summary.recropNote }}</p>
       <PreflightFindings :blocking="summary.blocking" :warnings="summary.warnings" />
     </div>
 
@@ -284,7 +281,7 @@ function onApply() {
       :ui="{ description: 'break-words' }"
     />
 
-    <div class="flex flex-col gap-2">
+    <div class="flex flex-col items-start gap-2">
       <UButton block color="primary" :loading="busy" :disabled="busy || !apply.enabled" @click="onApply">
         {{ apply.label }}
       </UButton>

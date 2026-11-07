@@ -302,11 +302,11 @@ async function confirmedUpdate() {
 
       <div v-if="chosenOption && chosenOption.events.length > 0" class="space-y-1.5">
         <EventsPanel :rows="chosenOption.events" :title="titleOf" @reveal="emit('reveal', $event)" />
-        <p v-if="tierOverflowMessage" class="text-xs text-muted">{{ tierOverflowMessage }}</p>
-        <p v-if="risenMessage" class="text-xs text-muted">{{ risenMessage }}</p>
+        <p v-if="tierOverflowMessage" class="text-sm text-muted">{{ tierOverflowMessage }}</p>
+        <p v-if="risenMessage" class="text-sm text-muted">{{ risenMessage }}</p>
       </div>
 
-      <UFormField label="Length">
+      <UFormField label="Length" help="Every length offered is a page count Pixajoy sells.">
         <!--
           `.nullable` widens the model's type to admit the `null` that means "no
           length chosen yet". It is runtime-inert here: the modifier only maps a
@@ -322,12 +322,11 @@ async function confirmedUpdate() {
       </UFormField>
 
       <UFormField label="Print size">
-        <div class="flex items-center justify-between gap-2 rounded-md border border-default px-3 py-1.5">
+        <div class="flex items-center justify-between gap-2">
           <span class="text-sm tabular-nums">{{ shownSpec ? sizeLabel(shownSpec, unit) : "…" }}</span>
           <UButton
             color="neutral"
             variant="outline"
-            size="xs"
             :disabled="busy || !shownSpec"
             @click="printSizeOpen = true"
           >
@@ -351,32 +350,37 @@ async function confirmedUpdate() {
         />
       </UFormField>
 
-      <div class="flex items-center gap-2 text-sm text-muted">
-        <span>Featured events get at least</span>
-        <UInputNumber
-          v-model="featuredFloor"
-          :min="FEATURED_FLOOR_RANGE.min"
-          :max="FEATURED_FLOOR_RANGE.max"
-          :disabled="busy"
-          size="xs"
-          class="w-24"
-          aria-label="Featured events get at least this many photos"
-        />
-        <span>photos</span>
-      </div>
-      <div class="flex items-center gap-2 text-sm text-muted">
-        <span>Brief events get at most</span>
-        <UInputNumber
-          v-model="briefCap"
-          :min="BRIEF_CAP_RANGE.min"
-          :max="BRIEF_CAP_RANGE.max"
-          :disabled="busy"
-          size="xs"
-          class="w-24"
-          aria-label="Brief events get at most this many photos"
-        />
-        <span>photos</span>
-      </div>
+      <!-- The tier knobs: rarely touched, so closed until asked for. -->
+      <DisclosureSection label="Advanced">
+        <div class="space-y-3">
+          <UFormField label="Featured events get at least">
+            <div class="flex items-center gap-2 text-sm text-muted">
+              <UInputNumber
+                v-model="featuredFloor"
+                :min="FEATURED_FLOOR_RANGE.min"
+                :max="FEATURED_FLOOR_RANGE.max"
+                :disabled="busy"
+                class="w-28"
+                aria-label="Featured events get at least this many photos"
+              />
+              <span>photos</span>
+            </div>
+          </UFormField>
+          <UFormField label="Brief events get at most">
+            <div class="flex items-center gap-2 text-sm text-muted">
+              <UInputNumber
+                v-model="briefCap"
+                :min="BRIEF_CAP_RANGE.min"
+                :max="BRIEF_CAP_RANGE.max"
+                :disabled="busy"
+                class="w-28"
+                aria-label="Brief events get at most this many photos"
+              />
+              <span>photos</span>
+            </div>
+          </UFormField>
+        </div>
+      </DisclosureSection>
     </div>
 
     <UModal v-model:open="printSizeOpen" title="Print size" :ui="{ content: 'max-w-md' }">
@@ -413,32 +417,43 @@ async function confirmedUpdate() {
       even in a book with room for them.
     -->
     <p v-if="canGenerate && recommendation" class="text-sm text-muted tabular-nums">
+      <template v-if="chosenOption">
+        <span class="text-default">{{ recommendation.keeperCount - chosenOption.droppedPhotos }}</span>
+        of
+      </template>
       <span class="text-default">{{ recommendation.keeperCount }}</span>
       keepers<template v-if="recommendation.includedCount > 0">
         (<span class="text-default">{{ recommendation.includedCount }}</span> you picked)</template
-      ><template v-if="chosenOption"
-        >; <span class="text-default">{{ recommendation.keeperCount - chosenOption.droppedPhotos }}</span> go in
-        <span class="text-default">{{ chosenOption.pages }}</span> pages<template
+      ><template v-if="chosenOption">
+        fit in <span class="text-default">{{ chosenOption.pages }}</span> pages<template
           v-if="chosenOption.droppedPhotos > 0"
           >, so
           <span class="font-medium text-highlighted"
             >{{ chosenOption.droppedPhotos }} would be left out</span
           ></template
         ><template v-else>, nothing left out</template></template
-      >.
-      <template v-if="isRecommended">This is the recommended length.</template>
-      <template v-else>
-        The recommended length is
-        <span class="text-default">{{ recommendation.recommendedPages }}</span> pages.
-      </template>
-      Every length offered is a page count Pixajoy sells.
+      ><template v-if="isRecommended">; this is the recommended length.</template
+      ><template v-else
+        >; the recommended length is
+        <span class="text-default">{{ recommendation.recommendedPages }}</span> pages.</template
+      >
     </p>
-    <p v-if="canGenerate && replacing" class="text-xs text-muted">
+    <p v-if="canGenerate && replacing" class="text-sm text-muted">
       Updating replaces the saved book and its export history. Saving as new keeps both.
     </p>
 
-    <!-- The book's own update first: re-editing is usually to change it, not fork it. -->
-    <div v-if="canGenerate" class="flex flex-col gap-2">
+    <!--
+      The book's own update first: re-editing is usually to change it, not fork it.
+      Sticky, so the action that commits stays on screen however long the panel
+      above it grows; it settles in place once the panel is scrolled to it.
+      `-mx-5 px-5` paints the bar across the aside's own padding, and `-bottom-5`
+      pins it to the aside's real edge: a sticky offset is measured inside the
+      scroller's padding, so `bottom-0` left 20px of scrolling text showing under it.
+    -->
+    <div
+      v-if="canGenerate"
+      class="sticky -bottom-5 z-10 -mx-5 flex flex-col items-start gap-2 border-t border-default bg-default px-5 py-3"
+    >
       <template v-if="replacing">
         <UButton
           block
