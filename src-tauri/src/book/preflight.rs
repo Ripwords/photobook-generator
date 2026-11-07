@@ -495,6 +495,7 @@ mod tests {
     /// keeps the whole frame. Callers mutate one thing at a time.
     fn book_with(slot: Rect, crop: Rect, side: Side) -> Book {
         Book {
+            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             controls: Default::default(),
@@ -988,6 +989,7 @@ mod tests {
         let good_slot = Rect::new(0.10, 0.10, 0.50, 0.40); // no declared bleed needed
         let short_slot = Rect::new(0.01, 0.0, 0.5, 1.0); // declares left bleed but stops short
         let book = Book {
+            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             controls: Default::default(),

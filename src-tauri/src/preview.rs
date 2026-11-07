@@ -27,8 +27,9 @@
 use crate::book::cull::Photo;
 use crate::book::edit::{alternatives, opening_count};
 use crate::book::pace::{Book, BookOptions};
-use crate::templates::Library;
+use crate::templates::{Align, Library};
 use crate::book::cover::Rgb;
+use crate::book::titles::Chapter;
 use crate::export::{cover_filename, output_filename};
 use crate::geometry::{CoverSide, Rect, Side};
 use crate::print_spec::PrintSpec;
@@ -106,7 +107,8 @@ pub struct PreviewPage {
     /// Two different causes, one appearance: a `BLANK_TEMPLATE_ID` page (no
     /// group was available), and a real template whose slots all sit on the
     /// OTHER half of the spread (the text-zone layouts). Both print white,
-    /// so both are flagged -- `template_id` still says which happened.
+    /// so both are flagged -- `template_id` still says which happened. A
+    /// page carrying a chapter title is not blank: the title prints.
     pub blank: bool,
     pub placements: Vec<PreviewPlacement>,
 }
@@ -196,6 +198,67 @@ pub struct BookLayout {
     /// One entry per opening, in `toSpreads` order.
     pub openings: Vec<PreviewOpening>,
     pub cover: PreviewCover,
+    /// The book's chapters in order, each with the title that prints and
+    /// where. From `book::titles::chapters`, the same list the manifest's
+    /// text boxes are written from.
+    pub chapters: Vec<PreviewChapter>,
+}
+
+/// One chapter as the editor shows it. Pages are PAGE NUMBERS here, not the
+/// indices into `Book::pages` that `titles::Chapter` carries, because the
+/// webview addresses pages by number everywhere else.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewChapter {
+    pub number: usize,
+    /// The lead event, which `SetChapterTitle` is addressed by.
+    pub event: u32,
+    pub events: Vec<u32>,
+    pub first_page: u32,
+    pub last_page: u32,
+    /// Wall-clock capture range, Unix seconds.
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+    pub auto_title: String,
+    /// What prints; empty when the user chose no title.
+    pub title: String,
+    pub custom: bool,
+    pub title_box: Option<PreviewTitleBox>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewTitleBox {
+    /// The page number the title prints on.
+    pub page: u32,
+    /// Page-normalised, like a slot.
+    pub rect: Rect,
+    pub align: Align,
+    pub point_size: f64,
+    pub overlaps_photo: bool,
+}
+
+fn preview_chapter(book: &Book, c: &Chapter) -> PreviewChapter {
+    let number = |i: usize| book.pages.get(i).map_or(0, |p| p.number);
+    PreviewChapter {
+        number: c.number,
+        event: c.event,
+        events: c.events.clone(),
+        first_page: c.pages.first().map_or(0, |&i| number(i)),
+        last_page: c.pages.last().map_or(0, |&i| number(i)),
+        start: c.start,
+        end: c.end,
+        auto_title: c.auto_title.clone(),
+        title: c.title.clone(),
+        custom: c.custom,
+        title_box: c.title_box.as_ref().map(|b| PreviewTitleBox {
+            page: number(b.page),
+            rect: b.rect,
+            align: b.align,
+            point_size: b.point_size,
+            overlaps_photo: b.overlaps_photo,
+        }),
+    }
 }
 
 /// The cover as the webview draws it: two panels and the spine between them.
@@ -279,21 +342,27 @@ pub fn preview_photo(photo: &Photo, thumbnail_path: Option<String>) -> PreviewPh
 /// `photos` is the ORIGINAL slice `Placement::photo_index` indexes into --
 /// the same contract `manifest::manifest` and `export::build_items` take, and
 /// the reason `preview_agrees_with_the_manifest_about_which_photo_is_in_which_slot`
-/// can check the two against each other.
+/// can check the two against each other. `chapters` is
+/// `titles::chapters` of the same book.
 pub fn book_layout(
     project_id: i64,
     book: &Book,
     photos: Vec<PreviewPhoto>,
     lib: &Library,
+    chapters: &[Chapter],
 ) -> BookLayout {
+    let titled = |index: usize| {
+        chapters.iter().any(|c| c.title_box.as_ref().is_some_and(|b| b.page == index))
+    };
     let pages: Vec<PreviewPage> = book
         .pages
         .iter()
-        .map(|page| PreviewPage {
+        .enumerate()
+        .map(|(index, page)| PreviewPage {
             number: page.number,
             side: page.side,
             template_id: page.template_id.clone(),
-            blank: page.placements.is_empty(),
+            blank: page.placements.is_empty() && !titled(index),
             placements: page
                 .placements
                 .iter()
@@ -337,6 +406,7 @@ pub fn book_layout(
         pages,
         openings,
         cover,
+        chapters: chapters.iter().map(|c| preview_chapter(book, c)).collect(),
     }
 }
 
@@ -365,7 +435,49 @@ mod tests {
     use crate::book::cover::{Cover, CoverPhoto, Rgb};
     use crate::book::manifest::manifest;
     use crate::book::pace::{Page, Placement, BLANK_TEMPLATE_ID};
+    use crate::book::titles::TitleBox;
     use crate::print_spec::{odd_spec, pixajoy_spec, PrintSpec};
+
+    /// One chapter over the last three pages, titled on p3 -- the half
+    /// `book()`'s text-zone template leaves empty. Indices into `pages` are
+    /// one less than the page numbers, so a consumer that ships the index
+    /// as a page number is off by one.
+    fn chapter() -> Chapter {
+        Chapter {
+            number: 1,
+            event: 4,
+            events: vec![4, 6],
+            opening: 1,
+            pages: vec![1, 2, 3],
+            start: Some(1_773_273_600),
+            end: Some(1_773_446_450),
+            auto_title: "12–14 Mar 2026".into(),
+            title: "Reykjavík".into(),
+            custom: true,
+            title_box: Some(TitleBox {
+                page: 2,
+                rect: Rect::new(0.125, 0.25, 0.75, 0.25),
+                align: Align::Center,
+                point_size: 24.0,
+                overlaps_photo: false,
+            }),
+        }
+    }
+
+    #[test]
+    fn a_page_a_chapter_title_prints_on_is_not_blank() {
+        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[chapter()]);
+        let blank: Vec<bool> = layout.pages.iter().map(|p| p.blank).collect();
+        assert_eq!(blank, vec![false, false, false, true]);
+    }
+
+    #[test]
+    fn chapters_address_pages_by_number_not_by_index() {
+        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[chapter()]);
+        let c = &layout.chapters[0];
+        assert_eq!((c.first_page, c.last_page), (2, 4));
+        assert_eq!(c.title_box.as_ref().map(|b| b.page), Some(3));
+    }
 
     /// NEVER square, and never the same shape twice -- a square photo makes
     /// `height/width == 1` and hides the whole class of aspect bug.
@@ -415,6 +527,7 @@ mod tests {
     /// `photo_index` produces different output.
     fn book() -> Book {
         Book {
+            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Cover {
                 front: Some(CoverPhoto { photo_index: 4, crop: Rect::new(0.0, 0.125, 1.0, 0.567) }),
@@ -514,7 +627,7 @@ mod tests {
     /// prints.
     #[test]
     fn preview_keeps_every_page_including_the_ones_that_hold_nothing() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() });
+        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[]);
 
         assert_eq!(layout.pages.len(), 4, "every page of the book is present");
         assert_eq!(layout.page_count, 4);
@@ -527,7 +640,7 @@ mod tests {
     /// still tells them apart.
     #[test]
     fn preview_flags_a_page_blank_for_a_text_zone_template_as_well_as_for_no_template() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() });
+        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[]);
         let blank: Vec<(&str, bool)> =
             layout.pages.iter().map(|p| (p.template_id.as_str(), p.blank)).collect();
 
@@ -548,7 +661,7 @@ mod tests {
     /// rather than letting the webview infer it from position alone.
     #[test]
     fn preview_carries_the_side_of_every_page_so_the_singles_are_not_halves_of_a_spread() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() });
+        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[]);
         let sides: Vec<Side> = layout.pages.iter().map(|p| p.side).collect();
 
         assert_eq!(sides, vec![Side::Right, Side::Left, Side::Right, Side::Left]);
@@ -569,8 +682,8 @@ mod tests {
     fn preview_agrees_with_the_manifest_about_which_photo_is_in_which_slot() {
         let book = book();
         let photos = photos();
-        let manifest = manifest(&book, &photos, 7);
-        let layout = book_layout(7, &book, preview_photos(), &Library { spreads: Vec::new() });
+        let manifest = manifest(&book, &photos, 7, &[]);
+        let layout = book_layout(7, &book, preview_photos(), &Library { spreads: Vec::new() }, &[]);
 
         assert_eq!(layout.pages.len(), manifest.pages.len());
         for (page, manifest_page) in layout.pages.iter().zip(&manifest.pages) {
@@ -615,7 +728,7 @@ mod tests {
     /// different part of the picture than the exporter writes.
     #[test]
     fn preview_passes_the_engines_crop_window_through_untouched() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() });
+        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[]);
         let page = &layout.pages[1];
 
         assert_eq!(page.placements[0].crop, Rect::new(0.0, 0.125, 1.0, 0.75));
@@ -639,7 +752,7 @@ mod tests {
     /// is the engine's own figure rather than a recount.
     #[test]
     fn preview_counts_placements_across_every_page_and_reports_the_engines_dropped_figure() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() });
+        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[]);
 
         assert_eq!(layout.placed_photos, 3);
         assert_eq!(layout.dropped_photos, 2);
@@ -653,7 +766,7 @@ mod tests {
     /// "which ones were left out" answer has nothing to draw from.
     #[test]
     fn preview_photos_keep_their_original_indices_so_unplaced_ones_are_identifiable() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() });
+        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[]);
         let placed: std::collections::BTreeSet<usize> =
             layout.pages.iter().flat_map(|p| p.placements.iter().map(|s| s.photo_index)).collect();
         let left_out: Vec<&str> = layout
@@ -677,7 +790,7 @@ mod tests {
         let mut book = book();
         book.pages[0].placements[0].photo_index = 99;
 
-        let layout = book_layout(7, &book, preview_photos(), &Library { spreads: Vec::new() });
+        let layout = book_layout(7, &book, preview_photos(), &Library { spreads: Vec::new() }, &[]);
 
         assert_eq!(layout.pages[0].placements[0].filename, None);
         // The surviving placements still name theirs.
@@ -862,7 +975,7 @@ mod tests {
     fn book_layout_carries_the_books_own_spec_not_pixajoy() {
         let mut b = book();
         b.spec = odd_spec();
-        let layout = book_layout(7, &b, preview_photos(), &Library { spreads: Vec::new() });
+        let layout = book_layout(7, &b, preview_photos(), &Library { spreads: Vec::new() }, &[]);
 
         assert_eq!(layout.geometry.page_w_in, 8.0, "must be the book's page, not 11.197");
         assert_eq!(layout.geometry.page_h_in, 10.0, "must be the book's page, not 8.894");
@@ -888,7 +1001,7 @@ mod tests {
     /// `book_json`, where the spelling must NOT change.
     #[test]
     fn preview_serialises_camel_case_keys_and_lowercase_sides() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() });
+        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[]);
         let value = serde_json::to_value(&layout).unwrap();
 
         assert_eq!(value["placedPhotos"], 3);
@@ -911,7 +1024,7 @@ mod tests {
     /// has nothing to find.
     #[test]
     fn preview_carries_the_cover_the_book_chose() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() });
+        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[]);
         let front = layout.cover.front.photo.as_ref().expect("the book has a front cover");
 
         assert_eq!(front.photo_index, 4);
@@ -922,7 +1035,7 @@ mod tests {
 
         let mut b = book();
         b.cover.back = Some(CoverPhoto { photo_index: 2, crop: Rect::new(0.1, 0.0, 0.8, 1.0) });
-        let layout = book_layout(7, &b, preview_photos(), &Library { spreads: Vec::new() });
+        let layout = book_layout(7, &b, preview_photos(), &Library { spreads: Vec::new() }, &[]);
         let back = layout.cover.back.photo.expect("the back now has a photo");
         assert_eq!((back.photo_index, back.filename.as_deref()), (2, Some("cover-back-hash-c")));
     }
@@ -935,7 +1048,7 @@ mod tests {
         for spec in [pixajoy_spec(), odd_spec()] {
             let mut b = book();
             b.spec = spec;
-            let layout = book_layout(7, &b, preview_photos(), &Library { spreads: Vec::new() });
+            let layout = book_layout(7, &b, preview_photos(), &Library { spreads: Vec::new() }, &[]);
 
             assert_eq!(layout.cover.aspect, spec.cover_aspect());
             assert_eq!(layout.cover.front.visible, spec.cover_visible_rect(CoverSide::Front));
@@ -970,7 +1083,7 @@ mod tests {
         // this fixture exists to pin; a real drift is orders of magnitude
         // larger than one ULP and still fails.
         let serialised =
-            serde_json::to_string(&book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() })).unwrap();
+            serde_json::to_string(&book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[chapter()])).unwrap();
         let value: serde_json::Value = serde_json::from_str(&serialised).unwrap();
 
         assert_eq!(value, fixture);

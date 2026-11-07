@@ -1508,6 +1508,7 @@ mod tests {
     /// round-trip mutations this file pins.
     fn fixture_book() -> Book {
         Book {
+            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             controls: Default::default(),

@@ -262,6 +262,7 @@ pub(crate) mod tests {
     /// are out of order so a view that numbers slots positionally differs.
     pub(crate) fn small_book() -> Book {
         let mut book = Book {
+            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             pages: vec![
@@ -383,6 +384,7 @@ pub(crate) mod tests {
         );
         let photos = vec![source(&secret), source(&other)];
         let book = Book {
+            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             pages: vec![page(

@@ -84,7 +84,10 @@ export interface PreviewPage {
   number: number;
   side: PageSide;
   templateId: string;
-  /** True when this page prints with nothing on it -- see `preview.rs`. */
+  /**
+   * True when this page prints with nothing on it -- see `preview.rs`. A page
+   * carrying a chapter title is not blank.
+   */
   blank: boolean;
   placements: PreviewPlacement[];
 }
@@ -137,6 +140,42 @@ export interface BookLayout {
   /** One entry per opening, in `toSpreads` order -- see `openingFor`. */
   openings: PreviewOpening[];
   cover: PreviewCover;
+  /** The book's chapters in order, with the title each prints and where. */
+  chapters: PreviewChapter[];
+}
+
+/** Which edge of its box a title hugs. */
+export type TextAlign = "left" | "center" | "right";
+
+/**
+ * Mirrors `preview::PreviewChapter`. Pages are page NUMBERS, as everywhere
+ * else in the webview.
+ */
+export interface PreviewChapter {
+  number: number;
+  /** The lead event: what `setChapterTitle` is addressed by. */
+  event: number;
+  events: number[];
+  firstPage: number;
+  lastPage: number;
+  /** Wall-clock capture range, Unix seconds. */
+  start: number | null;
+  end: number | null;
+  autoTitle: string;
+  /** What prints; empty when the user chose no title. */
+  title: string;
+  custom: boolean;
+  titleBox: PreviewTitleBox | null;
+}
+
+/** Mirrors `preview::PreviewTitleBox`. `rect` is page-normalised. */
+export interface PreviewTitleBox {
+  page: number;
+  rect: PreviewRect;
+  align: TextAlign;
+  /** The printed size in points; the preview scales it by the page box. */
+  pointSize: number;
+  overlapsPhoto: boolean;
 }
 
 /**
@@ -227,7 +266,13 @@ export type BookEdit =
   /** A hand crop on the cover; Rust derives the height from the cover panel. */
   | { kind: "setCoverCrop"; side: CoverSide; x: number; y: number; w: number }
   /** The plain spine colour, `#rrggbb`. */
-  | { kind: "setSpineColour"; rgb: string };
+  | { kind: "setSpineColour"; rgb: string }
+  /**
+   * Print `title` over the chapter that opens on `event` (see `book::titles`),
+   * or go back to the automatic title with `null`. An empty string prints no
+   * title. Withheld from the chat agent, like the cover edits.
+   */
+  | { kind: "setChapterTitle"; event: number; title: string | null };
 
 /** Mirrors `geometry::CoverSide`. */
 export type CoverSide = "front" | "back";

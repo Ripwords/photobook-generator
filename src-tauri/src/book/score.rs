@@ -1610,11 +1610,13 @@ mod tests {
             id: "fx-one-slot".into(),
             left: PageLayout {
                 side: Side::Left,
+                text: Vec::new(),
                 edge_treatment: EdgeTreatment::Margin,
                 slots: vec![full_left_page_slot()],
             },
             right: PageLayout {
                 side: Side::Right,
+                text: Vec::new(),
                 edge_treatment: EdgeTreatment::Margin,
                 slots: Vec::new(),
             },
@@ -1632,6 +1634,7 @@ mod tests {
             id: "fx-single-hero".into(),
             left: PageLayout {
                 side: Side::Left,
+                text: Vec::new(),
                 edge_treatment: EdgeTreatment::Margin,
                 slots: vec![Slot {
                     rect: Rect::new(0.1, 0.2, 0.8, 0.35),
@@ -1642,6 +1645,7 @@ mod tests {
             },
             right: PageLayout {
                 side: Side::Right,
+                text: Vec::new(),
                 edge_treatment: EdgeTreatment::Margin,
                 slots: Vec::new(),
             },
@@ -1657,6 +1661,7 @@ mod tests {
             id: "fx-hero-support".into(),
             left: PageLayout {
                 side: Side::Left,
+                text: Vec::new(),
                 edge_treatment: EdgeTreatment::Margin,
                 slots: vec![Slot {
                     rect: Rect::new(0.1, 0.2, 0.8, 0.35), // wide
@@ -1667,6 +1672,7 @@ mod tests {
             },
             right: PageLayout {
                 side: Side::Right,
+                text: Vec::new(),
                 edge_treatment: EdgeTreatment::Margin,
                 slots: vec![Slot {
                     rect: Rect::new(0.3, 0.1, 0.3, 0.75), // tall
@@ -1690,6 +1696,7 @@ mod tests {
             id: "fx-two-slot".into(),
             left: PageLayout {
                 side: Side::Left,
+                text: Vec::new(),
                 edge_treatment: EdgeTreatment::Margin,
                 slots: vec![Slot {
                     rect: Rect::new(0.1, 0.2, 0.7, 0.35),
@@ -1700,6 +1707,7 @@ mod tests {
             },
             right: PageLayout {
                 side: Side::Right,
+                text: Vec::new(),
                 edge_treatment: EdgeTreatment::Margin,
                 slots: vec![Slot {
                     rect: Rect::new(0.15, 0.15, 0.7, 0.35),
@@ -1722,6 +1730,7 @@ mod tests {
             id: "fx-hero-dominant".into(),
             left: PageLayout {
                 side: Side::Left,
+                text: Vec::new(),
                 edge_treatment: EdgeTreatment::Margin,
                 slots: vec![Slot {
                     rect: Rect::new(0.1, 0.15, 0.8, 0.6),
@@ -1732,6 +1741,7 @@ mod tests {
             },
             right: PageLayout {
                 side: Side::Right,
+                text: Vec::new(),
                 edge_treatment: EdgeTreatment::Margin,
                 slots: vec![
                     Slot {
@@ -1763,6 +1773,7 @@ mod tests {
             id: "fx-even-three-up".into(),
             left: PageLayout {
                 side: Side::Left,
+                text: Vec::new(),
                 edge_treatment: EdgeTreatment::Margin,
                 slots: vec![Slot {
                     rect: Rect::new(0.15, 0.3, 0.7, 0.35),
@@ -1773,6 +1784,7 @@ mod tests {
             },
             right: PageLayout {
                 side: Side::Right,
+                text: Vec::new(),
                 edge_treatment: EdgeTreatment::Margin,
                 slots: vec![
                     Slot {

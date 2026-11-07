@@ -97,6 +97,13 @@ pub struct Book {
     /// saved before covers existed loads with none and a white spine.
     #[serde(default)]
     pub cover: Cover,
+    /// What the user typed over a chapter's automatic title, keyed by the
+    /// event that opens the chapter (see `book::titles`). An empty string
+    /// prints no title. Omitted while empty, so a book nobody has titled is
+    /// the same bytes it was before titles existed and the golden did not
+    /// move.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub titles: BTreeMap<u32, String>,
 }
 
 pub const DEFAULT_FEATURED_FLOOR: u8 = 6;
@@ -761,6 +768,7 @@ pub fn assemble_with(
     let candidates: Vec<usize> =
         kept.iter().filter_map(|p| by_path.get(p.path.as_str()).copied()).collect();
     let mut book = Book {
+        titles: Default::default(),
         pages: out,
         seed,
         dropped: 0,
@@ -2082,6 +2090,7 @@ mod tests {
     /// Photo indices of a laid spread in the order a reader meets them.
     fn read_on(pages: &[Page; 2]) -> Vec<usize> {
         let book = Book {
+            titles: Default::default(),
             pages: pages.to_vec(),
             seed: 0,
             dropped: 0,
@@ -2975,7 +2984,7 @@ mod spec_persistence_tests {
 
     #[test]
     fn a_book_states_its_options_only_when_one_is_on() {
-        let off = Book { pages: Vec::new(), seed: 7, dropped: 0, controls: BTreeMap::new(), spec: pixajoy_spec(), options: BookOptions::default(), cover: Default::default() };
+        let off = Book { pages: Vec::new(), seed: 7, dropped: 0, controls: BTreeMap::new(), spec: pixajoy_spec(), options: BookOptions::default(), cover: Default::default(), titles: Default::default() };
         let json = serde_json::to_value(&off).unwrap();
         assert!(json.get("options").is_none(), "all-off must be the bytes an old book has: {json}");
 
@@ -2993,6 +3002,7 @@ mod spec_persistence_tests {
     #[test]
     fn a_book_round_trips_a_non_default_spec() {
         let book = Book {
+            titles: Default::default(),
             spec: odd_spec(),
             cover: Default::default(),
             pages: Vec::new(),

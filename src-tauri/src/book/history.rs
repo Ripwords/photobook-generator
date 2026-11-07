@@ -82,6 +82,8 @@ pub fn edit_label(edit: &BookEdit, before: &Book) -> &'static str {
         BookEdit::SetCoverPhoto { photo: None, .. } => "cover photo removal",
         BookEdit::SetCoverCrop { .. } => "cover crop",
         BookEdit::SetSpineColour { .. } => "spine colour",
+        BookEdit::SetChapterTitle { title: None, .. } => "automatic title",
+        BookEdit::SetChapterTitle { title: Some(_), .. } => "title",
     }
 }
 
@@ -119,6 +121,7 @@ mod tests {
     /// against. `edit_label` reads nothing else.
     fn book_with_slot(rect: Rect) -> Book {
         Book {
+            titles: Default::default(),
             pages: vec![Page {
                 number: 1,
                 side: Side::Right,
@@ -156,6 +159,8 @@ mod tests {
             BookEdit::SetCoverPhoto { side: CoverSide::Front, photo: None },
             BookEdit::SetCoverCrop { side: CoverSide::Front, x: 0.0, y: 0.0, w: 1.0 },
             BookEdit::SetSpineColour { rgb: Rgb { r: 1, g: 2, b: 3 } },
+            BookEdit::SetChapterTitle { event: 0, title: Some("Reykjavík".into()) },
+            BookEdit::SetChapterTitle { event: 0, title: None },
         ]
     }
 

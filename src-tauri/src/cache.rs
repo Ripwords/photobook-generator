@@ -661,6 +661,7 @@ mod tests {
         use crate::book::cull::{Override, Overrides};
         let db = Db::open_in_memory().unwrap();
         let book = crate::book::pace::Book {
+            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             controls: Default::default(),

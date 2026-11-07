@@ -445,6 +445,8 @@ export function editLabel(edit: BookEdit, before: BookLayout): string {
       return "cover crop";
     case "setSpineColour":
       return "spine colour";
+    case "setChapterTitle":
+      return edit.title === null ? "automatic title" : "title";
   }
 }
 
@@ -607,8 +609,37 @@ function applyEditTo(edit: BookEdit): void {
       layout.cover.spine = edit.rgb.toLowerCase();
       break;
     }
+    case "setChapterTitle": {
+      // Addressed by the LEAD event only, as `titles::set_title` is.
+      const chapter = layout.chapters.find((c) => c.event === edit.event);
+      if (!chapter) throw new Error("no chapter starts on that event any more");
+      const text = edit.title?.trim() ?? null;
+      // Characters, not UTF-16 units, as Rust counts them.
+      const chars = text === null ? 0 : [...text].length;
+      if (chars > MAX_TITLE_CHARS) {
+        throw new Error(
+          `a chapter title can be at most ${MAX_TITLE_CHARS} characters; this one is ${chars}`,
+        );
+      }
+      chapter.custom = text !== null;
+      chapter.title = text ?? chapter.autoTitle;
+      // Rust places no box for an empty title. The harness cannot re-run
+      // `title_box`, so it restores the box the fixture shipped instead.
+      chapter.titleBox = chapter.title === "" ? null : (titleBoxes.get(chapter.event) ?? null);
+      for (const page of layout.pages) {
+        page.blank =
+          page.placements.length === 0 && !layout.chapters.some((c) => c.titleBox?.page === page.number);
+      }
+      break;
+    }
   }
 }
+
+/** Mirrors `book::titles::MAX_TITLE_CHARS`. */
+const MAX_TITLE_CHARS = 60;
+
+/** Each chapter's title box as the fixture shipped it, keyed by lead event. */
+const titleBoxes = new Map(layout.chapters.map((c) => [c.event, c.titleBox]));
 
 /**
  * Which keys the keychain holds. Both start unset, so the chat panel opens on

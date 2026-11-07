@@ -19,3 +19,4 @@ pub mod preflight;
 pub mod reprint;
 pub mod score;
 pub mod story;
+pub mod titles;

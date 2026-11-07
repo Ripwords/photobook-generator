@@ -134,6 +134,10 @@ describe("the tool table", () => {
    * the cover would be choosing a photo and a crop for a panel it has never
    * been shown. They join the tools when the book view describes the cover.
    *
+   * `setChapterTitle` is withheld because the agent's role is the layout:
+   * printed words are the user's, and the round that added titles kept the
+   * agent out of them on purpose.
+   *
    * Naming them here rather than filtering by a predicate is the point: a new
    * variant lands in `wire` and fails this test until somebody decides which
    * side of the line it is on.
@@ -146,6 +150,7 @@ describe("the tool table", () => {
       "setCoverPhoto",
       "setCoverCrop",
       "setSpineColour",
+      "setChapterTitle",
     ];
     const driven = Object.values(WRITE_INPUTS).map((w) => w.kind);
     const wire = EDITS.map((e) => e.kind).filter((k) => !withheld.includes(k));

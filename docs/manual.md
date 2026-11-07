@@ -446,3 +446,32 @@ the spine colour to the `spine_hex` value from the manifest. Pixajoy publishes n
 the spine's width, so the app does not produce a spine image or a single wrap-around file;
 the spine is Pixajoy's to size.
 
+**Chapter titles.** The book is divided into chapters, and each chapter's title prints on the
+opening where it starts. A chapter starts on an opening whose first photo, read left to right
+and top to bottom, comes from an event no earlier page has shown. An event that first appears
+part-way through an opening joins the chapter already running, so one spread never carries
+two titles. The title is the place name when the book was made with **Places** on and that
+place's name has already been looked up; titles never trigger a lookup of their own.
+Otherwise it is the dates the chapter's photos were taken, in the camera's local time, for
+example "12–14 Mar 2026", "28 Mar – 2 Apr 2026" or "30 Dec 2025 – 2 Jan 2026". A chapter
+with no capture dates is called "Chapter 2", and so on. The cover carries no text.
+
+Where the title goes is chosen in this order:
+
+1. The text area of a layout drawn with one, unless a photo has been moved onto it.
+2. The tallest clear strip across the top or bottom of either page of the opening, at least
+   0.35 in tall. It stays inside the safe margin, keeps out of the fold, and is never more
+   than 1 in tall.
+3. The widest clear column beside the photos, at least 1.5 in wide. Portrait pairs leave
+   one.
+4. Otherwise a strip across the top of the opening's first page, on top of a photo. The
+   manifest marks it, so you can decide whether to move a box or keep it there.
+
+The type is set between 14 and 28 pt to suit the space.
+
+Export does not draw titles into the photo files. Each page in `manifest.json` lists its
+titles under `texts`: the `text`, its box in inches on the printed page (`rect_in`, measured
+from the top-left of the page including bleed, like a photo's `dest_rect_in`), the `align`ment,
+the `point_size`, and `overlaps_photo`. In Pixajoy's editor, add a text box on that page, type
+the title, and place and size it to match.
+

@@ -10,6 +10,7 @@ use crate::book::manifest::{manifest, Manifest};
 use crate::book::pace::{Book, BookOptions};
 use crate::book::pack::{recommend_pages, Capacity};
 use crate::book::preflight::{Finding, Severity};
+use crate::book::titles::Chapter;
 use crate::export::build_items;
 use crate::preview::BookLayout;
 use crate::print_spec::PrintSpec;
@@ -1513,6 +1514,40 @@ pub(crate) fn with_chapters(photos: &[Photo], places: bool) -> std::borrow::Cow<
     )
 }
 
+/// A saved book's photos as the engine saw them when it built the book: the
+/// persisted slice, restamped to place chapters when the book has Places on.
+///
+/// Every command that runs the engine on a saved book, or reads its chapters,
+/// starts here. `resolve_photos` alone hands back time events, so a
+/// regenerate on a Places book used to group by time, and its titles would
+/// have started chapters the book does not have.
+pub(crate) fn book_photos(db: &Db, project: &Project) -> Result<Vec<Photo>, String> {
+    let photos = resolve_photos(db, &project.photo_hashes)?;
+    Ok(with_chapters(&photos, project.book.options.places).into_owned())
+}
+
+/// The book's chapters and their titles. Place names come from the cache
+/// only, never a live geocode: see `place_names::cached_chapter_names`.
+/// `photos` is `book_photos`'s slice.
+pub(crate) fn book_chapters(db: &Db, book: &Book, photos: &[Photo], lib: &Library) -> Vec<Chapter> {
+    let names = if book.options.places { cached_names(db, photos) } else { BTreeMap::new() };
+    crate::book::titles::chapters(book, photos, lib, &names)
+}
+
+/// The preview payload for a saved book, chapters included.
+pub(crate) fn layout_of(db: &Db, project: &Project, lib: &Library) -> Result<BookLayout, String> {
+    let chapters = book_chapters(db, &project.book, &book_photos(db, project)?, lib);
+    let photos = resolve_preview_photos(db, &project.photo_hashes)?;
+    Ok(crate::preview::book_layout(project.id, &project.book, photos, lib, &chapters))
+}
+
+fn cached_names(db: &Db, photos: &[Photo]) -> BTreeMap<u32, String> {
+    let locations: Vec<_> = photos.iter().map(|p| p.location).collect();
+    let ids: Vec<u32> = photos.iter().map(|p| p.event_cluster).collect();
+    let centres = crate::book::chapter::centroids(&locations, &ids);
+    crate::place_names::cached_chapter_names(db, &centres).into_iter().collect()
+}
+
 /// The recommended book length and what each length would cost.
 pub(crate) fn recommend(
     photos: &[Photo],
@@ -1788,6 +1823,7 @@ pub(crate) fn run_export<S, W>(
     book: &Book,
     photos: &[Photo],
     project_id: i64,
+    chapters: &[Chapter],
     output_dir: &str,
     findings: Vec<Finding>,
     send: S,
@@ -1832,7 +1868,7 @@ where
 
     // Built and reconciled AFTER the export, from the real returned paths --
     // see `reconcile_manifest`.
-    let mut manifest = manifest(book, photos, project_id);
+    let mut manifest = manifest(book, photos, project_id, chapters);
     let unwritten = reconcile_manifest(&mut manifest, &records);
     if unwritten > 0 {
         log::warn!("{unwritten} placement(s) failed to export and were left out of the manifest");
@@ -2126,7 +2162,8 @@ pub async fn export_book(
             .load_project(project_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("project {project_id} no longer exists"))?;
-        let parsed = resolve_photos(&db, &project.photo_hashes)?;
+        let parsed = book_photos(&db, &project)?;
+        let chapters = book_chapters(&db, &project.book, &parsed, &load_library(&app)?);
         let output = PathBuf::from(&output_dir);
 
         // Pre-flight reads the real world: it checks every source file still
@@ -2149,6 +2186,7 @@ pub async fn export_book(
             &project.book,
             &parsed,
             project_id,
+            &chapters,
             &output_dir,
             findings,
             |items| {
@@ -2669,9 +2707,8 @@ pub async fn book_layout(app: AppHandle, project_id: i64) -> Result<BookLayout, 
             .load_project(project_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("project {project_id} no longer exists"))?;
-        let photos = resolve_preview_photos(&db, &project.photo_hashes)?;
         let lib = load_library(&app)?;
-        Ok(crate::preview::book_layout(project.id, &project.book, photos, &lib))
+        layout_of(&db, &project, &lib)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2823,7 +2860,7 @@ pub async fn edit_book(
             .ok_or_else(|| format!("project {project_id} no longer exists"))?;
         let lib = load_library(&app)?;
         let weights = load_weights(&app);
-        let parsed = resolve_photos(&db, &project.photo_hashes)?;
+        let parsed = book_photos(&db, &project)?;
         // Asked before the edit lands: the label for a slot edit depends on
         // the size the slot HAD, which applying it overwrites.
         let label = edit_label(&edit, &project.book);
@@ -2835,8 +2872,7 @@ pub async fn edit_book(
         if changed == 0 {
             return Err(format!("project {project_id} no longer exists"));
         }
-        let photos = resolve_preview_photos(&db, &project.photo_hashes)?;
-        Ok(crate::preview::book_layout(project.id, &project.book, photos, &lib))
+        layout_of(&db, &project, &lib)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2864,8 +2900,7 @@ pub async fn step_book(app: AppHandle, project_id: i64, step: Step) -> Result<Bo
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("project {project_id} no longer exists"))?;
         let lib = load_library(&app)?;
-        let photos = resolve_preview_photos(&db, &project.photo_hashes)?;
-        Ok(crate::preview::book_layout(project.id, &project.book, photos, &lib))
+        layout_of(&db, &project, &lib)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2911,7 +2946,7 @@ pub async fn check_print_spec(
             .load_project(project_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("project {project_id} no longer exists"))?;
-        let parsed = resolve_photos(&db, &project.photo_hashes)?;
+        let parsed = book_photos(&db, &project)?;
         Ok(crate::book::reprint::check(spec, Some((&project.book, &parsed))))
     })
     .await
@@ -2935,7 +2970,7 @@ pub async fn slot_candidates(
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("project {project_id} no longer exists"))?;
         let lib = load_library(&app)?;
-        let parsed = resolve_photos(&db, &project.photo_hashes)?;
+        let parsed = book_photos(&db, &project)?;
         crate::book::edit::slot_candidates(&project.book, &lib, &parsed, placement)
             .map_err(|e| e.to_string())
     })
@@ -2957,7 +2992,7 @@ pub async fn cover_candidates(
             .load_project(project_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("project {project_id} no longer exists"))?;
-        let parsed = resolve_photos(&db, &project.photo_hashes)?;
+        let parsed = book_photos(&db, &project)?;
         Ok(crate::book::edit::cover_candidates(&project.book, &parsed, side))
     })
     .await
@@ -3149,6 +3184,7 @@ mod tests {
     fn deleting_a_book_clears_only_what_has_been_in_the_trash_over_thirty_days() {
         let db = Db::open_in_memory().unwrap();
         let book = crate::book::pace::Book {
+            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             controls: Default::default(),
@@ -5474,6 +5510,7 @@ mod tests {
             z,
         };
         let book = Book {
+            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             controls: Default::default(),
@@ -6289,6 +6326,7 @@ mod tests {
             &book,
             &too_few,
             1,
+            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |_| panic!("a mismatched photo slice must never reach the sidecar"),
@@ -6316,6 +6354,7 @@ mod tests {
             &book,
             &photos,
             1,
+            &[],
             &dir.path().to_string_lossy(),
             findings,
             |_| panic!("the sidecar must never be reached when a finding blocks"),
@@ -6345,6 +6384,7 @@ mod tests {
             &book,
             &photos,
             1,
+            &[],
             &dir.path().to_string_lossy(),
             vec![finding(Severity::Warn, 1, "soft")],
             |items| {
@@ -6372,6 +6412,7 @@ mod tests {
             &book,
             &photos,
             1,
+            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |items| {
@@ -6415,6 +6456,7 @@ mod tests {
             &book,
             &photos,
             42,
+            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |items| items.iter().map(|i| ok_record(&i.filename, "png")).collect(),
@@ -6454,6 +6496,7 @@ mod tests {
             &book,
             &photos,
             42,
+            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |items| {
@@ -6494,6 +6537,7 @@ mod tests {
             &book,
             &photos,
             1,
+            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |items| {
@@ -6828,6 +6872,76 @@ mod tests {
         }
     }
 
+    /// One time event, half in Reykjavík and half in Vík, cached as records.
+    fn two_place_records() -> Vec<serde_json::Value> {
+        (0..40)
+            .map(|i| {
+                let mut record = photo_record(i, false, i as u32, 0);
+                let (lat, lon) = if i < 20 { (64.14, -21.94) } else { (63.42, -19.01) };
+                record["exif"] = serde_json::json!({
+                    "latitude": lat,
+                    "longitude": lon,
+                    "captureDate": 1_700_000_000 + i * 60,
+                });
+                record
+            })
+            .collect()
+    }
+
+    /// A Places book is built from photos restamped to place chapters, so
+    /// whatever reopens it has to restamp them too. `resolve_photos` alone
+    /// hands back the one time event, which would regenerate by time and
+    /// title one chapter where the book has two.
+    #[test]
+    fn a_places_book_reopens_with_the_place_chapters_it_was_built_from() {
+        let db = Db::open_in_memory().unwrap();
+        let records = two_place_records();
+        cache_records(&db, &records);
+        let photos = photos_from_records(&records).unwrap();
+        let lib = shipped_library();
+        let meta = NewProject {
+            options: BookOptions { places: true, ..BookOptions::default() },
+            ..new_project("Iceland", 20, 3)
+        };
+        let id = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new(), &EventTiers::new())
+            .unwrap()
+            .project_id;
+        let project = db.load_project(id).unwrap().unwrap();
+
+        let reopened = book_photos(&db, &project).unwrap();
+        let events: BTreeSet<u32> = reopened.iter().map(|p| p.event_cluster).collect();
+        assert_eq!(events.len(), 2, "the two place chapters, not the one time event");
+        assert_eq!(book_chapters(&db, &project.book, &reopened, &lib).len(), 2);
+    }
+
+    /// Titles name a Places chapter from the cache and never ask Apple: a
+    /// chapter whose town is not cached falls back to its dates.
+    #[test]
+    fn chapter_titles_take_cached_place_names_only() {
+        let db = Db::open_in_memory().unwrap();
+        let records = two_place_records();
+        cache_records(&db, &records);
+        let photos = photos_from_records(&records).unwrap();
+        let lib = shipped_library();
+        let meta = NewProject {
+            options: BookOptions { places: true, ..BookOptions::default() },
+            ..new_project("Iceland", 20, 3)
+        };
+        let id = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new(), &EventTiers::new())
+            .unwrap()
+            .project_id;
+        let project = db.load_project(id).unwrap().unwrap();
+        let reopened = book_photos(&db, &project).unwrap();
+        let first = crate::book::chapter::LatLon::new(64.14, -21.94).unwrap();
+        db.put_place_name(crate::place_names::PlaceKey::of(first), "Reykjavík").unwrap();
+
+        let titles: Vec<String> =
+            book_chapters(&db, &project.book, &reopened, &lib).into_iter().map(|c| c.title).collect();
+        assert_eq!(titles.len(), 2);
+        assert_eq!(titles[0], "Reykjavík");
+        assert!(titles[1].contains("2023"), "an uncached town falls back to its dates: {titles:?}");
+    }
+
     /// A library cover is decoration, so a photo it cannot show is skipped
     /// for the next one rather than failing the list or leaving a hole.
     #[test]
@@ -6854,6 +6968,7 @@ mod tests {
             z: 1,
         };
         let book = Book {
+            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             controls: Default::default(),
@@ -7139,6 +7254,7 @@ mod tests {
             &book,
             &photos,
             1,
+            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |items| items.iter().map(|i| ok_record(&i.filename, "jpg")).collect(),
@@ -7165,6 +7281,7 @@ mod tests {
             &book,
             &photos,
             1,
+            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |items| items.iter().map(|i| ok_record(&i.filename, "jpg")).collect(),
@@ -7190,6 +7307,7 @@ mod tests {
             &book,
             &photos,
             42,
+            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |items| {
@@ -7242,6 +7360,7 @@ mod tests {
             &book,
             &photos,
             42,
+            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |items| {

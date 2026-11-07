@@ -61,11 +61,29 @@ pub struct Slot {
     pub aspect_pref: (f64, f64),
 }
 
+/// Which edge of its box a line of text hugs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Align {
+    Left,
+    Center,
+    Right,
+}
+
+/// A box the template author left for words, PAGE-normalised like `Slot`.
+/// A chapter title prints in the first one on the page that opens it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextZone {
+    pub rect: Rect,
+    pub align: Align,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PageLayout {
     pub side: Side,
     pub slots: Vec<Slot>,
     pub edge_treatment: EdgeTreatment,
+    pub text: Vec<TextZone>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +106,7 @@ pub enum TemplateError {
     Io(String),
     Parse(String),
     SpansFold { template: String, slot: usize },
+    TextSpansFold { template: String, zone: usize },
 }
 
 impl std::fmt::Display for TemplateError {
@@ -98,6 +117,11 @@ impl std::fmt::Display for TemplateError {
             TemplateError::SpansFold { template, slot } => write!(
                 f,
                 "template '{template}' slot {slot} spans the fold; Pixajoy picture \
+                 boxes are page-local and cannot cross it"
+            ),
+            TemplateError::TextSpansFold { template, zone } => write!(
+                f,
+                "template '{template}' text zone {zone} spans the fold; Pixajoy text \
                  boxes are page-local and cannot cross it"
             ),
         }
@@ -116,9 +140,17 @@ struct RawSlot {
 }
 
 #[derive(Deserialize)]
+struct RawTextZone {
+    rect: [f64; 4],
+    align: Align,
+}
+
+#[derive(Deserialize)]
 struct RawTemplate {
     id: String,
     slots: Vec<RawSlot>,
+    #[serde(default)]
+    text_zones: Vec<RawTextZone>,
     min_photos: usize,
     max_photos: usize,
     density: Density,
@@ -166,6 +198,24 @@ impl Library {
     /// library for free and one that matches the book's style.
     pub fn page_half_pool(&self) -> Vec<&PageLayout> {
         self.spreads.iter().flat_map(|t| [&t.left, &t.right]).collect()
+    }
+
+    /// The layout a page prints with, from its `Page::template_id`. A spread
+    /// page names its template and takes the half on its own `side`; a single
+    /// page (1 and N) names `<id>:left|right`, the half it was cut from,
+    /// which need not be the side it prints on.
+    pub fn half(&self, template_id: &str, side: Side) -> Option<&PageLayout> {
+        let (id, side) = match template_id.rsplit_once(':') {
+            Some((id, "left")) => (id, Side::Left),
+            Some((id, "right")) => (id, Side::Right),
+            Some(_) => return None,
+            None => (template_id, side),
+        };
+        let t = self.spreads.iter().find(|t| t.id == id)?;
+        Some(match side {
+            Side::Left => &t.left,
+            Side::Right => &t.right,
+        })
     }
 }
 
@@ -215,13 +265,34 @@ fn decompose(raw: RawTemplate) -> Result<SpreadTemplate, TemplateError> {
         }
     }
 
+    let mut left_text = Vec::new();
+    let mut right_text = Vec::new();
+    for (i, rz) in raw.text_zones.iter().enumerate() {
+        let spread_rect = Rect::new(rz.rect[0], rz.rect[1], rz.rect[2], rz.rect[3]);
+        let (side, rect) = spread_to_page(&spread_rect).ok_or(TemplateError::TextSpansFold {
+            template: raw.id.clone(),
+            zone: i,
+        })?;
+        let zone = TextZone { rect, align: rz.align };
+        match side {
+            Side::Left => left_text.push(zone),
+            Side::Right => right_text.push(zone),
+        }
+    }
+
     Ok(SpreadTemplate {
         id: raw.id,
-        left: PageLayout { side: Side::Left, edge_treatment: edge_treatment(&left), slots: left },
+        left: PageLayout {
+            side: Side::Left,
+            edge_treatment: edge_treatment(&left),
+            slots: left,
+            text: left_text,
+        },
         right: PageLayout {
             side: Side::Right,
             edge_treatment: edge_treatment(&right),
             slots: right,
+            text: right_text,
         },
         density: raw.density,
         energy: raw.energy,
@@ -367,6 +438,71 @@ mod tests {
             }
             other => panic!("expected SpansFold, got {other:?}"),
         }
+    }
+
+    /// A text zone is authored in spread coordinates like a slot and must
+    /// land on its own page in page coordinates. Asymmetric on purpose: one
+    /// zone per side at different extents, so a side swap or a missed
+    /// conversion is visible.
+    #[test]
+    fn templates_decomposes_text_zones_to_their_page() {
+        let dir = tempfile::tempdir().unwrap();
+        write_template(
+            dir.path(),
+            "t-text.json",
+            r#"{"id":"t-text","slots":[
+                {"rect":[0.05,0.10,0.30,0.60],"role":"hero","bleed":[],"aspect_pref":[2.2,2.4]},
+                {"rect":[0.60,0.20,0.20,0.40],"role":"support","bleed":[],"aspect_pref":[2.4,2.6]}],
+                "text_zones":[
+                    {"rect":[0.60,0.70,0.30,0.10],"align":"left"},
+                    {"rect":[0.05,0.80,0.20,0.05],"align":"right"}],
+                "min_photos":2,"max_photos":2,"density":"medium","energy":"calm"}"#,
+        );
+        let lib = Library::load(dir.path()).unwrap();
+        let t = &lib.spreads[0];
+        assert_eq!(t.right.text.len(), 1);
+        assert_eq!(t.left.text.len(), 1);
+        let r = &t.right.text[0];
+        assert!((r.rect.x - 0.20).abs() < 1e-9 && (r.rect.w - 0.60).abs() < 1e-9, "{r:?}");
+        assert!((r.rect.y - 0.70).abs() < 1e-9 && (r.rect.h - 0.10).abs() < 1e-9, "{r:?}");
+        assert_eq!(r.align, Align::Left);
+        let l = &t.left.text[0];
+        assert!((l.rect.x - 0.10).abs() < 1e-9 && (l.rect.w - 0.40).abs() < 1e-9, "{l:?}");
+        assert_eq!(l.align, Align::Right);
+    }
+
+    #[test]
+    fn templates_rejects_a_fold_spanning_text_zone() {
+        let dir = tempfile::tempdir().unwrap();
+        write_template(
+            dir.path(),
+            "bad.json",
+            r#"{"id":"bad","slots":[
+                {"rect":[0.05,0.1,0.3,0.8],"role":"hero","bleed":[],"aspect_pref":[3.7,3.9]}],
+                "text_zones":[{"rect":[0.4,0.1,0.2,0.1],"align":"left"}],
+                "min_photos":1,"max_photos":1,"density":"sparse","energy":"calm"}"#,
+        );
+        match Library::load(dir.path()) {
+            Err(TemplateError::TextSpansFold { template, zone }) => {
+                assert_eq!(template, "bad");
+                assert_eq!(zone, 0);
+            }
+            other => panic!("expected TextSpansFold, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn templates_half_finds_a_page_layout_by_its_page_template_id() {
+        let dir = tempfile::tempdir().unwrap();
+        write_template(dir.path(), "t-two-up.json", TWO_UP);
+        let lib = Library::load(dir.path()).unwrap();
+        let t = &lib.spreads[0];
+        assert_eq!(lib.half("t-two-up", Side::Left), Some(&t.left));
+        assert_eq!(lib.half("t-two-up", Side::Right), Some(&t.right));
+        // A single page names the half it was cut from.
+        assert_eq!(lib.half("t-two-up:right", Side::Left), Some(&t.right));
+        assert_eq!(lib.half("t-two-up:left", Side::Right), Some(&t.left));
+        assert_eq!(lib.half("nope", Side::Left), None);
     }
 
     #[test]
@@ -550,6 +686,28 @@ mod tests {
             halves.len()
         );
         assert!(margin > 0, "the library must still offer matted pages");
+    }
+
+    /// A text zone is where a chapter title prints. One that sits on a photo
+    /// box would print the title over the picture on every book that picks
+    /// it, so the authored library must keep the two apart.
+    #[test]
+    fn templates_real_library_text_zones_clear_every_slot() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../templates");
+        let lib = Library::load(&dir).expect("the real library must decompose");
+        let mut zones = 0;
+        for t in &lib.spreads {
+            for half in [&t.left, &t.right] {
+                for z in &half.text {
+                    zones += 1;
+                    for s in &half.slots {
+                        let hit = z.rect.intersect(&s.rect).map_or(0.0, |r| r.area());
+                        assert!(hit < 1e-9, "`{}`: a text zone overlaps a slot by {hit}", t.id);
+                    }
+                }
+            }
+        }
+        assert!(zones >= 9, "expected the authored zones to load, got {zones}");
     }
 
     /// A spread template with all of its slots on one page half prints the

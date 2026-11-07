@@ -42,6 +42,27 @@
     },
     "spine": "#1a2b3c"
   },
+  "chapters": [
+    {
+      "autoTitle": "12–14 Mar 2026",
+      "custom": true,
+      "end": 1773446450,
+      "event": 4,
+      "events": [4, 6],
+      "firstPage": 2,
+      "lastPage": 4,
+      "number": 1,
+      "start": 1773273600,
+      "title": "Reykjavík",
+      "titleBox": {
+        "align": "center",
+        "overlapsPhoto": false,
+        "page": 3,
+        "pointSize": 24.0,
+        "rect": { "h": 0.25, "w": 0.75, "x": 0.125, "y": 0.25 }
+      }
+    }
+  ],
   "droppedPhotos": 2,
   "geometry": {
     "left": {
@@ -182,7 +203,7 @@
       "templateId": "03-hero-left-text-right"
     },
     {
-      "blank": true,
+      "blank": false,
       "number": 3,
       "placements": [],
       "side": "right",

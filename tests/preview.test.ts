@@ -96,11 +96,34 @@ describe("the wire fixture", () => {
     expect(layout.options).toStrictEqual({ places: true, featuredFloor: 6, briefCap: 2 });
     expect(layout.pages).toHaveLength(4);
     expect(layout.photos).toHaveLength(5);
-    // A real template id on a page that still prints white -- the text-zone
-    // case, which is the common one.
+    // The text-zone half of a real template holds no photo, and is not
+    // blank because the chapter title prints there.
     expect(layout.pages[2]?.templateId).toBe("03-hero-left-text-right");
-    expect(layout.pages[2]?.blank).toBe(true);
     expect(layout.pages[2]?.placements).toHaveLength(0);
+    expect(layout.pages[2]?.blank).toBe(false);
+    expect(layout.chapters).toEqual([
+      {
+        number: 1,
+        event: 4,
+        events: [4, 6],
+        firstPage: 2,
+        lastPage: 4,
+        start: 1773273600,
+        end: 1773446450,
+        autoTitle: "12–14 Mar 2026",
+        title: "Reykjavík",
+        custom: true,
+        titleBox: {
+          page: 3,
+          rect: { x: 0.125, y: 0.25, w: 0.75, h: 0.25 },
+          align: "center",
+          pointSize: 24,
+          overlapsPhoto: false,
+        },
+      },
+    ]);
+    // A page that got no group at all still prints white.
+    expect(layout.pages[3]?.blank).toBe(true);
   });
 
   /**
@@ -181,7 +204,8 @@ describe("toSpreads", () => {
     const seen = spreads.flatMap((s) => [s.left, s.right]).filter((p) => p !== null);
 
     expect(seen.map((p) => p.number)).toEqual([1, 2, 3, 4]);
-    expect(seen.filter((p) => p.blank).map((p) => p.number)).toEqual([3, 4]);
+    // p3 holds no photo but prints the chapter title, so only p4 is blank.
+    expect(seen.filter((p) => p.blank).map((p) => p.number)).toEqual([4]);
   });
 
   it("labels a spread by both its page numbers and a single by its one", () => {
@@ -715,6 +739,8 @@ describe("the edit wire", () => {
       { kind: "setCoverPhoto", side: "back", photo: null },
       { kind: "setCoverCrop", side: "back", x: 0.125, y: 0.0625, w: 0.5 },
       { kind: "setSpineColour", rgb: "#1a2b3c" },
+      { kind: "setChapterTitle", event: 4, title: "Reykjavík" },
+      { kind: "setChapterTitle", event: 9, title: null },
     ];
     expect(fixture).toEqual(typed);
   });

@@ -222,6 +222,7 @@ mod tests {
             vec![photo("/a.jpg", "haaa1111"), photo("/b.jpg", "hbbb2222"), photo("/c.png", "hccc3333")];
         let (front, back) = (Rect::new(0.1, 0.0, 0.7, 0.9), Rect::new(0.0, 0.05, 0.6, 0.8));
         let book = Book {
+            titles: Default::default(),
             spec: pixajoy_spec(),
             options: Default::default(),
             cover: Cover {
@@ -256,6 +257,7 @@ mod tests {
     fn build_items_writes_only_the_side_that_has_a_photo() {
         let photos = vec![photo("/a.jpg", "haaa1111"), photo("/b.jpg", "hbbb2222")];
         let book = Book {
+            titles: Default::default(),
             spec: pixajoy_spec(),
             options: Default::default(),
             cover: Cover {
@@ -278,6 +280,7 @@ mod tests {
     fn build_items_produces_one_item_per_placement_in_book_order() {
         let photos = vec![photo("/a.jpg", "haaa1111"), photo("/b.jpg", "hbbb2222")];
         let book = Book {
+            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             controls: Default::default(),
@@ -299,6 +302,7 @@ mod tests {
         let photos = vec![photo("/a.jpg", "haaa1111")];
         let crop = Rect::new(0.05, 0.1, 0.6, 0.7);
         let book = Book {
+            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             controls: Default::default(),
@@ -323,6 +327,7 @@ mod tests {
     fn build_items_skips_pages_with_no_placements() {
         let photos = vec![photo("/a.jpg", "haaa1111")];
         let book = Book {
+            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             controls: Default::default(),
@@ -378,7 +383,7 @@ mod tests {
                 &indices,
             ));
         }
-        let book = Book { spec: pixajoy_spec(), cover: Default::default(), controls: Default::default(), seed: 1, dropped: 0, pages, options: Default::default() };
+        let book = Book { spec: pixajoy_spec(), cover: Default::default(), controls: Default::default(), seed: 1, dropped: 0, pages, options: Default::default(), titles: Default::default() };
 
         let items = build_items(&book, &photos);
         assert!(items.len() > 40, "fixture must actually exercise many placements: {}", items.len());
@@ -414,7 +419,7 @@ mod tests {
             }
             pages.push(page_with_placements(page_number, Side::Right, &indices));
         }
-        let book = Book { spec: pixajoy_spec(), cover: Default::default(), controls: Default::default(), seed: 1, dropped: 0, pages, options: Default::default() };
+        let book = Book { spec: pixajoy_spec(), cover: Default::default(), controls: Default::default(), seed: 1, dropped: 0, pages, options: Default::default(), titles: Default::default() };
 
         let items = build_items(&book, &photos);
         let traversal_order: Vec<&str> = items.iter().map(|i| i.filename.as_str()).collect();

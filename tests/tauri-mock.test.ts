@@ -156,6 +156,8 @@ const EVERY_EDIT: BookEdit[] = [
   { kind: "setCoverPhoto", side: "front", photo: null },
   { kind: "setCoverCrop", side: "front", x: 0, y: 0, w: 1 },
   { kind: "setSpineColour", rgb: "#112233" },
+  { kind: "setChapterTitle", event: 4, title: "Reykjavík" },
+  { kind: "setChapterTitle", event: 4, title: null },
 ];
 
 /**
@@ -335,6 +337,39 @@ describe("the harness's undo timeline", () => {
       undo: "spine colour",
       redo: null,
     });
+  });
+
+  it("retitles a chapter, clears it to nothing, and hands it back to the automatic title", async () => {
+    const titled = await invoke<BookLayout>("edit_book", {
+      edit: { kind: "setChapterTitle", event: 4, title: "  Golden Circle  " },
+    });
+    expect(titled.chapters[0]).toMatchObject({ title: "Golden Circle", custom: true });
+
+    // An empty title prints nothing, so the half it sat on is blank again.
+    const cleared = await invoke<BookLayout>("edit_book", {
+      edit: { kind: "setChapterTitle", event: 4, title: "" },
+    });
+    expect(cleared.chapters[0]).toMatchObject({ title: "", custom: true, titleBox: null });
+    expect(cleared.pages.find((p) => p.number === 3)?.blank).toBe(true);
+
+    const auto = await invoke<BookLayout>("edit_book", {
+      edit: { kind: "setChapterTitle", event: 4, title: null },
+    });
+    expect(auto.chapters[0]).toMatchObject({ title: "12–14 Mar 2026", custom: false });
+    expect(auto.chapters[0]!.titleBox?.page).toBe(3);
+    expect(auto.pages.find((p) => p.number === 3)?.blank).toBe(false);
+  });
+
+  it("refuses a title longer than sixty characters, counting characters, not code units", async () => {
+    // 60 emoji are 120 UTF-16 units and still fit.
+    await invoke("edit_book", { edit: { kind: "setChapterTitle", event: 4, title: "🌋".repeat(60) } });
+    await expect(
+      invoke("edit_book", { edit: { kind: "setChapterTitle", event: 4, title: "a".repeat(61) } }),
+    ).rejects.toThrow("at most 60 characters; this one is 61");
+    // Event 6 is in the chapter but does not lead it.
+    await expect(
+      invoke("edit_book", { edit: { kind: "setChapterTitle", event: 6, title: "x" } }),
+    ).rejects.toThrow("no chapter");
   });
 
   it("leaves a refused edit off the timeline and the book as it was", async () => {

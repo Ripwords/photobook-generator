@@ -51,6 +51,7 @@ use app_lib::book::events::{self, gini, EventTiers, Suggestion, Tier, Tuning};
 use app_lib::book::pace::{assemble_with, Book, BookOptions};
 use app_lib::book::pack::Capacity;
 use app_lib::book::story::{self, ShotRole};
+use app_lib::book::titles;
 use app_lib::commands::load_project_photos;
 use app_lib::db::Db;
 use app_lib::print_spec::PrintSpec;
@@ -167,7 +168,7 @@ fn main() {
 
 fn books(projects: &[i64], load: &dyn Fn(i64) -> Vec<Photo>, spec: &PrintSpec, lib: &Library, weights: &Weights) {
     println!(
-        "project,pages,seed,photos,events,events_at_zero,gini,min_chapter,blank_pages,dropped,featured,normal,brief,skipped,floor_misses,opener_hit,closer_hit,chrono_inv,event_inv,mixed_spreads,role_cov,arc_fit"
+        "project,pages,seed,photos,events,events_at_zero,gini,min_chapter,blank_pages,dropped,featured,normal,brief,skipped,floor_misses,opener_hit,closer_hit,chrono_inv,event_inv,mixed_spreads,role_cov,arc_fit,chapters,titled,title_overlaps"
     );
     let overrides = Overrides::new();
     let options = BookOptions::default();
@@ -213,8 +214,13 @@ fn books(projects: &[i64], load: &dyn Fn(i64) -> Vec<Photo>, spec: &PrintSpec, l
                     .filter(|p| per.get(&p.event).copied().unwrap_or(0) < budget.floors.get(&p.event).copied().unwrap_or(0))
                     .count();
                 let m = story::story_metrics(&book, &photos);
+                // Date titles only: the report never geocodes, so a Places
+                // name never reaches it. Titled = a box was found at all.
+                let chapters = titles::chapters(&book, &photos, lib, &BTreeMap::new());
+                let titled = chapters.iter().filter(|c| c.title_box.is_some()).count();
+                let overlaps = chapters.iter().filter(|c| c.title_box.as_ref().is_some_and(|b| b.overlaps_photo)).count();
                 println!(
-                    "{id},{pages},{seed},{},{},{zero},{:.3},{min_chapter},{blank},{},{},{},{},{},{floor_misses},{},{},{},{},{},{},{}",
+                    "{id},{pages},{seed},{},{},{zero},{:.3},{min_chapter},{blank},{},{},{},{},{},{floor_misses},{},{},{},{},{},{},{},{},{titled},{overlaps}",
                     photos.len(),
                     per.len(),
                     gini(&counts),
@@ -230,6 +236,7 @@ fn books(projects: &[i64], load: &dyn Fn(i64) -> Vec<Photo>, spec: &PrintSpec, l
                     m.mixed_spreads,
                     share(m.role_cov),
                     share(m.arc_fit),
+                    chapters.len(),
                 );
             }
         }

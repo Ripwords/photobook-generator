@@ -548,6 +548,7 @@ mod tests {
                 })
                 .collect();
             Book {
+                titles: Default::default(),
                 pages,
                 seed: 1,
                 dropped: 0,

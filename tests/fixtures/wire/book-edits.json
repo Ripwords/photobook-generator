@@ -95,5 +95,15 @@
   {
     "kind": "setSpineColour",
     "rgb": "#1a2b3c"
+  },
+  {
+    "kind": "setChapterTitle",
+    "event": 4,
+    "title": "Reykjavík"
+  },
+  {
+    "kind": "setChapterTitle",
+    "event": 9,
+    "title": null
   }
 ]
