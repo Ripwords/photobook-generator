@@ -474,7 +474,7 @@ const snapped = computed<SnapLine[]>(() => snapLines(held.value));
         v-if="page.blank"
         class="absolute inset-0 flex items-center justify-center text-center"
       >
-        <span class="text-xs text-neutral-500">This page prints blank</span>
+        <span class="text-sm text-neutral-500">This page prints blank</span>
       </div>
 
       <!-- Guides, above the photos and inert to the pointer. -->
@@ -492,7 +492,7 @@ const snapped = computed<SnapLine[]>(() => snapLines(held.value));
       </div>
 
       <span
-        class="pointer-events-none absolute bottom-1 text-[10px] text-neutral-500 tabular-nums"
+        class="pointer-events-none absolute bottom-1 text-sm text-neutral-500 tabular-nums"
         :class="side === 'left' ? 'left-1.5' : 'right-1.5'"
       >
         {{ page.number }}
@@ -500,7 +500,7 @@ const snapped = computed<SnapLine[]>(() => snapLines(held.value));
     </template>
 
     <div v-else class="flex size-full items-center justify-center">
-      <span class="text-xs text-muted">Inside {{ insideCover(side) }} cover</span>
+      <span class="text-sm text-muted">Inside {{ insideCover(side) }} cover</span>
     </div>
   </div>
 </template>

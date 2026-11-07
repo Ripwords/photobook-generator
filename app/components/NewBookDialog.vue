@@ -94,14 +94,13 @@ function start() {
               <UIcon name="i-lucide-folder" class="size-4 shrink-0 text-muted" />
               <div class="min-w-0 flex-1">
                 <p class="truncate text-sm text-highlighted">{{ defaultProjectName(folder) }}</p>
-                <p class="truncate text-xs text-muted" :title="folder">{{ folder }}</p>
+                <p class="truncate text-sm text-muted" :title="folder">{{ folder }}</p>
               </div>
               <UTooltip text="Remove">
                 <UButton
                   icon="i-lucide-x"
                   color="neutral"
                   variant="ghost"
-                  size="xs"
                   :aria-label="`Remove ${folder}`"
                   @click="removeFolder(folder)"
                 />

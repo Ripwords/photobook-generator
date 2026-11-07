@@ -62,12 +62,12 @@ onMounted(() => {
             :label="provider.required ? 'Required' : 'Optional'"
             :color="provider.required ? 'primary' : 'neutral'"
             variant="subtle"
-            size="sm"
+            size="lg"
           />
         </h3>
         <span
           v-if="status"
-          class="flex items-center gap-1.5 text-xs"
+          class="flex items-center gap-1.5 text-sm"
           :class="status[provider.id] ? 'text-success' : 'text-muted'"
         >
           <UIcon
@@ -116,7 +116,7 @@ onMounted(() => {
       :description="error"
     />
 
-    <p class="flex items-start gap-2 text-xs text-muted">
+    <p class="flex items-start gap-2 text-sm text-muted">
       <UIcon name="i-lucide-key-round" class="mt-0.5 size-3.5 shrink-0" />
       Keys are kept in your macOS keychain. This app can check that a key is saved, but never
       shows it again.

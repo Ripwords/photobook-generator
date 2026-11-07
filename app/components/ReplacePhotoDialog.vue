@@ -251,7 +251,7 @@ const scroller = useTemplateRef<HTMLElement>("scroller");
   >
     <template #body>
       <div class="flex shrink-0 flex-wrap items-center gap-3 border-b border-default px-4 py-3 sm:px-6">
-        <UFieldGroup size="sm" aria-label="Which photos to show">
+        <UFieldGroup aria-label="Which photos to show">
           <UButton
             v-for="option in FILTERS"
             :key="option.value"
@@ -267,7 +267,6 @@ const scroller = useTemplateRef<HTMLElement>("scroller");
         <UButton
           color="neutral"
           variant="outline"
-          size="sm"
           icon="i-lucide-hard-drive-upload"
           :loading="importing"
           :disabled="importing"
@@ -275,7 +274,7 @@ const scroller = useTemplateRef<HTMLElement>("scroller");
         >
           Add from disk…
         </UButton>
-        <USelect v-model="sort" :items="SORTS" size="sm" class="ml-auto w-36" aria-label="Sort photos" />
+        <USelect v-model="sort" :items="SORTS" class="ml-auto w-36" aria-label="Sort photos" />
       </div>
 
       <div
@@ -285,8 +284,8 @@ const scroller = useTemplateRef<HTMLElement>("scroller");
       >
         <div v-if="loadError" role="alert" class="flex h-full flex-col items-center justify-center gap-3 text-center">
           <p class="text-sm text-highlighted">These photos could not be loaded.</p>
-          <p class="max-w-md text-xs text-muted">{{ loadError }}</p>
-          <UButton color="neutral" variant="outline" size="sm" icon="i-lucide-rotate-cw" @click="load">
+          <p class="max-w-md text-sm text-muted">{{ loadError }}</p>
+          <UButton color="neutral" variant="outline" icon="i-lucide-rotate-cw" @click="load">
             Try again
           </UButton>
         </div>
@@ -311,7 +310,6 @@ const scroller = useTemplateRef<HTMLElement>("scroller");
             v-if="filter === 'leftOut'"
             color="neutral"
             variant="outline"
-            size="sm"
             @click="filter = 'inBook'"
           >
             Show photos in the book
@@ -360,7 +358,7 @@ const scroller = useTemplateRef<HTMLElement>("scroller");
                   </div>
                 </div>
               </div>
-              <div class="flex h-7 shrink-0 items-center gap-1.5 px-2 text-xs">
+              <div class="flex h-7 shrink-0 items-center gap-1.5 px-2 text-sm">
                 <template v-if="tile.blocked">
                   <UIcon name="i-lucide-ban" class="size-3.5 shrink-0 text-muted" />
                   <span class="truncate text-muted">{{ tile.blocked }}</span>
@@ -383,7 +381,7 @@ const scroller = useTemplateRef<HTMLElement>("scroller");
       </div>
     </template>
     <template #footer>
-      <p class="truncate text-xs" :class="importError ? 'text-error' : 'text-muted'">
+      <p class="truncate text-sm" :class="importError ? 'text-error' : 'text-muted'">
         <template v-if="importError">{{ importError }}</template>
         <template v-else-if="importing">Analysing that photo…</template>
         <template v-else-if="selection">{{ name(selection.photo.path) }}</template>

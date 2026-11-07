@@ -28,7 +28,7 @@ const emit = defineEmits<{ reveal: [event: number] }>();
         v-for="row in rows"
         :key="row.event"
         type="button"
-        class="grid w-full grid-cols-[1fr_auto] gap-x-3 rounded px-2 py-1 text-left hover:bg-elevated"
+        class="grid w-full grid-cols-[1fr_auto] gap-x-3 rounded-sm px-2 py-1 text-left hover:bg-elevated"
         @click="emit('reveal', row.event)"
       >
         <span class="min-w-0 truncate" :class="row.tier === 'featured' ? 'font-semibold' : ''">{{
@@ -37,7 +37,7 @@ const emit = defineEmits<{ reveal: [event: number] }>();
         <span class="text-muted">
           {{ TIER_LABELS[row.tier] }} <span class="text-dimmed">({{ row.chosen ? "you" : "auto" }})</span>
         </span>
-        <span class="col-span-2 text-xs text-muted tabular-nums">{{ eventRowNote(row, title) }}</span>
+        <span class="col-span-2 text-sm text-muted tabular-nums">{{ eventRowNote(row, title) }}</span>
       </button>
     </div>
   </div>

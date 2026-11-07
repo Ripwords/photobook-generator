@@ -38,7 +38,7 @@ function strength(key: PrintSizeField, rest: string, lit: string): string {
     <div class="flex items-center justify-center gap-2">
       <div class="min-w-0" :style="{ width: `min(100%, calc(10rem * ${aspect}))` }">
         <div
-          class="mb-1 w-1/2 text-center text-[11px] tabular-nums"
+          class="mb-1 w-1/2 text-center text-sm tabular-nums"
           :class="active === 'trimW' ? 'font-medium text-highlighted' : 'text-muted'"
         >
           {{ len(spec.pageWIn - spec.bleedIn) }}
@@ -112,14 +112,14 @@ function strength(key: PrintSizeField, rest: string, lit: string): string {
         </svg>
       </div>
       <div
-        class="shrink-0 text-[11px] tabular-nums [writing-mode:vertical-rl]"
+        class="shrink-0 text-sm tabular-nums [writing-mode:vertical-rl]"
         :class="active === 'trimH' ? 'font-medium text-highlighted' : 'text-muted'"
       >
         {{ len(spec.pageHIn - 2 * spec.bleedIn) }}
       </div>
     </div>
     <figcaption class="space-y-1">
-      <ul class="flex flex-wrap justify-center gap-x-4 gap-y-1 text-xs">
+      <ul class="flex flex-wrap justify-center gap-x-4 gap-y-1 text-sm">
         <li
           v-for="item in legend"
           :key="item.key"
@@ -130,7 +130,7 @@ function strength(key: PrintSizeField, rest: string, lit: string): string {
           {{ item.label }} <span class="tabular-nums">{{ item.value }}</span>
         </li>
       </ul>
-      <p v-if="d.exaggerated" class="text-center text-[11px] text-dimmed">
+      <p v-if="d.exaggerated" class="text-center text-sm text-dimmed">
         Thin margins are drawn wider than scale.
       </p>
     </figcaption>

@@ -33,7 +33,6 @@ const { sidebarOpen, toggleSidebar } = useShell();
           icon="i-lucide-panel-left"
           color="neutral"
           variant="ghost"
-          size="sm"
           aria-label="Show sidebar"
           @click="toggleSidebar"
         />
@@ -45,7 +44,7 @@ const { sidebarOpen, toggleSidebar } = useShell();
         </slot>
         <p
           v-if="subtitle"
-          class="truncate text-xs text-muted"
+          class="truncate text-sm text-muted"
           :title="subtitleTitle ?? undefined"
         >
           {{ subtitle }}
