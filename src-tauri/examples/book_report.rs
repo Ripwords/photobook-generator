@@ -168,7 +168,7 @@ fn main() {
 
 fn books(projects: &[i64], load: &dyn Fn(i64) -> Vec<Photo>, spec: &PrintSpec, lib: &Library, weights: &Weights) {
     println!(
-        "project,pages,seed,photos,events,events_at_zero,gini,min_chapter,blank_pages,dropped,featured,normal,brief,skipped,floor_misses,opener_hit,closer_hit,chrono_inv,event_inv,mixed_spreads,role_cov,arc_fit,chapters,titled,title_overlaps,opener_spreads"
+        "project,pages,seed,photos,events,events_at_zero,gini,min_chapter,blank_pages,dropped,featured,normal,brief,skipped,floor_misses,opener_hit,closer_hit,chrono_inv,event_inv,mixed_spreads,role_cov,arc_fit,chapters,titled,title_overlaps"
     );
     let overrides = Overrides::new();
     let options = BookOptions::default();
@@ -204,6 +204,7 @@ fn books(projects: &[i64], load: &dyn Fn(i64) -> Vec<Photo>, spec: &PrintSpec, l
                 let counts: Vec<usize> = per.values().copied().collect();
                 let zero = counts.iter().filter(|&&c| c == 0).count();
                 let min_chapter = counts.iter().copied().filter(|&c| c > 0).min().unwrap_or(0);
+                let blank = book.pages.iter().filter(|p| p.placements.is_empty()).count();
                 // Measured on the PRINTED pages, so a photo the layout stage
                 // drops after the packed-group check (R10) shows here.
                 let floor_misses = budget
@@ -218,15 +219,8 @@ fn books(projects: &[i64], load: &dyn Fn(i64) -> Vec<Photo>, spec: &PrintSpec, l
                 let chapters = titles::chapters(&book, &photos, lib, &BTreeMap::new());
                 let titled = chapters.iter().filter(|c| c.title_box.is_some()).count();
                 let overlaps = chapters.iter().filter(|c| c.title_box.as_ref().is_some_and(|b| b.overlaps_photo)).count();
-                // A hero opener's title page holds no photo, but it is not blank.
-                let title_pages: BTreeSet<usize> =
-                    chapters.iter().filter_map(|c| c.title_box.as_ref().map(|b| b.page)).collect();
-                let blank = (0..book.pages.len())
-                    .filter(|i| book.pages[*i].placements.is_empty() && !title_pages.contains(i))
-                    .count();
-                let openers = title_pages.iter().filter(|&&i| book.pages[i].placements.is_empty()).count();
                 println!(
-                    "{id},{pages},{seed},{},{},{zero},{:.3},{min_chapter},{blank},{},{},{},{},{},{floor_misses},{},{},{},{},{},{},{},{},{titled},{overlaps},{openers}",
+                    "{id},{pages},{seed},{},{},{zero},{:.3},{min_chapter},{blank},{},{},{},{},{},{floor_misses},{},{},{},{},{},{},{},{},{titled},{overlaps}",
                     photos.len(),
                     per.len(),
                     gini(&counts),

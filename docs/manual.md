@@ -183,14 +183,6 @@ photos, fills up through the middle, and ends on a quieter spread again. A Featu
 starts sparser still, so its opening photo has room. This only steers how photos are shared
 between spreads: it never leaves a page blank or a photo out to keep the rhythm.
 
-When there is room, a Featured event opens on a spread of its own: the event's opening photo
-fills one page, and the facing page is left for the chapter title. This happens only where
-the event's other photos still fit its later spreads, so it never costs a photo or a page. In
-a full book, the event opens on an ordinary spread instead. A Featured event that begins the
-book opens on page 1, which has no facing page, so it does not get one either. The layout
-menu offers this spread only layouts with a title page opposite the photo. A one-photo layout
-that would print the other page white is refused.
-
 With the switch on, the contact sheet titles each chapter with its town, such as **Kyoto
 5 photos**. To find the town, the app sends the centre of each chapter, as a latitude and
 longitude, to Apple's map service. It never sends a photo, and it sends nothing while the
@@ -486,8 +478,7 @@ with no capture dates is called "Chapter 2", and so on. The cover carries no tex
 
 Where the title goes is chosen in this order:
 
-1. The text area of a layout drawn with one, unless a photo has been moved onto it. A
-   Featured event's one-photo opening spread always has one, on the page facing the photo.
+1. The text area of a layout drawn with one, unless a photo has been moved onto it.
 2. The tallest clear strip across the top or bottom of either page of the opening, at least
    0.35 in tall. It stays inside the safe margin, keeps out of the fold, and is never more
    than 1 in tall.
