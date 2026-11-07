@@ -61,7 +61,7 @@ The two buttons at the top right switch between covers and a list, which also sh
 book's source folders and last export. Search matches a book's name or any of its folder
 names; the sort menu orders by last edited, date created, or name.
 
-Click a book to open it. Right-click it, or hover and click **…**, for **Open**, **Add to
+Click a book to open it. Right-click it, or hover (or Tab to it) and click **…**, for **Open**, **Add to
 favourites** (or **Remove from favourites**), **Rename…**, **Show photos in Finder** (a
 submenu naming each folder when the book draws on several), **Show export in Finder** (only
 once the book has been exported) and **Delete…**. A starred book shows a star beside its name
@@ -103,21 +103,34 @@ size. Once a length is chosen, both the count and **In the book** switch to that
 so "N of M in the book" always matches what is undimmed and **In the book** hides exactly what
 the book would leave out at the length you picked, not just what culling excluded. The panel on the
 right is the book itself: name it, pick a length and, under **Print size**, **Change…** the
-page size (the same panel as in the editor, without the dry run), and below that are the selection
-counts and a key to the marks on the tiles. **Choose different folders** at the top starts
+page size (the same panel as in the editor, without the dry run). At the bottom of the panel,
+two closed sections open on a click: **How to read the sheet**, a key to the marks on the
+tiles, and **Technical details**, the selection counts (keepers, analysed and scanned, plus
+any that failed or came from the cache). Hover a tile and click the info button in its
+bottom corner for that photo's aesthetic and sharpness percentiles, ranked against every
+photo in the set, and the faces it found, if any; a photo shows "Not ranked yet" until every
+photo in its folders has been analysed. **Choose different folders** at the top starts
 again from other folders. The app recommends the shortest Pixajoy length that fits the keepers; the
 **Length** menu names each option by its page count and, under it, how many events get their own
-page and how many photos that length places.
+page and how many photos that length places. Every length it offers is one Pixajoy sells. Under
+the panel's settings, one sentence sums up the length you picked: how many of the keepers fit
+(and how many of those you marked **+**), how many would be left out, and whether this is the
+recommended length or which one is. **Generate book** (or, when you came from a book's **Edit
+photos**, **Update "<name>"** and **Save as a new photobook**) stays pinned to the bottom of
+the panel however far it scrolls.
 
 **Event tiers.** Every event lands in one of four tiers, which decides how much of it the
 book places: **Featured** gets at least your floor (2 to 12 photos, 6 by default), **Normal**
 gets at least 2, **Brief** gets at most your cap (1 to 3, 2 by default), and **Skip** gets
 none. The app suggests a tier for each event and gives a reason, such as "Stands out from the
-rest of the trip" or "Ranked 4 of 9" -- hover the control on the event's header, in the
-contact sheet, to read it; a Skipped event also shows its reason right in the header, since
-its tiles are dimmed and easy to pass over. Click **Featured**, **Brief** or **Skip** there
-to set the tier yourself, or **Auto** to hand it back to the app; in the events panel your own
-choice shows as **(you)**. It is saved with the draft and, once you generate, with the book. Choosing a tier
+rest of the trip" or "Ranked 4 of 9". Each event's header in the contact sheet has one
+tier menu, labelled with the tier and who chose it, such as **Featured (auto)**; hover it to
+read the reason, which also heads the menu when you open it. A Skipped event also shows its
+reason right in the header, since its tiles are dimmed and easy to pass over. Pick
+**Featured**, **Brief** or **Skip** in the menu to set the tier yourself, or **Auto** to hand
+it back to the app (while the app is choosing, that item names its pick, such as **Auto:
+Normal**); the
+menu and the events panel then show your choice as **(you)**. It is saved with the draft and, once you generate, with the book. Choosing a tier
 yourself always shows what you chose, even where the control would otherwise have shown why
 the app suggested something else. Marking a photo **+** always places it, even in a Skipped
 event.
@@ -155,8 +168,8 @@ switch is off. Names are kept on this Mac, so reopening a draft asks Apple nothi
 chapter Apple cannot name, or any chapter while this Mac is offline, keeps its number, such
 as **Event 3**.
 
-**Featured events get at least** and **Brief events get at most**, the two steppers under
-**Split chapters by place**, set the floor and cap the tiers above use: Featured from 2 to 12
+**Featured events get at least** and **Brief events get at most**, the two steppers in the
+closed **Advanced** section under **Split chapters by place**, set the floor and cap the tiers above use: Featured from 2 to 12
 photos (6 by default), Brief from 1 to 3 (2 by default). Changing either re-scores every
 event at every length.
 
@@ -238,8 +251,11 @@ folders (every photo the book already holds is a cache hit; a photo added to the
 since is analysed for the first time, which does take a moment); **Chat** (⌘J), which shows or hides
 the chat beside the book (while a reply is coming in, its send button stops it, and a message
 you type waits in the box until the reply has finished); and **Export** (⌘E). The bar along the bottom starts with the book's
-print size (for example **11 x 8.5 in**), then counts its pages, the photos placed, any blank
-pages and the photos left out, and says what dragging a photo does in the current mode.
+print size (for example **11 x 8.5 in**), then counts its pages and the photos placed. Blank
+pages and photos left out are added as warnings, with a warning sign, only when there are
+any. What dragging a photo does in each mode is in the tooltip of that mode's button, in the
+bar above the book. When the editor is narrow (the chat open in a small window), that bar
+shows its buttons as icons; hover one for its name or, for the two modes, what a drag does.
 
 Every opening (page 1, each pair of facing pages, the last page) has four controls on its
 right. Page 1 is shown facing the inside front cover and the last page facing the inside
@@ -250,6 +266,8 @@ back cover, the way the printed book opens.
   shown, the button is disabled.
 - **Reject** (thumbs down) does the same, and never offers the current layout here again.
 - **Choose a layout** (grid) lists the other layouts that hold this many photos by name.
+  The menu's first line names the layout the opening uses now (one per page where the two
+  pages are laid out separately).
 - **Lock** keeps the opening exactly as it is: **Shuffle** at the top of the book re-lays
   every unlocked opening at once and skips locked ones, and a locked opening refuses every
   other change until unlocked.
