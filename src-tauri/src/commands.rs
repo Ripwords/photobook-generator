@@ -2996,6 +2996,26 @@ pub async fn cover_candidates(
     .map_err(|e| e.to_string())?
 }
 
+/// `slot_candidates` for "Add a photo…" on a page that prints blank: every
+/// photo framed at the page's shape. The picker then sends `AddPhoto`.
+#[tauri::command]
+pub async fn page_candidates(
+    app: AppHandle,
+    project_id: i64,
+) -> Result<Vec<crate::book::edit::SlotCandidate>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app)?).map_err(|e| e.to_string())?;
+        let project = db
+            .load_project(project_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("project {project_id} no longer exists"))?;
+        let parsed = book_photos(&db, &project)?;
+        Ok(crate::book::edit::page_candidates(&project.book, &parsed))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Photos in any open contact sheet. A poisoned lock still holds a usable
 /// map, and ignoring it would unpin every photo on screen.
 fn live_hashes(state: &AppState) -> Vec<String> {

@@ -33,6 +33,7 @@ import {
   SLOT_DRAG_THRESHOLD_PX,
   DRAG_THRESHOLD_PX,
   pickAspect,
+  pickBlock,
   pickEdit,
   setCoverCropEdit,
   setCropEdit,
@@ -750,6 +751,7 @@ describe("the edit wire", () => {
       { kind: "setSpineColour", rgb: "#1a2b3c" },
       { kind: "setChapterTitle", event: 4, title: "Reykjavík" },
       { kind: "setChapterTitle", event: 9, title: null },
+      { kind: "addPhoto", opening: 10, photo: 31 },
     ];
     expect(fixture).toEqual(typed);
   });
@@ -1103,6 +1105,63 @@ describe("choosing a photo for a slot", () => {
     const texts = reasons.map((r) => refusalText(r, "slot"));
     expect(new Set(texts).size).toBe(reasons.length);
     for (const text of texts) expect(text.length).toBeGreaterThan(10);
+  });
+});
+
+describe("adding a photo to a blank page", () => {
+  // Page 1 is the one this target fills; the fixture places 3 there and 1, 0
+  // on page 2. Photos 2 and 4 are left out.
+  const target: PickTarget = { kind: "opening", opening: 0, page: 1 };
+  const candidates: SlotCandidate[] = layout.photos.map(() => ({
+    crop: { x: 0, y: 0, w: 1, h: 0.9 },
+    refused: null,
+  }));
+  const rows = replaceCandidates(layout, candidates, target, "all", "best");
+  const block = (index: number) => pickBlock(rows.find((r) => r.index === index)!, target);
+
+  it("sends an AddPhoto for the opening, not a swap", () => {
+    expect(pickEdit(target, 2)).toEqual({ kind: "addPhoto", opening: 0, photo: 2 });
+  });
+
+  /** Adding a photo the book already holds would print it twice, so Rust refuses it; the tile says so first. */
+  it("blocks every photo already in the book, and only those", () => {
+    expect([0, 1, 3].map(block)).toEqual(["Already used", "Already used", "Already used"]);
+    expect([2, 4].map(block)).toEqual([null, null]);
+  });
+
+  it("has no current photo and no locks, since nothing trades places", () => {
+    const locked: BookLayout = {
+      ...layout,
+      openings: layout.openings.map((o) => ({ ...o, locked: true })),
+    };
+    const lockedRows = replaceCandidates(locked, candidates, target, "all", "best");
+    expect(lockedRows.filter((r) => r.current || r.locked)).toEqual([]);
+  });
+
+  it("frames each tile at the whole page's printed shape", () => {
+    expect(pickAspect(layout, target)).toBeCloseTo(layout.geometry.pageWIn / layout.geometry.pageHIn, 12);
+  });
+});
+
+describe("pickBlock on a slot", () => {
+  const target: PickTarget = { kind: "slot", placement: { page: 2, z: 1 } };
+  const candidates: SlotCandidate[] = layout.photos.map((_, i) => ({
+    crop: { x: 0, y: 0, w: 0.5, h: 1 },
+    refused: i === 4 ? "faceInGutter" : null,
+  }));
+  const locked: BookLayout = {
+    ...layout,
+    openings: layout.openings.map((o) => (o.index === 0 ? { ...o, locked: true } : o)),
+  };
+  const rows = replaceCandidates(locked, candidates, target, "all", "best");
+  const block = (index: number) => pickBlock(rows.find((r) => r.index === index)!, target);
+
+  it("lets a placed photo swap in, and blocks the current, the locked and the refused", () => {
+    expect(block(0)).toBeNull();
+    expect(block(1)).toBe("In this slot now");
+    expect(block(3)).toBe("On a locked page");
+    expect(block(4)).toBe(refusalText("faceInGutter", "slot"));
+    expect(block(2)).toBeNull();
   });
 });
 

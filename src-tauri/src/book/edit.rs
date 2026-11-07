@@ -166,6 +166,14 @@ pub enum BookEdit {
         event: u32,
         title: Option<String>,
     },
+    /// Put photo `photo`, one the book does not hold yet, on this opening and
+    /// lay the opening out again for one more photo. The only way to fill a
+    /// blank page: Regenerate keeps the photo count, and every one-photo
+    /// spread leaves a page empty.
+    AddPhoto {
+        opening: usize,
+        photo: usize,
+    },
 }
 
 /// What one photo would look like in one slot: the crop it would get, and
@@ -201,6 +209,16 @@ pub enum EditError {
     NoSuchPlacement(PlacementRef),
     /// An index past the end of the analysed photos.
     NoSuchPhoto(usize),
+    /// `AddPhoto` with a photo the book already holds.
+    AlreadyPlaced {
+        photo: usize,
+        page: u32,
+    },
+    /// No layout holds one more photo than this opening has.
+    OpeningFull {
+        opening: usize,
+        photos: usize,
+    },
     SamePlacement,
     SwapRejected {
         placement: PlacementRef,
@@ -272,6 +290,14 @@ impl std::fmt::Display for EditError {
             ),
             Self::NoSuchPlacement(p) => write!(f, "there is no photo at {p}"),
             Self::NoSuchPhoto(i) => write!(f, "this book has no photo {i}"),
+            Self::AlreadyPlaced { page, .. } => write!(
+                f,
+                "that photo is already on page {page}; swap it instead, or choose one that was left out"
+            ),
+            Self::OpeningFull { photos, .. } => write!(
+                f,
+                "no layout holds more than {photos} photos on one spread"
+            ),
             Self::SamePlacement => write!(f, "choose two different photos to swap"),
             Self::SwapRejected { placement, reason } => write!(
                 f,
@@ -528,6 +554,7 @@ pub fn apply(
             book.cover.spine = *rgb;
             Ok(())
         }
+        BookEdit::AddPhoto { opening, photo } => add_photo(book, lib, photos, w, *opening, *photo),
         BookEdit::SetChapterTitle { event, title } => {
             titles::set_title(book, photos, lib, *event, title.as_deref()).map_err(|e| match e {
                 TitleError::NoSuchChapter(e) => EditError::NoSuchChapter(e),
@@ -571,6 +598,76 @@ fn regenerate(
     commit(book, &pages, laid);
     book.controls.entry(o).or_default().rerolls = rerolls;
     Ok(())
+}
+
+/// Adds a photo the book does not hold to opening `o` and lays the opening
+/// out on the best template for one more photo than it has. Rejected
+/// templates stay rejected. The left-out count drops by one.
+fn add_photo(
+    book: &mut Book,
+    lib: &Library,
+    photos: &[Photo],
+    w: &Weights,
+    o: usize,
+    photo: usize,
+) -> Result<(), EditError> {
+    let pages = unlocked(book, o)?;
+    if photo >= photos.len() {
+        return Err(EditError::NoSuchPhoto(photo));
+    }
+    if let Some(page) = book
+        .pages
+        .iter()
+        .find(|p| p.placements.iter().any(|pl| pl.photo_index == photo))
+    {
+        return Err(EditError::AlreadyPlaced {
+            photo,
+            page: page.number,
+        });
+    }
+    let mut indices = opening_photos(book, &pages);
+    indices.push(photo);
+    let n = indices.len();
+    let rejected = book
+        .controls
+        .get(&o)
+        .map(|c| c.rejected.clone())
+        .unwrap_or_default();
+    let allowed = |id: &str| !rejected.iter().any(|r| r == id);
+    let candidates: Vec<String> = if is_single(book, o) {
+        let side = book.pages[pages[0]].side;
+        halves(lib)
+            .into_iter()
+            .filter(|(id, l)| l.side == side && l.slots.len() == n && allowed(id))
+            .map(|(id, _)| id)
+            .collect()
+    } else {
+        lib.spreads_with(n)
+            .into_iter()
+            .filter(|t| allowed(&t.id))
+            .map(|t| t.id.clone())
+            .collect()
+    };
+    if candidates.is_empty() {
+        return Err(EditError::OpeningFull {
+            opening: o,
+            photos: n - 1,
+        });
+    }
+    let seed = opening_seed(book.seed, o, 0);
+    let laid = lay_out(book, lib, photos, w, o, &pages, &indices, &candidates, seed)?;
+    commit(book, &pages, laid);
+    book.dropped = left_out(book, photos.len());
+    Ok(())
+}
+
+/// How many of `known` photos no page places. Recounted rather than
+/// decremented: a photo imported from disk joins the photo list without
+/// joining `Book::dropped`.
+fn left_out(book: &Book, known: usize) -> usize {
+    let placed: std::collections::BTreeSet<usize> =
+        book.pages.iter().flat_map(|p| p.placements.iter().map(|pl| pl.photo_index)).collect();
+    known.saturating_sub(placed.len())
 }
 
 /// Rejects the current template for good, then regenerates. Checked before
@@ -948,6 +1045,21 @@ pub fn cover_candidates(book: &Book, photos: &[Photo], side: CoverSide) -> Vec<S
                 refused: cover::rejects(&book.spec, photo, &crop, side),
                 crop,
             }
+        })
+        .collect()
+}
+
+/// The picker behind "Add a photo…": every analysed photo framed as a whole
+/// page would print it, in `photos` order. Nothing is refused here, because
+/// `AddPhoto` chooses the layout afterwards and the slot it lands in is not
+/// known yet; the page's shape is only so the tiles are not stretched.
+pub fn page_candidates(book: &Book, photos: &[Photo]) -> Vec<SlotCandidate> {
+    let aspect = book.spec.page_aspect(&Rect::new(0.0, 0.0, 1.0, 1.0));
+    photos
+        .iter()
+        .map(|photo| SlotCandidate {
+            crop: choose_crop(photo, aspect),
+            refused: None,
         })
         .collect()
 }
@@ -2000,6 +2112,145 @@ mod tests {
         assert_eq!(serde_json::to_value(&fine).unwrap()["refused"], serde_json::Value::Null);
     }
 
+    // --- add a photo ----------------------------------------------------------
+
+    fn page_photo_counts(b: &Book, o: usize) -> Vec<usize> {
+        opening_pages(b, o).unwrap().iter().map(|&p| b.pages[p].placements.len()).collect()
+    }
+
+    /// The saved book behind the user's report: a spread laid on a one-photo
+    /// template, so its facing page prints white and Regenerate can only
+    /// offer other one-photo layouts. Built by taking a photo out of a
+    /// two-photo spread and laying the one left on template 03, a one-photo
+    /// spread like the 41 in that book.
+    fn half_blank(ps: &[Photo]) -> (Book, usize, usize) {
+        let mut b = book(ps);
+        let lib = frozen_library();
+        let o = spread_with(&b, 2);
+        let pages = opening_pages(&b, o).unwrap();
+        let p = *pages.iter().find(|&&p| !b.pages[p].placements.is_empty()).unwrap();
+        let removed = b.pages[p].placements.pop().unwrap().photo_index;
+        apply(
+            &mut b,
+            &BookEdit::SetTemplate { opening: o, template_id: "03-hero-left-text-right".into() },
+            &lib,
+            ps,
+            &Weights::default(),
+        )
+        .unwrap();
+        assert!(page_photo_counts(&b, o).contains(&0), "fixture: one page of the spread is blank");
+        (b, o, removed)
+    }
+
+    #[test]
+    fn edit_add_photo_fills_the_blank_page_of_a_one_photo_spread() {
+        let ps = photos(25);
+        let (mut b, o, removed) = half_blank(&ps);
+        let before = photos_of(&b, o);
+
+        apply(&mut b, &BookEdit::AddPhoto { opening: o, photo: removed }, &frozen_library(), &ps, &Weights::default())
+            .unwrap();
+
+        let mut expected = before.clone();
+        expected.push(removed);
+        expected.sort_unstable();
+        assert_eq!(photos_of(&b, o), expected, "the opening keeps its photo and gains the new one");
+        assert!(
+            !page_photo_counts(&b, o).contains(&0),
+            "no page of the opening is blank: {:?} on {}",
+            page_photo_counts(&b, o),
+            template_of(&b, o)
+        );
+    }
+
+    /// `extra` is appended the way `import_photo` appends a photo from disk:
+    /// to the photo list, without touching `dropped`. So the left-out count
+    /// must be recounted (`photos.len()` less the distinct photos placed, the
+    /// invariant `expected_photo_count` relies on), not decremented, or adding
+    /// an imported photo would leave it one short.
+    #[test]
+    fn edit_add_photo_leaves_every_other_opening_alone_and_recounts_the_left_out() {
+        let mut ps = photos(25);
+        let mut b = book(&ps);
+        assert_eq!(b.dropped, 0, "fixture: the generated book places all 25");
+        // One photo was left out when the book was made, and `extra` came in
+        // from disk afterwards, uncounted.
+        with_left_out(&mut ps);
+        b.dropped = 1;
+        let extra = with_left_out(&mut ps);
+        let o = spread_with(&b, 2);
+        let others: Vec<Vec<Page>> = (0..opening_count(&b))
+            .filter(|&k| k != o)
+            .map(|k| opening_pages(&b, k).unwrap().iter().map(|&p| b.pages[p].clone()).collect())
+            .collect();
+
+        apply(&mut b, &BookEdit::AddPhoto { opening: o, photo: extra }, &frozen_library(), &ps, &Weights::default())
+            .unwrap();
+
+        assert_eq!(photos_of(&b, o).len(), 3);
+        assert!(photos_of(&b, o).contains(&extra));
+        let after: Vec<Vec<Page>> = (0..opening_count(&b))
+            .filter(|&k| k != o)
+            .map(|k| opening_pages(&b, k).unwrap().iter().map(|&p| b.pages[p].clone()).collect())
+            .collect();
+        assert_eq!(after, others);
+        let placed: std::collections::BTreeSet<usize> =
+            b.pages.iter().flat_map(|p| p.placements.iter().map(|pl| pl.photo_index)).collect();
+        assert_eq!(b.dropped, ps.len() - placed.len());
+        assert_eq!(b.dropped, 1, "the photo left out at generation is still left out");
+    }
+
+    #[test]
+    fn edit_add_photo_refuses_a_locked_opening_a_placed_photo_and_an_unknown_one() {
+        let mut ps = photos(25);
+        let b = book(&ps);
+        let extra = with_left_out(&mut ps);
+        let lib = frozen_library();
+        let w = Weights::default();
+        let o = spread_with(&b, 2);
+
+        let mut locked = b.clone();
+        locked.controls.entry(o).or_default().locked = true;
+        assert_eq!(
+            apply(&mut locked, &BookEdit::AddPhoto { opening: o, photo: extra }, &lib, &ps, &w),
+            Err(EditError::Locked(o))
+        );
+
+        let placed = photos_of(&b, spread_with(&b, 3))[0];
+        let mut twice = b.clone();
+        assert!(matches!(
+            apply(&mut twice, &BookEdit::AddPhoto { opening: o, photo: placed }, &lib, &ps, &w),
+            Err(EditError::AlreadyPlaced { .. })
+        ));
+        assert_eq!(twice, b, "a refused edit leaves the book unchanged");
+
+        let mut unknown = b.clone();
+        assert_eq!(
+            apply(&mut unknown, &BookEdit::AddPhoto { opening: o, photo: ps.len() }, &lib, &ps, &w),
+            Err(EditError::NoSuchPhoto(ps.len()))
+        );
+    }
+
+    /// Every photo is cut to the page's inch ratio, not the normalised 1:1
+    /// of the unit rect: on Pixajoy's 11.197 x 8.894 page a landscape 4:3
+    /// photo keeps its full width and loses a sliver of height.
+    #[test]
+    fn page_candidates_frame_every_photo_at_the_page_shape() {
+        let ps = photos(6);
+        let b = book(&ps);
+        let page = b.spec.page_aspect(&Rect::new(0.0, 0.0, 1.0, 1.0));
+        assert!((page - 11.197 / 8.894).abs() < 1e-9, "{page}");
+
+        let cs = page_candidates(&b, &ps);
+
+        assert_eq!(cs.len(), ps.len());
+        for (p, c) in cs.iter().enumerate() {
+            assert_eq!(c.crop, choose_crop(&ps[p], page), "photo {p}");
+            assert_eq!(c.refused, None);
+        }
+        assert_ne!(cs[0].crop, choose_crop(&ps[0], 1.0), "the page shape, not a square");
+    }
+
     // --- crop -----------------------------------------------------------------
 
     /// The window moves where the user put it, keeps the slot's shape whatever
@@ -2403,6 +2654,7 @@ mod tests {
                 BookEdit::SetSpineColour { rgb: Rgb { r: 0x1a, g: 0x2b, b: 0x3c } },
                 BookEdit::SetChapterTitle { event: 4, title: Some("Reykjavík".into()) },
                 BookEdit::SetChapterTitle { event: 9, title: None },
+                BookEdit::AddPhoto { opening: 10, photo: 31 },
             ]
         );
         // The panel sends a spec, and it goes through `TryFrom<RawPrintSpec>`

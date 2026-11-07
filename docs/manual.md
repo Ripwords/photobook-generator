@@ -335,6 +335,15 @@ with page N** and exchanges the two. A photo that would cut a face, put one in t
 the trim margin, or print too small is dimmed with the reason and cannot be picked, and so
 are photos on a locked spread.
 
+To **fill a page that prints blank**, press **Add a photo…** in the middle of that page.
+The same dialog opens, titled **Add a photo to page N**, on the photos no page uses, each
+shown at the page's shape. Pick one and press **Add to page N**. The page is then laid out
+again on the best layout for one more photo; on a spread, the photo on the facing page can
+move or change size too. Photos already in the book are dimmed with **Already used**: adding one
+would print it twice, so swap it in instead. The button is not shown on a locked spread,
+and when no layout holds one more photo on that spread the editor says so and nothing
+changes. **Add from disk…** works here as well. Undo takes the photo back off.
+
 To **use a photo from anywhere on the machine**, press **Add from disk…** at the top of
 that same dialog. The photo does not have to be in the folders this book was made from, or
 in any folder the app has analysed. It is analysed on the spot, which takes a moment the

@@ -77,6 +77,8 @@ const emit = defineEmits<{
   crop: [placement: PlacementRef, crop: PreviewRect];
   /** The user moved or resized a slot in layout mode and let go. */
   slot: [placement: PlacementRef, rect: PreviewRect];
+  /** "Add a photo…" on a page that prints blank. */
+  add: [];
 }>();
 
 /**
@@ -447,9 +449,20 @@ const titleJustify = { left: "justify-start", center: "justify-center", right: "
       -->
       <div
         v-if="page.blank"
-        class="absolute inset-0 flex items-center justify-center text-center"
+        class="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 text-center"
       >
         <span class="text-sm text-neutral-500">This page prints blank</span>
+        <!-- Above the guides, which are inert to the pointer anyway. -->
+        <UButton
+          v-if="selectable"
+          icon="i-lucide-image-plus"
+          color="neutral"
+          variant="outline"
+          :aria-label="`Add a photo to page ${page.number}`"
+          @click="emit('add')"
+        >
+          Add a photo…
+        </UButton>
       </div>
 
       <!-- Guides, above the photos and inert to the pointer. -->

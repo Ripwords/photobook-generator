@@ -17,6 +17,7 @@ import {
   type BookEdit,
   type BookLayout,
   type CoverSide,
+  type CropTarget,
   type PickTarget,
   type PlacementRef,
   type PreviewGeometry,
@@ -152,6 +153,13 @@ function chooseFromAll() {
   replaceOpen.value = true;
 }
 
+/** "Add a photo…" on a blank page: the picker, then `addPhoto` for its opening. */
+function addToPage(opening: number, page: number) {
+  selected.value = null;
+  replaceTarget.value = { kind: "opening", opening, page };
+  replaceOpen.value = true;
+}
+
 function chooseCover(side: CoverSide) {
   selected.value = null;
   replaceTarget.value = { kind: "cover", side };
@@ -167,11 +175,11 @@ function onCrop(placement: PlacementRef, crop: PreviewRect) {
  * The photo the crop dialog is open on. Like `replaceTarget`, its own ref:
  * saving clears `selected` while the dialog is still closing.
  */
-const cropTarget = ref<PickTarget | null>(null);
+const cropTarget = ref<CropTarget | null>(null);
 const cropOpen = ref(false);
 const cropping = computed(() => (cropTarget.value ? cropSubject(layout, cropTarget.value) : null));
 
-function openCrop(target: PickTarget) {
+function openCrop(target: CropTarget) {
   cropTarget.value = target;
   cropOpen.value = true;
 }
@@ -478,6 +486,7 @@ const leftOut = computed(() =>
                 @select="onSelect"
                 @crop="onCrop"
                 @slot="onSlot"
+                @add="spread.left && addToPage(spread.index, spread.left.number)"
               />
             </div>
             <div class="w-1/2">
@@ -493,6 +502,7 @@ const leftOut = computed(() =>
                 @select="onSelect"
                 @crop="onCrop"
                 @slot="onSlot"
+                @add="spread.right && addToPage(spread.index, spread.right.number)"
               />
             </div>
           </div>

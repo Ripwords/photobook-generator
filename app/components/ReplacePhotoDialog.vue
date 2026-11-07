@@ -4,14 +4,13 @@ import { open as pickFile } from "@tauri-apps/plugin-dialog";
 import {
   cropStyle,
   pickAspect,
+  pickBlock,
   pickEdit,
-  refusalText,
   replaceCandidates,
   withImportedPhotos,
   type BookEdit,
   type BookLayout,
   type CandidateFilter,
-  type CandidateRow,
   type CandidateSort,
   type PickTarget,
   type PreviewPhoto,
@@ -20,7 +19,8 @@ import {
 import { IMPORTABLE, type ImportedPhoto } from "~/types/book";
 
 /**
- * Picks any analysed photo for one slot or one side of the cover. For a slot,
+ * Picks any analysed photo for one slot, one side of the cover, or a blank
+ * page (an `opening` target, which sends `addPhoto`). For a slot,
  * a photo already in the book trades places; the cover takes a copy and
  * leaves the pages alone. Each tile shows the photo cropped as the target
  * would print it, and a photo a hard constraint refuses says why instead of
@@ -80,10 +80,12 @@ async function load() {
     const answer =
       target.kind === "cover"
         ? await invoke<SlotCandidate[]>("cover_candidates", { projectId: layout.projectId, side: target.side })
-        : await invoke<SlotCandidate[]>("slot_candidates", {
-            projectId: layout.projectId,
-            placement: target.placement,
-          });
+        : target.kind === "opening"
+          ? await invoke<SlotCandidate[]>("page_candidates", { projectId: layout.projectId })
+          : await invoke<SlotCandidate[]>("slot_candidates", {
+              projectId: layout.projectId,
+              placement: target.placement,
+            });
     if (mine === request) candidates.value = answer;
   } catch (e) {
     if (mine === request) loadError.value = String(e);
@@ -131,25 +133,27 @@ const SORTS = [
 
 const aspect = computed(() => pickAspect(shown.value, target));
 
-const copy = computed(() =>
-  target.kind === "cover"
-    ? {
+const copy = computed(() => {
+  switch (target.kind) {
+    case "cover":
+      return {
         title: `Choose the ${target.side} cover photo`,
         description: `Each photo is shown as the ${target.side} cover would print it, wrap included.`,
-        current: `On the ${target.side} cover now`,
-      }
-    : {
+      };
+    case "opening":
+      return {
+        title: `Add a photo to page ${target.page}`,
+        description:
+          "The page is laid out again with one more photo, and on a spread the facing page may change too. A photo already in the book cannot be added twice.",
+      };
+    case "slot":
+      return {
         title: `Replace the photo on page ${target.placement.page}`,
         description: "Each photo is shown as this slot would print it.",
-        current: "In this slot now",
-      },
-);
+      };
+  }
+});
 
-function blocked(row: CandidateRow): string | null {
-  if (row.current) return copy.value.current;
-  if (row.locked) return "On a locked page";
-  return row.refused ? refusalText(row.refused, target.kind) : null;
-}
 
 const tiles = computed(() =>
   rows.value.map((row) => ({
@@ -157,7 +161,7 @@ const tiles = computed(() =>
     path: row.photo.path,
     src: row.photo.thumbnailPath ? convertFileSrc(row.photo.thumbnailPath) : null,
     style: cropStyle(row.crop),
-    blocked: blocked(row),
+    blocked: pickBlock(row, target),
   })),
 );
 
@@ -165,6 +169,7 @@ const selection = computed(() => tiles.value.find((tile) => tile.index === chose
 
 const confirmLabel = computed(() => {
   if (target.kind === "cover") return `Use on the ${target.side} cover`;
+  if (target.kind === "opening") return `Add to page ${target.page}`;
   return selection.value?.placedAt ? `Swap with page ${selection.value.placedAt.page}` : "Replace";
 });
 

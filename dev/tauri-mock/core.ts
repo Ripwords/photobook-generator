@@ -412,6 +412,14 @@ function coverPhoto(side: CoverSide, photo: number) {
   return { photoIndex: photo, crop: centred(photo, layout.cover.aspect), filename: `cover-${side}-${hash.slice(0, 8)}` };
 }
 
+/** `page_candidates`: every photo framed at the whole page, nothing refused. */
+function pageCandidates(): SlotCandidate[] {
+  return layout.photos.map((_, index) => ({
+    crop: centred(index, layout.spec.pageWIn / layout.spec.pageHIn),
+    refused: null,
+  }));
+}
+
 function slotCandidates(ref: PlacementRef): SlotCandidate[] {
   return layout.photos.map((_, index) => ({
     crop: centredCrop(ref, index),
@@ -472,6 +480,8 @@ export function editLabel(edit: BookEdit, before: BookLayout): string {
       return "spine colour";
     case "setChapterTitle":
       return edit.title === null ? "automatic title" : "title";
+    case "addPhoto":
+      return "photo added";
   }
 }
 
@@ -632,6 +642,31 @@ function applyEditTo(edit: BookEdit): void {
     case "setSpineColour": {
       if (!/^#[0-9a-f]{6}$/i.test(edit.rgb)) throw new Error(`${edit.rgb} is not a #rrggbb colour`);
       layout.cover.spine = edit.rgb.toLowerCase();
+      break;
+    }
+    case "addPhoto": {
+      // The harness cannot re-run `lay_out`, so the photo fills the opening's
+      // blank page inside its safe area, which is all the screen needs to show.
+      const opening = layout.openings[edit.opening];
+      if (!opening) throw new Error(`this book has no opening ${edit.opening}`);
+      if (opening.locked) throw new Error("this spread is locked; unlock it to change it");
+      if (!layout.photos[edit.photo]) throw new Error(`this book has no photo ${edit.photo}`);
+      const on = layout.pages.find((page) => page.placements.some((pl) => pl.photoIndex === edit.photo));
+      if (on) throw new Error(`that photo is already on page ${on.number}; swap it instead, or choose one that was left out`);
+      const numbers = edit.opening === 0 ? [1] : [edit.opening * 2, edit.opening * 2 + 1];
+      const page = layout.pages.find((p) => numbers.includes(p.number) && p.blank);
+      if (!page) throw new Error("no layout holds more photos on this spread");
+      const safe = layout.geometry[page.side].safe;
+      page.placements.push({
+        z: 1,
+        photoIndex: edit.photo,
+        slotRect: { ...safe },
+        crop: centred(edit.photo, (safe.w * layout.spec.pageWIn) / (safe.h * layout.spec.pageHIn)),
+        filename: null,
+      });
+      page.blank = false;
+      layout.placedPhotos += 1;
+      layout.droppedPhotos = Math.max(0, layout.droppedPhotos - 1);
       break;
     }
     case "setChapterTitle": {
@@ -869,6 +904,10 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
     case "cover_candidates":
       await sleep(250);
       return coverCandidates() as T;
+
+    case "page_candidates":
+      await sleep(250);
+      return pageCandidates() as T;
 
     case "rename_project": {
       const project = projects.find((p) => p.id === (args?.id as number));

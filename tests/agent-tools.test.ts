@@ -138,6 +138,10 @@ describe("the tool table", () => {
    * printed words are the user's, and the round that added titles kept the
    * agent out of them on purpose.
    *
+   * `addPhoto` is withheld for now, like `replacePhoto`: it is the editor's
+   * answer to a blank page the user is looking at, and growing the agent's
+   * tools was not part of the change that added it.
+   *
    * Naming them here rather than filtering by a predicate is the point: a new
    * variant lands in `wire` and fails this test until somebody decides which
    * side of the line it is on.
@@ -151,6 +155,7 @@ describe("the tool table", () => {
       "setCoverCrop",
       "setSpineColour",
       "setChapterTitle",
+      "addPhoto",
     ];
     const driven = Object.values(WRITE_INPUTS).map((w) => w.kind);
     const wire = EDITS.map((e) => e.kind).filter((k) => !withheld.includes(k));

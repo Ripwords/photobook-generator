@@ -77,6 +77,7 @@ pub fn edit_label(edit: &BookEdit, before: &Book) -> &'static str {
             }
         }
         BookEdit::ReplacePhoto { .. } => "photo replacement",
+        BookEdit::AddPhoto { .. } => "photo added",
         BookEdit::SetPrintSpec { .. } => "print size change",
         BookEdit::SetCoverPhoto { photo: Some(_), .. } => "cover photo",
         BookEdit::SetCoverPhoto { photo: None, .. } => "cover photo removal",

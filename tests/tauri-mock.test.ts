@@ -158,6 +158,7 @@ const EVERY_EDIT: BookEdit[] = [
   { kind: "setSpineColour", rgb: "#112233" },
   { kind: "setChapterTitle", event: 4, title: "Reykjavík" },
   { kind: "setChapterTitle", event: 4, title: null },
+  { kind: "addPhoto", opening: 2, photo: 4 },
 ];
 
 /**

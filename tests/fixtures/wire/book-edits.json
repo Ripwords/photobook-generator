@@ -105,5 +105,10 @@
     "kind": "setChapterTitle",
     "event": 9,
     "title": null
+  },
+  {
+    "kind": "addPhoto",
+    "opening": 10,
+    "photo": 31
   }
 ]

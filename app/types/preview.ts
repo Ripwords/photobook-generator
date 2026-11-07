@@ -272,7 +272,12 @@ export type BookEdit =
    * or go back to the automatic title with `null`. An empty string prints no
    * title. Withheld from the chat agent, like the cover edits.
    */
-  | { kind: "setChapterTitle"; event: number; title: string | null };
+  | { kind: "setChapterTitle"; event: number; title: string | null }
+  /**
+   * Put a left-out photo on this opening, which is laid out again on the
+   * best layout for one more photo. How a blank page gets filled.
+   */
+  | { kind: "addPhoto"; opening: number; photo: number };
 
 /** Mirrors `geometry::CoverSide`. */
 export type CoverSide = "front" | "back";
@@ -1155,10 +1160,18 @@ function takenAt(row: CandidateRow): number {
 
 /**
  * What the photo picker fills: a slot on a page, which trades places with a
- * photo already in the book, or one side of the cover, which takes a copy and
- * leaves the pages alone.
+ * photo already in the book; one side of the cover, which takes a copy and
+ * leaves the pages alone; or an opening with a blank page, which gains one
+ * more photo and is laid out again around it (`addPhoto`). `page` is only the
+ * blank page the user asked from, for the dialog's title.
  */
-export type PickTarget = { kind: "slot"; placement: PlacementRef } | { kind: "cover"; side: CoverSide };
+export type PickTarget =
+  | { kind: "slot"; placement: PlacementRef }
+  | { kind: "cover"; side: CoverSide }
+  | { kind: "opening"; opening: number; page: number };
+
+/** The targets that already hold a photo, which is all the crop dialog can open on. */
+export type CropTarget = Extract<PickTarget, { kind: "slot" | "cover" }>;
 
 /** What the crop dialog edits: one photo, its saved crop, and what to call it. */
 export interface CropSubject {
@@ -1168,7 +1181,7 @@ export interface CropSubject {
 }
 
 /** The photo and saved crop behind a page slot or a cover side, or `null` if it holds none. */
-export function cropSubject(layout: BookLayout, target: PickTarget): CropSubject | null {
+export function cropSubject(layout: BookLayout, target: CropTarget): CropSubject | null {
   if (target.kind === "cover") {
     const cover = layout.cover[target.side].photo;
     const photo = cover && photoFor(layout, cover.photoIndex);
@@ -1266,7 +1279,7 @@ export function replaceCandidates(
       current:
         target.kind === "cover"
           ? index === coverPhoto
-          : where !== undefined && samePlacement(where.at, target.placement),
+          : target.kind === "slot" && where !== undefined && samePlacement(where.at, target.placement),
       locked: target.kind === "slot" && (where?.locked ?? false),
     });
   });
@@ -1281,6 +1294,7 @@ export function replaceCandidates(
 /** The target's printed shape, so every tile is framed the way the book frames it. */
 export function pickAspect(layout: BookLayout, target: PickTarget): number {
   if (target.kind === "cover") return layout.cover.aspect;
+  if (target.kind === "opening") return layout.geometry.pageWIn / layout.geometry.pageHIn;
   const page = layout.pages.find((p) => p.number === target.placement.page);
   const rect = page?.placements.find((p) => p.z === target.placement.z)?.slotRect;
   if (!rect) return 1;
@@ -1289,9 +1303,24 @@ export function pickAspect(layout: BookLayout, target: PickTarget): number {
 
 /** The edit that puts photo `photo` on the target. */
 export function pickEdit(target: PickTarget, photo: number): BookEdit {
-  return target.kind === "cover"
-    ? { kind: "setCoverPhoto", side: target.side, photo }
-    : { kind: "replacePhoto", placement: target.placement, photo };
+  switch (target.kind) {
+    case "cover":
+      return { kind: "setCoverPhoto", side: target.side, photo };
+    case "opening":
+      return { kind: "addPhoto", opening: target.opening, photo };
+    case "slot":
+      return { kind: "replacePhoto", placement: target.placement, photo };
+  }
+}
+
+/** What a tile says when it cannot be chosen for `target`, or `null` when it can. */
+export function pickBlock(row: CandidateRow, target: PickTarget): string | null {
+  if (row.current) return target.kind === "cover" ? `On the ${target.side} cover now` : "In this slot now";
+  // A blank page gains a photo rather than trading one, so a photo already on
+  // a page would print twice. `add_photo` refuses it too; this says why first.
+  if (target.kind === "opening" && row.placedAt) return "Already used";
+  if (row.locked) return "On a locked page";
+  return row.refused ? refusalText(row.refused, target.kind) : null;
 }
 
 const REFUSALS: Record<Rejection, string> = {
