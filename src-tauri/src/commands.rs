@@ -1823,7 +1823,6 @@ pub(crate) fn run_export<S, W>(
     book: &Book,
     photos: &[Photo],
     project_id: i64,
-    chapters: &[Chapter],
     output_dir: &str,
     findings: Vec<Finding>,
     send: S,
@@ -1868,7 +1867,7 @@ where
 
     // Built and reconciled AFTER the export, from the real returned paths --
     // see `reconcile_manifest`.
-    let mut manifest = manifest(book, photos, project_id, chapters);
+    let mut manifest = manifest(book, photos, project_id);
     let unwritten = reconcile_manifest(&mut manifest, &records);
     if unwritten > 0 {
         log::warn!("{unwritten} placement(s) failed to export and were left out of the manifest");
@@ -2163,7 +2162,6 @@ pub async fn export_book(
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("project {project_id} no longer exists"))?;
         let parsed = book_photos(&db, &project)?;
-        let chapters = book_chapters(&db, &project.book, &parsed, &load_library(&app)?);
         let output = PathBuf::from(&output_dir);
 
         // Pre-flight reads the real world: it checks every source file still
@@ -2186,7 +2184,6 @@ pub async fn export_book(
             &project.book,
             &parsed,
             project_id,
-            &chapters,
             &output_dir,
             findings,
             |items| {
@@ -6326,7 +6323,6 @@ mod tests {
             &book,
             &too_few,
             1,
-            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |_| panic!("a mismatched photo slice must never reach the sidecar"),
@@ -6354,7 +6350,6 @@ mod tests {
             &book,
             &photos,
             1,
-            &[],
             &dir.path().to_string_lossy(),
             findings,
             |_| panic!("the sidecar must never be reached when a finding blocks"),
@@ -6384,7 +6379,6 @@ mod tests {
             &book,
             &photos,
             1,
-            &[],
             &dir.path().to_string_lossy(),
             vec![finding(Severity::Warn, 1, "soft")],
             |items| {
@@ -6412,7 +6406,6 @@ mod tests {
             &book,
             &photos,
             1,
-            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |items| {
@@ -6456,7 +6449,6 @@ mod tests {
             &book,
             &photos,
             42,
-            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |items| items.iter().map(|i| ok_record(&i.filename, "png")).collect(),
@@ -6496,7 +6488,6 @@ mod tests {
             &book,
             &photos,
             42,
-            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |items| {
@@ -6537,7 +6528,6 @@ mod tests {
             &book,
             &photos,
             1,
-            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |items| {
@@ -7254,7 +7244,6 @@ mod tests {
             &book,
             &photos,
             1,
-            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |items| items.iter().map(|i| ok_record(&i.filename, "jpg")).collect(),
@@ -7281,7 +7270,6 @@ mod tests {
             &book,
             &photos,
             1,
-            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |items| items.iter().map(|i| ok_record(&i.filename, "jpg")).collect(),
@@ -7307,7 +7295,6 @@ mod tests {
             &book,
             &photos,
             42,
-            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |items| {
@@ -7360,7 +7347,6 @@ mod tests {
             &book,
             &photos,
             42,
-            &[],
             &dir.path().to_string_lossy(),
             Vec::new(),
             |items| {

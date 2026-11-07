@@ -487,15 +487,11 @@ Where the title goes is chosen in this order:
 3. The widest clear column beside the photos, at least 1.5 in wide. Portrait pairs leave
    one.
 4. Otherwise a strip across the top of the opening's first page, on top of a photo. The
-   manifest marks it, so you can decide whether to move a box or keep it there.
+   chapter heading says so, so you can decide where to put the title, or leave it out.
 
-The type is set between 14 and 28 pt to suit the space.
+The suggested type size is between 14 and 28 pt, to suit the space.
 
-Export does not draw titles into the photo files. Each page in `manifest.json` lists its
-titles under `texts`: the `text`, its box in inches on the printed page (`rect_in`, measured
-from the top-left of the page including bleed, like a photo's `dest_rect_in`), the `align`ment,
-the `point_size`, and `overlaps_photo`. The **Export** sheet lists every title that prints, with
-its page, a warning sign on any that prints over a photo, and a button that copies the title.
-In Pixajoy's editor, add a text box on that page, paste the title, and place and size it to
-match the manifest.
+Export carries no titles: they are not drawn into the photo files, `manifest.json` holds no
+text, and the **Export** sheet does not list them. To add one, open that page in Pixajoy's
+editor, add a text box, type the title, and place it where the editor shows the title spot.
 

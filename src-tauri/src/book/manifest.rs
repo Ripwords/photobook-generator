@@ -9,10 +9,8 @@
 use crate::book::cull::Photo;
 use crate::book::pace::Book;
 use crate::book::cover::Rgb;
-use crate::book::titles::Chapter;
 use crate::export::{cover_filename, output_filename, predicted_format};
 use crate::geometry::{CoverSide, Rect};
-use crate::templates::Align;
 use serde::{Deserialize, Serialize};
 
 /// One exported photo's record within a page.
@@ -57,23 +55,6 @@ pub struct ManifestPage {
     /// fixes the page count, so a manifest that silently drops a page cannot
     /// be reconciled against what was actually ordered.
     pub photos: Vec<ManifestPhoto>,
-    /// Words to type onto this page with Pixajoy's text tool: export never
-    /// composites, so a chapter title travels here rather than in an image.
-    /// Defaulted so a manifest written before titles still reads.
-    #[serde(default)]
-    pub texts: Vec<ManifestText>,
-}
-
-/// One text box, as the user would draw it in Pixajoy's editor.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ManifestText {
-    pub text: String,
-    /// Inches on the printed page, like `ManifestPhoto::dest_rect_in`.
-    pub rect_in: Rect,
-    pub align: Align,
-    pub point_size: f64,
-    /// No clear space was found and the box sits on a photo.
-    pub overlaps_photo: bool,
 }
 
 /// The whole book's export manifest.
@@ -119,9 +100,9 @@ pub struct ManifestCoverPhoto {
 
 /// Builds the manifest for `book`. `photos` is the ORIGINAL slice
 /// `Placement::photo_index` indexes into, matching `export::build_items`'s
-/// own contract. `chapters` is `titles::chapters` of the same book; each
-/// titled one adds a text box to the page its title prints on.
-pub fn manifest(book: &Book, photos: &[Photo], project_id: i64, chapters: &[Chapter]) -> Manifest {
+/// own contract. Chapter titles are an on-screen guide and never print, so
+/// the manifest carries no text.
+pub fn manifest(book: &Book, photos: &[Photo], project_id: i64) -> Manifest {
     // The book's own geometry, never a default: a manifest is the hand-off to
     // the printer, so naming the wrong page size here is the one bug nothing
     // downstream can catch.
@@ -132,20 +113,7 @@ pub fn manifest(book: &Book, photos: &[Photo], project_id: i64, chapters: &[Chap
     let pages = book
         .pages
         .iter()
-        .enumerate()
-        .map(|(index, page)| ManifestPage {
-            texts: chapters
-                .iter()
-                .filter_map(|c| c.title_box.as_ref().map(|b| (c, b)))
-                .filter(|(_, b)| b.page == index)
-                .map(|(c, b)| ManifestText {
-                    text: c.title.clone(),
-                    rect_in: inches(&b.rect),
-                    align: b.align,
-                    point_size: b.point_size,
-                    overlaps_photo: b.overlaps_photo,
-                })
-                .collect(),
+        .map(|page| ManifestPage {
             number: page.number,
             template_id: page.template_id.clone(),
             photos: page
@@ -253,19 +221,18 @@ mod tests {
             }],
             options: Default::default(),
         };
-        let m = manifest(&book, &photos, 77, &[]);
+        let m = manifest(&book, &photos, 77);
         assert_eq!(m.project_id, 77);
         assert_eq!(m.seed, 4242);
         assert_eq!(m.page_count, 1);
         assert_eq!(m.page_count, m.pages.len());
     }
 
-    /// A chapter title is a text box on the page it prints on, in inches of
-    /// the book's own page, and on no other page. `odd_spec` so a title
-    /// scaled by the wrong page size is visible.
+    /// Chapter titles are a guide in the editor and never print, so the
+    /// manifest -- the hand-off to the printer -- carries no text at all. A
+    /// manifest written while titles travelled in `texts` still reads.
     #[test]
-    fn manifest_carries_each_chapter_title_on_its_page_in_inches() {
-        use crate::book::titles::{Chapter, TitleBox};
+    fn manifest_carries_no_chapter_titles_and_reads_one_that_did() {
         let photos = vec![photo("/a.jpg", "haaa1111")];
         let blank = |number, side| Page { number, side, template_id: "blank".into(), placements: Vec::new() };
         let book = Book {
@@ -275,32 +242,21 @@ mod tests {
             controls: Default::default(),
             seed: 1,
             dropped: 0,
-            pages: vec![blank(1, Side::Right), blank(2, Side::Left), blank(3, Side::Right)],
+            pages: vec![blank(1, Side::Right), blank(2, Side::Left)],
             options: Default::default(),
         };
-        let chapter = |title: &str, page, overlaps_photo| Chapter {
-            number: 1, event: 0, events: vec![0], opening: 0, pages: vec![page],
-            start: None, end: None, auto_title: "auto".into(), title: title.into(), custom: true,
-            title_box: Some(TitleBox {
-                page, rect: Rect::new(0.1, 0.2, 0.5, 0.25), align: Align::Right,
-                point_size: 21.5, overlaps_photo,
-            }),
-        };
-        let mut untitled = chapter("", 0, false);
-        untitled.title_box = None;
-        let m = manifest(&book, &photos, 1, &[chapter("Vík", 2, true), untitled]);
-        assert!(m.pages[0].texts.is_empty() && m.pages[1].texts.is_empty());
-        let t = &m.pages[2].texts;
-        assert_eq!(t.len(), 1);
-        let (w, h) = (book.spec.page_w_in(), book.spec.page_h_in());
-        assert_eq!(t[0].text, "Vík");
-        assert_eq!(t[0].rect_in, Rect::new(0.1 * w, 0.2 * h, 0.5 * w, 0.25 * h));
-        assert_eq!((t[0].align, t[0].point_size, t[0].overlaps_photo), (Align::Right, 21.5, true));
-        // A manifest written before titles has no `texts` and still reads.
-        let mut old = serde_json::to_value(&m).unwrap();
-        old["pages"][2].as_object_mut().unwrap().remove("texts");
+        let m = manifest(&book, &photos, 1);
+        let json = serde_json::to_value(&m).unwrap();
+        for page in json["pages"].as_array().unwrap() {
+            assert!(page.get("texts").is_none(), "a page carries text: {page}");
+        }
+        let mut old = json;
+        old["pages"][1]["texts"] = serde_json::json!([{
+            "text": "Vík", "rect_in": {"x": 1.0, "y": 1.0, "w": 4.0, "h": 1.0},
+            "align": "right", "point_size": 21.5, "overlaps_photo": true
+        }]);
         let back: Manifest = serde_json::from_value(old).unwrap();
-        assert!(back.pages[2].texts.is_empty());
+        assert_eq!(back, m);
     }
 
     /// Regression: a page with zero placements must still appear in the
@@ -333,7 +289,7 @@ mod tests {
             ],
             options: Default::default(),
         };
-        let m = manifest(&book, &photos, 1, &[]);
+        let m = manifest(&book, &photos, 1);
         assert_eq!(m.page_count, 2, "book has 2 pages, manifest must report 2");
         assert_eq!(m.pages.len(), 2, "the blank page must not be dropped from the list");
         assert_eq!(m.pages[0].number, 1);
@@ -372,7 +328,7 @@ mod tests {
             }],
             options: Default::default(),
         };
-        let m = manifest(&book, &photos, 1, &[]);
+        let m = manifest(&book, &photos, 1);
         let dest = m.pages[0].photos[0].dest_rect_in;
 
         assert!((dest.x - slot_rect.x * 8.0).abs() < 1e-9, "x was {}", dest.x);
@@ -383,7 +339,7 @@ mod tests {
         // The same book under Pixajoy's page must give different numbers, or
         // this fixture cannot tell "reads the spec" from "hardcodes 11.197".
         let pixajoy = Book { spec: pixajoy_spec(), ..book };
-        let other = manifest(&pixajoy, &photos, 1, &[]).pages[0].photos[0].dest_rect_in;
+        let other = manifest(&pixajoy, &photos, 1).pages[0].photos[0].dest_rect_in;
         assert!((other.w - dest.w).abs() > 0.1, "the two specs must be distinguishable");
 
         // Sanity: the page is not 1" square, so a bug that skips the
@@ -414,7 +370,7 @@ mod tests {
             }],
             options: Default::default(),
         };
-        let m = manifest(&book, &photos, 1, &[]);
+        let m = manifest(&book, &photos, 1);
         let p = &m.pages[0].photos[0];
         assert_eq!(p.source_path, "/photos/a.jpg");
         assert_eq!(p.hash, "deadbeef99");
@@ -472,7 +428,7 @@ mod tests {
         };
 
         let items = build_items(&book, &photos);
-        let m = manifest(&book, &photos, 1, &[]);
+        let m = manifest(&book, &photos, 1);
         let manifest_filenames: Vec<&str> =
             m.pages.iter().flat_map(|p| p.photos.iter().map(|ph| ph.filename.as_str()))
                 .chain([&m.cover.front, &m.cover.back].into_iter().flatten().map(|c| c.filename.as_str()))
@@ -501,7 +457,7 @@ mod tests {
             pages: Vec::new(),
         };
 
-        let m = manifest(&book, &photos, 1, &[]);
+        let m = manifest(&book, &photos, 1);
         assert_eq!(m.cover.front, None);
         assert_eq!(
             m.cover.back,

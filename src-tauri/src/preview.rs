@@ -682,7 +682,7 @@ mod tests {
     fn preview_agrees_with_the_manifest_about_which_photo_is_in_which_slot() {
         let book = book();
         let photos = photos();
-        let manifest = manifest(&book, &photos, 7, &[]);
+        let manifest = manifest(&book, &photos, 7);
         let layout = book_layout(7, &book, preview_photos(), &Library { spreads: Vec::new() }, &[]);
 
         assert_eq!(layout.pages.len(), manifest.pages.len());
