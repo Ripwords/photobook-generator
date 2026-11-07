@@ -55,6 +55,7 @@ const spreads = computed(() =>
 
 const anyLocked = computed(() => layout.openings.some((opening) => opening.locked));
 const anyToShuffle = computed(() => layout.openings.some(canRelayout));
+const shuffleLabel = computed(() => (anyLocked.value ? "Shuffle unlocked spreads" : "Shuffle every spread"));
 
 /**
  * The photo picked for a swap, or `null`. One selection for the whole book,
@@ -128,11 +129,20 @@ function onSlot(placement: PlacementRef, rect: PreviewRect) {
   emit("edit", setSlotEdit(placement, rect));
 }
 
-function layoutMenu(index: number, alternatives: string[]) {
-  return alternatives.map((templateId) => ({
-    label: templateLabel(templateId),
-    onSelect: () => emit("edit", { kind: "setTemplate", opening: index, templateId }),
-  }));
+/**
+ * The layout menu, headed by the template ids this opening uses now. The ids
+ * used to sit beside the page label, where a template repeating across
+ * consecutive openings was visible at a glance; they are machine data, so
+ * they moved here, one click away for whoever is chasing that defect.
+ */
+function layoutMenu(index: number, alternatives: string[], current: string[]) {
+  return [
+    [{ type: "label" as const, label: `Current: ${current.join(", ")}`, class: "font-mono font-normal text-muted" }],
+    alternatives.map((templateId) => ({
+      label: templateLabel(templateId),
+      onSelect: () => emit("edit", { kind: "setTemplate", opening: index, templateId }),
+    })),
+  ];
 }
 
 /**
@@ -154,27 +164,45 @@ const leftOut = computed(() =>
     <div
       class="sticky top-0 z-20 flex h-11 items-center gap-3 border-b border-default bg-default/95 px-6 backdrop-blur"
     >
-      <UFieldGroup size="xs" aria-label="What dragging a photo does">
-        <UButton
-          icon="i-lucide-crop"
-          color="neutral"
-          :variant="editSlots ? 'outline' : 'solid'"
-          :aria-pressed="!editSlots"
-          :disabled="busy"
-          @click="editSlots = false"
+      <!--
+        What a drag does in each mode is said in its tooltip, not in a status line.
+        Labels fold to icons as the column narrows (measured at md: the modes need
+        ~30rem with icon-only actions, everything labelled needs ~42rem), so the
+        bar never wraps; each button keeps its name as an aria-label.
+      -->
+      <UFieldGroup aria-label="What dragging a photo does">
+        <UTooltip
+          text="Drag a photo to move its crop, ⌘-scroll over it to zoom. Click a photo, then another anywhere in the book, to swap them"
+          :content="{ side: 'bottom', align: 'start' }"
         >
-          Crop and swap
-        </UButton>
-        <UButton
-          icon="i-lucide-move"
-          color="neutral"
-          :variant="editSlots ? 'solid' : 'outline'"
-          :aria-pressed="editSlots"
-          :disabled="busy"
-          @click="editSlots = true"
+          <UButton
+            icon="i-lucide-crop"
+            color="neutral"
+            :variant="editSlots ? 'outline' : 'solid'"
+            :aria-pressed="!editSlots"
+            :disabled="busy"
+            aria-label="Crop and swap"
+            @click="editSlots = false"
+          >
+            <span class="hidden @[30rem]:inline">Crop and swap</span>
+          </UButton>
+        </UTooltip>
+        <UTooltip
+          text="Drag a box to move it, drag a corner to resize it; edges and centres snap to the guides"
+          :content="{ side: 'bottom', align: 'start' }"
         >
-          Move and resize boxes
-        </UButton>
+          <UButton
+            icon="i-lucide-move"
+            color="neutral"
+            :variant="editSlots ? 'solid' : 'outline'"
+            :aria-pressed="editSlots"
+            :disabled="busy"
+            aria-label="Move and resize boxes"
+            @click="editSlots = true"
+          >
+            <span class="hidden @[30rem]:inline">Move and resize boxes</span>
+          </UButton>
+        </UTooltip>
       </UFieldGroup>
 
       <div class="ml-auto flex items-center gap-2">
@@ -185,9 +213,13 @@ const leftOut = computed(() =>
           not a preview artefact.
         -->
         <UPopover :content="{ align: 'end' }">
-          <UButton icon="i-lucide-ruler" color="neutral" variant="ghost" size="xs">Guides</UButton>
+          <UTooltip text="Guides">
+            <UButton icon="i-lucide-ruler" color="neutral" variant="ghost" aria-label="Guides">
+              <span class="hidden @[42rem]:inline">Guides</span>
+            </UButton>
+          </UTooltip>
           <template #content>
-            <ul class="w-80 space-y-2.5 p-3 text-xs text-muted">
+            <ul class="w-80 space-y-2.5 p-3 text-sm text-muted">
               <li class="flex items-center gap-2">
                 <span class="h-0 w-4 shrink-0 border-t border-dashed border-red-500/70" />
                 Trim — cut here
@@ -224,16 +256,18 @@ const leftOut = computed(() =>
           yet, with the same photos in place. Locking is how the user keeps the
           spreads they like while the rest keep changing.
         -->
-        <UButton
-          icon="i-lucide-shuffle"
-          color="neutral"
-          variant="outline"
-          size="xs"
-          :disabled="busy || !anyToShuffle"
-          @click="emit('edit', { kind: 'shuffle' })"
-        >
-          {{ anyLocked ? "Shuffle unlocked spreads" : "Shuffle every spread" }}
-        </UButton>
+        <UTooltip :text="shuffleLabel">
+          <UButton
+            icon="i-lucide-shuffle"
+            color="neutral"
+            variant="outline"
+            :aria-label="shuffleLabel"
+            :disabled="busy || !anyToShuffle"
+            @click="emit('edit', { kind: 'shuffle' })"
+          >
+            <span class="hidden @[42rem]:inline">{{ shuffleLabel }}</span>
+          </UButton>
+        </UTooltip>
       </div>
     </div>
 
@@ -248,26 +282,14 @@ const leftOut = computed(() =>
       <ol class="space-y-10">
         <li v-for="spread in spreads" :key="spread.key" class="space-y-2.5">
           <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-            <!--
-              The template id next to the page label, so a template repeating
-              across consecutive openings is directly visible. It is one of the
-              defects this preview exists to reveal, and without the id on screen
-              it can only be inferred from layout shape.
-            -->
-            <p class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted tabular-nums">
+            <p class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted tabular-nums">
               <span class="font-medium text-toned">{{ spread.label }}</span>
-              <span
-                v-for="id in spreadTemplates(spread)"
-                :key="id"
-                class="font-mono text-[11px] text-dimmed"
-                >{{ id }}</span
-              >
               <UBadge
                 v-if="spread.opening.locked"
                 icon="i-lucide-lock"
                 color="primary"
                 variant="subtle"
-                size="sm"
+                size="lg"
                 label="Locked"
               />
             </p>
@@ -282,7 +304,6 @@ const leftOut = computed(() =>
                   icon="i-lucide-dices"
                   color="neutral"
                   variant="ghost"
-                  size="xs"
                   :aria-label="`Regenerate ${spread.label}`"
                   :disabled="busy || !canRelayout(spread.opening)"
                   @click="emit('edit', { kind: 'regenerate', opening: spread.index })"
@@ -293,21 +314,19 @@ const leftOut = computed(() =>
                   icon="i-lucide-thumbs-down"
                   color="neutral"
                   variant="ghost"
-                  size="xs"
                   :aria-label="`Reject the layout of ${spread.label}`"
                   :disabled="busy || !canRelayout(spread.opening)"
                   @click="emit('edit', { kind: 'rejectTemplate', opening: spread.index })"
                 />
               </UTooltip>
               <UDropdownMenu
-                :items="layoutMenu(spread.index, spread.opening.alternatives)"
+                :items="layoutMenu(spread.index, spread.opening.alternatives, spreadTemplates(spread))"
                 :content="{ align: 'end' }"
               >
                 <UButton
                   icon="i-lucide-layout-template"
                   color="neutral"
                   variant="ghost"
-                  size="xs"
                   :aria-label="`Choose a layout for ${spread.label}`"
                   :disabled="busy || !canRelayout(spread.opening)"
                 />
@@ -323,7 +342,6 @@ const leftOut = computed(() =>
                   :icon="spread.opening.locked ? 'i-lucide-lock' : 'i-lucide-lock-open'"
                   :color="spread.opening.locked ? 'primary' : 'neutral'"
                   variant="ghost"
-                  size="xs"
                   :aria-label="`${spread.opening.locked ? 'Unlock' : 'Lock'} ${spread.label}`"
                   :aria-pressed="spread.opening.locked"
                   :disabled="busy"
@@ -385,14 +403,14 @@ const leftOut = computed(() =>
         <h4 class="text-sm font-semibold text-highlighted">
           Left out <span class="font-normal text-muted tabular-nums">{{ leftOut.length }}</span>
         </h4>
-        <p class="text-xs text-muted">
+        <p class="text-sm text-muted">
           Culled, trimmed to fit the page count, or not placeable in any template.
         </p>
         <ul class="flex flex-wrap gap-2">
           <li
             v-for="photo in leftOut"
             :key="photo.path"
-            class="size-16 overflow-hidden rounded bg-elevated ring ring-default"
+            class="size-16 overflow-hidden rounded-sm bg-elevated ring ring-default"
             :title="photo.path"
           >
             <img
@@ -430,15 +448,14 @@ const leftOut = computed(() =>
           icon="i-lucide-images"
           color="neutral"
           variant="outline"
-          size="sm"
           :disabled="busy"
           @click="chooseFromAll"
         >
           Choose any photo…
         </UButton>
-        <UButton color="neutral" variant="ghost" size="sm" @click="selected = null">
+        <UButton color="neutral" variant="ghost" @click="selected = null">
           Cancel
-          <UKbd value="esc" size="sm" />
+          <UKbd value="esc" />
         </UButton>
       </div>
     </div>

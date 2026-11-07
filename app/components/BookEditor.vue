@@ -232,7 +232,6 @@ onMounted(() => {
         v-if="activeProject && renaming"
         v-model="draftName"
         autofocus
-        size="sm"
         :disabled="busy"
         aria-label="Photobook name"
         class="w-72"
@@ -249,7 +248,6 @@ onMounted(() => {
             icon="i-lucide-pencil"
             color="neutral"
             variant="ghost"
-            size="xs"
             :disabled="busy"
             aria-label="Rename this photobook"
             @click="startRenaming"
@@ -271,7 +269,6 @@ onMounted(() => {
           icon="i-lucide-undo-2"
           color="neutral"
           variant="ghost"
-          size="sm"
           :disabled="!canStep('undo', history, busy)"
           :aria-label="stepLabel('undo', history)"
           @click="step('undo')"
@@ -282,7 +279,6 @@ onMounted(() => {
           icon="i-lucide-redo-2"
           color="neutral"
           variant="ghost"
-          size="sm"
           :disabled="!canStep('redo', history, busy)"
           :aria-label="stepLabel('redo', history)"
           @click="step('redo')"
@@ -294,7 +290,7 @@ onMounted(() => {
       v-if="activeProject"
       text="Every change you make here is written to disk as you make it."
     >
-      <span class="mr-2 flex items-center gap-1.5 text-xs text-muted">
+      <span class="mr-2 flex items-center gap-1.5 text-sm text-muted">
         <!--
           Keyed by name: Nuxt Icon's CSS mode, reused across a name change,
           writes the new name's rule with the old icon's image, and the check
@@ -324,7 +320,6 @@ onMounted(() => {
         icon="i-lucide-images"
         color="neutral"
         variant="ghost"
-        size="sm"
         :disabled="busy || !activeProject"
         @click="requestEditPhotos"
       >
@@ -337,7 +332,6 @@ onMounted(() => {
         icon="i-lucide-message-square"
         color="neutral"
         :variant="chatOpen ? 'soft' : 'ghost'"
-        size="sm"
         :aria-pressed="chatOpen"
         @click="chatOpen = !chatOpen"
       >
@@ -349,7 +343,6 @@ onMounted(() => {
       <UButton
         icon="i-lucide-download"
         color="primary"
-        size="sm"
         :disabled="!activeProject"
         @click="exportOpen = true"
       >
@@ -426,14 +419,14 @@ onMounted(() => {
         />
       </main>
 
-      <!-- What the book holds, and what a click or a drag does right now. -->
+      <!-- What the book holds, and what is wrong with it, if anything. -->
       <footer
         v-if="layout"
-        class="flex h-8 shrink-0 items-center gap-4 border-t border-default bg-default px-4 text-xs whitespace-nowrap text-muted tabular-nums"
+        class="flex min-h-9 shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-t border-default bg-default px-4 py-1.5 text-sm whitespace-nowrap text-muted tabular-nums"
       >
         <button
           type="button"
-          class="-mx-1 rounded px-1 text-default hover:bg-elevated focus-visible:outline-2 focus-visible:outline-primary"
+          class="-mx-1 rounded-sm px-1 text-default hover:bg-elevated focus-visible:outline-2 focus-visible:outline-primary"
           title="Change the print size"
           @click="printSizeOpen = true"
         >
@@ -441,31 +434,18 @@ onMounted(() => {
         </button>
         <span><span class="text-default">{{ layout.pageCount }}</span> pages</span>
         <span><span class="text-default">{{ layout.placedPhotos }}</span> photos placed</span>
-        <span v-if="blankPages > 0">
-          <span class="text-default">{{ blankPages }}</span>
-          {{ blankPages === 1 ? "page prints" : "pages print" }} blank
+        <!--
+          Problems only, and only when there is one: a blank page or a photo
+          left out is something to act on, so it reads as a warning.
+          (What a drag does lives in the mode toggle's tooltip.)
+        -->
+        <span v-if="blankPages > 0" class="flex items-center gap-1.5 text-warning">
+          <UIcon name="i-lucide-triangle-alert" class="size-4 shrink-0" />
+          {{ blankPages }} {{ blankPages === 1 ? "page prints" : "pages print" }} blank
         </span>
-        <span v-if="layout.droppedPhotos > 0">
-          <span class="text-default">{{ layout.droppedPhotos }}</span> left out
-        </span>
-        <span class="ml-auto flex min-w-0 items-center gap-1.5">
-          <UIcon :key="editSlots ? 'move' : 'crop'" :name="editSlots ? 'i-lucide-move' : 'i-lucide-crop'" class="size-3.5 shrink-0" />
-          <span
-            class="truncate"
-            :title="
-              editSlots
-                ? 'Drag a box to move it, drag a corner to resize it; edges and centres snap to the guides'
-                : 'Drag a photo to move its crop, ⌘-scroll over it to zoom. Click a photo, then another anywhere in the book, to swap them'
-            "
-          >
-            <template v-if="editSlots">
-              Drag a box to move it, drag a corner to resize it; edges and centres snap to the guides
-            </template>
-            <template v-else>
-              Drag a photo to move its crop, ⌘-scroll over it to zoom. Click a photo, then another
-              anywhere in the book, to swap them
-            </template>
-          </span>
+        <span v-if="layout.droppedPhotos > 0" class="flex items-center gap-1.5 text-warning">
+          <UIcon name="i-lucide-triangle-alert" class="size-4 shrink-0" />
+          {{ layout.droppedPhotos }} left out
         </span>
       </footer>
     </div>
@@ -498,7 +478,7 @@ onMounted(() => {
       <div v-if="activeProject" class="space-y-6">
         <section class="space-y-1">
           <p class="text-sm text-toned tabular-nums">{{ projectDetailLabel(activeProject) }}</p>
-          <p v-if="restoredSelection" class="flex items-center gap-1.5 text-xs text-muted">
+          <p v-if="restoredSelection" class="flex items-center gap-1.5 text-sm text-muted">
             <UIcon name="i-lucide-hand" class="size-3 shrink-0" />
             <span>{{ restoredSelection }}</span>
           </p>
@@ -517,7 +497,6 @@ onMounted(() => {
             <UButton
               color="neutral"
               variant="outline"
-              size="xs"
               :disabled="busy"
               @click="pickOutputDir"
             >

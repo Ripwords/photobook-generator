@@ -132,12 +132,12 @@ const checkLabel = computed(() => CHECK_LABELS[updater.value.phase] ?? "Check fo
                     size="xs"
                     aria-label="Share of the limit in use"
                   />
-                  <p v-if="summary?.warning" class="text-xs text-muted">{{ summary.warning }}</p>
+                  <p v-if="summary?.warning" class="text-sm text-muted">{{ summary.warning }}</p>
                 </div>
                 <div class="flex items-center justify-between gap-4 px-3 py-3">
                   <div class="min-w-0">
                     <label for="settings-cache-limit">Limit</label>
-                    <p class="text-xs text-muted">
+                    <p class="text-sm text-muted">
                       Past it, the photos no book or draft uses are removed, oldest first. They are
                       analysed again if you need them.
                     </p>
@@ -154,14 +154,13 @@ const checkLabel = computed(() => CHECK_LABELS[updater.value.phase] ?? "Check fo
                 <div class="flex items-center justify-between gap-4 px-3 py-3">
                   <div class="min-w-0">
                     <p>Clear unused</p>
-                    <p class="text-xs text-muted">
+                    <p class="text-sm text-muted">
                       {{ freed ?? "Removes every analysed photo that no saved book or open draft uses." }}
                     </p>
                   </div>
                   <UButton
                     color="neutral"
                     variant="outline"
-                    size="sm"
                     class="shrink-0"
                     :loading="cacheBusy"
                     :disabled="!cache"
@@ -171,7 +170,7 @@ const checkLabel = computed(() => CHECK_LABELS[updater.value.phase] ?? "Check fo
                   </UButton>
                 </div>
               </div>
-              <p v-if="cacheError" class="text-xs text-error">{{ cacheError }}</p>
+              <p v-if="cacheError" class="text-sm text-error">{{ cacheError }}</p>
             </section>
 
             <section class="space-y-3" aria-labelledby="settings-shortcuts">
@@ -179,7 +178,7 @@ const checkLabel = computed(() => CHECK_LABELS[updater.value.phase] ?? "Check fo
               <ul class="divide-y divide-default rounded-md border border-default">
                 <li v-for="id in shortcutIds" :key="id" class="flex items-center justify-between gap-4 px-3 py-2 text-sm">
                   <span class="flex-1">{{ SHORTCUTS[id].label }}</span>
-                  <span class="text-xs text-muted">{{ SHORTCUTS[id].where }}</span>
+                  <span class="text-sm text-muted">{{ SHORTCUTS[id].where }}</span>
                   <span class="flex w-14 justify-end gap-0.5">
                     <UKbd v-for="key in shortcutKbds(id)" :key :value="key" />
                   </span>
@@ -206,19 +205,18 @@ const checkLabel = computed(() => CHECK_LABELS[updater.value.phase] ?? "Check fo
                 <p class="text-highlighted">Version {{ availableUpdate.version }} is available.</p>
                 <p
                   v-if="availableUpdate.notes"
-                  class="max-h-32 overflow-y-auto whitespace-pre-line text-xs text-toned"
+                  class="max-h-32 overflow-y-auto whitespace-pre-line text-sm text-toned"
                 >{{ availableUpdate.notes }}</p>
                 <div class="flex items-center gap-2">
                   <UButton
                     color="neutral"
                     variant="outline"
-                    size="sm"
                     icon="i-lucide-download"
                     @click="install"
                   >
                     Install and restart
                   </UButton>
-                  <UButton color="neutral" variant="ghost" size="sm" @click="dismiss">Not now</UButton>
+                  <UButton color="neutral" variant="ghost" @click="dismiss">Not now</UButton>
                 </div>
               </div>
 
@@ -246,7 +244,6 @@ const checkLabel = computed(() => CHECK_LABELS[updater.value.phase] ?? "Check fo
                   <UButton
                     color="neutral"
                     variant="outline"
-                    size="sm"
                     icon="i-lucide-rotate-cw"
                     :loading="updater.phase === 'checking'"
                     :disabled="updater.phase === 'checking'"
@@ -254,11 +251,11 @@ const checkLabel = computed(() => CHECK_LABELS[updater.value.phase] ?? "Check fo
                   >
                     {{ checkLabel }}
                   </UButton>
-                  <span v-if="updater.phase === 'uptodate'" class="text-xs text-muted">
+                  <span v-if="updater.phase === 'uptodate'" class="text-sm text-muted">
                     You're up to date.
                   </span>
                 </div>
-                <p v-if="updateError" class="flex items-start gap-1.5 text-xs text-error">
+                <p v-if="updateError" class="flex items-start gap-1.5 text-sm text-error">
                   <UIcon name="i-lucide-triangle-alert" class="mt-0.5 size-3.5 shrink-0" />
                   {{ updateError }}
                 </p>

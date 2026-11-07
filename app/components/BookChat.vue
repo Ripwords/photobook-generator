@@ -107,7 +107,7 @@ onMounted(() => {
       <div v-if="noKey" class="flex h-full flex-col items-center justify-center gap-3 px-4 text-center">
         <UIcon name="i-lucide-key-round" class="size-6 text-muted" />
         <p class="text-sm text-toned">{{ NO_DEEPSEEK_KEY }}</p>
-        <UButton color="primary" size="sm" icon="i-lucide-key-round" @click="emit('openKeys')">
+        <UButton color="primary" icon="i-lucide-key-round" @click="emit('openKeys')">
           Add API key
         </UButton>
       </div>
@@ -126,7 +126,6 @@ onMounted(() => {
             :key="suggestion"
             color="neutral"
             variant="outline"
-            size="sm"
             class="text-left"
             @click="send(suggestion)"
           >
@@ -154,7 +153,7 @@ onMounted(() => {
                 :text="block.text"
                 :streaming="block.streaming"
               >
-                <p class="whitespace-pre-wrap text-xs text-muted">{{ block.text }}</p>
+                <p class="whitespace-pre-wrap text-sm text-muted">{{ block.text }}</p>
               </UChatReasoning>
 
               <div
@@ -164,18 +163,17 @@ onMounted(() => {
               >
                 <div class="space-y-0.5">
                   <p class="text-sm font-medium text-highlighted">{{ block.title }}</p>
-                  <p v-if="block.where" class="text-xs text-muted tabular-nums">{{ block.where }}</p>
+                  <p v-if="block.where" class="text-sm text-muted tabular-nums">{{ block.where }}</p>
                 </div>
 
-                <p v-if="block.warning" class="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-300">
-                  <UIcon name="i-lucide-triangle-alert" class="mt-px size-3.5 shrink-0" />
+                <p v-if="block.warning" class="flex items-start gap-1.5 text-sm text-warning">
+                  <UIcon name="i-lucide-triangle-alert" class="mt-0.5 size-4 shrink-0" />
                   <span>{{ block.warning }}</span>
                 </p>
 
                 <div v-if="block.approvalId" class="flex gap-2">
                   <UButton
                     color="primary"
-                    size="sm"
                     icon="i-lucide-check"
                     @click="approve(block.approvalId, true)"
                   >
@@ -184,14 +182,13 @@ onMounted(() => {
                   <UButton
                     color="neutral"
                     variant="outline"
-                    size="sm"
                     @click="approve(block.approvalId, false)"
                   >
                     Don't apply
                   </UButton>
                 </div>
 
-                <p v-if="block.line" class="flex items-center gap-1.5 text-xs" :class="block.line.tone">
+                <p v-if="block.line" class="flex items-center gap-1.5 text-sm" :class="block.line.tone">
                   <UIcon
                     :key="block.line.icon"
                     :name="block.line.icon"
@@ -200,7 +197,7 @@ onMounted(() => {
                   />
                   {{ block.line.text }}
                 </p>
-                <p v-if="block.reason" class="text-xs text-toned">{{ block.reason }}</p>
+                <p v-if="block.reason" class="text-sm text-toned">{{ block.reason }}</p>
               </div>
             </template>
           </div>

@@ -190,17 +190,17 @@ function onSpine(event: Event) {
 <template>
   <div class="space-y-2.5">
     <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-      <p class="text-xs font-medium text-toned">Cover</p>
+      <p class="text-sm font-medium text-toned">Cover</p>
       <!--
         A native colour well: the layout carries no palette to offer swatches
         from, and the hex beside it says exactly what the manifest records.
       -->
       <label
-        class="flex items-center gap-2 text-xs text-muted"
+        class="flex items-center gap-2 text-sm text-muted"
         :class="busy ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'"
       >
         Spine colour
-        <span class="relative size-5 overflow-hidden rounded ring-1 ring-default">
+        <span class="relative size-5 overflow-hidden rounded-sm ring-1 ring-default">
           <input
             type="color"
             class="absolute -inset-2 size-9 cursor-[inherit] border-0 p-0"
@@ -210,7 +210,7 @@ function onSpine(event: Event) {
             @change="onSpine"
           />
         </span>
-        <span class="font-mono text-[11px] text-toned tabular-nums">{{ layout.cover.spine }}</span>
+        <span class="font-mono text-sm text-toned tabular-nums">{{ layout.cover.spine }}</span>
       </label>
     </div>
 
@@ -289,7 +289,7 @@ function onSpine(event: Event) {
         </div>
       </template>
     </div>
-    <div class="flex gap-px text-[11px] text-dimmed" aria-hidden="true">
+    <div class="flex gap-px text-sm text-dimmed" aria-hidden="true">
       <p class="flex-1">Back</p>
       <p class="w-5 shrink-0" />
       <p class="flex-1">Front</p>

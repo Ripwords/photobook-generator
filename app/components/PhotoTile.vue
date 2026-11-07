@@ -94,11 +94,11 @@ const sharpnessPct = computed(() => (isRanked(photo) ? photo.sharpnessPct : null
     <UBadge
       v-if="burstSize > 1"
       color="neutral"
-      size="sm"
+      size="lg"
       class="absolute top-2 left-2 gap-1 bg-black/60 text-white ring-0"
       :title="`Best of ${burstSize} near-duplicate frames`"
     >
-      <UIcon name="i-lucide-images" class="size-3" />
+      <UIcon name="i-lucide-images" class="size-3.5" />
       <span class="tabular-nums">{{ burstSize }}</span>
     </UBadge>
 
@@ -118,7 +118,6 @@ const sharpnessPct = computed(() => (isRanked(photo) ? photo.sharpnessPct : null
     >
       <UButton
         :icon="override === 'include' ? 'i-lucide-check-circle-2' : 'i-lucide-circle-plus'"
-        size="sm"
         :color="override === 'include' ? 'primary' : 'neutral'"
         :class="override === 'include' ? '' : 'bg-black/60 text-white'"
         :aria-pressed="override === 'include'"
@@ -128,7 +127,6 @@ const sharpnessPct = computed(() => (isRanked(photo) ? photo.sharpnessPct : null
       />
       <UButton
         :icon="override === 'exclude' ? 'i-lucide-x-circle' : 'i-lucide-circle-minus'"
-        size="sm"
         :color="override === 'exclude' ? 'error' : 'neutral'"
         :class="override === 'exclude' ? '' : 'bg-black/60 text-white'"
         :aria-pressed="override === 'exclude'"
@@ -163,50 +161,56 @@ const sharpnessPct = computed(() => (isRanked(photo) ? photo.sharpnessPct : null
       />
     </UBadge>
 
-    <figcaption
-      class="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-gradient-to-t from-black/85 via-black/55 to-transparent px-2 pt-6 pb-1.5 text-white"
-    >
-      <span
-        v-if="ranked && aestheticPct !== null && sharpnessPct !== null"
-        class="flex items-center gap-2 text-[11px] leading-none"
-      >
-        <span class="flex items-center gap-1" title="Aesthetic percentile within this folder">
-          <UIcon name="i-lucide-sparkles" class="size-3" />
-          <span class="tabular-nums">{{ Math.round(aestheticPct) }}</span>
-        </span>
-        <span class="flex items-center gap-1" title="Sharpness percentile within this folder">
-          <UIcon name="i-lucide-focus" class="size-3" />
-          <span class="tabular-nums">{{ Math.round(sharpnessPct) }}</span>
-        </span>
-      </span>
-      <span
-        v-else
-        class="flex items-center gap-1 text-[11px] leading-none text-white"
-        title="Rank is computed once every photo in the folder has been analyzed"
-      >
-        <UIcon name="i-lucide-clock" class="size-3" />
-        <span>unranked</span>
-      </span>
+    <!--
+      The numbers behind the pick -- percentiles and the face count -- are
+      machine data, so they sit behind an info button rather than captioning
+      every photo. Revealed on hover or focus like the override buttons, and
+      kept visible while its popover is open.
 
-      <span v-if="photo.faceCount > 0" class="flex items-center gap-2 text-[11px] leading-none">
-        <span class="flex items-center gap-1" title="Faces detected">
-          <UIcon name="i-lucide-user-round" class="size-3" />
-          <span class="tabular-nums">{{ photo.faceCount }}</span>
-        </span>
-        <!--
-          Smile badge intentionally removed. `smileFraction` is still
-          computed by the sidecar and carried on `photo` end to end -- only
-          rendering it is suppressed here. Real calibration data (15 faces,
-          all confirmed smiling by a human) shows the threshold has a 100%
-          false-negative rate: the strongest measured lift was 0.072, but
-          `confidence > 0.5` requires lift > 0.10, so no genuine smile can
-          ever cross it. A confidently wrong percentage is worse than no
-          signal. See docs/PROJECT-STATUS.md, "Deferred: smile detection
-          calibration" under What is NOT built, for the full measurement,
-          the disqualification of `midpointLift`, and what is needed to
-          finish this (or drop `smile_fraction` entirely).
-        -->
-      </span>
-    </figcaption>
+      Smile badge intentionally absent. `smileFraction` is still computed by
+      the sidecar and carried on `photo` end to end -- only rendering it is
+      suppressed. Real calibration data (15 faces, all confirmed smiling by a
+      human) shows the threshold has a 100% false-negative rate: the strongest
+      measured lift was 0.072, but `confidence > 0.5` requires lift > 0.10, so
+      no genuine smile can ever cross it. A confidently wrong percentage is
+      worse than no signal. See docs/PROJECT-STATUS.md, "Deferred: smile
+      detection calibration" under What is NOT built.
+    -->
+    <UPopover :content="{ side: 'top', align: 'end' }">
+      <UButton
+        icon="i-lucide-info"
+        color="neutral"
+        class="absolute right-2 bottom-2 bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+        aria-label="Photo details"
+      />
+      <template #content>
+        <dl
+          v-if="ranked && aestheticPct !== null && sharpnessPct !== null"
+          class="grid grid-cols-[auto_auto] gap-x-4 gap-y-1.5 p-3 text-sm tabular-nums"
+        >
+          <dt class="flex items-center gap-1.5 text-muted">
+            <UIcon name="i-lucide-sparkles" class="size-4" />Aesthetic percentile
+          </dt>
+          <dd class="text-right text-highlighted">{{ Math.round(aestheticPct) }}</dd>
+          <dt class="flex items-center gap-1.5 text-muted">
+            <UIcon name="i-lucide-focus" class="size-4" />Sharpness percentile
+          </dt>
+          <dd class="text-right text-highlighted">{{ Math.round(sharpnessPct) }}</dd>
+          <template v-if="photo.faceCount > 0">
+            <dt class="flex items-center gap-1.5 text-muted">
+              <UIcon name="i-lucide-user-round" class="size-4" />Faces
+            </dt>
+            <dd class="text-right text-highlighted">{{ photo.faceCount }}</dd>
+          </template>
+          <p class="col-span-2 mt-1 max-w-60 text-muted">
+            Ranked against every photo in this set.
+          </p>
+        </dl>
+        <p v-else class="flex max-w-64 items-start gap-1.5 p-3 text-sm text-muted">
+          <UIcon name="i-lucide-clock" class="mt-0.5 size-4 shrink-0" />
+          Not ranked yet. Ranks are worked out once every photo in the folder has been analyzed.
+        </p>
+      </template>
+    </UPopover>
   </figure>
 </template>

@@ -50,7 +50,6 @@ const steps = [
       <UInput
         v-model="query"
         icon="i-lucide-search"
-        size="sm"
         placeholder="Search"
         aria-label="Search photobooks by name or folder"
         class="w-56"
@@ -59,11 +58,10 @@ const steps = [
         v-model="sort"
         :items="LIBRARY_SORTS"
         value-key="value"
-        size="sm"
         aria-label="Sort by"
         class="w-36"
       />
-      <UFieldGroup size="sm">
+      <UFieldGroup>
         <UTooltip text="Covers">
           <UButton
             icon="i-lucide-layout-grid"
@@ -89,7 +87,7 @@ const steps = [
   </AppHeader>
 
   <main class="flex-1 overflow-y-auto">
-    <div class="mx-auto max-w-6xl space-y-6 p-8">
+    <div class="mx-auto max-w-6xl space-y-6 p-6">
       <UAlert
         v-if="error"
         color="error"
@@ -103,7 +101,7 @@ const steps = [
       <!-- No books yet: the way in, and what happens after it. -->
       <section
         v-if="projects.length === 0"
-        class="mx-auto mt-10 max-w-2xl space-y-8 rounded-xl border border-default p-10"
+        class="mx-auto mt-10 max-w-2xl space-y-8 rounded-lg border border-default p-10"
         aria-labelledby="first-book"
       >
         <div class="space-y-3">
@@ -119,9 +117,9 @@ const steps = [
             <UButton icon="i-lucide-plus" color="primary" @click="emit('new')">
               New photobook
             </UButton>
-            <span class="flex items-center gap-1 text-xs text-muted">
+            <span class="flex items-center gap-1 text-sm text-muted">
               or press
-              <UKbd v-for="key in shortcutKbds('newBook')" :key size="sm" :value="key" />
+              <UKbd v-for="key in shortcutKbds('newBook')" :key :value="key" />
             </span>
           </div>
         </div>
@@ -129,13 +127,13 @@ const steps = [
           <li v-for="(step, i) in steps" :key="step.title" class="space-y-2">
             <div class="flex items-start gap-2 text-sm font-medium text-highlighted">
               <span
-                class="flex size-5 shrink-0 items-center justify-center rounded-full bg-inverted text-[11px] text-inverted tabular-nums"
+                class="flex size-5 shrink-0 items-center justify-center rounded-full bg-inverted text-sm text-inverted tabular-nums"
               >
                 {{ i + 1 }}
               </span>
               {{ step.title }}
             </div>
-            <p class="text-xs text-muted">{{ step.text }}</p>
+            <p class="text-sm text-muted">{{ step.text }}</p>
           </li>
         </ol>
       </section>

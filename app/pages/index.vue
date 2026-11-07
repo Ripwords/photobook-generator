@@ -67,6 +67,7 @@ async function deleteBook(id: number) {
     actions: [
       {
         label: "Undo",
+        size: "md",
         color: "neutral",
         variant: "outline",
         onClick: () => void restoreProject(id),
@@ -149,6 +150,7 @@ function announce(job: AnalysisJob) {
     actions: [
       {
         label: "Open",
+        size: "md",
         color: "neutral",
         variant: "outline",
         onClick: () => openJob(job.id),

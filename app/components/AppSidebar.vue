@@ -114,7 +114,6 @@ const itemClass = (active: boolean) => [
           icon="i-lucide-panel-left"
           color="neutral"
           variant="ghost"
-          size="sm"
           aria-label="Hide sidebar"
           @click="toggleSidebar"
         />
@@ -142,13 +141,12 @@ const itemClass = (active: boolean) => [
       >
         <UIcon name="i-lucide-library" class="size-4 shrink-0" />
         <span class="flex-1">Library</span>
-        <span class="text-xs text-muted tabular-nums">{{ projects.length }}</span>
       </button>
     </div>
 
     <div class="min-h-0 flex-1 space-y-4 overflow-y-auto px-2 pb-2">
       <section v-if="drafts.length > 0" aria-labelledby="sidebar-drafts">
-        <p id="sidebar-drafts" class="px-2 pb-1 text-xs font-medium text-muted">Drafts</p>
+        <p id="sidebar-drafts" class="px-2 pb-1 text-sm font-medium text-muted">Drafts</p>
         <ul class="space-y-0.5">
           <li v-for="draft in drafts" :key="draft.id">
             <button
@@ -170,7 +168,7 @@ const itemClass = (active: boolean) => [
                 <UIcon v-else name="i-lucide-images" class="size-3.5" />
               </span>
               <span class="flex-1 truncate">{{ draft.name || "Untitled photobook" }}</span>
-              <span class="shrink-0 text-xs font-normal text-muted tabular-nums">
+              <span class="shrink-0 text-sm font-normal text-muted tabular-nums">
                 {{ draftStatus(draft) }}
               </span>
             </button>
@@ -179,7 +177,7 @@ const itemClass = (active: boolean) => [
       </section>
 
       <section v-for="section in sections" :key="section.id" :aria-labelledby="section.id">
-        <p :id="section.id" class="px-2 pb-1 text-xs font-medium text-muted">{{ section.title }}</p>
+        <p :id="section.id" class="px-2 pb-1 text-sm font-medium text-muted">{{ section.title }}</p>
         <ul class="space-y-0.5">
           <li v-for="project in section.books" :key="project.id">
             <UContextMenu :items="actions(project)">
@@ -206,7 +204,7 @@ const itemClass = (active: boolean) => [
           </li>
         </ul>
       </section>
-      <p v-if="projects.length === 0" class="px-2 py-1 text-xs text-muted">
+      <p v-if="projects.length === 0" class="px-2 py-1 text-sm text-muted">
         Books you make appear here.
       </p>
     </div>

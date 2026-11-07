@@ -150,7 +150,7 @@ const keepFocus = { onCloseAutoFocus: (event: Event) => event.preventDefault() }
         <div
           class="pointer-events-none relative grid shrink-0 overflow-hidden bg-elevated ring ring-default transition-shadow group-hover:ring-accented"
           :class="[
-            view === 'grid' ? 'aspect-[11/8.5] w-full rounded-lg shadow-sm' : 'aspect-[11/8.5] w-20 rounded',
+            view === 'grid' ? 'aspect-[11/8.5] w-full rounded-lg shadow-sm' : 'aspect-[11/8.5] w-20 rounded-sm',
             covers.length === 4 ? 'grid-cols-2 grid-rows-2 gap-px' : covers.length === 2 ? 'grid-cols-2 gap-px' : '',
           ]"
           aria-hidden="true"
@@ -173,7 +173,6 @@ const keepFocus = { onCloseAutoFocus: (event: Event) => event.preventDefault() }
             <UInput
               v-if="editing"
               v-model="draftName"
-              size="sm"
               autofocus
               :disabled="busy"
               aria-label="Photobook name"
@@ -192,12 +191,12 @@ const keepFocus = { onCloseAutoFocus: (event: Event) => event.preventDefault() }
                 aria-label="Favourite"
               />
             </p>
-            <p class="truncate text-xs text-muted tabular-nums">
+            <p class="truncate text-sm text-muted tabular-nums">
               {{ project.pageCount }} pages, {{ project.photoCount }} photos
             </p>
             <p
               v-if="view === 'list'"
-              class="truncate text-xs text-muted"
+              class="truncate text-sm text-muted"
               :title="project.sourceFolders.join('\n')"
             >
               From {{ folderListLabel(project.sourceFolders) }}
@@ -205,7 +204,7 @@ const keepFocus = { onCloseAutoFocus: (event: Event) => event.preventDefault() }
           </div>
           <p
             v-if="view === 'list'"
-            class="shrink-0 self-center text-xs text-muted tabular-nums"
+            class="shrink-0 self-center text-sm text-muted tabular-nums"
           >
             {{ exportedOn ? `Exported ${exportedOn}` : "Not exported yet" }}
           </p>
@@ -214,17 +213,16 @@ const keepFocus = { onCloseAutoFocus: (event: Event) => event.preventDefault() }
               icon="i-lucide-ellipsis"
               color="neutral"
               variant="ghost"
-              size="xs"
               :disabled="busy"
               :aria-label="`Actions for ${project.name}`"
-              class="pointer-events-auto relative z-10 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+              class="pointer-events-auto relative z-10 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
               :class="view === 'list' && 'self-center'"
             />
           </UDropdownMenu>
         </div>
         <p
           v-if="view === 'grid'"
-          class="pointer-events-none -mt-2 truncate text-xs text-muted tabular-nums"
+          class="pointer-events-none -mt-2 truncate text-sm text-muted tabular-nums"
           :title="project.sourceFolders.join('\n')"
         >
           {{ exportedOn ? `Exported ${exportedOn}` : "Not exported yet" }}

@@ -268,7 +268,6 @@ function onGenerated(projectId: number) {
         icon="i-lucide-folder-open"
         color="neutral"
         variant="outline"
-        size="sm"
         :loading="job.running"
         :disabled="job.running"
         @click="chooseOtherFolders"
@@ -281,7 +280,6 @@ function onGenerated(projectId: number) {
         icon="i-lucide-trash-2"
         color="neutral"
         variant="ghost"
-        size="sm"
         aria-label="Discard draft"
         @click="confirmDiscard = true"
       />
@@ -383,7 +381,7 @@ function onGenerated(projectId: number) {
         <div
           class="@container sticky top-0 z-20 flex h-11 items-center gap-3 border-b border-default bg-default/95 px-6 backdrop-blur"
         >
-          <UFieldGroup v-if="leftOutCount > 0 || !showLeftOut" size="xs" class="shrink-0">
+          <UFieldGroup v-if="leftOutCount > 0 || !showLeftOut" class="shrink-0">
             <UButton
               color="neutral"
               :variant="showLeftOut ? 'solid' : 'outline'"
@@ -401,17 +399,17 @@ function onGenerated(projectId: number) {
               In the book
             </UButton>
           </UFieldGroup>
-          <p class="min-w-0 truncate text-xs text-muted tabular-nums">
+          <p class="min-w-0 truncate text-sm text-muted tabular-nums">
             <span class="font-medium text-highlighted">{{ placedTotal }}</span> of {{ photos.length }} in the book
           </p>
           <!--
-            Measured, not guessed: the toggle is 164px, the slider group 162px
-            and the two gaps 24px, so everything fits once the row's content box
-            reaches ~26rem, with the counts giving way first. Below that the
-            slider stands down rather than being clipped. The narrowest real
-            surface is this sheet inside the editor's Edit photos panel, which
-            is 477px at the window's own minWidth of 1100, so the slider is
-            there at every size the app can reach.
+            Measured, not guessed, at md: the toggle is 179px, the count ~131px,
+            the slider group 130px and the two gaps 24px -- 464px in all. The
+            narrowest real surface is this sheet inside the editor's Edit photos
+            panel, 477px at the window's own minWidth of 1100, so everything
+            fits whole at every size the app can reach. Narrower than 26rem the
+            count gives way first, then the slider stands down rather than
+            being clipped.
           -->
           <div class="ml-auto hidden shrink-0 items-center gap-2 @min-[26rem]:flex">
             <UIcon name="i-lucide-image" class="size-3.5 text-muted" />
@@ -422,7 +420,7 @@ function onGenerated(projectId: number) {
               :step="10"
               size="xs"
               color="neutral"
-              class="w-28"
+              class="w-20"
               aria-label="Photo size"
             />
             <UIcon name="i-lucide-image" class="size-5 text-muted" />
@@ -484,7 +482,7 @@ function onGenerated(projectId: number) {
               -->
               <span
                 v-if="skipNoteFor(event)"
-                class="col-start-2 ml-2 min-w-0 truncate text-xs font-normal text-muted"
+                class="col-start-2 ml-2 min-w-0 truncate text-sm font-normal text-muted"
               >
                 {{ skipNoteFor(event) }}
               </span>
@@ -536,48 +534,48 @@ function onGenerated(projectId: number) {
         @reveal="revealEvent"
       />
 
-      <section class="space-y-2 border-t border-default pt-6" aria-labelledby="select-stats">
-        <h2 id="select-stats" class="text-sm font-medium text-highlighted">Selection</h2>
-        <dl class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm tabular-nums">
-          <dt class="text-muted">Keepers</dt>
-          <dd class="text-right text-highlighted">{{ kept.length }}</dd>
-          <dt class="text-muted">Analyzed</dt>
-          <dd class="text-right">{{ summary.photos.length }}</dd>
-          <dt class="text-muted">Scanned</dt>
-          <dd class="text-right">{{ summary.total }}</dd>
-          <template v-if="summary.failed > 0">
-            <dt class="text-muted">Failed</dt>
-            <dd class="text-right">{{ summary.failed }}</dd>
-          </template>
-          <template v-if="summary.cached > 0">
-            <dt class="text-muted">From cache</dt>
-            <dd class="text-right">{{ summary.cached }}</dd>
-          </template>
-        </dl>
-      </section>
+      <div class="space-y-1 border-t border-default pt-4">
+        <DisclosureSection label="How to read the sheet">
+          <ul class="space-y-2 text-sm text-muted">
+            <li class="flex gap-2">
+              <UIcon name="i-lucide-star" class="mt-0.5 size-4 shrink-0 text-highlighted" />
+              The best photo of each event, outlined.
+            </li>
+            <li class="flex gap-2">
+              <UIcon name="i-lucide-circle-plus" class="mt-0.5 size-4 shrink-0 text-highlighted" />
+              Use + and &minus; on a photo to override what the engine chose.
+            </li>
+            <li class="flex gap-2">
+              <UIcon name="i-lucide-images" class="mt-0.5 size-4 shrink-0 text-highlighted" />
+              The best of a burst of near-duplicate frames.
+            </li>
+            <li class="flex gap-2">
+              <UIcon name="i-lucide-info" class="mt-0.5 size-4 shrink-0 text-highlighted" />
+              A photo&rsquo;s aesthetic and sharpness percentiles, ranked across everything you
+              chose.
+            </li>
+          </ul>
+        </DisclosureSection>
 
-      <section class="space-y-2 border-t border-default pt-6" aria-labelledby="select-legend">
-        <h2 id="select-legend" class="text-sm font-medium text-highlighted">Reading the sheet</h2>
-        <ul class="space-y-2 text-xs text-muted">
-          <li class="flex gap-2">
-            <UIcon name="i-lucide-star" class="mt-px size-3.5 shrink-0 text-highlighted" />
-            The best photo of each event, outlined.
-          </li>
-          <li class="flex gap-2">
-            <UIcon name="i-lucide-circle-plus" class="mt-px size-3.5 shrink-0 text-highlighted" />
-            Use + and &minus; on a photo to override what the engine chose.
-          </li>
-          <li class="flex gap-2">
-            <UIcon name="i-lucide-images" class="mt-px size-3.5 shrink-0 text-highlighted" />
-            The best of a burst of near-duplicate frames.
-          </li>
-          <li class="flex gap-2">
-            <UIcon name="i-lucide-sparkles" class="mt-px size-3.5 shrink-0 text-highlighted" />
-            Percentiles are ranked across everything you chose: sparkle is aesthetic, focus is
-            sharpness.
-          </li>
-        </ul>
-      </section>
+        <DisclosureSection label="Technical details">
+          <dl class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm tabular-nums">
+            <dt class="text-muted">Keepers</dt>
+            <dd class="text-right text-highlighted">{{ kept.length }}</dd>
+            <dt class="text-muted">Analyzed</dt>
+            <dd class="text-right">{{ summary.photos.length }}</dd>
+            <dt class="text-muted">Scanned</dt>
+            <dd class="text-right">{{ summary.total }}</dd>
+            <template v-if="summary.failed > 0">
+              <dt class="text-muted">Failed</dt>
+              <dd class="text-right">{{ summary.failed }}</dd>
+            </template>
+            <template v-if="summary.cached > 0">
+              <dt class="text-muted">From cache</dt>
+              <dd class="text-right">{{ summary.cached }}</dd>
+            </template>
+          </dl>
+        </DisclosureSection>
+      </div>
     </aside>
   </div>
 
