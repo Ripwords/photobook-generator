@@ -3,12 +3,9 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   cropMoved,
   cropStyle,
-  cropZoomed,
   pressIsDrag,
   rectStyle,
   releaseAction,
-  zoomTakeover,
-  wheelZoomFactor,
   type BookLayout,
   type CoverSide,
   type PreviewRect,
@@ -23,22 +20,23 @@ const { layout, busy = false } = defineProps<{
 const emit = defineEmits<{
   /** Open the photo picker for one side. */
   choose: [side: CoverSide];
-  /** The user dragged or zoomed a cover photo and let go. */
+  /** The user dragged a cover photo and let go. */
   crop: [side: CoverSide, crop: PreviewRect];
+  /** Open the crop dialog for one side. */
+  cropOpen: [side: CoverSide];
   /** A new plain spine colour, `#rrggbb`. */
   spine: [rgb: string];
 }>();
 
 /**
- * The same gesture as a page photo: drag moves the window, ⌘-scroll zooms,
- * one edit on release. A press that never travels `DRAG_THRESHOLD_PX` is a
- * click, which opens the picker for that side instead of selecting for a swap
- * -- the cover holds a copy of a photo, so there is nothing to swap it with.
+ * The same gesture as a page photo: drag moves the window, one edit on
+ * release; zooming is in the crop dialog. A press that never travels
+ * `DRAG_THRESHOLD_PX` is a click, which opens the picker for that side instead
+ * of selecting for a swap -- the cover holds a copy of a photo, so there is nothing to swap it with.
  *
  * Release decides, on where the pointer ENDED. A press that drifts out past
  * the threshold and comes back is a click, not a one-pixel crop nudge.
  */
-const WHEEL_SETTLE_MS = 250;
 const live = ref<Partial<Record<CoverSide, PreviewRect>>>({});
 interface Drag {
   side: CoverSide;
@@ -50,8 +48,6 @@ interface Drag {
   moved: boolean;
 }
 let drag: Drag | null = null;
-let wheelTimer: ReturnType<typeof setTimeout> | undefined;
-let wheelPending: { side: CoverSide; crop: PreviewRect } | null = null;
 
 function onPointerDown(event: PointerEvent, side: CoverSide, crop: PreviewRect) {
   if (busy || event.button !== 0) return;
@@ -66,10 +62,6 @@ function onPointerDown(event: PointerEvent, side: CoverSide, crop: PreviewRect) 
     h: box.height || 1,
     moved: false,
   };
-  // As on a page: this press takes over any zoom still waiting to be saved,
-  // held for release to decide on this side, saved now on the other one.
-  if (zoomTakeover(wheelPending?.side ?? null, side, true) === "save") saveWheel();
-  else clearTimeout(wheelTimer);
   el.setPointerCapture(event.pointerId);
 }
 
@@ -88,9 +80,7 @@ function onPointerUp(event: PointerEvent) {
   drag = null;
   (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
   const crop = live.value[finished.side];
-  const owed = wheelPending?.side === finished.side;
-  wheelPending = null;
-  if (crop && releaseAction(finished.moved, true, owed) === "save") {
+  if (crop && releaseAction(finished.moved, true) === "save") {
     emit("crop", finished.side, crop);
     return;
   }
@@ -103,45 +93,8 @@ function onPointerCancel() {
   if (!drag) return;
   const cancelled = drag;
   drag = null;
-  // A zoom this press took over is not the cancelled thing -- the wheel
-  // gesture finished before the press began -- so it is saved, not dropped.
-  if (wheelPending?.side === cancelled.side) {
-    saveWheel();
-    return;
-  }
   const { [cancelled.side]: _dropped, ...rest } = live.value;
   live.value = rest;
-}
-
-function onWheel(event: WheelEvent, side: CoverSide, crop: PreviewRect) {
-  const factor = wheelZoomFactor(event);
-  if (busy || factor === null) return;
-  event.preventDefault();
-  // One zoom waits at a time, so a roll that moves to the other panel ends the
-  // one before it. Without this the back panel's zoom was drawn, never emitted,
-  // and snapped back to the saved crop when the front panel's edit answered.
-  if (zoomTakeover(wheelPending?.side ?? null, side, false) === "save") saveWheel();
-  const next = cropZoomed(live.value[side] ?? crop, factor);
-  live.value = { ...live.value, [side]: next };
-  wheelPending = { side, crop: next };
-  clearTimeout(wheelTimer);
-  wheelTimer = setTimeout(saveWheel, WHEEL_SETTLE_MS);
-}
-
-/**
- * Save the zoom the wheel has been building, whoever asks for it.
- *
- * A roll of the wheel is one edit, not one per notch, so the save waits for
- * `WHEEL_SETTLE_MS` of quiet. Anything that ends the gesture early -- a press,
- * or a roll that has moved to the other panel -- comes here instead of leaving
- * the timer armed to fire into whatever happens next. A click used to open the
- * picker and let the timer land a crop edit underneath the open dialog.
- */
-function saveWheel() {
-  clearTimeout(wheelTimer);
-  const pending = wheelPending;
-  wheelPending = null;
-  if (pending) emit("crop", pending.side, pending.crop);
 }
 
 // As on the pages: once an edit is answered, by a new layout or by a refusal
@@ -242,12 +195,11 @@ function onSpine(event: Event) {
             :class="busy ? 'cursor-wait' : 'cursor-grab'"
             :disabled="busy"
             :title="panel.photo.title"
-            :aria-label="`${panel.label} cover photo: click to change or remove it, drag to move the crop, command-scroll to zoom`"
+            :aria-label="`${panel.label} cover photo: click to change or remove it, drag to move the crop`"
             @pointerdown="onPointerDown($event, panel.side, panel.photo.saved)"
             @pointermove="onPointerMove"
             @pointerup="onPointerUp"
             @pointercancel="onPointerCancel"
-            @wheel="onWheel($event, panel.side, panel.photo.saved)"
             @keydown.enter.space.prevent="emit('choose', panel.side)"
           >
             <img
@@ -285,6 +237,24 @@ function onSpine(event: Event) {
               :style="panel.board"
             />
             <div class="absolute border border-dashed border-sky-500/70" :style="panel.visible" />
+          </div>
+          <!-- Zoom and framing, in the crop dialog; dragging the photo here only moves it. -->
+          <div
+            v-if="panel.photo"
+            class="pointer-events-none absolute flex items-start justify-end p-2"
+            :style="panel.visible"
+          >
+            <UTooltip :text="`Crop the ${panel.side} cover photo`">
+              <UButton
+                icon="i-lucide-crop"
+                color="neutral"
+                variant="solid"
+                class="pointer-events-auto"
+                :disabled="busy"
+                :aria-label="`Crop the ${panel.side} cover photo`"
+                @click="emit('cropOpen', panel.side)"
+              />
+            </UTooltip>
           </div>
         </div>
       </template>

@@ -3,7 +3,6 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   cropMoved,
   cropStyle,
-  cropZoomed,
   insideCover,
   NO_HOLD,
   pageGuides,
@@ -13,7 +12,6 @@ import {
   SLOT_DRAG_THRESHOLD_PX,
   rectStyle,
   releaseAction,
-  zoomTakeover,
   samePlacement,
   slotMoved,
   slotResized,
@@ -27,7 +25,6 @@ import {
   type PreviewPage,
   type PreviewRect,
   type SnapLine,
-  wheelZoomFactor,
 } from "~/types/preview";
 
 const {
@@ -76,7 +73,7 @@ const shown = computed(() => geometry ?? layout.geometry);
 const emit = defineEmits<{
   /** The user clicked a photo while swapping -- see `nextSwapStep`. */
   select: [placement: PlacementRef];
-  /** The user dragged or zoomed a photo inside its slot and let go. */
+  /** The user dragged a photo inside its slot and let go. */
   crop: [placement: PlacementRef, crop: PreviewRect];
   /** The user moved or resized a slot in layout mode and let go. */
   slot: [placement: PlacementRef, rect: PreviewRect];
@@ -187,8 +184,10 @@ const cornerClass: Record<Corner, string> = {
 };
 
 /**
- * Hand-cropping, as a gesture on the slot itself: drag the photo to move the
- * window, ⌘-scroll to zoom it. The window is drawn live from a local copy while
+ * Quick cropping, as a gesture on the slot itself: drag the photo to move the
+ * window. Zooming lives in the crop dialog (`CropPhotoDialog`), where a wheel or
+ * pinch has nothing to scroll; on the page it fought the book's own scrolling.
+ * The window is drawn live from a local copy while
  * the pointer is down and sent as ONE edit on release, so a drag is one save
  * and one round trip, not one per pixel. Rust re-derives the height from the
  * slot, keeps the window inside the photo and re-runs the hard constraints;
@@ -231,11 +230,6 @@ function onPointerDown(event: PointerEvent, key: string, ref: PlacementRef, crop
     slotH: box.height || 1,
     moved: false,
   };
-  // This press takes over any zoom still waiting to be saved. On this slot it
-  // is held for release to decide; on any other slot that gesture is over, so
-  // it is saved now rather than firing part way through this one.
-  if (zoomTakeover(wheelPending?.key ?? null, key, true) === "save") saveWheel();
-  else clearTimeout(wheelTimer);
   el.setPointerCapture(event.pointerId);
 }
 
@@ -257,9 +251,7 @@ function onPointerUp(event: PointerEvent) {
   drag = null;
   (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
   const crop = liveCrops.value[finished.key];
-  const owed = wheelPending?.key === finished.key;
-  wheelPending = null;
-  if (crop && releaseAction(finished.moved, true, owed) === "save") {
+  if (crop && releaseAction(finished.moved, true) === "save") {
     emit("crop", finished.ref, crop);
     return;
   }
@@ -272,49 +264,10 @@ function onPointerCancel() {
   if (!drag) return;
   const cancelled = drag;
   drag = null;
-  // A zoom this press took over is not the cancelled thing -- the wheel
-  // gesture finished before the press began -- so it is saved, not dropped.
-  if (wheelPending?.key === cancelled.key) {
-    saveWheel();
-    return;
-  }
   const { [cancelled.key]: _dropped, ...rest } = liveCrops.value;
   liveCrops.value = rest;
 }
 
-function onWheel(event: WheelEvent, key: string, ref: PlacementRef, crop: PreviewRect) {
-  const factor = wheelZoomFactor(event);
-  if (!selectable || factor === null) return;
-  event.preventDefault();
-  // One zoom waits at a time, so a roll that moves to another slot ends the
-  // one before it. Without this the pending slot was simply overwritten and
-  // its zoom never became an edit.
-  if (zoomTakeover(wheelPending?.key ?? null, key, false) === "save") saveWheel();
-  const next = cropZoomed(cropOf(key, crop), factor);
-  liveCrops.value = { ...liveCrops.value, [key]: next };
-  wheelPending = { key, ref, crop: next };
-  clearTimeout(wheelTimer);
-  wheelTimer = setTimeout(saveWheel, WHEEL_SETTLE_MS);
-}
-
-/**
- * Save the zoom the wheel has been building, whoever asks for it.
- *
- * A roll of the wheel is one edit, not one per notch, so the save waits for
- * `WHEEL_SETTLE_MS` of quiet. Anything that ends the gesture early -- a press,
- * or a roll of the wheel that has moved to another slot -- comes here instead
- * of leaving the timer armed to fire in the middle of whatever happens next,
- * or dropping the zoom on the floor. `zoomTakeover` decides which it is.
- */
-function saveWheel() {
-  clearTimeout(wheelTimer);
-  const pending = wheelPending;
-  wheelPending = null;
-  if (pending) emit("crop", pending.ref, pending.crop);
-}
-const WHEEL_SETTLE_MS = 250;
-let wheelTimer: ReturnType<typeof setTimeout> | undefined;
-let wheelPending: { key: string; ref: PlacementRef; crop: PreviewRect } | null = null;
 
 // The saved book is the truth. Once the edit a gesture produced has been
 // answered -- a new layout arrived, or `busy` fell back to false because the
@@ -381,9 +334,9 @@ const gutter = computed(() => rectStyle(shown.value[side].gutter));
 
 const snapped = computed<SnapLine[]>(() => snapLines(held.value));
 
-/** The chapter title this page prints, at its printed size -- see `pageTitle`. */
-const title = computed(() => (page ? pageTitle(layout, page.number, shown.value.pageWIn) : null));
-const titleAlign = { left: "text-left", center: "text-center", right: "text-right" } as const;
+/** Where this page's chapter title goes, if the user adds it -- see `pageTitle`. */
+const title = computed(() => (page ? pageTitle(layout, page.number) : null));
+const titleJustify = { left: "justify-start", center: "justify-center", right: "justify-end" } as const;
 </script>
 
 <template>
@@ -423,13 +376,12 @@ const titleAlign = { left: "text-left", center: "text-center", right: "text-righ
         ]"
         :style="box.slot"
         :title="[box.photo?.path, box.filename].filter(Boolean).join('\n')"
-        :aria-label="selectable ? `Photo on page ${page.number}, slot ${box.z}: ${editSlots ? 'drag to move the box, drag a corner to resize it, hold shift to keep its shape' : isSelected(box.ref) ? 'selected for swap' : 'click to swap, drag to move the crop, command-scroll to zoom'}` : undefined"
+        :aria-label="selectable ? `Photo on page ${page.number}, slot ${box.z}: ${editSlots ? 'drag to move the box, drag a corner to resize it, hold shift to keep its shape' : isSelected(box.ref) ? 'selected for swap' : 'click to select it, drag to move the crop'}` : undefined"
         :aria-pressed="selectable && !editSlots ? isSelected(box.ref) : undefined"
         @pointerdown="editSlots ? onSlotPointerDown($event, box.key, box.ref, box.savedRect, null) : onPointerDown($event, box.key, box.ref, box.saved)"
         @pointermove="editSlots ? onSlotPointerMove($event) : onPointerMove($event)"
         @pointerup="editSlots ? onSlotPointerUp($event) : onPointerUp($event)"
         @pointercancel="editSlots ? onSlotPointerCancel() : onPointerCancel()"
-        @wheel="onWheel($event, box.key, box.ref, box.saved)"
         @keydown.enter.space.prevent="selectable && !editSlots && emit('select', box.ref)"
       >
         <!--
@@ -472,22 +424,21 @@ const titleAlign = { left: "text-left", center: "text-center", right: "text-righ
       </component>
 
       <!--
-        The chapter title, where `manifest.json` tells the user to type it in
-        Pixajoy. Over a photo it gets a light backing so it stays readable; the
-        chapter header says why it landed there.
+        Where the chapter title goes, drawn as a guide like the trim and safe
+        lines: the export never prints it, so the preview must not pretend it
+        does. The tag names the title so the user can type it in Pixajoy.
       -->
       <div
         v-if="title"
-        class="pointer-events-none absolute flex items-center"
+        class="pointer-events-none absolute flex border border-dashed border-violet-500"
+        :class="titleJustify[title.align]"
         :style="title.box"
       >
-        <p
-          class="w-full leading-tight font-semibold break-words text-neutral-900"
-          :class="[titleAlign[title.align], title.overlapsPhoto && 'bg-white/75 px-[0.4em]']"
-          :style="{ fontSize: title.fontSize }"
+        <span
+          class="m-0.5 h-fit max-w-full truncate rounded-sm bg-violet-600 px-1.5 text-sm text-white"
         >
-          {{ title.text }}
-        </p>
+          Title: {{ title.text }}
+        </span>
       </div>
 
       <!--

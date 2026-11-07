@@ -86,7 +86,7 @@ const pages = computed(() =>
         >
           {{ chapter.title === "" ? "No title" : chapter.title }}
         </h3>
-        <UTooltip text="Edit the title this chapter prints">
+        <UTooltip text="Edit this chapter's title">
           <UButton
             icon="i-lucide-pencil"
             color="neutral"
@@ -109,18 +109,14 @@ const pages = computed(() =>
     </div>
 
     <p v-if="editing" class="text-sm text-muted">
-      Enter saves, Esc cancels. Leave it empty to print no title.
+      Enter saves, Esc cancels. Leave it empty for no title.
     </p>
-    <p
-      v-else-if="chapter.titleBox?.overlapsPhoto"
-      class="flex items-start gap-1.5 text-sm text-warning"
-    >
-      <UIcon name="i-lucide-triangle-alert" class="mt-0.5 size-4 shrink-0" />
-      Prints over a photo on page {{ chapter.titleBox.page }}: this layout has no clear band for
-      it. Choose another layout, or move a box.
+    <p v-else-if="chapter.titleBox?.overlapsPhoto" class="text-sm text-muted">
+      Title spot on page {{ chapter.titleBox.page }}, over a photo: the page has no empty space
+      for it.
     </p>
     <p v-else-if="chapter.titleBox" class="text-sm text-muted">
-      Prints on page {{ chapter.titleBox.page }}
+      Title spot on page {{ chapter.titleBox.page }}
     </p>
   </header>
 </template>

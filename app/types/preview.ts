@@ -320,52 +320,12 @@ export function stepLabel(step: HistoryStep, status: HistoryStatus): string {
 export type Release = "save" | "select";
 
 /**
- * Decide it from the three things that differ between one release and another.
- *
- * `moved` is whether the press travelled `DRAG_THRESHOLD_PX` and so counts as
- * a drag. `live` is whether a window is being drawn that the saved book does
- * not have. `owed` is whether a wheel zoom put that window there and has not
- * been saved yet -- the wheel waits out `WHEEL_SETTLE_MS` of quiet so that a
- * roll is one edit, and a press inside that wait takes the pending save over.
- *
- * `owed` is the whole reason this is a function. A click inside the settle
- * window is not a drag, so it fell to the branch that throws the live window
- * away, and the zoom the user had just watched happen snapped back to the old
- * crop -- for over three seconds in a traced run -- before the pending save
- * landed and jumped it forward again. The same handoff keeps zoom-then-drag to
- * one entry in the timeline: the drag starts from the zoomed window, so its
- * crop already carries the zoom and the wheel's own save would be a stale
- * second edit for the same slot.
+ * Decide it from whether the press travelled `DRAG_THRESHOLD_PX` and so
+ * counts as a drag (`moved`), and whether a window is being drawn that the
+ * saved book does not have (`live`).
  */
-export function releaseAction(moved: boolean, live: boolean, owed: boolean): Release {
-  return live && (moved || owed) ? "save" : "select";
-}
-
-/**
- * What a gesture starting now does to a zoom that is still waiting out
- * `WHEEL_SETTLE_MS`.
- *
- * "save" emits it as its own edit, "hold" leaves it pending for the release to
- * decide as `releaseAction`'s `owed`, and "none" means there is nothing to do.
- *
- * Only one zoom can be waiting, and one timer holds it. So a gesture on a
- * DIFFERENT box has to flush it here: overwriting the pending box and
- * re-arming the shared timer dropped the first zoom entirely. Measured on both
- * surfaces -- command-scroll one cover panel then the other inside the settle
- * window and the first panel went 113.475% wide on screen, then back to the
- * 113.475% the book still held, with no edit for it in the timeline.
- *
- * A gesture on the SAME box is not a loss. Another roll of the wheel is
- * computed from the window already on screen and so carries the waiting zoom,
- * which is why it is "none" rather than a stale first edit; a press is held
- * because a drag's crop starts from that same window.
- */
-export type Takeover = "save" | "hold" | "none";
-
-export function zoomTakeover(pending: string | null, box: string, press: boolean): Takeover {
-  if (pending === null) return "none";
-  if (pending !== box) return "save";
-  return press ? "hold" : "none";
+export function releaseAction(moved: boolean, live: boolean): Release {
+  return live && moved ? "save" : "select";
 }
 
 /** Mirrors `score::Rejection`: the hard constraints an edit can break. */
@@ -489,58 +449,38 @@ export function cropStyle(crop: PreviewRect): CropStyle {
   };
 }
 
-/** A chapter title as the page draws it -- see `pageTitle`. */
+/**
+ * A chapter title as the page marks it -- see `pageTitle`. A guide, like the
+ * trim and safe lines: where the title's box goes if the user adds it in
+ * Pixajoy, not type the preview pretends is printed.
+ */
 export interface PageTitle {
   text: string;
   box: BoxStyle;
-  /** In `cqw` of the page box, so it is the printed size at any zoom. */
-  fontSize: string;
   align: TextAlign;
   overlapsPhoto: boolean;
 }
 
-/**
- * The title printed on page `page`, or `null`. `pageWIn` is the width the page
- * box stands for: a point is 1/72", so `pointSize / 72 / pageWIn` is the type's
- * share of the page's width, which the page box carries as `100cqw`.
- */
-export function pageTitle(layout: BookLayout, page: number, pageWIn: number): PageTitle | null {
+/** The title spot on page `page`, or `null` when no titled chapter's box is on it. */
+export function pageTitle(layout: BookLayout, page: number): PageTitle | null {
   const chapter = layout.chapters.find((c) => c.titleBox?.page === page && c.title !== "");
   const box = chapter?.titleBox;
   if (!chapter || !box) return null;
   return {
     text: chapter.title,
     box: rectStyle(box.rect),
-    fontSize: `${pct((box.pointSize / 72 / extent(pageWIn)) * 100)}cqw`,
     align: box.align,
     overlapsPhoto: box.overlapsPhoto,
   };
 }
 
-/** A title the book prints, as the export sheet lists it for typing into Pixajoy. */
-export interface PrintedTitle {
-  chapter: number;
-  page: number;
-  text: string;
-  overlapsPhoto: boolean;
-}
-
-/** Every title that prints, in page order. An untitled or unplaced chapter prints none. */
-export function printedTitles(layout: BookLayout): PrintedTitle[] {
-  return layout.chapters
-    .flatMap((chapter) =>
-      chapter.titleBox && chapter.title !== ""
-        ? [
-            {
-              chapter: chapter.number,
-              page: chapter.titleBox.page,
-              text: chapter.title,
-              overlapsPhoto: chapter.titleBox.overlapsPhoto,
-            },
-          ]
-        : [],
-    )
-    .toSorted((a, b) => a.page - b.page);
+/**
+ * The opening the page viewer shows after stepping `delta` from `index`,
+ * held inside `0..count`. It stops at either end rather than wrapping, and
+ * pulls an index the book has since shrunk past back onto its last opening.
+ */
+export function viewerStep(index: number, delta: number, count: number): number {
+  return Math.min(Math.max(index + delta, 0), Math.max(count - 1, 0));
 }
 
 /** The chapter whose first page is on this spread, which the editor heads with it. */
@@ -804,20 +744,48 @@ export function cropZoomed(crop: PreviewRect, factor: number): PreviewRect {
   };
 }
 
-const ZOOM_PER_WHEEL_UNIT = 0.0015;
+/** The most the crop dialog zooms in: past this a 400px thumbnail is mush, and print long since is. */
+export const MAX_CROP_ZOOM = 8;
+
+/** The widest a window of this shape can be and still fit inside the photo. */
+function widestWindow(crop: PreviewRect): number {
+  return Math.min(1, crop.w / crop.h);
+}
 
 /**
- * How much a wheel event over a photo zooms its crop, or `null` when it should
- * scroll the page instead. Zoom needs ⌘ (or Ctrl) held, because the preview is a long scroll of
- * spreads, and a bare wheel that zoomed whichever photo drifted under the
- * pointer turned scrolling the book into accidental crop edits.
+ * How far in a crop is zoomed: 1 is the widest window of its shape the photo
+ * can give, 2 shows half that width, and so on. The crop dialog's slider.
  */
-export function wheelZoomFactor(
-  event: Pick<WheelEvent, "deltaY" | "ctrlKey" | "metaKey">,
-): number | null {
-  if (!event.ctrlKey && !event.metaKey) return null;
-  // Scrolling up (negative deltaY) zooms in, as in every image viewer.
-  return Math.exp(-event.deltaY * ZOOM_PER_WHEEL_UNIT);
+export function cropZoom(crop: PreviewRect): number {
+  return widestWindow(crop) / crop.w;
+}
+
+/** The crop at exactly `zoom`, about its centre, clamped to 1..`MAX_CROP_ZOOM`. */
+export function cropAtZoom(crop: PreviewRect, zoom: number): PreviewRect {
+  const target = clamp(zoom, 1, MAX_CROP_ZOOM);
+  return cropZoomed(crop, target / cropZoom(crop));
+}
+
+/**
+ * The crop after dragging the WINDOW by `delta` photo-widths and
+ * photo-heights, as the crop dialog draws it: the whole photo, the window on
+ * top, following the pointer one to one. `cropMoved` is the other gesture,
+ * dragging the photo under a fixed slot, which runs the opposite way.
+ */
+export function windowMoved(crop: PreviewRect, delta: SlotDelta): PreviewRect {
+  return {
+    x: clamp(crop.x + delta.dx, 0, 1 - crop.w),
+    y: clamp(crop.y + delta.dy, 0, 1 - crop.h),
+    w: crop.w,
+    h: crop.h,
+  };
+}
+
+const ZOOM_PER_WHEEL_UNIT = 0.0015;
+
+/** How much a wheel roll of `deltaY` zooms a crop. Up (negative) zooms in, as in every image viewer. */
+export function wheelZoomFactor(deltaY: number): number {
+  return Math.exp(-deltaY * ZOOM_PER_WHEEL_UNIT);
 }
 
 /** The edit that saves a crop the user dragged or zoomed into place. */
@@ -1180,6 +1148,26 @@ function takenAt(row: CandidateRow): number {
  * leaves the pages alone.
  */
 export type PickTarget = { kind: "slot"; placement: PlacementRef } | { kind: "cover"; side: CoverSide };
+
+/** What the crop dialog edits: one photo, its saved crop, and what to call it. */
+export interface CropSubject {
+  photo: PreviewPhoto;
+  crop: PreviewRect;
+  label: string;
+}
+
+/** The photo and saved crop behind a page slot or a cover side, or `null` if it holds none. */
+export function cropSubject(layout: BookLayout, target: PickTarget): CropSubject | null {
+  if (target.kind === "cover") {
+    const cover = layout.cover[target.side].photo;
+    const photo = cover && photoFor(layout, cover.photoIndex);
+    return cover && photo ? { photo, crop: cover.crop, label: `${target.side === "front" ? "Front" : "Back"} cover` } : null;
+  }
+  const { page: number, z } = target.placement;
+  const placement = layout.pages.find((p) => p.number === number)?.placements.find((p) => p.z === z);
+  const photo = placement && photoFor(layout, placement.photoIndex);
+  return placement && photo ? { photo, crop: placement.crop, label: `Photo on page ${number}` } : null;
+}
 
 export type CandidateFilter = "leftOut" | "inBook" | "all";
 export type CandidateSort = "best" | "taken";

@@ -247,7 +247,7 @@ update of the old one.
 ## 3. Editing the book
 
 The book, spread by spread, as it will print. **Everything on this screen is written to disk
-as you do it** (the check beside the title says when it last saved), so there is nothing to
+as you do it** (the cloud with a check, beside Undo and Redo, says it has saved; it reads **Saving…** while a change is being written), so there is nothing to
 save and you can leave whenever you like through the sidebar.
 
 Because it saves as you go, there is no closing without saving to fall back on, so **Undo**
@@ -280,9 +280,10 @@ one you chose, or one inside it -- the count says "at least this many".
 The toolbar at the top holds the title, with a pencil to rename the book; **Edit photos**,
 which takes its photo selection back to the contact sheet and re-analyses the book's own
 folders (every photo the book already holds is a cache hit; a photo added to the folder
-since is analysed for the first time, which does take a moment); **Chat** (⌘J), which shows or hides
-the chat beside the book (while a reply is coming in, its send button stops it, and a message
-you type waits in the box until the reply has finished); and **Export** (⌘E). The bar along the bottom starts with the book's
+since is analysed for the first time, which does take a moment); **Export** (⌘E); and, at the
+far right, the chat button (a panel icon, ⌘J), which shows or hides the chat beside the book
+(while a reply is coming in, its send button stops it, and a message you type waits in the
+box until the reply has finished). The bar along the bottom starts with the book's
 print size (for example **11 x 8.5 in**), then counts its pages and the photos placed. Blank
 pages and photos left out are added as warnings, with a warning sign, only when there are
 any. What dragging a photo does in each mode is in the tooltip of that mode's button, in the
@@ -291,20 +292,23 @@ shows its buttons as icons; hover one for its name or, for the two modes, what a
 
 Each chapter starts with a heading above its first opening. The heading gives the chapter
 number, its pages, its dates (when the title is not already the dates) and how many events
-it merges. Below that are the title it prints and, under the title, the page it prints on.
+it merges. Below that are the chapter's title and, under it, the page its title spot is on.
 A book with more than two chapters also has a **Chapters** menu (the list icon) in the bar
 above the book. It lists every chapter's title and pages; pick one to scroll to it.
 
+Titles are a guide, not part of the printed book: export never draws them. On the page, a
+violet dashed box marks the **title spot**, with a tag naming the title, so you can see where
+it would go if you add it in Pixajoy. The **Guides** legend lists it with the trim and safe
+lines. When the opening has no empty space for it, the spot sits over a photo and the
+heading says so.
+
 To **change a chapter's title**, press the pencil beside it, type, and press Enter. Clicking
-away also saves; Esc leaves the title as it was. The title draws on the page in the editor at
-the size it prints. Clear the box and save to print no title at all: the heading then reads
-**No title**, and if the page has nothing else on it, it counts as blank. A title you have
-typed stays through **Regenerate** and **Shuffle**, but not through **Update** after **Edit
-photos**, which rebuilds the book. Undo takes it back like any other change. **Use automatic title** goes back to the place name or dates, and typing the
-automatic title back does the same. If the layout leaves no clear space for the title, the
-heading warns that it **prints over a photo** and names the page. Choose another layout or
-move a box to make room. Where a title goes, and how to get it
-into Pixajoy, is under **Chapter titles** further down.
+away also saves; Esc leaves the title as it was. Clear the box and save for no title: the
+heading then reads **No title** and the page shows no title spot. A title you have typed
+stays through **Regenerate** and **Shuffle**, but not through **Update** after **Edit
+photos**, which rebuilds the book. Undo takes it back like any other change. **Use automatic
+title** goes back to the place name or dates, and typing the automatic title back does the
+same. How to add a title in Pixajoy is under **Chapter titles** further down.
 
 Every opening (page 1, each pair of facing pages, the last page) has four controls on its
 right. Page 1 is shown facing the inside front cover and the last page facing the inside
@@ -342,17 +346,19 @@ The same button is on the cover picker. One caveat: a photo added this way belon
 book, not to its folders, so if you later run **Edit photos** and **Update "<name>"**, the
 book is rebuilt from the folders and hand-added photos are not carried across.
 
-To **adjust a crop**, drag the photo inside its
-slot to move the window, or hold ⌘ and scroll over it to zoom;
-a plain scroll always scrolls the book, never a photo. A press only counts as a drag once it
-has travelled about 10px, so an ordinary click still selects the photo however much the
-trackpad wobbles, and a press that wanders and comes back to where it started is a click too. The window keeps the slot's shape and
-is saved when you let go. A zoom is saved a moment after the wheel stops, so that a roll of
-the wheel is one change rather than one per notch. Touching the photo again saves it at
-once: that click counts as keeping the zoom rather than as selecting the photo, so click
-once more if a swap was what you wanted. So does rolling the wheel over a different photo,
-so zooming one and then the next keeps both rather than only the one you stopped on.
-Zooming and then dragging is one change, not two. Regenerating that opening or swapping the photo away recomputes
+To **crop a photo**, click it, then **Crop…** in the bar at the bottom. The crop dialog
+shows the whole photo, with the part that prints lit and the rest dimmed. Drag the frame to
+choose what prints, and zoom with the slider, the **−** and **+** buttons, or by scrolling or
+pinching over the photo; the arrow keys nudge the frame. The frame keeps the slot's shape.
+Nothing changes until **Save crop** (or Enter), and then as one change you can undo;
+**Reset** goes back to the crop the dialog opened on, and **Cancel** or Escape closes it
+without saving. Scrolling over the book itself always scrolls the book; it never zooms a
+photo.
+
+For a quick nudge without the dialog, drag the photo inside its slot to move the window; it
+is saved when you let go. A press only counts as a drag once it has travelled about 10px, so
+an ordinary click still selects the photo however much the trackpad wobbles, and a press
+that wanders and comes back to where it started is a click too. Regenerating that opening or swapping the photo away recomputes
 its crop, because the slot it was chosen for is gone.
 
 To **move or resize the boxes themselves**, switch the bar above the book from **Crop and
@@ -399,9 +405,9 @@ Any photo can go on the cover, including one already on a page: the cover uses a
 the pages are left alone. Pick one and press **Use on the front cover**, or double-click it.
 A photo that would put a face in the wrap or too near the board's edge, cut a face, or print
 too small for the panel is dimmed with the reason and cannot be picked. Click a cover photo
-to change it, or to take it off with **Remove** at the bottom of the dialog. Drag a cover
-photo to move its crop and hold ⌘ and scroll over it to zoom, exactly as on a page, down to
-what a click or a zoom on the other panel does to a zoom that has not been saved yet; a crop
+to change it, or to take it off with **Remove** at the bottom of the dialog. The crop button
+in the top corner of a cover photo opens the same crop dialog as a page, and dragging a cover
+photo moves its crop, exactly as on a page; a crop
 that would cut a face, push one into the wrap or too near the board's edge, or zoom in below
 the lowest print resolution is refused with the reason, and the cover stays as it was.
 
@@ -468,8 +474,9 @@ the spine colour to the `spine_hex` value from the manifest. Pixajoy publishes n
 the spine's width, so the app does not produce a spine image or a single wrap-around file;
 the spine is Pixajoy's to size.
 
-**Chapter titles.** The book is divided into chapters, and each chapter's title prints on the
-opening where it starts. A chapter starts on an opening whose first photo, read left to right
+**Chapter titles.** The book is divided into chapters, and each chapter has a title and a
+title spot on the opening where it starts. Neither is printed unless you add the title yourself
+in Pixajoy. A chapter starts on an opening whose first photo, read left to right
 and top to bottom, comes from an event no earlier page has shown. An event that first appears
 part-way through an opening joins the chapter already running, so one spread never carries
 two titles. The title is the place name when the book was made with **Places** on and that
@@ -478,7 +485,7 @@ Otherwise it is the dates the chapter's photos were taken, in the camera's local
 example "12–14 Mar 2026", "28 Mar – 2 Apr 2026" or "30 Dec 2025 – 2 Jan 2026". A chapter
 with no capture dates is called "Chapter 2", and so on. The cover carries no text.
 
-Where the title goes is chosen in this order:
+Where the title spot goes is chosen in this order:
 
 1. The text area of a layout drawn with one, unless a photo has been moved onto it.
 2. The tallest clear strip across the top or bottom of either page of the opening, at least

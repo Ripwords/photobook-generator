@@ -3,6 +3,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   canRelayout,
   chapterOpening,
+  cropSubject,
   leftOutPhotos,
   nextSwapStep,
   openingFor,
@@ -78,6 +79,9 @@ const chapterMenu = computed(() =>
 );
 
 const anyLocked = computed(() => layout.openings.some((opening) => opening.locked));
+
+/** The opening shown large in the page viewer, or `null` when it is closed. */
+const viewing = ref<number | null>(null);
 const anyToShuffle = computed(() => layout.openings.some(canRelayout));
 const shuffleLabel = computed(() => (anyLocked.value ? "Shuffle unlocked spreads" : "Shuffle every spread"));
 
@@ -139,6 +143,26 @@ function chooseCover(side: CoverSide) {
 function onCrop(placement: PlacementRef, crop: PreviewRect) {
   selected.value = null;
   emit("edit", setCropEdit(placement, crop));
+}
+
+/**
+ * The photo the crop dialog is open on. Like `replaceTarget`, its own ref:
+ * saving clears `selected` while the dialog is still closing.
+ */
+const cropTarget = ref<PickTarget | null>(null);
+const cropOpen = ref(false);
+const cropping = computed(() => (cropTarget.value ? cropSubject(layout, cropTarget.value) : null));
+
+function openCrop(target: PickTarget) {
+  cropTarget.value = target;
+  cropOpen.value = true;
+}
+
+function onCropSaved(crop: PreviewRect) {
+  const target = cropTarget.value;
+  if (!target) return;
+  if (target.kind === "cover") onCoverCrop(target.side, crop);
+  else onCrop(target.placement, crop);
 }
 
 function onCoverCrop(side: CoverSide, crop: PreviewRect) {
@@ -268,6 +292,10 @@ const leftOut = computed(() =>
                 <span class="h-2.5 w-4 shrink-0 bg-black/35" />
                 Cover wrap — folds under the board, never shows
               </li>
+              <li class="flex items-center gap-2">
+                <span class="h-2.5 w-4 shrink-0 border border-dashed border-violet-500" />
+                Title spot — not printed; add the title here in Pixajoy if you want one
+              </li>
               <!--
                 Said on screen, not only in a doc. These are the 400px contact-sheet
                 thumbnails, roughly 4x under-sampled against the 300 DPI export, so the
@@ -309,6 +337,7 @@ const leftOut = computed(() =>
         :busy
         @choose="chooseCover"
         @crop="onCoverCrop"
+        @crop-open="openCrop({ kind: 'cover', side: $event })"
         @spine="onSpine"
       />
       <ol class="space-y-10">
@@ -343,6 +372,15 @@ const leftOut = computed(() =>
               as a missing feature, a disabled one as a fact about this spread.
             -->
             <div class="flex items-center gap-0.5">
+              <UTooltip text="View larger, and step through the book">
+                <UButton
+                  icon="i-lucide-maximize-2"
+                  color="neutral"
+                  variant="ghost"
+                  :aria-label="`View ${spread.label} larger`"
+                  @click="viewing = spread.index"
+                />
+              </UTooltip>
               <UTooltip text="Show a different layout for these photos">
                 <UButton
                   icon="i-lucide-dices"
@@ -443,6 +481,8 @@ const leftOut = computed(() =>
         </li>
       </ol>
 
+      <BookPageViewer v-if="viewing !== null" v-model:index="viewing" :layout />
+
       <div v-if="leftOut.length > 0" class="space-y-2 border-t border-default pt-5">
         <h4 class="text-sm font-semibold text-highlighted">
           Left out <span class="font-normal text-muted tabular-nums">{{ leftOut.length }}</span>
@@ -483,11 +523,20 @@ const leftOut = computed(() =>
     >
       <UIcon name="i-lucide-arrow-left-right" class="size-4 shrink-0 text-muted" />
       <p class="min-w-0 truncate whitespace-nowrap">
-        <span class="font-medium text-highlighted">Swapping page {{ selected.page }}.</span>
-        <span class="hidden text-muted @2xl:inline"> Click another photo to swap.</span>
+        <span class="font-medium text-highlighted">Photo on page {{ selected.page }} selected.</span>
+        <span class="hidden text-muted @2xl:inline"> Click another photo to swap them.</span>
       </p>
       <span class="h-5 shrink-0 border-l border-default" aria-hidden="true" />
       <div class="flex shrink-0 items-center gap-1">
+        <UButton
+          icon="i-lucide-crop"
+          color="neutral"
+          variant="outline"
+          :disabled="busy"
+          @click="openCrop({ kind: 'slot', placement: selected })"
+        >
+          Crop…
+        </UButton>
         <UButton
           icon="i-lucide-images"
           color="neutral"
@@ -503,6 +552,18 @@ const leftOut = computed(() =>
         </UButton>
       </div>
     </div>
+
+    <CropPhotoDialog
+      v-if="cropping"
+      :key="JSON.stringify(cropTarget)"
+      v-model:open="cropOpen"
+      :src="cropping.photo.thumbnailPath ? convertFileSrc(cropping.photo.thumbnailPath) : null"
+      :width="cropping.photo.width"
+      :height="cropping.photo.height"
+      :crop="cropping.crop"
+      :label="cropping.label"
+      @save="onCropSaved"
+    />
 
     <ReplacePhotoDialog
       v-if="replaceTarget"

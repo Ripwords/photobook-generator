@@ -5,13 +5,17 @@ import {
   canRelayout,
   chapterOpening,
   pageTitle,
-  printedTitles,
+  viewerStep,
   titleEdit,
   releaseAction,
-  zoomTakeover,
   cropMoved,
   cropStyle,
   cropZoomed,
+  cropZoom,
+  cropSubject,
+  cropAtZoom,
+  windowMoved,
+  MAX_CROP_ZOOM,
   leftOutPhotos,
   nextSwapStep,
   openingFor,
@@ -785,14 +789,9 @@ describe("hand cropping", () => {
     expect(wide.y + wide.h).toBeLessThanOrEqual(1 + 1e-12);
   });
 
-  it("leaves a plain scroll to the page, so scrolling past a photo never zooms it", () => {
-    expect(wheelZoomFactor({ deltaY: 40, ctrlKey: false, metaKey: false })).toBeNull();
-    expect(wheelZoomFactor({ deltaY: -40, ctrlKey: false, metaKey: false })).toBeNull();
-  });
-
-  it("zooms on a command- or control-scroll", () => {
-    const zoomIn = wheelZoomFactor({ deltaY: -40, ctrlKey: false, metaKey: true });
-    const zoomOut = wheelZoomFactor({ deltaY: 40, ctrlKey: true, metaKey: false });
+  it("zooms in on a scroll up and out on a scroll down", () => {
+    const zoomIn = wheelZoomFactor(-40);
+    const zoomOut = wheelZoomFactor(40);
     expect(zoomIn).toBeGreaterThan(1);
     expect(zoomOut).toBeLessThan(1);
     expect(zoomOut).toBeGreaterThan(0);
@@ -1395,175 +1394,71 @@ describe("a photo imported from disk", () => {
   });
 });
 
-describe("zoomTakeover", () => {
-  it("has nothing to take over when no zoom is waiting", () => {
-    expect(zoomTakeover(null, "p2s1", false)).toBe("none");
-    expect(zoomTakeover(null, "p2s1", true)).toBe("none");
-  });
-
-  it("saves the waiting zoom when the wheel moves to another box", () => {
-    // The measured bug. Rolling one box then another inside the settle window
-    // overwrote the single pending zoom and re-armed the one shared timer, so
-    // the first box's zoom was never emitted. It stayed drawn until the second
-    // box's edit answered, then snapped back to the crop the book still held.
-    expect(zoomTakeover("p2s1", "p2s2", false)).toBe("save");
-  });
-
-  it("saves the waiting zoom when a press lands on another box", () => {
-    expect(zoomTakeover("p2s1", "p2s2", true)).toBe("save");
-  });
-
-  it("lets another roll of the wheel on the same box subsume the wait", () => {
-    // The new zoom is computed from the window already on screen, so it
-    // carries the waiting one. Saving here would be a stale first edit.
-    expect(zoomTakeover("p2s1", "p2s1", false)).toBe("none");
-  });
-
-  it("holds the waiting zoom for a press on the same box to decide", () => {
-    // `releaseAction`'s `owed`: the press may become a drag, whose crop starts
-    // from the zoomed window and so carries the zoom in one edit.
-    expect(zoomTakeover("p2s1", "p2s1", true)).toBe("hold");
-  });
-
-  it("keys the cover by its side, the only name a cover panel has", () => {
-    expect(zoomTakeover("back", "front", false)).toBe("save");
-    expect(zoomTakeover("back", "back", true)).toBe("hold");
-  });
-});
-
 describe("releaseAction", () => {
   it("saves what a drag left on screen", () => {
-    expect(releaseAction(true, true, false)).toBe("save");
+    expect(releaseAction(true, true)).toBe("save");
   });
 
   it("selects for a swap when a click found nothing live", () => {
-    expect(releaseAction(false, false, false)).toBe("select");
+    expect(releaseAction(false, false)).toBe("select");
   });
 
-  it("saves a wheel zoom a click interrupted rather than dropping it", () => {
-    // The measured bug. A click inside the wheel's settle window is not a
-    // drag, so it used to take the branch that throws the live window away --
-    // and the zoom the user had just watched happen snapped back to the old
-    // crop, staying there for over three seconds in a traced run before the
-    // pending save finally arrived and jumped it forward again.
-    expect(releaseAction(false, true, true)).toBe("save");
-  });
-
-  it("still saves a drag only once when a wheel zoom started it", () => {
-    // Zoom then drag is one gesture and has to be one entry in the timeline.
-    // The drag already begins from the zoomed window, so the crop it emits
-    // carries the zoom; the wheel's own pending save would be a second, stale
-    // edit for the same slot.
-    expect(releaseAction(true, true, true)).toBe("save");
-  });
-
-  it("drops a live window nothing owes a save for", () => {
-    // A click after a drag was abandoned below the threshold: the window on
-    // screen is stale, and the saved crop is the truth.
-    expect(releaseAction(false, true, false)).toBe("select");
+  it("drops a live window when the press never became a drag", () => {
+    // A drag abandoned below the threshold: the window on screen is stale,
+    // and the saved crop is the truth.
+    expect(releaseAction(false, true)).toBe("select");
   });
 
   it("never saves a window that is not there", () => {
-    for (const moved of [true, false]) {
-      for (const owed of [true, false]) {
-        expect(releaseAction(moved, false, owed)).toBe("select");
-      }
-    }
+    expect(releaseAction(true, false)).toBe("select");
   });
 });
 
-describe("a press on a photo takes over the wheel's pending save", () => {
-  const text = readFileSync(new URL("../app/components/BookPreviewPage.vue", import.meta.url), "utf8");
-
-  it("routes the settle timer through a function anything can flush", () => {
-    // Not `setTimeout(() => emit("crop", ref, next))`. That closure could only
-    // be cancelled, never run early, so a press had no way to claim the zoom
-    // it interrupted -- which is how the click branch came to throw the live
-    // window away while the timer put it back a beat later.
-    expect(text).toContain("wheelTimer = setTimeout(saveWheel, WHEEL_SETTLE_MS);");
-    expect([...text.matchAll(/emit\("crop"/g)].length).toBe(2);
-  });
-
-  it("asks zoomTakeover what a press does to the pending zoom", () => {
-    expect(text).toContain(
-      'if (zoomTakeover(wheelPending?.key ?? null, key, true) === "save") saveWheel();',
-    );
-  });
-
-  it("asks zoomTakeover what another roll of the wheel does to it", () => {
-    // The measured bug: `onWheel` overwrote `wheelPending` outright, so a roll
-    // that moved to another slot dropped the zoom before it. The flush has to
-    // be in `onWheel` too, not only in `onPointerDown`.
-    expect(text).toContain(
-      'if (zoomTakeover(wheelPending?.key ?? null, key, false) === "save") saveWheel();',
-    );
-  });
-
-  it("asks releaseAction what the release meant", () => {
-    expect(text).toMatch(/releaseAction\(finished\.moved, true, owed\) === "save"/);
-    expect(text).toContain("const owed = wheelPending?.key === finished.key;");
+// Titles are an on-screen guide and never print, so the export sheet must not
+// hand them over to be typed into Pixajoy as if they were part of the book.
+describe("the export sheet lists no chapter titles", () => {
+  it("BookEditor.vue reads no chapter title into the export sheet", () => {
+    const text = readFileSync(new URL("../app/components/BookEditor.vue", import.meta.url), "utf8");
+    expect(text).not.toMatch(/chapters|chapter\.title|clipboard/);
   });
 });
 
-describe("the cover panels arbitrate the wheel the same way the pages do", () => {
-  // Two panels sit side by side, so the cross-box case is reachable with one
-  // roll of the wheel and a hand moving right. Measured before the fix: the
-  // back panel drew a zoom at 135.855% wide and then went back to the 113.475%
-  // the book still held, with no edit for it anywhere in the timeline.
-  const text = readFileSync(new URL("../app/components/BookPreviewCover.vue", import.meta.url), "utf8");
+describe("the scrolling book leaves the wheel alone", () => {
+  // Zooming a photo with the wheel on the page fought the book's own scroll:
+  // two rounds of arbitration (a modifier key, then a gesture latch) and the
+  // user still reported it bleeding into scrolling. Zoom moved to the crop
+  // dialog, where nothing behind it scrolls. A wheel handler back on a page
+  // photo or a cover panel brings the fight back.
+  for (const file of ["BookPreviewPage.vue", "BookPreviewCover.vue"]) {
+    it(`${file} has no wheel handler`, () => {
+      const text = readFileSync(new URL(`../app/components/${file}`, import.meta.url), "utf8");
+      expect(text).not.toMatch(/@wheel|addEventListener\("wheel"/);
+    });
+  }
 
-  it("routes the settle timer through a function anything can flush", () => {
-    expect(text).toContain("wheelTimer = setTimeout(saveWheel, WHEEL_SETTLE_MS);");
-  });
-
-  it("flushes a zoom on the other panel before starting one here", () => {
-    expect(text).toContain(
-      'if (zoomTakeover(wheelPending?.side ?? null, side, false) === "save") saveWheel();',
-    );
-  });
-
-  it("flushes or holds one when a press lands", () => {
-    expect(text).toContain(
-      'if (zoomTakeover(wheelPending?.side ?? null, side, true) === "save") saveWheel();',
-    );
-  });
-
-  it("asks releaseAction what the release meant, so a click cannot drop a zoom", () => {
-    // Before: the click branch deleted the live crop and emitted `choose`,
-    // then the still-armed timer landed a crop edit underneath the open picker.
-    expect(text).toMatch(/releaseAction\(finished\.moved, true, owed\) === "save"/);
-    expect(text).toContain("const owed = wheelPending?.side === finished.side;");
-  });
-
-  it("keeps a zoom a cancelled press had taken over", () => {
-    expect(text).toContain("if (wheelPending?.side === cancelled.side) {");
+  it("the crop dialog does, and takes the wheel from the page", () => {
+    const text = readFileSync(new URL("../app/components/CropPhotoDialog.vue", import.meta.url), "utf8");
+    expect(text).toContain('@wheel="onWheel"');
+    expect(text).toContain("event.preventDefault();");
   });
 });
 
 describe("chapter titles in the editor", () => {
   const chapter = layout.chapters[0]!;
 
-  it("draws a chapter's title on the page its box is on, and only there", () => {
+  it("marks a chapter's title spot on the page its box is on, and only there", () => {
     expect(chapter.titleBox?.page).toBe(3);
-    const drawn = pageTitle(layout, 3, geometry.pageWIn);
+    const drawn = pageTitle(layout, 3);
     expect(drawn?.text).toBe("Reykjavík");
     expect(drawn?.align).toBe("center");
     expect(drawn?.box).toEqual(rectStyle(chapter.titleBox!.rect));
-    expect(pageTitle(layout, 2, geometry.pageWIn)).toBeNull();
-  });
-
-  // 24 pt on an 11.197" page is 24/72/11.197 of the page's width, so the
-  // preview's title is the printed size at any zoom.
-  it("scales the point size to the page's width", () => {
-    const drawn = pageTitle(layout, 3, 11.197);
-    expect(drawn?.fontSize).toBe(`${Math.round((24 / 72 / 11.197) * 100 * 10_000) / 10_000}cqw`);
-    expect(pageTitle(layout, 3, 22.394)?.fontSize).not.toBe(drawn?.fontSize);
+    expect(pageTitle(layout, 2)).toBeNull();
   });
 
   it("draws nothing for a chapter the user left untitled", () => {
     const untitled = structuredClone(layout);
     untitled.chapters[0]!.title = "";
-    expect(pageTitle(untitled, 3, geometry.pageWIn)).toBeNull();
+    expect(pageTitle(untitled, 3)).toBeNull();
   });
 
   it("heads the spread a chapter opens on, and no other", () => {
@@ -1598,26 +1493,89 @@ describe("chapter titles in the editor", () => {
       expect(titleEdit(chapter, "   ")).toEqual({ kind: "setChapterTitle", event: 4, title: "" });
     });
   });
+});
 
-  // The export sheet's list of titles to type into Pixajoy: what prints, where.
-  describe("printedTitles", () => {
-    it("lists each printed title with its page, in page order", () => {
-      const two = structuredClone(layout);
-      const later = { ...two.chapters[0]!, number: 2, event: 9, title: "Vík", titleBox: { ...two.chapters[0]!.titleBox!, page: 7, overlapsPhoto: true } };
-      two.chapters = [later, two.chapters[0]!];
-      expect(printedTitles(two)).toEqual([
-        { chapter: 1, page: 3, text: "Reykjavík", overlapsPhoto: false },
-        { chapter: 2, page: 7, text: "Vík", overlapsPhoto: true },
-      ]);
-    });
+// The page viewer steps one opening at a time and stops at either end rather
+// than wrapping: a book has a first and a last page, and wrapping from the
+// back cover to page 1 reads as a jump, not a turn.
+describe("viewerStep", () => {
+  it("moves one opening either way", () => {
+    expect(viewerStep(3, 1, 10)).toBe(4);
+    expect(viewerStep(3, -1, 10)).toBe(2);
+  });
 
-    it("leaves out a chapter with no title or nowhere to print it", () => {
-      const none = structuredClone(layout);
-      none.chapters = [
-        { ...none.chapters[0]!, title: "" },
-        { ...none.chapters[0]!, number: 2, titleBox: null },
-      ];
-      expect(printedTitles(none)).toEqual([]);
-    });
+  it("stops at the first and the last opening", () => {
+    expect(viewerStep(0, -1, 10)).toBe(0);
+    expect(viewerStep(9, 1, 10)).toBe(9);
+  });
+
+  it("keeps an index the book has since shrunk past inside it", () => {
+    expect(viewerStep(12, 0, 10)).toBe(9);
+    expect(viewerStep(4, 0, 0)).toBe(0);
+  });
+});
+
+describe("crop dialog geometry", () => {
+  // A landscape slot's window on a landscape photo: as wide as the photo can
+  // give is w = 1, so this window is zoomed 2x.
+  const crop = { x: 0.2, y: 0.1, w: 0.5, h: 0.25 };
+
+  it("reads the zoom as how much narrower the window is than the widest it can be", () => {
+    expect(cropZoom(crop)).toBeCloseTo(2, 12);
+    expect(cropZoom({ x: 0, y: 0, w: 1, h: 0.5 })).toBeCloseTo(1, 12);
+    // A tall window on the photo is limited by its height, not its width.
+    expect(cropZoom({ x: 0.3, y: 0, w: 0.25, h: 1 })).toBeCloseTo(1, 12);
+  });
+
+  it("sets a zoom exactly, about the window's centre, keeping its shape", () => {
+    const four = cropAtZoom(crop, 4);
+    expect(cropZoom(four)).toBeCloseTo(4, 12);
+    expect(four.h / four.w).toBeCloseTo(crop.h / crop.w, 12);
+    expect(four.x + four.w / 2).toBeCloseTo(crop.x + crop.w / 2, 12);
+    expect(four.y + four.h / 2).toBeCloseTo(crop.y + crop.h / 2, 12);
+  });
+
+  it("clamps a zoom to between the whole photo and the most it allows", () => {
+    expect(cropZoom(cropAtZoom(crop, 0.1))).toBeCloseTo(1, 12);
+    expect(cropZoom(cropAtZoom(crop, 1000))).toBeCloseTo(MAX_CROP_ZOOM, 12);
+  });
+
+  it("moves the window the way it is dragged, in fractions of the photo", () => {
+    // Unlike `cropMoved`, which drags the PHOTO inside a slot: here the user
+    // drags the window over the whole photo, so it follows the pointer 1:1.
+    const moved = windowMoved(crop, { dx: 0.1, dy: 0.05 });
+    expect(moved.x).toBeCloseTo(0.3, 12);
+    expect(moved.y).toBeCloseTo(0.15, 12);
+    expect([moved.w, moved.h]).toEqual([crop.w, crop.h]);
+  });
+
+  it("stops the window at the photo's edges", () => {
+    expect(windowMoved(crop, { dx: 9, dy: 9 })).toEqual({ x: 0.5, y: 0.75, w: 0.5, h: 0.25 });
+    expect(windowMoved(crop, { dx: -9, dy: -9 })).toEqual({ x: 0, y: 0, w: 0.5, h: 0.25 });
+  });
+});
+
+describe("cropSubject", () => {
+  it("finds the placement's own photo and saved crop, not the page's first", () => {
+    const page = layout.pages.find((p) => p.placements.length > 1);
+    if (!page) throw new Error("fixture has no page with two photos");
+    const second = page.placements[1];
+    const subject = cropSubject(layout, { kind: "slot", placement: { page: page.number, z: second.z } });
+    expect(subject?.crop).toEqual(second.crop);
+    expect(subject?.photo).toBe(layout.photos[second.photoIndex]);
+    expect(subject?.label).toBe(`Photo on page ${page.number}`);
+  });
+
+  it("finds a cover side's photo, and nothing for a side without one or a missing slot", () => {
+    const side = layout.cover.front.photo ? "front" : "back";
+    const cover = layout.cover[side].photo;
+    const subject = cropSubject(layout, { kind: "cover", side });
+    if (cover) {
+      expect(subject?.crop).toEqual(cover.crop);
+      expect(subject?.photo).toBe(layout.photos[cover.photoIndex]);
+    } else {
+      expect(subject).toBeNull();
+    }
+    expect(cropSubject(layout, { kind: "slot", placement: { page: 9999, z: 0 } })).toBeNull();
   });
 });
