@@ -52,36 +52,59 @@ cover; reordering within a chapter only; the UI stays monochrome).
 - **Chapter titles** (`caa54b2`, `f6e565e`). `book::titles` derives chapters, the automatic
   title (a cached place name, otherwise a wall-clock date range, otherwise "Chapter N") and
   the title box on every read. `Book::titles` stores only what the user typed, keyed by the
-  chapter's opening event. Titles travel in `manifest.json` `texts`, never in an image. The
+  chapter's opening event. The title box is now only a guide (see below). The
   contact sheet titles chapters with the same date formatter (`app/types/dates.ts`, pinned to
   `tests/fixtures/wire/date-ranges.json`).
-- **Hero opener** (`e2b18e0`). A Featured chapter with room opens on one photo on a titled
-  spread; `feasible_band` refuses it whenever it would strand the rest.
-- **Editor** (`55e1a2a`). Chapter headings with inline title editing, the title drawn on the
-  page at its printed size, a Chapters jump menu, and the export sheet's copyable title list.
+- **Hero opener** (`e2b18e0`), **reverted**. A Featured chapter with room opened on one photo
+  with its title on the facing page. Once titles stopped printing (below), that facing page
+  printed white: the user's "why is it still possible to print blanks". Reverted whole
+  (engine, `pack_sweep`'s titled-half exemption, `book_report`'s `opener_spreads`, manual).
+- **Editor** (`55e1a2a`). Chapter headings with inline title editing and a Chapters jump menu.
+- **Titles are a guide, not print** (after user review). The editor draws a violet dashed
+  *title spot* with a tag instead of the title text, listed in the Guides legend. Export
+  carries no text: `ManifestPage::texts`/`ManifestText` and the export sheet's title list are
+  gone (an older manifest with `texts` still deserialises). A titled half no longer counts as
+  occupied, so `blank` means what prints white.
+- **Crowded layouts** (user screenshot: a five-photo bleed mosaic with photos butted together).
+  The ten zero-gap bleed templates (21, 22, 25, 44, 46, 49, 50, 52, 54, 56) now keep a 0.2"
+  gutter between neighbouring photos on a page, the margin layouts' spacing; outer bleed edges
+  and fold-flush edges are unchanged and `aspect_pref` is rescaled to the new shapes.
+  `tests/templates.test.ts` pins the rule (README rule 4); with the old files it fails on all 10.
+- **Crop dialog** (user: "the zoom to crop bleeds into normal scrolling", then "still really
+  sucks"). Wheel zoom is gone from the page and cover entirely; **Crop…** in the selection bar
+  (and a crop button on each cover panel) opens `CropPhotoDialog`: the whole photo with the
+  printed window lit, drag to move, slider/buttons/wheel/pinch to zoom, arrow nudges, one
+  undoable save. `useWheelLatch` and the wheel arbitration in `preview.ts` were deleted.
+- **Page viewer**: a maximise button on each opening opens `BookPageViewer`, one opening at a
+  time at window size, stepped with ← and →.
 - **UI polish** (merged in `9859d2c`): 14 px type and `md` controls, machine data behind
   disclosures, one tier dropdown, a sticky Generate action, footer warnings.
 
-**Measured at HEAD** (`book_report 14 10 15` on a DB copy; projects 14 Iceland, 10 Vietnam,
-15 Japan; seeds 7/1234/99 identical). "Before" is the U1 run: the new metrics on the
-pre-story engine. `blank_pages`, `dropped` and `floor_misses` match the baseline on every
-row; `--scenarios` 9/9 PASS; `--stability` 0 violations.
+**Measured after the revert and the gutters** (`book_report --db <copy> 14 10 16`; projects 14
+Iceland, 10 Vietnam, 16 Japan -- 15 is now in the trash, 16 is the same 1133 photos; seeds
+7/1234/99 identical). `blank_pages`, `dropped` and `floor_misses` are identical with and without
+the gutters on every row; the gutters move only `title_overlaps` (14: 3→2 and 5→4; 16: 2→3
+and 5→6). `--scenarios 14` 9/9 PASS; `--stability 14 10 16` 0 moved their own event.
 
-| project, pages | opener_hit | closer_hit | chrono_inv | role_cov | titled / chapters | title_overlaps | opener_spreads |
+| project, pages | opener_hit | closer_hit | chrono_inv | role_cov | chapters | title_overlaps | blank_pages |
 |---|---|---|---|---|---|---|---|
-| 14, 20 | 0.50–0.75 → 0.83 | 0.00 → 0.33 | 2 → 0 | 0.68 → 0.77 | 7 / 7 | 3 | 0 |
-| 14, 40 | 0.62–0.75 → 0.78 | 0.11 → 0.44 | 0 → 0 | 0.82 → 0.89 | 12 / 12 | 7 | 2 |
-| 10, 20 | 0.00 → 1.00 | 0.00 → 0.00 | 0 → 0 | 0.83 → 0.83 | 4 / 4 | 0 | 1 |
-| 10, 40 | 0.50 → 1.00 | 0.00 → 0.00 | 0 → 0 | 0.83 → 0.83 | 4 / 4 | 0 | 1 |
-| 15, 20 | 0.00 → 0.33 | 0.60 → 0.60 | 2 → 0 | 0.73 → 0.78 | 6 / 6 | 1 | 1 |
-| 15, 40 | 0.00 → 0.40 | 0.00 → 0.67 | 0 → 0 | 0.89 → 0.91 | 11 / 11 | 5 | 1 |
+| 14, 20 | 0.83 | 0.33 | 0 | 0.77 | 7 | 2 | 0 |
+| 14, 40 | 0.67 | 0.44 | 0 | 0.89 | 12 | 4 | 0 |
+| 10, 20 | 1.00 | 0.00 | 0 | 0.83 | 4 | 0 | 0 |
+| 10, 40 | 1.00 | 0.00 | 0 | 0.83 | 4 | 0 | 11 |
+| 16, 20 | 0.00 | 0.60 | 0 | 0.78 | 6 | 3 | 0 |
+| 16, 40 | 0.20 | 0.67 | 0 | 0.91 | 11 | 6 | 0 |
+
+Against the pre-revert table (U6 on, project 15): Iceland 40 `opener_hit` 0.78 → 0.67 and Japan
+20 0.33 → 0.00, because the hero opener had put the lead in a hero slot. Vietnam at 40 pages
+has 11 blank pages because its selection is 31 photos for 40 pages (photos run out; the editor
+footer warns), unchanged from the baseline.
 
 **Still open, measured rather than assumed:**
 
-- **Titles over photos.** 7 of Iceland's 12 titles at 40 pages have no clear band and sit on
-  a photo (the manifest and editor both flag them). The scorer does not yet prefer layouts
-  that leave a band; U6 nudged the total up slightly. This is the next engine change worth
-  making.
+- **Title spots over photos.** 4 of Iceland's 12 title spots at 40 pages have no clear band
+  and sit on a photo (the chapter heading flags them). Less urgent now titles never print,
+  but the scorer still does not prefer layouts that leave a band.
 - **Closers on Vietnam** stay at 0: its chapters are short, and the closer rule needs four
   photos and a calm frame in the last 40%.
 - **Soft event boundaries (plan U7) were skipped**: `mixed_spreads` totals 30 over 18 books.
