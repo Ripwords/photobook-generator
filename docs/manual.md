@@ -294,6 +294,22 @@ any. What dragging a photo does in each mode is in the tooltip of that mode's bu
 bar above the book. When the editor is narrow (the chat open in a small window), that bar
 shows its buttons as icons; hover one for its name or, for the two modes, what a drag does.
 
+Each chapter starts with a heading above its first opening. The heading gives the chapter
+number, its pages, its dates (when the title is not already the dates) and how many events
+it merges. Below that are the title it prints and, under the title, the page it prints on.
+A book with more than two chapters also has a **Chapters** menu (the list icon) in the bar
+above the book. It lists every chapter's title and pages; pick one to scroll to it.
+
+To **change a chapter's title**, press the pencil beside it, type, and press Enter. Clicking
+away also saves; Esc leaves the title as it was. The title draws on the page in the editor at
+the size it prints. Clear the box and save to print no title at all: the heading then reads
+**No title**, and if the page has nothing else on it, it counts as blank. A title you have
+typed stays through **Regenerate** and **Shuffle**. Undo takes it back like any other change. **Use automatic title** goes back to the place name or dates, and typing the
+automatic title back does the same. If the layout leaves no clear space for the title, the
+heading warns that it **prints over a photo** and names the page. Choose another layout or
+move a box to make room. Where a title goes, and how to get it
+into Pixajoy, is under **Chapter titles** further down.
+
 Every opening (page 1, each pair of facing pages, the last page) has four controls on its
 right. Page 1 is shown facing the inside front cover and the last page facing the inside
 back cover, the way the printed book opens.
@@ -483,6 +499,8 @@ The type is set between 14 and 28 pt to suit the space.
 Export does not draw titles into the photo files. Each page in `manifest.json` lists its
 titles under `texts`: the `text`, its box in inches on the printed page (`rect_in`, measured
 from the top-left of the page including bleed, like a photo's `dest_rect_in`), the `align`ment,
-the `point_size`, and `overlaps_photo`. In Pixajoy's editor, add a text box on that page, type
-the title, and place and size it to match.
+the `point_size`, and `overlaps_photo`. The **Export** sheet lists every title that prints, with
+its page, a warning sign on any that prints over a photo, and a button that copies the title.
+In Pixajoy's editor, add a text box on that page, paste the title, and place and size it to
+match the manifest.
 

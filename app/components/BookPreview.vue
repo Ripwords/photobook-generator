@@ -2,6 +2,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   canRelayout,
+  chapterOpening,
   leftOutPhotos,
   nextSwapStep,
   openingFor,
@@ -50,7 +51,30 @@ const spreads = computed(() =>
     ...spread,
     index,
     opening: openingFor(layout, index),
+    chapter: chapterOpening(layout, spread),
   })),
+);
+
+/**
+ * The chapters menu: each chapter's title and pages, jumping to its header.
+ * Only with a real choice -- a one-chapter book has nowhere to jump.
+ */
+const chapterMenu = computed(() =>
+  layout.chapters.length > 1
+    ? [
+        layout.chapters.map((chapter) => ({
+          label: chapter.title === "" ? `Chapter ${chapter.number}` : chapter.title,
+          description:
+            chapter.firstPage === chapter.lastPage
+              ? `Page ${chapter.firstPage}`
+              : `Pages ${chapter.firstPage}–${chapter.lastPage}`,
+          onSelect: () =>
+            document
+              .getElementById(`chapter-${chapter.number}`)
+              ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+        })),
+      ]
+    : null,
 );
 
 const anyLocked = computed(() => layout.openings.some((opening) => opening.locked));
@@ -167,8 +191,9 @@ const leftOut = computed(() =>
       <!--
         What a drag does in each mode is said in its tooltip, not in a status line.
         Labels fold to icons as the column narrows (measured at md: the modes need
-        ~30rem with icon-only actions, everything labelled needs ~42rem), so the
-        bar never wraps; each button keeps its name as an aria-label.
+        ~30rem with icon-only actions, everything labelled needs ~42rem, and
+        ~54rem with Chapters labelled too), so the bar never wraps; each button
+        keeps its name as an aria-label.
       -->
       <UFieldGroup aria-label="What dragging a photo does">
         <UTooltip
@@ -206,6 +231,13 @@ const leftOut = computed(() =>
       </UFieldGroup>
 
       <div class="ml-auto flex items-center gap-2">
+        <UDropdownMenu v-if="chapterMenu" :items="chapterMenu" :content="{ align: 'end' }">
+          <UTooltip text="Jump to a chapter">
+            <UButton icon="i-lucide-list" color="neutral" variant="ghost" aria-label="Chapters">
+              <span class="hidden @[54rem]:inline">Chapters</span>
+            </UButton>
+          </UTooltip>
+        </UDropdownMenu>
         <!--
           What the coloured lines mean. Stated once here rather than repeated
           on every page: the guides are the same predicates `book::score` and
@@ -280,7 +312,19 @@ const leftOut = computed(() =>
         @spine="onSpine"
       />
       <ol class="space-y-10">
-        <li v-for="spread in spreads" :key="spread.key" class="space-y-2.5">
+        <li
+          v-for="spread in spreads"
+          :id="spread.chapter ? `chapter-${spread.chapter.number}` : undefined"
+          :key="spread.key"
+          class="scroll-mt-16 space-y-2.5"
+        >
+          <BookChapterHeader
+            v-if="spread.chapter"
+            :chapter="spread.chapter"
+            :busy
+            class="mb-4"
+            @edit="emit('edit', $event)"
+          />
           <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
             <p class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted tabular-nums">
               <span class="font-medium text-toned">{{ spread.label }}</span>

@@ -3,6 +3,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   canRelayout,
+  chapterOpening,
+  pageTitle,
+  printedTitles,
+  titleEdit,
   releaseAction,
   zoomTakeover,
   cropMoved,
@@ -1533,5 +1537,87 @@ describe("the cover panels arbitrate the wheel the same way the pages do", () =>
 
   it("keeps a zoom a cancelled press had taken over", () => {
     expect(text).toContain("if (wheelPending?.side === cancelled.side) {");
+  });
+});
+
+describe("chapter titles in the editor", () => {
+  const chapter = layout.chapters[0]!;
+
+  it("draws a chapter's title on the page its box is on, and only there", () => {
+    expect(chapter.titleBox?.page).toBe(3);
+    const drawn = pageTitle(layout, 3, geometry.pageWIn);
+    expect(drawn?.text).toBe("Reykjavík");
+    expect(drawn?.align).toBe("center");
+    expect(drawn?.box).toEqual(rectStyle(chapter.titleBox!.rect));
+    expect(pageTitle(layout, 2, geometry.pageWIn)).toBeNull();
+  });
+
+  // 24 pt on an 11.197" page is 24/72/11.197 of the page's width, so the
+  // preview's title is the printed size at any zoom.
+  it("scales the point size to the page's width", () => {
+    const drawn = pageTitle(layout, 3, 11.197);
+    expect(drawn?.fontSize).toBe(`${Math.round((24 / 72 / 11.197) * 100 * 10_000) / 10_000}cqw`);
+    expect(pageTitle(layout, 3, 22.394)?.fontSize).not.toBe(drawn?.fontSize);
+  });
+
+  it("draws nothing for a chapter the user left untitled", () => {
+    const untitled = structuredClone(layout);
+    untitled.chapters[0]!.title = "";
+    expect(pageTitle(untitled, 3, geometry.pageWIn)).toBeNull();
+  });
+
+  it("heads the spread a chapter opens on, and no other", () => {
+    const spreads = toSpreads(layout.pages);
+    expect(spreads.map((spread) => chapterOpening(layout, spread)?.number ?? null)).toEqual([null, 1, null]);
+  });
+
+  describe("titleEdit", () => {
+    const auto = { ...chapter, custom: false, title: chapter.autoTitle };
+
+    it("sends nothing when the title did not change", () => {
+      expect(titleEdit(chapter, "Reykjavík")).toBeNull();
+      expect(titleEdit(chapter, "  Reykjavík ")).toBeNull();
+      expect(titleEdit(auto, auto.autoTitle)).toBeNull();
+    });
+
+    it("sends the trimmed new title", () => {
+      expect(titleEdit(auto, " Golden Circle ")).toEqual({
+        kind: "setChapterTitle",
+        event: 4,
+        title: "Golden Circle",
+      });
+    });
+
+    // Typing the automatic title back is going back to automatic, so a later
+    // place name can still replace it.
+    it("goes back to automatic when the automatic title is typed back", () => {
+      expect(titleEdit(chapter, chapter.autoTitle)).toEqual({ kind: "setChapterTitle", event: 4, title: null });
+    });
+
+    it("sends an empty title, which prints none", () => {
+      expect(titleEdit(chapter, "   ")).toEqual({ kind: "setChapterTitle", event: 4, title: "" });
+    });
+  });
+
+  // The export sheet's list of titles to type into Pixajoy: what prints, where.
+  describe("printedTitles", () => {
+    it("lists each printed title with its page, in page order", () => {
+      const two = structuredClone(layout);
+      const later = { ...two.chapters[0]!, number: 2, event: 9, title: "Vík", titleBox: { ...two.chapters[0]!.titleBox!, page: 7, overlapsPhoto: true } };
+      two.chapters = [later, two.chapters[0]!];
+      expect(printedTitles(two)).toEqual([
+        { chapter: 1, page: 3, text: "Reykjavík", overlapsPhoto: false },
+        { chapter: 2, page: 7, text: "Vík", overlapsPhoto: true },
+      ]);
+    });
+
+    it("leaves out a chapter with no title or nowhere to print it", () => {
+      const none = structuredClone(layout);
+      none.chapters = [
+        { ...none.chapters[0]!, title: "" },
+        { ...none.chapters[0]!, number: 2, titleBox: null },
+      ];
+      expect(printedTitles(none)).toEqual([]);
+    });
   });
 });

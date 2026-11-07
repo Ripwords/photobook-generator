@@ -11,7 +11,13 @@ import {
 import type { EventTiers, PhotoOverrides } from "~/types/features";
 import type { BookOptions } from "~/types/book";
 import { sizeLabel, type PrintSpec } from "~/types/printSpec";
-import { canStep, stepLabel, type HistoryStep, type PreviewGeometry } from "~/types/preview";
+import {
+  canStep,
+  printedTitles,
+  stepLabel,
+  type HistoryStep,
+  type PreviewGeometry,
+} from "~/types/preview";
 import { shortcutCombo, shortcutKbds } from "~/types/shortcuts";
 
 const { projectId, listedName } = defineProps<{
@@ -107,6 +113,20 @@ defineShortcuts({
 const blankPages = computed(
   () => layout.value?.pages.filter((page) => page.blank).length ?? 0,
 );
+
+/** The chapter titles to type into Pixajoy: export writes them to the manifest, not the photos. */
+const titles = computed(() => (layout.value ? printedTitles(layout.value) : []));
+/** The chapter whose title was just copied, so its button can say so. */
+const copiedTitle = ref<number | null>(null);
+let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+
+async function copyTitle(chapter: number, text: string) {
+  await navigator.clipboard.writeText(text);
+  copiedTitle.value = chapter;
+  clearTimeout(copiedTimer);
+  copiedTimer = setTimeout(() => (copiedTitle.value = null), 1500);
+}
+onBeforeUnmount(() => clearTimeout(copiedTimer));
 
 const counts = computed(() => (exportResult.value ? summarizeExport(exportResult.value) : null));
 const outcome = computed(() => (exportResult.value ? exportOutcome(exportResult.value) : null));
@@ -503,6 +523,38 @@ onMounted(() => {
               {{ outputDir ? "Change output folder" : "Choose output folder" }}
             </UButton>
           </div>
+        </section>
+
+        <section v-if="titles.length > 0" class="space-y-2" aria-labelledby="export-titles">
+          <h3 id="export-titles" class="text-sm font-medium text-highlighted">Chapter titles</h3>
+          <p class="text-sm text-muted">
+            Export does not draw these into the photos. In Pixajoy, add a text box on each page and
+            paste its title; <span class="font-mono">manifest.json</span> gives the box and size.
+          </p>
+          <ul class="divide-y divide-default rounded-md border border-default">
+            <li
+              v-for="title in titles"
+              :key="title.chapter"
+              class="flex items-center gap-3 py-1.5 pr-1.5 pl-3"
+            >
+              <span class="w-16 shrink-0 text-sm text-muted tabular-nums">Page {{ title.page }}</span>
+              <span class="min-w-0 flex-1 text-sm break-words text-default">{{ title.text }}</span>
+              <UTooltip v-if="title.overlapsPhoto" text="Prints over a photo: no clear band on this layout">
+                <UIcon
+                  name="i-lucide-triangle-alert"
+                  class="size-4 shrink-0 text-warning"
+                  aria-label="Prints over a photo"
+                />
+              </UTooltip>
+              <UButton
+                :icon="copiedTitle === title.chapter ? 'i-lucide-check' : 'i-lucide-copy'"
+                color="neutral"
+                variant="ghost"
+                :aria-label="`Copy the title on page ${title.page}`"
+                @click="copyTitle(title.chapter, title.text)"
+              />
+            </li>
+          </ul>
         </section>
 
         <UButton

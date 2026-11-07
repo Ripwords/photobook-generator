@@ -343,20 +343,20 @@ describe("the harness's undo timeline", () => {
     const titled = await invoke<BookLayout>("edit_book", {
       edit: { kind: "setChapterTitle", event: 4, title: "  Golden Circle  " },
     });
-    expect(titled.chapters[0]).toMatchObject({ title: "Golden Circle", custom: true });
+    expect(titled.chapters.find((c) => c.event === 4)).toMatchObject({ title: "Golden Circle", custom: true });
 
     // An empty title prints nothing, so the half it sat on is blank again.
     const cleared = await invoke<BookLayout>("edit_book", {
       edit: { kind: "setChapterTitle", event: 4, title: "" },
     });
-    expect(cleared.chapters[0]).toMatchObject({ title: "", custom: true, titleBox: null });
+    expect(cleared.chapters.find((c) => c.event === 4)).toMatchObject({ title: "", custom: true, titleBox: null });
     expect(cleared.pages.find((p) => p.number === 3)?.blank).toBe(true);
 
     const auto = await invoke<BookLayout>("edit_book", {
       edit: { kind: "setChapterTitle", event: 4, title: null },
     });
-    expect(auto.chapters[0]).toMatchObject({ title: "12–14 Mar 2026", custom: false });
-    expect(auto.chapters[0]!.titleBox?.page).toBe(3);
+    expect(auto.chapters.find((c) => c.event === 4)).toMatchObject({ title: "12–14 Mar 2026", custom: false });
+    expect(auto.chapters.find((c) => c.event === 4)?.titleBox?.page).toBe(3);
     expect(auto.pages.find((p) => p.number === 3)?.blank).toBe(false);
   });
 

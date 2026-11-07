@@ -489,6 +489,81 @@ export function cropStyle(crop: PreviewRect): CropStyle {
   };
 }
 
+/** A chapter title as the page draws it -- see `pageTitle`. */
+export interface PageTitle {
+  text: string;
+  box: BoxStyle;
+  /** In `cqw` of the page box, so it is the printed size at any zoom. */
+  fontSize: string;
+  align: TextAlign;
+  overlapsPhoto: boolean;
+}
+
+/**
+ * The title printed on page `page`, or `null`. `pageWIn` is the width the page
+ * box stands for: a point is 1/72", so `pointSize / 72 / pageWIn` is the type's
+ * share of the page's width, which the page box carries as `100cqw`.
+ */
+export function pageTitle(layout: BookLayout, page: number, pageWIn: number): PageTitle | null {
+  const chapter = layout.chapters.find((c) => c.titleBox?.page === page && c.title !== "");
+  const box = chapter?.titleBox;
+  if (!chapter || !box) return null;
+  return {
+    text: chapter.title,
+    box: rectStyle(box.rect),
+    fontSize: `${pct((box.pointSize / 72 / extent(pageWIn)) * 100)}cqw`,
+    align: box.align,
+    overlapsPhoto: box.overlapsPhoto,
+  };
+}
+
+/** A title the book prints, as the export sheet lists it for typing into Pixajoy. */
+export interface PrintedTitle {
+  chapter: number;
+  page: number;
+  text: string;
+  overlapsPhoto: boolean;
+}
+
+/** Every title that prints, in page order. An untitled or unplaced chapter prints none. */
+export function printedTitles(layout: BookLayout): PrintedTitle[] {
+  return layout.chapters
+    .flatMap((chapter) =>
+      chapter.titleBox && chapter.title !== ""
+        ? [
+            {
+              chapter: chapter.number,
+              page: chapter.titleBox.page,
+              text: chapter.title,
+              overlapsPhoto: chapter.titleBox.overlapsPhoto,
+            },
+          ]
+        : [],
+    )
+    .toSorted((a, b) => a.page - b.page);
+}
+
+/** The chapter whose first page is on this spread, which the editor heads with it. */
+export function chapterOpening(layout: BookLayout, opening: PreviewSpread): PreviewChapter | null {
+  const pages = [opening.left?.number, opening.right?.number];
+  return layout.chapters.find((chapter) => pages.includes(chapter.firstPage)) ?? null;
+}
+
+/**
+ * The edit committing `draft` as a chapter's title, or `null` when nothing
+ * changes. Typing the automatic title back returns the chapter to automatic
+ * (`title: null`), so a place name found later can still replace it; an
+ * empty draft prints no title at all.
+ */
+export function titleEdit(chapter: PreviewChapter, draft: string): BookEdit | null {
+  const text = draft.trim();
+  if (text === chapter.title.trim()) return null;
+  if (text === chapter.autoTitle) {
+    return chapter.custom ? { kind: "setChapterTitle", event: chapter.event, title: null } : null;
+  }
+  return { kind: "setChapterTitle", event: chapter.event, title: text };
+}
+
 /** Any page-normalised rect as an absolutely positioned box. */
 export function rectStyle(rect: PreviewRect): BoxStyle {
   return {

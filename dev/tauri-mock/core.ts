@@ -72,6 +72,31 @@ layout.openings[1] = {
   rejected: [],
   alternatives: ["07-two-up-symmetric-margin", "08-two-up-symmetric-bleed-outer"],
 };
+// The fixture has one chapter, so give page 1 one of its own: the editor's
+// chapters menu needs two to appear, and this one's title has no clear band,
+// so it shows the "prints over a photo" warning as Rust would report it.
+layout.chapters = [
+  {
+    number: 1,
+    event: 0,
+    events: [0],
+    firstPage: 1,
+    lastPage: 1,
+    start: 1_773_100_800,
+    end: 1_773_187_200,
+    autoTitle: "10–11 Mar 2026",
+    title: "10–11 Mar 2026",
+    custom: false,
+    titleBox: {
+      page: 1,
+      rect: { x: 0.08, y: 0.06, w: 0.84, h: 0.11 },
+      align: "center",
+      pointSize: 20,
+      overlapsPhoto: true,
+    },
+  },
+  ...layout.chapters.map((chapter) => ({ ...chapter, number: chapter.number + 1 })),
+];
 // The fixture's thumbnail paths point at a disk this browser cannot read.
 layout.photos = layout.photos.map((photo, index) => ({
   ...photo,

@@ -8,6 +8,7 @@ import {
   NO_HOLD,
   pageGuides,
   pageSlots,
+  pageTitle,
   pressIsDrag,
   SLOT_DRAG_THRESHOLD_PX,
   rectStyle,
@@ -379,6 +380,10 @@ const safe = computed(() => rectStyle(shown.value[side].safe));
 const gutter = computed(() => rectStyle(shown.value[side].gutter));
 
 const snapped = computed<SnapLine[]>(() => snapLines(held.value));
+
+/** The chapter title this page prints, at its printed size -- see `pageTitle`. */
+const title = computed(() => (page ? pageTitle(layout, page.number, shown.value.pageWIn) : null));
+const titleAlign = { left: "text-left", center: "text-center", right: "text-right" } as const;
 </script>
 
 <template>
@@ -390,7 +395,7 @@ const snapped = computed<SnapLine[]>(() => snapLines(held.value));
   -->
   <div
     ref="pageEl"
-    class="relative overflow-hidden"
+    class="@container relative overflow-hidden"
     :style="{ aspectRatio: `${shown.pageWIn} / ${shown.pageHIn}` }"
     :class="page ? 'bg-white' : 'bg-neutral-200 dark:bg-neutral-800'"
   >
@@ -465,6 +470,25 @@ const snapped = computed<SnapLine[]>(() => snapLines(held.value));
           />
         </template>
       </component>
+
+      <!--
+        The chapter title, where `manifest.json` tells the user to type it in
+        Pixajoy. Over a photo it gets a light backing so it stays readable; the
+        chapter header says why it landed there.
+      -->
+      <div
+        v-if="title"
+        class="pointer-events-none absolute flex items-center"
+        :style="title.box"
+      >
+        <p
+          class="w-full leading-tight font-semibold break-words text-neutral-900"
+          :class="[titleAlign[title.align], title.overlapsPhoto && 'bg-white/75 px-[0.4em]']"
+          :style="{ fontSize: title.fontSize }"
+        >
+          {{ title.text }}
+        </p>
+      </div>
 
       <!--
         A page that prints white, said out loud. It is a real printed page,
