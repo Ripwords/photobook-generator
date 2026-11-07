@@ -1,7 +1,7 @@
 # PhotobookGen — Project Status
 
-**Last updated:** 2026-09-23
-**Branch:** `master`
+**Last updated:** 2026-11-07
+**Branch:** `feat/story` (not yet merged to `master`)
 
 This document exists so a new agent can pick the project up without re-deriving what
 was already learned. Read it before touching code. The authoritative documents are:
@@ -21,6 +21,74 @@ are long but they are where the reasoning lives.
 
 **If you read only one section, read "Phase 2 open items" — every entry there is a real,
 deliberately-parked decision that this file is the only surviving record of.**
+
+---
+
+## What changed on 2026-11-07: the story round (branch `feat/story`)
+
+**The problem.** The book read as "best frame per moment, in clock order, poured into
+slots". Nothing chose what opens or closes a chapter, spread density followed a
+content-blind global cycle, a Featured event had no route to a hero layout, the book carried
+no text, and capture times lost their UTC offset. The plan and the user's rulings are in
+memory `story-round-rulings` (printed, editable chapter titles; no AI captions; a text-free
+cover; reordering within a chapter only; the UI stays monochrome).
+
+**What was built**, one commit each, test-first, with mutation evidence in every body:
+
+- **Time zones** (`2dd4428`). The sidecar reads `OffsetTimeOriginal`; `Photo::instant` is
+  wall clock minus offset, and a photo with no offset borrows one only from the same local
+  day. Ordering and event gaps read `instant`; titles and dates read the wall clock.
+- **Shot roles** (`5b582c6`, `book::story`). Establishing / People / Detail / Moment from tags,
+  faces and saliency, plus the story columns in `book_report`. Metrics only.
+- **Role coverage** (`d025f39`). Each event's picks gain a wide shot, a face and a detail
+  when it has them, by permuting only inside the existing prefix budget.
+- **Reading order** (`175e289`) and **opener/closer** (`cfc231c`). A chapter opens on its best
+  wide shot from the first half and closes on its calmest frame from the last 40%; at most
+  two photos move, and only in chapters of four or more. The anchors are pinned through
+  `repace` and never cut to fit.
+- **Arc rhythm** (`bff46ed`). `story::arc_swing` replaces the global `DENSITY_RHYTHM` per
+  chapter: sparse opener, dense middle, quieter close. It changes only the `aim` key, below
+  feasibility, so it adds no blanks or drops.
+- **Chapter titles** (`caa54b2`, `f6e565e`). `book::titles` derives chapters, the automatic
+  title (a cached place name, otherwise a wall-clock date range, otherwise "Chapter N") and
+  the title box on every read. `Book::titles` stores only what the user typed, keyed by the
+  chapter's opening event. Titles travel in `manifest.json` `texts`, never in an image. The
+  contact sheet titles chapters with the same date formatter (`app/types/dates.ts`, pinned to
+  `tests/fixtures/wire/date-ranges.json`).
+- **Hero opener** (`e2b18e0`). A Featured chapter with room opens on one photo on a titled
+  spread; `feasible_band` refuses it whenever it would strand the rest.
+- **Editor** (`55e1a2a`). Chapter headings with inline title editing, the title drawn on the
+  page at its printed size, a Chapters jump menu, and the export sheet's copyable title list.
+- **UI polish** (merged in `9859d2c`): 14 px type and `md` controls, machine data behind
+  disclosures, one tier dropdown, a sticky Generate action, footer warnings.
+
+**Measured at HEAD** (`book_report 14 10 15` on a DB copy; projects 14 Iceland, 10 Vietnam,
+15 Japan; seeds 7/1234/99 identical). "Before" is the U1 run: the new metrics on the
+pre-story engine. `blank_pages`, `dropped` and `floor_misses` match the baseline on every
+row; `--scenarios` 9/9 PASS; `--stability` 0 violations.
+
+| project, pages | opener_hit | closer_hit | chrono_inv | role_cov | titled / chapters | title_overlaps | opener_spreads |
+|---|---|---|---|---|---|---|---|
+| 14, 20 | 0.50–0.75 → 0.83 | 0.00 → 0.33 | 2 → 0 | 0.68 → 0.77 | 7 / 7 | 3 | 0 |
+| 14, 40 | 0.62–0.75 → 0.78 | 0.11 → 0.44 | 0 → 0 | 0.82 → 0.89 | 12 / 12 | 7 | 2 |
+| 10, 20 | 0.00 → 1.00 | 0.00 → 0.00 | 0 → 0 | 0.83 → 0.83 | 4 / 4 | 0 | 1 |
+| 10, 40 | 0.50 → 1.00 | 0.00 → 0.00 | 0 → 0 | 0.83 → 0.83 | 4 / 4 | 0 | 1 |
+| 15, 20 | 0.00 → 0.33 | 0.60 → 0.60 | 2 → 0 | 0.73 → 0.78 | 6 / 6 | 1 | 1 |
+| 15, 40 | 0.00 → 0.40 | 0.00 → 0.67 | 0 → 0 | 0.89 → 0.91 | 11 / 11 | 5 | 1 |
+
+**Still open, measured rather than assumed:**
+
+- **Titles over photos.** 7 of Iceland's 12 titles at 40 pages have no clear band and sit on
+  a photo (the manifest and editor both flag them). The scorer does not yet prefer layouts
+  that leave a band; U6 nudged the total up slightly. This is the next engine change worth
+  making.
+- **Closers on Vietnam** stay at 0: its chapters are short, and the closer rule needs four
+  photos and a calm frame in the last 40%.
+- **Soft event boundaries (plan U7) were skipped**: `mixed_spreads` totals 30 over 18 books.
+- **Typed titles are not carried into a rebuilt book.** Regenerate and Shuffle keep them;
+  **Edit photos** → Update builds a new `Book` with an empty `titles`. The plan's
+  `carry_titles` (match chapters by member overlap) was not built.
+- **Whether the book now reads like a story** is the user's call, not a metric.
 
 ---
 

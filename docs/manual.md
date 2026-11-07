@@ -243,7 +243,8 @@ that book, with its decisions, print size, event tiers and **Split chapters by p
 restored once the analysis is done (**Edit photos** again reopens the same draft), and the
 generate control becomes two: **Update "<name>"** asks you to confirm, then builds the book
 again from these photos and settings. Changes you made in the editor -- swapped or replaced
-photos, crops, layouts, moved boxes, the cover, and photos added from disk -- are replaced;
+photos, crops, layouts, moved boxes, the cover, chapter titles you typed, and photos added
+from disk -- are replaced;
 its undo history, export history and favourite star don't carry over, though files you
 already exported are not touched. **Save as a new photobook** keeps both. Choosing different
 folders makes it a new book again, since a book built from a different source is not an
@@ -304,7 +305,8 @@ To **change a chapter's title**, press the pencil beside it, type, and press Ent
 away also saves; Esc leaves the title as it was. The title draws on the page in the editor at
 the size it prints. Clear the box and save to print no title at all: the heading then reads
 **No title**, and if the page has nothing else on it, it counts as blank. A title you have
-typed stays through **Regenerate** and **Shuffle**. Undo takes it back like any other change. **Use automatic title** goes back to the place name or dates, and typing the
+typed stays through **Regenerate** and **Shuffle**, but not through **Update** after **Edit
+photos**, which rebuilds the book. Undo takes it back like any other change. **Use automatic title** goes back to the place name or dates, and typing the
 automatic title back does the same. If the layout leaves no clear space for the title, the
 heading warns that it **prints over a photo** and names the page. Choose another layout or
 move a box to make room. Where a title goes, and how to get it
