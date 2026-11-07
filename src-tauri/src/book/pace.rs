@@ -15,7 +15,8 @@ use crate::book::crop::choose_crop;
 use crate::book::cull::{cull, Overrides, Photo};
 use crate::book::edit::OpeningControls;
 use crate::book::pack::{pack_selected, Buildable, Capacity, Group, IncludeOverflow, SlotKind};
-use crate::book::score::{best_spread, page_reading_order, rejects, slot_aspect};
+use crate::book::score::{best_spread_ordered, page_reading_order, rejects, slot_aspect};
+use crate::book::story::{self, Anchors};
 use crate::geometry::{Rect, Side};
 use crate::print_spec::PrintSpec;
 use crate::templates::{EdgeTreatment, Library, PageLayout, SpreadTemplate, Weights};
@@ -282,6 +283,7 @@ fn best_single<'a>(
     group: &Group,
     side: Side,
     seed: u64,
+    anchors: &Anchors,
 ) -> Option<(&'a str, &'a PageLayout, Vec<usize>)> {
     let n = group.photos.len();
     if n == 0 {
@@ -292,7 +294,7 @@ fn best_single<'a>(
         pool.iter().filter(|(_, l)| fits(l)).map(|(_, l)| l.slots.len()).collect();
 
     for capacity in sizes.into_iter().rev() {
-        let indices = strongest(group, photos, capacity);
+        let indices = strongest(group, photos, capacity, anchors);
         let mut scored: Vec<(f64, &str, &PageLayout, Vec<usize>)> = pool
             .iter()
             .filter(|(_, l)| fits(l) && l.slots.len() == capacity)
@@ -333,16 +335,18 @@ fn seat_in_reading_order(layout: &PageLayout, indices: &[usize]) -> Vec<usize> {
 /// mirrors `pack`'s own worst-first ranking when it trims to capacity --
 /// aesthetic percentile, then sharpness, then path for determinism -- and
 /// drops from that end, so the page keeps the strongest photos rather than
-/// whichever happen to sort first by filename.
-fn strongest(group: &Group, photos: &[Photo], capacity: usize) -> Vec<usize> {
+/// whichever happen to sort first by filename. A chapter's opening or
+/// closing photo goes last of all: `story::sequence` chose it to be read.
+fn strongest(group: &Group, photos: &[Photo], capacity: usize, anchors: &Anchors) -> Vec<usize> {
     if group.photos.len() <= capacity {
         return group.photos.clone();
     }
     let mut ranked = group.photos.clone();
     ranked.sort_by(|&a, &b| {
-        photos[a]
-            .aesthetic_pct
-            .cmp(&photos[b].aesthetic_pct)
+        anchors
+            .contains(a)
+            .cmp(&anchors.contains(b))
+            .then(photos[a].aesthetic_pct.cmp(&photos[b].aesthetic_pct))
             .then(photos[a].sharpness_pct.cmp(&photos[b].sharpness_pct))
             .then(photos[a].path.cmp(&photos[b].path))
     });
@@ -359,9 +363,10 @@ fn single_page(
     pool: &[(&str, &PageLayout)],
     photos: &[Photo],
     seed: u64,
+    anchors: &Anchors,
 ) -> Page {
     let Some((id, layout, indices)) =
-        group.and_then(|g| best_single(spec, pool, photos, g, side, seed))
+        group.and_then(|g| best_single(spec, pool, photos, g, side, seed, anchors))
     else {
         return blank_page(side);
     };
@@ -409,6 +414,10 @@ fn seatable_slots(spec: &PrintSpec, lib: &Library, photo: &Photo) -> usize {
 /// choice is deterministic and the spread keeps its strongest photos. The
 /// happy path pays nothing: the full group is tried first and the ranking
 /// only runs once a size has already failed.
+///
+/// A chapter anchor is shed only after every other seatable photo: an
+/// unseatable one goes first whatever it is, because nothing can print it.
+#[allow(clippy::too_many_arguments)]
 fn spread_pages<'a>(
     spec: &PrintSpec,
     group: &Group,
@@ -417,13 +426,15 @@ fn spread_pages<'a>(
     w: &Weights,
     previous: Option<&str>,
     seed: u64,
+    anchors: &Anchors,
 ) -> Option<(&'a SpreadTemplate, [Page; 2])> {
     let mut indices = group.photos.clone();
     while !indices.is_empty() {
         let refs: Vec<&Photo> = indices.iter().map(|&i| &photos[i]).collect();
         let eligible = lib.spreads_with(indices.len());
+        let order = anchors.order_for(&indices);
         if let Some((template, assignment, _)) =
-            best_spread(spec, &eligible, &refs, previous, w, seed)
+            best_spread_ordered(spec, &eligible, &refs, previous, w, seed, order)
         {
             return Some((template, rebuild(spec, template, &assignment, &indices, photos)));
         }
@@ -432,8 +443,10 @@ fn spread_pages<'a>(
         let worst = (0..indices.len())
             .min_by(|&a, &b| {
                 let (pa, pb) = (&photos[indices[a]], &photos[indices[b]]);
-                seatable[a]
-                    .cmp(&seatable[b])
+                (seatable[a] > 0)
+                    .cmp(&(seatable[b] > 0))
+                    .then(anchors.contains(indices[a]).cmp(&anchors.contains(indices[b])))
+                    .then(seatable[a].cmp(&seatable[b]))
                     .then(pa.aesthetic_pct.cmp(&pb.aesthetic_pct))
                     .then(pa.sharpness_pct.cmp(&pb.sharpness_pct))
                     .then(pa.path.cmp(&pb.path))
@@ -675,6 +688,9 @@ pub fn assemble_with(
         })
         .collect();
 
+    let in_order: Vec<usize> = groups.iter().flat_map(|g| g.photos.iter().copied()).collect();
+    let anchors = story::anchors(&in_order, photos);
+
     let pool = half_pool(lib);
     let spread_count = (pages.saturating_sub(2) / 2) as usize;
     let mut out: Vec<Page> = Vec::with_capacity(pages as usize);
@@ -692,14 +708,16 @@ pub fn assemble_with(
         groups.iter().filter(|g| g.slot == SlotKind::Spread).collect();
 
     // Page 1: a single, facing the inside front cover.
-    out.push(single_page(spec, Side::Right, opening, &pool, photos, seed));
+    out.push(single_page(spec, Side::Right, opening, &pool, photos, seed, &anchors));
 
     // The middle: true spreads, two pages each.
     let mut previous: Option<String> = None;
     for s in 0..spread_count {
         match middle
             .get(s)
-            .and_then(|g| spread_pages(spec, g, photos, lib, w, previous.as_deref(), seed))
+            .and_then(|g| {
+                spread_pages(spec, g, photos, lib, w, previous.as_deref(), seed, &anchors)
+            })
         {
             Some((template, [left, right])) => {
                 previous = Some(template.id.clone());
@@ -716,7 +734,7 @@ pub fn assemble_with(
     }
 
     // The final page: a single, facing the inside back cover.
-    out.push(single_page(spec, Side::Left, closing, &pool, photos, seed));
+    out.push(single_page(spec, Side::Left, closing, &pool, photos, seed, &anchors));
 
     // Odd or degenerate page counts are not real SKUs, but the promise is
     // exactly `pages` pages, so honour it either way.
@@ -837,6 +855,9 @@ pub fn repace(book: &mut Book, lib: &Library, photos: &[Photo], w: &Weights, see
     // under.
     let spec = &book.spec;
     let spread_count = book.pages.len().saturating_sub(2) / 2;
+    // Recovered from the book, so a swap keeps the chapter's opening and
+    // closing photo where assembly put them.
+    let anchors = story::anchors(&story::reading_order(book), photos);
 
     for s in 2..spread_count {
         let (Some(a), Some(b), Some(c)) = (
@@ -876,8 +897,9 @@ pub fn repace(book: &mut Book, lib: &Library, photos: &[Photo], w: &Weights, see
 
         let refs: Vec<&Photo> = indices.iter().map(|&i| &photos[i]).collect();
         let previous = a.id.as_str();
+        let order = anchors.order_for(&indices);
         let Some((template, assignment, _)) =
-            best_spread(spec, &candidates, &refs, Some(previous), w, seed)
+            best_spread_ordered(spec, &candidates, &refs, Some(previous), w, seed, order)
         else {
             continue;
         };
@@ -1609,7 +1631,7 @@ mod tests {
         let group = Group { photos: vec![0, 1, 2], event_cluster: 0, slot: SlotKind::Spread };
 
         let (template, [left, right]) =
-            spread_pages(&pixajoy_spec(), &group, &photos, &lib, &Weights::default(), None, 7)
+            spread_pages(&pixajoy_spec(), &group, &photos, &lib, &Weights::default(), None, 7, &Anchors::default())
                 .expect("two of the three photos are printable, so this spread is not blank");
 
         assert_eq!(
@@ -1644,7 +1666,7 @@ mod tests {
         }
         let group = Group { photos: vec![0, 1, 2], event_cluster: 0, slot: SlotKind::Spread };
         assert!(
-            spread_pages(&pixajoy_spec(), &group, &photos, &lib, &Weights::default(), None, 7)
+            spread_pages(&pixajoy_spec(), &group, &photos, &lib, &Weights::default(), None, 7, &Anchors::default())
                 .is_none(),
             "a blank spread is still the answer when every photo is unprintable"
         );
@@ -1905,7 +1927,7 @@ mod tests {
 
         // Three photos onto a half that holds at most two.
         let group = Group { photos: vec![0, 1, 2], event_cluster: 0, slot: SlotKind::Single(Side::Right) };
-        let page = single_page(&pixajoy_spec(), Side::Right, Some(&group), &half_pool(&lib), &photos, 5);
+        let page = single_page(&pixajoy_spec(), Side::Right, Some(&group), &half_pool(&lib), &photos, 5, &Anchors::default());
         assert_ne!(page.template_id, BLANK_TEMPLATE_ID, "a blank page is the wrong answer here");
         assert_eq!(
             page.placements.len(),
@@ -1935,7 +1957,7 @@ mod tests {
             p.captured_at = Some(1_000 * i as i64);
         }
         let group = Group { photos: vec![0, 1], event_cluster: 0, slot: SlotKind::Single(Side::Right) };
-        let page = single_page(&pixajoy_spec(), Side::Right, Some(&group), &pool, &photos, 0);
+        let page = single_page(&pixajoy_spec(), Side::Right, Some(&group), &pool, &photos, 0, &Anchors::default());
         assert_eq!(page.placements.len(), 2);
         let first = page
             .placements
@@ -2032,15 +2054,89 @@ mod tests {
 
         let group = Group { photos: vec![1, 2, 3], event_cluster: 0, slot: SlotKind::Single(Side::Left) };
         assert_eq!(
-            strongest(&group, &photos, 2),
+            strongest(&group, &photos, 2, &Anchors::default()),
             vec![2, 3],
             "the weakest photo of the group must be the one dropped, not the last in path order"
         );
         assert_eq!(
-            strongest(&group, &photos, 3),
+            strongest(&group, &photos, 3, &Anchors::default()),
             vec![1, 2, 3],
             "a group that fits must come through untouched"
         );
+    }
+
+    // --- chapter anchors ----------------------------------------------------
+
+    fn placed_on(pages: &[Page; 2]) -> BTreeSet<usize> {
+        pages.iter().flat_map(|p| p.placements.iter().map(|pl| pl.photo_index)).collect()
+    }
+
+    /// Photo indices of a laid spread in the order a reader meets them.
+    fn read_on(pages: &[Page; 2]) -> Vec<usize> {
+        let book = Book {
+            pages: pages.to_vec(),
+            seed: 0,
+            dropped: 0,
+            controls: BTreeMap::new(),
+            spec: pixajoy_spec(),
+            options: Default::default(),
+            cover: Default::default(),
+        };
+        crate::book::story::reading_order(&book)
+    }
+
+    /// A chapter's opening and closing photo are what `story::sequence`
+    /// chose; trimming a group to fit a page half must cut around them.
+    #[test]
+    fn pace_never_cuts_a_chapter_anchor_to_fit_a_page_half() {
+        let mut photos = fixture_photos(36);
+        photos[1].aesthetic_pct = 5; // the weakest, so the first to go
+        let group = Group { photos: vec![1, 2, 3], event_cluster: 0, slot: SlotKind::Single(Side::Left) };
+        let anchors = Anchors { leads: BTreeSet::from([1]), ..Default::default() };
+        assert_eq!(strongest(&group, &photos, 2, &Anchors::default()), vec![2, 3]);
+        assert_eq!(strongest(&group, &photos, 2, &anchors), vec![1, 2]);
+    }
+
+    /// Four photos and no four-up template: the spread sheds one. Whichever
+    /// it sheds unanchored, anchoring that photo must save it.
+    #[test]
+    fn pace_sheds_a_spread_photo_around_a_chapter_anchor() {
+        let lib = fixture_library();
+        let photos = fixture_photos(4);
+        let group = Group { photos: vec![0, 1, 2, 3], event_cluster: 0, slot: SlotKind::Spread };
+        let lay = |a: &Anchors| {
+            spread_pages(&pixajoy_spec(), &group, &photos, &lib, &Weights::default(), None, 7, a)
+                .expect("three of the four fit a three-up")
+        };
+        let free = placed_on(&lay(&Anchors::default()).1);
+        assert_eq!(free.len(), 3, "fixture: the fixture library has no four-up");
+        let shed = (0..4).find(|i| !free.contains(i)).unwrap();
+        let anchors = Anchors { tails: BTreeSet::from([shed]), ..Default::default() };
+        assert!(placed_on(&lay(&anchors).1).contains(&shed), "the anchor {shed} was shed");
+    }
+
+    /// The lead opens the spread or takes its largest slot. The lead is the
+    /// photo the unanchored layout put in neither place.
+    #[test]
+    fn pace_opens_a_spread_on_the_chapter_lead() {
+        let lib = fixture_library();
+        let photos = fixture_photos(3);
+        let group = Group { photos: vec![0, 1, 2], event_cluster: 0, slot: SlotKind::Spread };
+        let lay = |a: &Anchors| {
+            spread_pages(&pixajoy_spec(), &group, &photos, &lib, &Weights::default(), None, 7, a).unwrap().1
+        };
+        let prominent = |pages: &[Page; 2]| {
+            let all: Vec<&Placement> = pages.iter().flat_map(|p| p.placements.iter()).collect();
+            let largest = all.iter().map(|p| p.slot_rect.area()).fold(0.0, f64::max);
+            let mut out: BTreeSet<usize> =
+                all.iter().filter(|p| p.slot_rect.area() >= largest).map(|p| p.photo_index).collect();
+            out.insert(read_on(pages)[0]);
+            out
+        };
+        let free = lay(&Anchors::default());
+        let lead = (0..3).find(|i| !prominent(&free).contains(i)).expect("fixture: a photo sits in a minor slot");
+        let anchors = Anchors { leads: BTreeSet::from([lead]), ..Default::default() };
+        assert!(prominent(&lay(&anchors)).contains(&lead), "lead {lead} was left in a minor slot");
     }
 
     // --- the index remap --------------------------------------------------
@@ -2502,6 +2598,56 @@ mod tests {
             }
         }
         assert!(swapped >= 2, "expected at least one spread (two pages) to be swapped");
+    }
+
+    /// A swap re-runs the photo-to-slot search, so it must keep what assembly
+    /// owed the story: an event's lead opens its spread or takes the largest
+    /// slot, and its tail closes it, whenever time order allows. The book
+    /// starts as all hero-left three-ups, so every swap to hero-right or the
+    /// alternate is a fresh chance to shrink a lead: unordered, lead 12 lands
+    /// in a minor slot at spread 1.
+    #[test]
+    fn pace_repace_keeps_each_chapter_lead_and_tail_in_place() {
+        let flat = library_from(&[("f5.json", F5_THREE_UP_HERO_LEFT)]);
+        let lib = fixture_library();
+        let photos: Vec<Photo> = fixture_photos(60)
+            .into_iter()
+            .enumerate()
+            .map(|(i, mut p)| {
+                p.event_cluster = (i / 6) as u32;
+                p.captured_at = Some(i as i64 * 60);
+                p
+            })
+            .collect();
+        let w = Weights::default();
+        let mut book = assemble(&pixajoy_spec(), &photos, 20, &flat, &w, 9, &Overrides::new())
+            .expect("the fixture must place every included photo");
+        let anchors = crate::book::story::anchors(&crate::book::story::reading_order(&book), &photos);
+        repace(&mut book, &lib, &photos, &w, 9);
+
+        let mut checked = 0;
+        for s in 0..(book.pages.len() - 2) / 2 {
+            let pages = [book.pages[1 + 2 * s].clone(), book.pages[2 + 2 * s].clone()];
+            if pages[0].template_id.starts_with("f5-") {
+                continue;
+            }
+            let read = read_on(&pages);
+            let event = |i: usize| photos[i].event_cluster;
+            let all: Vec<&Placement> = pages.iter().flat_map(|p| &p.placements).collect();
+            let largest = all.iter().map(|p| p.slot_rect.area()).fold(0.0, f64::max);
+            for pl in &all {
+                let i = pl.photo_index;
+                if anchors.leads.contains(&i) && read.iter().all(|&j| event(j) >= event(i)) {
+                    assert!(read[0] == i || pl.slot_rect.area() >= largest, "spread {s}: lead {i} in a minor slot");
+                    checked += 1;
+                }
+                if anchors.tails.contains(&i) && read.iter().all(|&j| event(j) <= event(i)) {
+                    assert_eq!(read.last(), Some(&i), "spread {s}: tail {i} does not close the spread");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0, "fixture: no swapped spread held an anchor");
     }
 
     /// Both pages of a spread must name the same template: half a spread from

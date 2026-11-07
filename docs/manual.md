@@ -168,6 +168,15 @@ zone of the nearest phone photo from the same day. When nothing on that day reco
 zone, the camera's own clock decides the order, so set the camera to local time when you
 travel.
 
+Each event that prints four or more photos is told with a beginning and an end. It opens
+on its best wide shot (a landscape, a street, a skyline) from the first half of the event,
+and closes on its calmest photo from the last part: a wide, warm, evenly exposed frame. At
+most those two photos move; the rest stay in the order they were taken. The opening photo
+takes the first or the largest box on its pages, and the closing photo the last. A spread
+that holds two events reads left to right in the order they happened. **Regenerate**,
+**Shuffle** and the other layout changes keep all of this, so trying another layout never
+buries an event's opening photo in a small box.
+
 With the switch on, the contact sheet titles each chapter with its town, such as **Kyoto
 5 photos**. To find the town, the app sends the centre of each chapter, as a latitude and
 longitude, to Apple's map service. It never sends a photo, and it sends nothing while the

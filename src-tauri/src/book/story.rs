@@ -12,6 +12,7 @@
 
 use crate::book::cull::Photo;
 use crate::book::pace::Book;
+use crate::book::score::SpreadOrder;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What a photo can do in a chapter.
@@ -145,6 +146,85 @@ pub fn calm_score(photo: &Photo) -> f64 {
     let warmth = photo.warmth.unwrap_or(0.5).clamp(0.0, 1.0);
     let clipped = (photo.clipped_low + photo.clipped_high).clamp(0.0, 1.0);
     0.5 * wide + 0.3 * warmth + 0.2 * (1.0 - clipped)
+}
+
+/// The fewest photos an event must print before it is told as a chapter
+/// with an opening and a close. Below this, time order is the story.
+pub const SEQUENCE_MIN: usize = 4;
+
+/// Re-orders a chapter's members, already in capture order, so each event
+/// run opens and closes deliberately. At most two photos move per run:
+///
+/// * the best wide shot (by aesthetic) of the run's first half moves to the
+///   front, so the chapter sets the scene before it zooms in;
+/// * the calmest photo of the last 40% moves to the end, so it settles
+///   rather than stopping mid-moment.
+///
+/// Both windows keep the move local: a late photo never opens and an early
+/// one never closes, so the run still reads forward in time.
+pub fn sequence(photos: &[Photo], members: &mut [usize]) {
+    let mut start = 0;
+    while start < members.len() {
+        let event = photos[members[start]].event_cluster;
+        let len = members[start..].iter().take_while(|&&i| photos[i].event_cluster == event).count();
+        sequence_run(photos, &mut members[start..start + len]);
+        start += len;
+    }
+}
+
+fn sequence_run(photos: &[Photo], run: &mut [usize]) {
+    let n = run.len();
+    if n < SEQUENCE_MIN {
+        return;
+    }
+    let opener = (0..n.div_ceil(2))
+        .filter(|&k| shot_role(&photos[run[k]]) == ShotRole::Establishing)
+        .max_by(|&a, &b| photos[run[a]].aesthetic_pct.cmp(&photos[run[b]].aesthetic_pct).then(b.cmp(&a)));
+    if let Some(k) = opener {
+        run[..=k].rotate_right(1);
+    }
+    let calm = |k: usize| calm_score(&photos[run[k]]);
+    let closer = (n - (2 * n).div_ceil(5)..n).max_by(|&a, &b| calm(a).total_cmp(&calm(b)).then(a.cmp(&b)));
+    if let Some(k) = closer {
+        run[k..].rotate_left(1);
+    }
+}
+
+/// The photos that open and close each chapter, as `sequence` left them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Anchors {
+    pub leads: BTreeSet<usize>,
+    pub tails: BTreeSet<usize>,
+}
+
+impl Anchors {
+    pub fn contains(&self, photo: usize) -> bool {
+        self.leads.contains(&photo) || self.tails.contains(&photo)
+    }
+
+    /// What a spread laid out from `indices` owes the story, as positions
+    /// into `indices`.
+    pub fn order_for(&self, indices: &[usize]) -> SpreadOrder {
+        SpreadOrder {
+            lead: indices.iter().position(|i| self.leads.contains(i)),
+            tail: indices.iter().rposition(|i| self.tails.contains(i)),
+        }
+    }
+}
+
+/// The first and last photo of every event run of `SEQUENCE_MIN` or more in
+/// `order`: the group order at assembly, the reading order of a finished
+/// book. Both derive from the photos alone, so a re-layout recovers the same
+/// anchors the engine chose without the book storing them.
+pub fn anchors(order: &[usize], photos: &[Photo]) -> Anchors {
+    let mut out = Anchors::default();
+    for run in order.chunk_by(|&a, &b| photos[a].event_cluster == photos[b].event_cluster) {
+        if run.len() >= SEQUENCE_MIN {
+            out.leads.insert(run[0]);
+            out.tails.insert(run[run.len() - 1]);
+        }
+    }
+    out
 }
 
 /// A photo counts toward what a chapter *could* show only if it is good
@@ -505,6 +585,83 @@ mod tests {
             // detail, moment -- not people.
             let m = story_metrics(&book_of(&[0, 2]), &photos);
             assert!((m.role_cov.unwrap() - 2.0 / 3.0).abs() < 1e-9);
+        }
+    }
+
+    mod sequencing {
+        use super::*;
+
+        /// Event `event`, one photo per entry, captured in the order given.
+        fn run(event: u32, shots: Vec<Photo>) -> Vec<Photo> {
+            shots
+                .into_iter()
+                .enumerate()
+                .map(|(k, mut p)| {
+                    p.event_cluster = event;
+                    p.captured_at = Some(k as i64);
+                    p.path = format!("e{event}-{k}");
+                    p
+                })
+                .collect()
+        }
+
+        fn wide(aesthetic: u8) -> Photo {
+            let mut p = photo(&["lake"]);
+            p.aesthetic_pct = aesthetic;
+            p
+        }
+
+        #[test]
+        fn a_chapter_opens_on_its_best_wide_shot_from_the_first_half() {
+            let m = || photo(&[]);
+            // 2 is the best wide shot of the first half; 4 is better but late,
+            // and as the calmest late photo it closes instead.
+            let photos = run(0, vec![m(), m(), wide(60), m(), wide(80), m()]);
+            let mut members: Vec<usize> = (0..6).collect();
+            sequence(&photos, &mut members);
+            assert_eq!(members, vec![2, 0, 1, 3, 5, 4]);
+        }
+
+        #[test]
+        fn a_chapter_closes_on_its_calmest_photo_of_the_last_forty_percent() {
+            let mut warm = photo(&[]);
+            warm.warmth = Some(0.9);
+            let mut warmer = photo(&[]);
+            warmer.warmth = Some(1.0);
+            let mut harsh = photo(&[]);
+            harsh.clipped_high = 0.5;
+            // 0 and 1 are calmer still, but they are early; only 3, 4 and 5
+            // may close.
+            let photos = run(0, vec![wide(50), warmer, photo(&[]), warm, harsh, photo(&[])]);
+            let mut members: Vec<usize> = (0..6).collect();
+            sequence(&photos, &mut members);
+            assert_eq!(members, vec![0, 1, 2, 4, 5, 3]);
+        }
+
+        #[test]
+        fn short_runs_stay_in_time_and_each_event_is_sequenced_alone() {
+            let m = || photo(&[]);
+            // A run of three is too short to open on its wide shot.
+            let mut photos = run(0, vec![m(), wide(90), m()]);
+            photos.extend(run(1, vec![m(), wide(70), m(), m()]));
+            let mut members: Vec<usize> = (0..7).collect();
+            sequence(&photos, &mut members);
+            assert_eq!(members, vec![0, 1, 2, 4, 3, 5, 6]);
+        }
+
+        #[test]
+        fn anchors_are_the_ends_of_every_event_run_of_four_or_more() {
+            let m = || photo(&[]);
+            let mut photos = run(0, vec![m(), m(), m(), m()]);
+            photos.extend(run(1, vec![m(), m()]));
+            photos.extend(run(2, vec![m(), m(), m(), m(), m()]));
+            let order: Vec<usize> = (0..11).collect();
+            let a = anchors(&order, &photos);
+            assert_eq!(a.leads, BTreeSet::from([0, 6]));
+            assert_eq!(a.tails, BTreeSet::from([3, 10]));
+            // Two tails on one spread: the later one closes it.
+            let spread = a.order_for(&[6, 3, 10]);
+            assert_eq!((spread.lead, spread.tail), (Some(0), Some(2)));
         }
     }
 }

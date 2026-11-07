@@ -459,10 +459,13 @@ pub fn pack_selected(
 
     for ((cluster, mut members), mut slots_left) in chapters.into_iter().zip(allowance) {
         // Capture order, so a group reads as a stretch of the trip. Path
-        // breaks ties and orders photos with no capture time.
+        // breaks ties and orders photos with no capture time. Then each
+        // event opens on a wide shot and closes on a calm one, which `pace`
+        // keeps through to the page as the chapter's anchors.
         members.sort_by(|&a, &b| {
             photos[a].instant().cmp(&photos[b].instant()).then(photos[a].path.cmp(&photos[b].path))
         });
+        crate::book::story::sequence(photos, &mut members);
 
         let mut i = 0;
         while i < members.len() && slots_left > 0 {
@@ -1312,6 +1315,32 @@ mod tests {
 
     fn include(paths: &[&str]) -> Overrides {
         paths.iter().map(|p| (format!("h{p}"), Override::Include)).collect()
+    }
+
+    /// **A chapter opens on its wide shot, not on its first frame.**
+    ///
+    /// Six photos of one event, in capture order. The only wide shot is the
+    /// third frame, and the second prints too, so time order alone would open
+    /// the chapter on a close-up; `story::sequence` lifts the wide shot to the
+    /// front and the group order carries that through to `pace`.
+    #[test]
+    fn pack_opens_each_chapter_on_its_wide_shot() {
+        let photos: Vec<Photo> = (0..6)
+            .map(|i| {
+                let mut p = photo(&format!("/p{i}.jpg"), 0, 50);
+                p.captured_at = Some(i as i64 * 60);
+                if i == 2 {
+                    p.scene_tags = vec!["lake".into()];
+                }
+                p
+            })
+            .collect();
+        let groups = pack(&photos, &capacity_for(20, &sizes()), &buildable_for(&sizes()), &Overrides::default())
+            .expect("six photos fit in twenty pages");
+        let read: Vec<String> =
+            groups.iter().flat_map(|g| g.photos.iter().map(|&i| photos[i].path.clone())).collect();
+        assert!(read.contains(&"/p1.jpg".to_string()), "an earlier frame prints too: {read:?}");
+        assert_eq!(read[0], "/p2.jpg", "the wide shot opens the chapter: {read:?}");
     }
 
     // --- overrides: an explicit choice is never traded away silently ------

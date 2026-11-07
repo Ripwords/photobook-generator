@@ -19,7 +19,7 @@
 //!
 //! ## "Regenerate" shows a DIFFERENT layout
 //!
-//! `best_spread` picks the highest-scoring template and the seed only breaks
+//! `best_spread_ordered` picks the highest-scoring template and the seed only breaks
 //! exact ties, so re-running it with a fresh seed returns the same layout
 //! almost every time. That is not what a user clicking "try another" wants.
 //! Regenerating therefore excludes the CURRENT template and picks the best of
@@ -39,7 +39,8 @@ use crate::book::cover::{self, CoverPhoto, Rgb};
 use crate::book::crop::choose_crop;
 use crate::book::cull::Photo;
 use crate::book::pace::{half_id, place, rebuild, single_fit, tie_break, Book, Page};
-use crate::book::score::{best_spread, rejects, slot_aspect, Rejection};
+use crate::book::score::{best_spread_ordered, rejects, slot_aspect, Rejection};
+use crate::book::story;
 use crate::geometry::{BleedEdge, CoverSide, Rect, Side};
 use crate::templates::{Library, PageLayout, Role, Slot, SpreadTemplate, Weights};
 use serde::{Deserialize, Serialize};
@@ -640,7 +641,7 @@ fn set_template(
 }
 
 /// The new pages for an opening, chosen from `candidates`. Spread candidates
-/// go through `best_spread`, which also chooses the photo-to-slot
+/// go through `best_spread_ordered`, which also chooses the photo-to-slot
 /// assignment; single-page candidates are ranked by `single_fit` with the
 /// photos in their current order. `None` from either means every candidate
 /// breaks a hard constraint.
@@ -687,8 +688,11 @@ fn lay_out(
         .collect();
     let refs: Vec<&Photo> = indices.iter().map(|&i| &photos[i]).collect();
     let previous = previous_template(book, o);
+    // Recovered from the book, so a regenerate keeps the chapter's opening
+    // and closing photo where assembly put them.
+    let order = story::anchors(&story::reading_order(book), photos).order_for(indices);
     let (template, assignment, _) =
-        best_spread(&book.spec, &eligible, &refs, previous.as_deref(), w, seed)
+        best_spread_ordered(&book.spec, &eligible, &refs, previous.as_deref(), w, seed, order)
             .ok_or_else(|| rejected_all(candidates))?;
     Ok(rebuild(&book.spec, template, &assignment, indices, photos).to_vec())
 }
@@ -1085,6 +1089,62 @@ mod tests {
             b.pages[pages[0]].template_id, b.pages[pages[1]].template_id,
             "both halves from one template"
         );
+    }
+
+    /// Regenerating re-runs the photo-to-slot search, so it must keep what
+    /// assembly owed the story: a chapter's lead opens its spread or takes
+    /// the largest slot whenever time order allows. Checked after every
+    /// regenerate, against the leads the book had before any edit.
+    #[test]
+    fn edit_regenerate_keeps_each_chapter_lead_prominent() {
+        // Events of six over 40 photos: an unordered search buries the lead
+        // of event 2 at opening 3.
+        let ps: Vec<Photo> = photos(40)
+            .into_iter()
+            .enumerate()
+            .map(|(i, mut p)| {
+                p.event_cluster = (i / 6) as u32;
+                p.captured_at = Some(i as i64 * 60);
+                p
+            })
+            .collect();
+        let mut b = book(&ps);
+        let lib = frozen_library();
+        let leads = story::anchors(&story::reading_order(&b), &ps).leads;
+        let mut checked = 0;
+        for o in 1..opening_count(&b) - 1 {
+            for _ in 0..3 {
+                let edit = BookEdit::Regenerate { opening: o };
+                if apply(&mut b, &edit, &lib, &ps, &Weights::default()).is_err() {
+                    break;
+                }
+                let pages = opening_pages(&b, o).unwrap();
+                let placed: Vec<&crate::book::pace::Placement> =
+                    pages.iter().flat_map(|&p| &b.pages[p].placements).collect();
+                let Some(lead) = placed.iter().find(|p| leads.contains(&p.photo_index)) else {
+                    break;
+                };
+                // Time order outranks the lead: beside an earlier event the lead
+                // cannot read first, so only spreads it opens are checked.
+                let event = ps[lead.photo_index].event_cluster;
+                if placed.iter().any(|p| ps[p.photo_index].event_cluster < event) {
+                    break;
+                }
+                let largest = placed.iter().map(|p| p.slot_rect.area()).fold(0.0, f64::max);
+                let spread = Book {
+                    pages: pages.iter().map(|&p| b.pages[p].clone()).collect(),
+                    ..b.clone()
+                };
+                let first = story::reading_order(&spread)[0];
+                assert!(
+                    lead.photo_index == first || lead.slot_rect.area() >= largest,
+                    "opening {o}: lead {} sits in a minor slot after regenerate",
+                    lead.photo_index
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "fixture: no regenerated spread held a chapter lead");
     }
 
     /// With one alternative, the second regenerate goes back to the first
