@@ -29,6 +29,8 @@ export type DragSource =
       placement: PlacementRef;
       /** Its index in `layout.photos`, for dropping on the cover; `null` if unknown. */
       photo: number | null;
+      /** The opening it is on: a drop on that opening's own empty space does nothing. */
+      opening: number | null;
     }
   | { kind: "tray"; photo: number };
 
@@ -93,16 +95,20 @@ export function dropOutcome(source: DragSource, target: DropTarget | null): Drop
       ? { kind: "none" }
       : { kind: "edit", edit: { kind: "setCoverPhoto", side: target.side, photo: source.photo } };
   }
-  if (target.kind === "slot" && source.kind === "slot") {
-    const a = source.placement;
-    const b = target.placement;
-    if (a.page === b.page && a.z === b.z) return { kind: "none" };
+  if (source.kind === "slot") {
+    if (target.kind === "slot") {
+      const a = source.placement;
+      const b = target.placement;
+      if (a.page === b.page && a.z === b.z) return { kind: "none" };
+      if (target.locked) return { kind: "locked", target };
+      return { kind: "edit", edit: { kind: "swapPhotos", a, b } };
+    }
+    // Its own spread's empty space: there is nowhere to move it to.
+    if (target.opening === source.opening) return { kind: "none" };
     if (target.locked) return { kind: "locked", target };
-    return { kind: "edit", edit: { kind: "swapPhotos", a, b } };
+    return { kind: "edit", edit: { kind: "movePhoto", from: source.placement, opening: target.opening } };
   }
   if (target.locked) return { kind: "locked", target };
-  // A page photo dropped on a page's empty area would be a move, which has no edit yet.
-  if (source.kind !== "tray") return { kind: "none" };
   return target.kind === "slot"
     ? { kind: "edit", edit: { kind: "replacePhoto", placement: target.placement, photo: source.photo } }
     : { kind: "edit", edit: { kind: "addPhoto", opening: target.opening, photo: source.photo } };
@@ -128,6 +134,12 @@ export function dropBadge(outcome: DropOutcome, target: DropTarget | null): Drop
       return {
         label: target?.kind === "page" ? `Add to page ${target.page}` : "Add to page",
         icon: "i-lucide-image-plus",
+        refused: false,
+      };
+    case "movePhoto":
+      return {
+        label: target?.kind === "page" ? `Move to page ${target.page}` : "Move to page",
+        icon: "i-lucide-move-right",
         refused: false,
       };
     case "setCoverPhoto":

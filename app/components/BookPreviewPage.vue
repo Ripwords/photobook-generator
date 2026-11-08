@@ -234,7 +234,7 @@ function onPointerMove(event: PointerEvent) {
   press = null;
   const photo = page?.placements.find((p) => p.z === started.ref.z)?.photoIndex ?? null;
   photoDrag?.start({
-    source: { kind: "slot", placement: started.ref, photo },
+    source: { kind: "slot", placement: started.ref, photo, opening },
     src: started.src,
     from: el,
     x: event.clientX,

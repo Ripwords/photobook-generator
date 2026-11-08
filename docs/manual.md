@@ -349,11 +349,19 @@ back cover, the way the printed book opens.
 
 To **swap two photos**, drag one onto the other, anywhere in the book. While you drag, the
 photo travels with the pointer, the photo under it gets a ring, and the slot you started
-from shows the photo it would get, so you can see the swap before you let go. The photo
-under the pointer reads **Swap**, or **Locked** if it is on a locked spread, where a drop
-does nothing. Hold the photo near the top or bottom edge of the book to scroll towards a
-spread that is out of view. Let go anywhere that is not a photo, or press Escape, and the
-photo slides back with nothing changed. A press only counts as a drag once it has travelled
+from shows the photo it would get, so you can see the swap before you let go. A label under
+the dragged photo says what letting go would do: **Swap**, or **Locked** over a locked
+spread, where a drop does nothing. Hold the photo near the top or bottom edge of the book to
+scroll towards a spread that is out of view. Let go anywhere that would do nothing, or press
+Escape, and the photo slides back with nothing changed.
+
+To **move a photo to another spread**, drag it onto that spread's empty space, off its
+photos. The whole page is outlined and the label reads **Move to page N**. Both spreads are
+laid out again, the one it lands on with one more photo and the one it left with one fewer.
+If either cannot be laid out, the move is refused with the reason and nothing changes: for
+example, when no layout holds one more photo, or none holds the photos left behind (swap
+instead). A spread whose last photo leaves stays in the book and prints blank; pages are
+never removed. Dropping a photo on its own spread's empty space does nothing. A press only counts as a drag once it has travelled
 about 10px, so a click still just selects, however much the trackpad wobbles.
 
 Clicking a photo selects it, with a ring, and the bar at the bottom offers **Swap with…**,

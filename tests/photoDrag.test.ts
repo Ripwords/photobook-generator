@@ -48,10 +48,11 @@ const target = (page: number, z: number, locked = false): DropTarget => ({
   placement: { page, z },
   locked,
 });
-const slotSource = (page: number, z: number, photo: number | null): DragSource => ({
+const slotSource = (page: number, z: number, photo: number | null, opening = 1): DragSource => ({
   kind: "slot",
   placement: { page, z },
   photo,
+  opening,
 });
 const photo = (path: string) => ({ path }) as BookLayout["photos"][number];
 const placement = (z: number, photoIndex: number) =>
@@ -152,8 +153,20 @@ describe("dropOutcome", () => {
     });
   });
 
-  it("does nothing for a page photo dropped on a page's empty area", () => {
-    expect(dropOutcome(fromSlot, { kind: "page", opening: 4, page: 8, locked: false })).toEqual({ kind: "none" });
+  it("moves a page photo to another spread dropped on its empty area", () => {
+    expect(dropOutcome(fromSlot, { kind: "page", opening: 4, page: 8, locked: false })).toEqual({
+      kind: "edit",
+      edit: { kind: "movePhoto", from, opening: 4 },
+    });
+  });
+
+  it("does nothing for a page photo dropped on its own spread's empty area", () => {
+    expect(dropOutcome(fromSlot, { kind: "page", opening: 1, page: 2, locked: false })).toEqual({ kind: "none" });
+  });
+
+  it("refuses moving a page photo onto a locked spread", () => {
+    const page = { kind: "page", opening: 4, page: 8, locked: true } as const;
+    expect(dropOutcome(fromSlot, page)).toEqual({ kind: "locked", target: page });
   });
 
   it("puts either kind of photo on the cover, by its photo index", () => {
@@ -179,6 +192,7 @@ describe("dropBadge", () => {
     expect(badge(slotSource(3, 1, 7), target(4, 1))).toBe("Swap");
     expect(badge(tray, target(4, 1))).toBe("Replace");
     expect(badge(tray, { kind: "page", opening: 1, page: 2, locked: false })).toBe("Add to page 2");
+    expect(badge(slotSource(3, 1, 7), { kind: "page", opening: 5, page: 10, locked: false })).toBe("Move to page 10");
     expect(badge(tray, { kind: "cover", side: "back" })).toBe("Use on back cover");
     expect(badge(tray, target(4, 1, true))).toBe("Locked");
   });
