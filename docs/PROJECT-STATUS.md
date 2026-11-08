@@ -24,6 +24,50 @@ deliberately-parked decision that this file is the only surviving record of.**
 
 ---
 
+## What changed on 2026-11-08: the Graphics setting (branch `feat/story`)
+
+**The problem.** Every editor image drew from the 400 px analysis thumbnail
+(`Analyzer.swift` `thumbnailMaxPixel = 400`), stretched about 3x on a Retina screen, so
+sharp photos looked soft. Export was never affected; it reads the originals.
+
+**What was built** (`920ae38` sidecar, `afc8706` cache, `b3a1f07` Rust, then the webview
+commit): Settings → General → Graphics, with Low (thumbnails only), Optimised (1600 px) and
+Maximum (2400 px), plus Auto. Auto is Maximum when `sysctl hw.memsize` reads 16 GiB or more,
+else Optimised. If the read fails, `detected` is `null`, the webview hides Auto, and the
+effective level is Optimised. The setting is the `graphics_mode` row in `settings`.
+
+**Measured on the M4 / 16 GB Mac against Japan 2026's Sony ARW files**, through the real
+sidecar, in batches of 8 the way the app sends them:
+
+| Level | Per photo | Disk per photo | Sample |
+|---|---|---|---|
+| Optimised (1600) | 55 ms | ~404 KB | all 1133 analysed photos of project 16 |
+| Maximum (2400) | 418 ms | ~645 KB | 86 photos, first batch after 3.7 s |
+
+The real app logged `preview pass 1 at 2400px took 41.02s` for an 88-photo book opened
+cold. Optimised is cheap because the ARW's built-in preview is 1616x1080 and
+`ImageLoader.loadThumbnail` uses it when it is at least the floor; 2400 needs a full decode.
+
+**Things that will bite you:**
+
+- **Second sidecar pool.** `AppState.preview_pool` is separate from `pool` because analysis
+  and export hold `pool` for minutes; previews must not queue behind them. A new pass bumps
+  `AppState.preview_passes`, and a superseded pass stops between batches
+  (`graphics::run_previews`, `PREVIEW_BATCH = 8`). The webview also drops batches from a
+  superseded pass (`latestPass` in `useGraphics.ts`).
+- **Asset scope.** Previews live in `thumbnails/<px>/<hash>.jpg`. Tauri's scope globs use
+  `require_literal_separator: true`, so `$APPDATA/thumbnails/*` does **not** match a
+  subfolder; `tauri.conf.json` carries `$APPDATA/thumbnails/*/*` as well. Remove it and every
+  preview silently fails to load while the thumbnail stays on screen.
+- **Cache.** `cache.rs` counts and evicts the all-digit subfolders of `thumbnails/` with the
+  photo's hash, so previews obey the storage limit and Clear unused. Switching to Low does
+  not delete existing previews.
+- **Order.** `previewOrder` sends the front cover, back cover, then page placements, each
+  photo once. The contact sheet and the replace dialog's left-out strip stay on thumbnails.
+- **`check:build` while `bun run dev` is running** deletes `.nuxt/dist` under the dev
+  server; the open webview then logs `Importing a module script failed` until reloaded. That
+  is not a bug in the app.
+
 ## What changed on 2026-11-07: the story round (branch `feat/story`)
 
 **The problem.** The book read as "best frame per moment, in clock order, poured into

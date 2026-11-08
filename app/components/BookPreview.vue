@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { previewOrder } from "~/types/graphics";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   canRelayout,
@@ -227,6 +228,25 @@ function layoutMenu(index: number, alternatives: string[], current: string[]) {
     })),
   ];
 }
+
+/**
+ * Sharpens the book's photos at the Graphics setting's size, cover first.
+ * Keyed on the photos in order and the level, so an edit that moves no photo
+ * (a crop, a title) starts no pass, and changing the setting starts one.
+ */
+const graphics = useGraphics();
+const sharpenItems = computed(() => previewOrder(layout));
+if (!graphics.status.value) void graphics.refresh();
+watch(
+  () => {
+    const level = graphics.status.value?.effective;
+    return level ? `${level}|${sharpenItems.value.map((item) => item.hash).join(",")}` : null;
+  },
+  (key) => {
+    if (key) void graphics.sharpen(sharpenItems.value);
+  },
+  { immediate: true },
+);
 
 /** The book's page width over its height, for the layout menu's sketches. */
 const pageAspect = computed(() => layout.geometry.pageWIn / layout.geometry.pageHIn);
@@ -601,7 +621,7 @@ const leftOut = computed(() =>
       v-if="cropping"
       :key="JSON.stringify(cropTarget)"
       v-model:open="cropOpen"
-      :src="cropping.photo.thumbnailPath ? convertFileSrc(cropping.photo.thumbnailPath) : null"
+      :src="graphics.src(cropping.photo)"
       :width="cropping.photo.width"
       :height="cropping.photo.height"
       :crop="cropping.crop"

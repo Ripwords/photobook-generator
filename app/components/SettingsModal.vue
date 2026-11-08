@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { SettingsTab } from "~/composables/useShell";
 import { SHORTCUTS, type ShortcutId, shortcutKbds } from "~/types/shortcuts";
+import { graphicsOptions } from "~/types/graphics";
 import { DEFAULT_CACHE_LIMIT, formatBytes, limitItems, storageSummary } from "~/types/storage";
 import type { UpdaterState } from "~/types/updater";
 
@@ -28,11 +29,17 @@ const summary = computed(() => (cache.value ? storageSummary(cache.value) : null
 const limits = computed(() => limitItems(cache.value?.limitBytes ?? DEFAULT_CACHE_LIMIT));
 const freed = ref<string | null>(null);
 
+const { status: graphics, error: graphicsError, refresh: refreshGraphics, setMode } = useGraphics();
+const graphicsChoices = computed(() => (graphics.value ? graphicsOptions(graphics.value) : []));
+
 watch(
   settingsOpen,
   (open) => {
     freed.value = null;
-    if (open) void refreshCache();
+    if (open) {
+      void refreshCache();
+      void refreshGraphics();
+    }
   },
   { immediate: true },
 );
@@ -113,6 +120,41 @@ const checkLabel = computed(() => CHECK_LABELS[updater.value.phase] ?? "Check fo
                   {{ option.label }}
                 </button>
               </div>
+            </section>
+
+            <section class="space-y-3" aria-labelledby="settings-graphics">
+              <div class="space-y-1">
+                <h3 id="settings-graphics" class="text-sm font-medium text-highlighted">Graphics</h3>
+                <p class="text-sm text-muted">
+                  How sharp photos look in the editor. Printing always uses your original photos.
+                </p>
+              </div>
+              <!-- Three choices sit in one row like Appearance; four make a 2×2 rather than a row with a gap. -->
+              <div
+                class="grid gap-2"
+                :class="graphicsChoices.length === 3 ? 'grid-cols-3' : 'grid-cols-2'"
+                role="radiogroup"
+                aria-labelledby="settings-graphics"
+              >
+                <button
+                  v-for="option in graphicsChoices"
+                  :key="option.value"
+                  type="button"
+                  role="radio"
+                  :aria-checked="graphics?.mode === option.value"
+                  class="flex flex-col items-start gap-1 rounded-md border px-3 py-3 text-left text-sm transition-colors focus-visible:outline-2 focus-visible:outline-primary"
+                  :class="
+                    graphics?.mode === option.value
+                      ? 'border-inverted text-highlighted ring-1 ring-inverted'
+                      : 'border-default text-toned hover:bg-elevated'
+                  "
+                  @click="setMode(option.value)"
+                >
+                  <span class="font-medium">{{ option.label }}</span>
+                  <span class="text-muted">{{ option.detail }}</span>
+                </button>
+              </div>
+              <p v-if="graphicsError" class="text-sm text-error">{{ graphicsError }}</p>
             </section>
 
             <section class="space-y-3" aria-labelledby="settings-storage">

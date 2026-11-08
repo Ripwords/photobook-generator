@@ -836,6 +836,18 @@ function cacheStatus() {
   return { ...cache, overBudget: cache.usedBytes > cache.limitBytes };
 }
 
+/** Set to any value to mock a Mac whose memory the app cannot read, which hides Auto. */
+const NO_MEMORY_KEY = "pbg-mock-no-memory";
+let graphicsMode: "auto" | "low" | "optimised" | "maximum" = "auto";
+
+/** `graphics::status` for a 16 GB Mac, or one the app cannot read. */
+function graphicsStatus() {
+  const detected = localStorage.getItem(NO_MEMORY_KEY) === null ? "maximum" : null;
+  const mode = graphicsMode === "auto" && detected === null ? "optimised" : graphicsMode;
+  const effective = mode === "auto" ? (detected ?? "optimised") : mode;
+  return { mode, detected, effective };
+}
+
 function evictTo(limit: number) {
   cache.usedBytes = Math.max(cache.pinnedBytes, Math.min(cache.usedBytes, limit));
 }
@@ -1091,6 +1103,17 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
       cache.limitBytes = args?.limitBytes as number;
       evictTo(cache.limitBytes);
       return cacheStatus() as T;
+
+    case "graphics_status":
+      return graphicsStatus() as T;
+
+    case "set_graphics_mode":
+      graphicsMode = args?.mode as typeof graphicsMode;
+      return graphicsStatus() as T;
+
+    // The mock's photos are its thumbnails; there is nothing sharper to write.
+    case "photo_previews":
+      return undefined as T;
 
     case "clear_unused_cache":
       await sleep(400);

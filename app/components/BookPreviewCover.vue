@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   cropMoved,
   cropStyle,
@@ -16,6 +15,8 @@ const { layout, busy = false } = defineProps<{
   /** True while an edit is in flight; every control waits for it. */
   busy?: boolean;
 }>();
+
+const graphics = useGraphics();
 
 const emit = defineEmits<{
   /** Open the photo picker for one side. */
@@ -127,7 +128,7 @@ const panels = computed(() =>
       photo: photo && {
         saved: photo.crop,
         crop: cropStyle(liveCrop ?? photo.crop),
-        src: shot?.thumbnailPath ? convertFileSrc(shot.thumbnailPath) : null,
+        src: shot ? graphics.src(shot) : null,
         title: [shot?.path, photo.filename].filter(Boolean).join("\n"),
       },
     };

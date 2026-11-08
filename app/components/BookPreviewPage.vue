@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   cropMoved,
   cropStyle,
@@ -67,6 +66,8 @@ const {
    */
   geometry?: PreviewGeometry | null;
 }>();
+
+const graphics = useGraphics();
 
 const shown = computed(() => geometry ?? layout.geometry);
 
@@ -309,10 +310,11 @@ const boxes = computed(() => {
     const liveRect = liveRects.value[box.key];
     return {
       ...box,
-      // Thumbnails only. `tauri.conf.json`'s `assetProtocol.scope` is
-      // `$APPDATA/thumbnails/*`, so originals are not loadable without widening
-      // it -- and a 6718px spread is far past what WKWebView will composite.
-      src: box.photo?.thumbnailPath ? convertFileSrc(box.photo.thumbnailPath) : null,
+      // The thumbnail, or the sharper preview the Graphics setting asks for
+      // (`useGraphics`). Never the original: `assetProtocol.scope` admits only
+      // `$APPDATA/thumbnails`, and a 6718px spread is far past what WKWebView
+      // will composite.
+      src: box.photo ? graphics.src(box.photo) : null,
       ref: { page: page.number, z: box.z } satisfies PlacementRef,
       saved,
       savedRect,

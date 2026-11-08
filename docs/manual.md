@@ -29,8 +29,8 @@ you are. Right-click a book there for the same menu the library gives it (see be
 | ⌘J | Show or hide the chat | Book editor |
 | ⌘E | Export | Book editor |
 
-**Settings** has three tabs. **General** sets the appearance (System, Light or Dark),
-manages storage, and lists the shortcuts above. **API keys** is where the chat's keys are saved. **About**
+**Settings** has three tabs. **General** sets the appearance (System, Light or Dark) and
+the graphics level, manages storage, and lists the shortcuts above. **API keys** is where the chat's keys are saved. **About**
 shows the version and what leaves this Mac: no image ever does, and the chat sends only a
 description of the book (its layouts, page numbers and photo tags). With **Split chapters
 by place** on, each chapter's centre (a latitude and longitude, never a photo) goes to Apple
@@ -40,9 +40,28 @@ its version and release notes there with **Install and restart** beside **Not no
 the quiet launch check is the one that found it, a dot appears on **Settings** in the
 sidebar and clicking through opens this tab.
 
+**Graphics** (in **General**) sets how sharp photos look in the book editor: the pages, the
+cover and the crop dialog. It never changes the exported book, which always uses your
+original photos.
+
+| Level | The editor shows | Cost for each photo the first time |
+|---|---|---|
+| **Low** | The small preview from analysis, which can look soft on a large screen | None |
+| **Optimised** | A 1600 px image, read from the preview your camera saved inside the file | A fraction of a second, a few hundred KB of disk |
+| **Maximum** | A 2400 px image, read from the full photo | About half a second for a RAW photo, more disk than Optimised |
+| **Auto** | Maximum on a Mac with 16 GB of memory or more, otherwise Optimised | As the level it picks |
+
+Auto is the default, and its card says which level it picked on this Mac. If the app cannot
+read how much memory the Mac has, Auto is not offered and the default is Optimised. When a
+book opens, every photo shows its small preview at once and turns sharp as its larger image
+is made, the cover first and then the pages in order, without anything moving. A photo
+already made at that level is shown straight away. The contact sheet always uses the small
+previews. The larger images count toward the storage limit below and are removed with their
+photo; switching to Low does not delete the ones already made.
+
 **Storage** (in **General**) shows how much disk the analysis cache uses against its
 limit. The cache is every analysed photo's results plus the small preview image the contact
-sheet shows, about 34 KB per photo; your original photos are never in it and never touched.
+sheet shows, about 34 KB per photo, and the larger images **Graphics** makes for the editor; your original photos are never in it and never touched.
 The limit is 2 GB unless you pick another (500 MB, 1 GB, 2 GB, 5 GB or 10 GB). When the cache
 is over it, the app removes the photos no book or draft uses, least recently analysed first,
 at startup and after each analysis. It never removes a photo that a saved book, a book
