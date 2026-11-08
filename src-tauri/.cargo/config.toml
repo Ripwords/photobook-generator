@@ -1,0 +1,4 @@
+# Sign the dev app before `cargo run` (and so `bun run dev`) starts it, so the
+# keychain's "Always Allow" survives rebuilds. See scripts/dev-sign-run.sh.
+[target.aarch64-apple-darwin]
+runner = "../scripts/dev-sign-run.sh"

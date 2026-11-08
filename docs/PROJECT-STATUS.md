@@ -2348,6 +2348,16 @@ bun run lint           # oxlint, warnings are failures
 packaged app** — `envPrefix` is `["VITE_","TAURI_"]` and a shipped `.app` has no `.env`
 beside it. The design calls for the OS keychain, read from Rust.
 
+**`bun run dev` signs the app before it starts.** `src-tauri/.cargo/config.toml` makes
+`scripts/dev-sign-run.sh` cargo's runner. It signs `target/debug/PhotobookGen` with the
+machine's first Apple Development certificate under the bundle id, then runs it. Cargo's
+own ad-hoc signature names the binary by a hash of the build, so the keychain saw every
+rebuild as a new app: it asked for the login password on each run, and "Always Allow"
+never stuck. The signed binary's designated requirement is the identifier plus the
+certificate, which no rebuild changes, so one "Always Allow" lasts. Test binaries pass
+through unsigned. On a machine with no Apple Development certificate, nothing is signed
+and the old prompt-per-build behaviour comes back.
+
 ---
 
 ## Known smaller debts
