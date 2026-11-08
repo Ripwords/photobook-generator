@@ -124,6 +124,7 @@ fn real_sidecar_crops_and_writes_files_matching_the_requested_windows() {
             items: vec![jpeg_item, png_item],
         }),
         coordinates: None,
+        preview: None,
     };
 
     let response = round_trip(&request);

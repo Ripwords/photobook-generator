@@ -18,6 +18,9 @@ pub enum RequestKind {
     /// only request whose data leaves the Mac, as coordinates sent to
     /// Apple's geocoder, so only `commands::place_names` sends it.
     Geocode,
+    /// Writes the editor's larger previews. See `Request.preview` and
+    /// `graphics.rs`.
+    Preview,
 }
 
 /// One photo to crop and write, as decided by the Rust layout engine.
@@ -57,6 +60,24 @@ pub struct ExportRequest {
     pub items: Vec<ExportItem>,
 }
 
+/// One photo to write a larger editor preview of. Mirrors Swift's
+/// `PreviewItem`; the hash names the file, so the caller validates it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PreviewItem {
+    pub path: String,
+    pub hash: String,
+}
+
+/// Mirrors Swift's `PreviewRequest`: write each item to
+/// `<directory>/<hash>.jpg` at `max_pixel` on the long edge.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PreviewRequest {
+    pub directory: String,
+    #[serde(rename = "maxPixel")]
+    pub max_pixel: u32,
+    pub items: Vec<PreviewItem>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     pub id: String,
@@ -83,6 +104,9 @@ pub struct Request {
     /// Payload for `.geocode` requests, as `[lat, lon]` pairs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coordinates: Option<Vec<crate::book::chapter::LatLon>>,
+    /// Payload for `.preview` requests.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<PreviewRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +124,8 @@ pub enum ResponseResult {
     Exported(Vec<serde_json::Value>),
     /// One town name or `None` per coordinate, in request order.
     Geocoded(Vec<Option<String>>),
+    /// One written path or `None` per `PreviewItem`, in request order.
+    Previewed(Vec<Option<String>>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,7 +140,7 @@ mod tests {
 
     #[test]
     fn serializes_ping_request_as_single_line() {
-        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None, export: None, coordinates: None };
+        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None, export: None, coordinates: None, preview: None };
         let line = serde_json::to_string(&req).unwrap();
         assert!(!line.contains('\n'));
         assert!(line.contains("\"kind\":\"ping\""));
@@ -132,6 +158,7 @@ mod tests {
             thumbnail_dir: Some("/cache/thumbnails".into()),
             export: None,
             coordinates: None,
+            preview: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(line.contains(r#""thumbnailDir":"/cache/thumbnails""#));
@@ -142,7 +169,7 @@ mod tests {
     /// matching how `paths` is already omitted for ping requests.
     #[test]
     fn omits_thumbnail_dir_when_absent() {
-        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None, export: None, coordinates: None };
+        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None, export: None, coordinates: None, preview: None };
         let line = serde_json::to_string(&req).unwrap();
         assert!(!line.contains("thumbnailDir"));
     }
@@ -156,6 +183,7 @@ mod tests {
             thumbnail_dir: None,
             export: None,
             coordinates: None,
+            preview: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(line.contains("\"kind\":\"benchmark\""));
@@ -260,6 +288,7 @@ mod tests {
             thumbnail_dir: None,
             export: None,
             coordinates: None,
+            preview: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(line.contains("\"kind\":\"export\""));
@@ -315,6 +344,7 @@ mod tests {
             thumbnail_dir: None,
             export: None,
             coordinates: None,
+            preview: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(!line.contains("\"export\""));
@@ -343,6 +373,7 @@ mod tests {
                 }],
             }),
             coordinates: None,
+            preview: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(line.contains(r#""outputDir":"/tmp/out""#), "{line}");
@@ -388,6 +419,7 @@ mod tests {
             thumbnail_dir: None,
             export: None,
             coordinates: Some(vec![LatLon::new(35.01, 135.77).unwrap(), LatLon::new(64.15, -21.94).unwrap()]),
+            preview: None,
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(line.contains(r#""kind":"geocode""#), "{line}");
@@ -396,8 +428,49 @@ mod tests {
 
     #[test]
     fn omits_coordinates_when_absent() {
-        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None, export: None, coordinates: None };
+        let req = Request { id: "a".into(), kind: RequestKind::Ping, paths: None, thumbnail_dir: None, export: None, coordinates: None, preview: None };
         assert!(!serde_json::to_string(&req).unwrap().contains("coordinates"));
+    }
+
+    /// Swift's `PreviewRequest` spells `maxPixel` camelCase and has no
+    /// blanket rename, so a snake_case key here would decode as a missing
+    /// payload and every preview would come back an error.
+    #[test]
+    fn serializes_a_preview_request_with_swifts_key_spelling() {
+        let req = Request {
+            id: "p".into(),
+            kind: RequestKind::Preview,
+            paths: None,
+            thumbnail_dir: None,
+            export: None,
+            coordinates: None,
+            preview: Some(PreviewRequest {
+                directory: "/t/2400".into(),
+                max_pixel: 2400,
+                items: vec![PreviewItem { path: "/p/a.ARW".into(), hash: "ab".into() }],
+            }),
+        };
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(line.contains(r#""kind":"preview""#), "{line}");
+        assert!(
+            line.contains(r#""preview":{"directory":"/t/2400","maxPixel":2400,"items":[{"path":"/p/a.ARW","hash":"ab"}]}"#),
+            "{line}"
+        );
+    }
+
+    /// A photo whose drive is unplugged answers null in its own position;
+    /// dropping it would hand the next photo's preview to the wrong hash.
+    #[test]
+    fn deserializes_previewed_paths_keeping_each_null_in_place() {
+        let line = r#"{"id":"p","result":{"type":"previewed","data":["/t/a.jpg",null,"/t/c.jpg"]}}"#;
+        let res: Response = serde_json::from_str(line).unwrap();
+        match res.result {
+            ResponseResult::Previewed(paths) => assert_eq!(
+                paths,
+                vec![Some("/t/a.jpg".to_string()), None, Some("/t/c.jpg".to_string())]
+            ),
+            other => panic!("expected previewed, got {other:?}"),
+        }
     }
 
     /// Swift answers a failed lookup with a null in that position. A reader

@@ -209,6 +209,12 @@ pub struct AppState {
     /// it. An enforcement that finds the gate taken is skipped, not queued:
     /// the analysis holding it enforces when it finishes.
     pub cache_gate: std::sync::Arc<tokio::sync::RwLock<()>>,
+    /// A second sidecar for the editor's previews, so a long analysis or
+    /// export holding `pool` never leaves the editor waiting on it.
+    pub preview_pool: tokio::sync::Mutex<SidecarPool>,
+    /// Bumped by every `photo_previews` call; a pass whose number is no
+    /// longer the latest stops at its next batch.
+    preview_passes: std::sync::atomic::AtomicU64,
 }
 
 /// Runs `f` with the sidecar, holding it for exactly that long.
@@ -3087,6 +3093,85 @@ pub async fn set_cache_limit(app: AppHandle, limit_bytes: u64) -> Result<crate::
         Ok(gate) => enforce_cache(app, gate, None).await,
         Err(_) => cache_status(app).await,
     }
+}
+
+// --- Graphics: how sharp the editor draws photos (see `graphics.rs`). ---
+
+fn graphics_status_from(db: &Db) -> Result<crate::graphics::GraphicsStatus, String> {
+    let stored = db.graphics_mode().map_err(|e| e.to_string())?;
+    Ok(crate::graphics::status(stored, crate::graphics::auto_level(crate::graphics::detect_memory())))
+}
+
+#[tauri::command]
+pub async fn graphics_status(app: AppHandle) -> Result<crate::graphics::GraphicsStatus, String> {
+    with_db(app, |db| Ok(graphics_status_from(db))).await?
+}
+
+/// Stores the choice and answers the status it resolves to. The webview
+/// then starts a fresh `photo_previews` pass at the new size.
+#[tauri::command]
+pub async fn set_graphics_mode(
+    app: AppHandle,
+    mode: crate::graphics::GraphicsMode,
+) -> Result<crate::graphics::GraphicsStatus, String> {
+    with_db(app, move |db| {
+        db.set_graphics_mode(mode)?;
+        Ok(graphics_status_from(db))
+    })
+    .await?
+}
+
+/// Writes the larger previews the Graphics setting asks for, streaming
+/// `{hash: path}` batches as they land, in the order given (the webview
+/// sends the book's photos cover first). Answers nothing at Low. Each call
+/// supersedes the one before it. Ends by enforcing the cache limit, since
+/// the previews count toward it.
+#[tauri::command]
+pub async fn photo_previews(
+    app: AppHandle,
+    items: Vec<crate::protocol::PreviewItem>,
+    on_batch: Channel<std::collections::HashMap<String, String>>,
+) -> Result<(), String> {
+    let pass = app
+        .state::<AppState>()
+        .preview_passes
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        + 1;
+    let status = with_db(app.clone(), |db| Ok(graphics_status_from(db))).await??;
+    let Some(max_pixel) = status.effective.max_pixel() else {
+        return Ok(());
+    };
+    let dir = thumbnail_dir(&app)?.join(max_pixel.to_string());
+    let worker = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = worker.state::<AppState>();
+        let started = Instant::now();
+        let directory = dir.to_string_lossy().into_owned();
+        crate::graphics::run_previews(
+            items,
+            &dir,
+            crate::graphics::PREVIEW_BATCH,
+            &mut || state.preview_passes.load(std::sync::atomic::Ordering::SeqCst) == pass,
+            |chunk| {
+                let req = crate::protocol::PreviewRequest {
+                    directory: directory.clone(),
+                    max_pixel,
+                    items: chunk,
+                };
+                state.preview_pool.blocking_lock().preview(&worker, req)
+            },
+            |found| {
+                if let Err(err) = on_batch.send(found) {
+                    log::warn!("graphics: cannot send previews: {err}");
+                }
+            },
+        );
+        log::info!("graphics: preview pass {pass} at {max_pixel}px took {:.2?}", started.elapsed());
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    spawn_cache_enforcement(app);
+    Ok(())
 }
 
 /// Removes every photo nothing pins, whatever the limit.
@@ -6593,6 +6678,17 @@ mod tests {
             over_budget: true,
         };
         assert_eq!(serde_json::to_value(&value).unwrap(), wire_fixture("cache-status.json"));
+    }
+
+    #[test]
+    fn graphics_status_serialises_exactly_the_keys_the_webview_reads() {
+        use crate::graphics::{GraphicsMode, GraphicsStatus, Level};
+        let value = GraphicsStatus {
+            mode: GraphicsMode::Auto,
+            detected: Some(Level::Optimised),
+            effective: Level::Optimised,
+        };
+        assert_eq!(serde_json::to_value(value).unwrap(), wire_fixture("graphics-status.json"));
     }
 
     /// `EventRow` uses `#[serde(flatten)]` on `plan`, whose own `reason`

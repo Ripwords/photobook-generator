@@ -1,5 +1,7 @@
 use crate::book::chapter::LatLon;
-use crate::protocol::{ExportItem, ExportRequest, Request, RequestKind, Response, ResponseResult};
+use crate::protocol::{
+    ExportItem, ExportRequest, PreviewRequest, Request, RequestKind, Response, ResponseResult,
+};
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 use tauri::AppHandle;
@@ -99,6 +101,7 @@ impl Sidecar {
             thumbnail_dir,
             export,
             coordinates: None,
+            preview: None,
         };
         self.exchange(req, timeout)
     }
@@ -147,7 +150,8 @@ impl Sidecar {
             ResponseResult::Pong { .. }
             | ResponseResult::Benchmarked(_)
             | ResponseResult::Exported(_)
-            | ResponseResult::Geocoded(_) => Err(SidecarError::Malformed("expected analyzed".into())),
+            | ResponseResult::Geocoded(_)
+            | ResponseResult::Previewed(_) => Err(SidecarError::Malformed("expected analyzed".into())),
         }
     }
 
@@ -168,7 +172,8 @@ impl Sidecar {
             ResponseResult::Pong { .. }
             | ResponseResult::Analyzed(_)
             | ResponseResult::Benchmarked(_)
-            | ResponseResult::Geocoded(_) => {
+            | ResponseResult::Geocoded(_)
+            | ResponseResult::Previewed(_) => {
                 Err(SidecarError::Malformed("expected exported".into()))
             }
         }
@@ -186,6 +191,7 @@ impl Sidecar {
             thumbnail_dir: None,
             export: None,
             coordinates: Some(coordinates),
+            preview: None,
         };
         match self.exchange(req, GEOCODE_TIMEOUT * count as u32 + timeout_for(0))? {
             ResponseResult::Geocoded(names) if names.len() == count => Ok(names),
@@ -197,7 +203,37 @@ impl Sidecar {
             ResponseResult::Pong { .. }
             | ResponseResult::Analyzed(_)
             | ResponseResult::Benchmarked(_)
-            | ResponseResult::Exported(_) => Err(SidecarError::Malformed("expected geocoded".into())),
+            | ResponseResult::Exported(_)
+            | ResponseResult::Previewed(_) => Err(SidecarError::Malformed("expected geocoded".into())),
+        }
+    }
+
+    /// One written path or `None` per item, in order. A preview reads the
+    /// source like an analysis does (a RAW decode at worst), so it shares
+    /// `timeout_for`'s per-photo scale.
+    pub fn preview(&mut self, req: PreviewRequest) -> Result<Vec<Option<String>>, SidecarError> {
+        let count = req.items.len();
+        let request = Request {
+            id: self.next_id(),
+            kind: RequestKind::Preview,
+            paths: None,
+            thumbnail_dir: None,
+            export: None,
+            coordinates: None,
+            preview: Some(req),
+        };
+        match self.exchange(request, timeout_for(count))? {
+            ResponseResult::Previewed(paths) if paths.len() == count => Ok(paths),
+            ResponseResult::Previewed(paths) => Err(SidecarError::Malformed(format!(
+                "asked for {count} previews, got {}",
+                paths.len()
+            ))),
+            ResponseResult::Error { message } => Err(SidecarError::Engine(message)),
+            ResponseResult::Pong { .. }
+            | ResponseResult::Analyzed(_)
+            | ResponseResult::Benchmarked(_)
+            | ResponseResult::Exported(_)
+            | ResponseResult::Geocoded(_) => Err(SidecarError::Malformed("expected previewed".into())),
         }
     }
 }
@@ -543,6 +579,18 @@ impl SidecarPool {
         coordinates: Vec<LatLon>,
     ) -> Result<Vec<Option<String>>, SidecarError> {
         let result = self.ensure(app).and_then(|sidecar| sidecar.geocode(coordinates));
+        if result.is_err() {
+            self.inner = None;
+        }
+        result
+    }
+
+    pub fn preview(
+        &mut self,
+        app: &AppHandle,
+        req: PreviewRequest,
+    ) -> Result<Vec<Option<String>>, SidecarError> {
+        let result = self.ensure(app).and_then(|sidecar| sidecar.preview(req));
         if result.is_err() {
             self.inner = None;
         }

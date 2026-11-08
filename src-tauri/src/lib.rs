@@ -6,6 +6,7 @@ pub mod commands;
 pub mod db;
 pub mod export;
 pub mod geometry;
+pub mod graphics;
 pub mod place_names;
 pub mod preview;
 pub mod print_spec;
@@ -81,6 +82,9 @@ pub fn run() {
             commands::reveal_in_finder,
             commands::cache_status,
             commands::set_cache_limit,
+            commands::graphics_status,
+            commands::set_graphics_mode,
+            commands::photo_previews,
             commands::clear_unused_cache,
         ])
         .setup(|app| {

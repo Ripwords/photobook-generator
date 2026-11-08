@@ -302,6 +302,26 @@ impl Db {
         Ok(())
     }
 
+    /// The Graphics setting, or `None` when the user never chose one (or a
+    /// newer build stored a mode this one does not know), which
+    /// `graphics::status` reads as Auto.
+    pub fn graphics_mode(&self) -> rusqlite::Result<Option<crate::graphics::GraphicsMode>> {
+        let stored: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = 'graphics_mode'", [], |r| r.get(0))
+            .optional()?;
+        Ok(stored.as_deref().and_then(crate::graphics::GraphicsMode::parse))
+    }
+
+    pub fn set_graphics_mode(&self, mode: crate::graphics::GraphicsMode) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('graphics_mode', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [mode.as_str()],
+        )?;
+        Ok(())
+    }
+
     /// Apple's name for a place, if it has named it before. See
     /// `place_names::name_chapters`.
     pub fn place_name(&self, key: PlaceKey) -> rusqlite::Result<Option<String>> {
@@ -2415,5 +2435,16 @@ mod tests {
         assert_eq!(db.cache_limit().unwrap(), 500 * 1024 * 1024);
         db.set_cache_limit(u64::MAX).unwrap();
         assert_eq!(db.cache_limit().unwrap(), u64::MAX, "stored as text, so no i64 overflow");
+    }
+
+    #[test]
+    fn the_graphics_mode_is_unset_until_chosen_and_then_round_trips() {
+        use crate::graphics::GraphicsMode;
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.graphics_mode().unwrap(), None);
+        db.set_graphics_mode(GraphicsMode::Low).unwrap();
+        assert_eq!(db.graphics_mode().unwrap(), Some(GraphicsMode::Low));
+        db.set_graphics_mode(GraphicsMode::Maximum).unwrap();
+        assert_eq!(db.graphics_mode().unwrap(), Some(GraphicsMode::Maximum));
     }
 }

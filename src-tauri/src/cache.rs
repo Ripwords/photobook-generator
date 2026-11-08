@@ -359,10 +359,7 @@ fn images_in(dir: &Path) -> HashMap<String, u64> {
         .filter_map(|entry| {
             let name = entry.file_name().into_string().ok()?;
             let hash = name.strip_suffix(".jpg")?;
-            let is_hash = hash.len() == 64
-                && hash
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+            let is_hash = crate::graphics::is_content_hash(hash);
             let meta = entry.metadata().ok().filter(|m| m.is_file())?;
             is_hash.then(|| (hash.to_string(), meta.len()))
         })
