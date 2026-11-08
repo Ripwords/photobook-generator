@@ -14,10 +14,12 @@ import { sizeLabel, type PrintSpec } from "~/types/printSpec";
 import {
   canStep,
   stepLabel,
+  type BookEdit,
   type HistoryStep,
   type PreviewGeometry,
 } from "~/types/preview";
 import { shortcutCombo, shortcutKbds } from "~/types/shortcuts";
+import { doneToast } from "~/types/photoDrag";
 
 const { projectId, listedName } = defineProps<{
   projectId: number;
@@ -95,6 +97,39 @@ const { openSettings } = useShell();
  */
 function step(which: HistoryStep) {
   if (canStep(which, history.value, busy.value)) void stepBook(which);
+}
+
+const toast = useToast();
+
+/**
+ * Every edit from the book, with what happened said beside the book rather
+ * than only in the banner at the top of the desk, which is out of view when
+ * the photo dropped was twenty spreads down. A photo that moved gets a toast
+ * naming it, with Undo; a refusal gets one with the reason.
+ */
+async function onEdit(edit: BookEdit) {
+  const before = layout.value;
+  await editBook(edit);
+  if (error.value) {
+    toast.add({
+      id: "edit-refused",
+      title: "That change was not made",
+      description: error.value,
+      icon: "i-lucide-circle-x",
+      color: "error",
+    });
+    return;
+  }
+  const done = doneToast(edit);
+  if (done && layout.value !== before) {
+    toast.add({
+      id: "edit-done",
+      title: done,
+      icon: "i-lucide-check",
+      color: "neutral",
+      actions: [{ label: "Undo", color: "neutral", variant: "outline", onClick: () => step("undo") }],
+    });
+  }
 }
 
 defineShortcuts({
@@ -373,7 +408,7 @@ onMounted(() => {
         The desk the book lies on: a toned surface, so the white pages read as
         paper and the controls around them recede.
       -->
-      <main class="min-h-0 flex-1 overflow-y-auto bg-desk">
+      <main data-desk class="min-h-0 flex-1 overflow-y-auto bg-desk">
         <div v-if="!layout" class="mx-auto max-w-[1400px] space-y-6 p-6">
           <UAlert
             v-if="error"
@@ -431,7 +466,7 @@ onMounted(() => {
           :layout
           :busy
           :geometry="printSizeOpen ? proposedGeometry : null"
-          @edit="editBook"
+          @edit="onEdit"
         />
       </main>
 

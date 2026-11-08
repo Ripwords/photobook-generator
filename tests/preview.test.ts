@@ -19,7 +19,6 @@ import {
   windowMoved,
   MAX_CROP_ZOOM,
   leftOutPhotos,
-  nextSwapStep,
   openingFor,
   insideCover,
   pageSide,
@@ -676,30 +675,6 @@ describe("openings", () => {
   });
 });
 
-describe("nextSwapStep", () => {
-  const a = { page: 2, z: 1 };
-  const b = { page: 7, z: 2 };
-
-  it("selects on the first click and sends nothing", () => {
-    expect(nextSwapStep(null, a)).toEqual({ selected: a, edit: null });
-  });
-
-  it("deselects when the same photo is clicked again", () => {
-    expect(nextSwapStep(a, { ...a })).toEqual({ selected: null, edit: null });
-  });
-
-  it("swaps with a different photo, anywhere in the book, and clears the selection", () => {
-    expect(nextSwapStep(a, b)).toEqual({
-      selected: null,
-      edit: { kind: "swapPhotos", a, b },
-    });
-  });
-
-  it("treats the same z on a different page as a different photo", () => {
-    expect(nextSwapStep(a, { page: 3, z: 1 }).edit).not.toBeNull();
-  });
-});
-
 describe("layoutSketch", () => {
   const spread = [
     [{ x: 0.1, y: 0.2, w: 0.8, h: 0.6 }],
@@ -1308,9 +1283,9 @@ describe("a slot nudge and a crop drag do not share a threshold", () => {
     expect(body("onSlotPointerMove")).toContain("pressIsDrag(dxPx, dyPx, SLOT_DRAG_THRESHOLD_PX)");
   });
 
-  it("leaves the crop drag on the generous default", () => {
+  it("leaves the photo drag on the generous default", () => {
     const move = body("onPointerMove");
-    expect(move).toContain("pressIsDrag(dxPx, dyPx)");
+    expect(move).toMatch(/pressIsDrag\([^)]*\)\)/);
     expect(move).not.toContain("SLOT_DRAG_THRESHOLD_PX");
   });
 
@@ -1368,7 +1343,7 @@ describe("the snap indicator goes dark when the gesture ends", () => {
  * `GenerateBook`'s watcher.
  */
 describe("a press that became a drag stays one until release", () => {
-  const sources = ["BookPreviewPage.vue", "BookPreviewCover.vue"].map((file) => ({
+  const sources = ["BookPreviewCover.vue"].map((file) => ({
     file,
     text: readFileSync(new URL(`../app/components/${file}`, import.meta.url), "utf8"),
   }));
@@ -1387,6 +1362,62 @@ describe("a press that became a drag stays one until release", () => {
       expect(up).toMatch(/finished\.moved/);
       expect(up).not.toMatch(/pressIsDrag/);
     }
+  });
+});
+
+/**
+ * On a page, a press that becomes a drag is handed to the book's photo drag
+ * (`usePhotoDrag`), which owns the release from then on. The page must forget
+ * the press BEFORE handing it over: otherwise the page's own pointerup would
+ * still read it as a click and select the photo the user just dropped
+ * somewhere else. A pointer gesture is out of reach of a unit test, so this
+ * pins it as source, like the blocks above.
+ */
+describe("a page photo drag is handed over, not also clicked", () => {
+  const text = readFileSync(new URL("../app/components/BookPreviewPage.vue", import.meta.url), "utf8");
+  const body = (name: string) => text.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}`))?.[0] ?? "";
+
+  it("clears the press before starting the drag", () => {
+    const move = body("onPointerMove");
+    const cleared = move.indexOf("press = null;");
+    const started = move.indexOf("photoDrag?.start(");
+    expect(cleared).toBeGreaterThan(-1);
+    expect(started).toBeGreaterThan(cleared);
+  });
+
+  it("selects on release only from a press still held", () => {
+    const up = body("onPointerUp");
+    expect(up).toMatch(/if \(!press\) return;/);
+    expect(up).toContain('emit("select"');
+  });
+
+  it("no longer pans the crop on a page", () => {
+    expect(text).not.toContain("cropMoved(");
+  });
+});
+
+/**
+ * An inset ring is a box-shadow, and a box-shadow paints UNDER the element's
+ * children, so a ring on the slot itself is hidden by the photo filling it.
+ * That is how the selection ring went unseen since it was written, and how the
+ * swap target and the post-edit flash first did too: every one has to be drawn
+ * on an overlay that comes after the photo.
+ */
+describe("slot highlights paint over the photo, not under it", () => {
+  const text = readFileSync(new URL("../app/components/BookPreviewPage.vue", import.meta.url), "utf8");
+  const slotOpen = text.match(/<component\s[\s\S]*?:data-placement[\s\S]*?\n {6}>/)?.[0] ?? "";
+
+  it("keeps rings and the flash off the slot element itself", () => {
+    expect(slotOpen).toContain(":data-placement");
+    expect(slotOpen).not.toContain("ring-inset");
+    expect(slotOpen).not.toContain("slot-flash");
+  });
+
+  it("draws them after the photo", () => {
+    const photo = text.indexOf(':src="box.src"');
+    expect(photo).toBeGreaterThan(-1);
+    expect(text.indexOf("ring-inset", photo)).toBeGreaterThan(photo);
+    expect(text.indexOf("'slot-flash'", photo)).toBeGreaterThan(photo);
   });
 });
 

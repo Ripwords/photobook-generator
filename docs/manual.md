@@ -312,7 +312,7 @@ shows its buttons as icons; hover one for its name or, for the two modes, what a
 Each chapter starts with a heading above its first opening. The heading gives the chapter
 number, its pages, its dates (when the title is not already the dates) and how many events
 it merges. Below that are the chapter's title and, under it, the page its title spot is on.
-A book with more than two chapters also has a **Chapters** menu (the list icon) in the bar
+A book with two or more chapters also has a **Chapters** menu (the list icon) in the bar
 above the book. It lists every chapter's title and pages; pick one to scroll to it.
 
 Titles are a guide, not part of the printed book: export never draws them. On the page, a
@@ -344,11 +344,31 @@ back cover, the way the printed book opens.
   printed under it, one per page where the two pages are laid out separately.
 - **Lock** keeps the opening exactly as it is: **Shuffle** at the top of the book re-lays
   every unlocked opening at once and skips locked ones, and a locked opening refuses every
-  other change until unlocked.
+  other change until unlocked. Pressing or dragging a photo on a locked opening says so in
+  a notice at the bottom right, with an **Unlock** button.
 
-To **swap two photos**, click one, then click another anywhere in the book; click the
-first again or press Escape to cancel. To **use a photo the book left out**, click the photo
-to replace, then **Choose any photo…** in the bar at the bottom. The dialog opens on the
+To **swap two photos**, drag one onto the other, anywhere in the book. While you drag, the
+photo travels with the pointer, the photo under it gets a ring, and the slot you started
+from shows the photo it would get, so you can see the swap before you let go. The photo
+under the pointer reads **Swap**, or **Locked** if it is on a locked spread, where a drop
+does nothing. Hold the photo near the top or bottom edge of the book to scroll towards a
+spread that is out of view. Let go anywhere that is not a photo, or press Escape, and the
+photo slides back with nothing changed. A press only counts as a drag once it has travelled
+about 10px, so a click still just selects, however much the trackpad wobbles.
+
+Clicking a photo selects it, with a ring, and the bar at the bottom offers **Swap with…**,
+**Crop…** and **Choose any photo…**. Right-clicking a photo opens the same three without
+selecting it. **Swap with…** is the way to swap without dragging: choose it, then click the
+other photo. Escape backs out one step at a time, first the swap, then the selection.
+
+After a swap or a replaced photo, the slots that changed flash, and a notice at the bottom
+right names the pages, for example "Swapped photos on pages 3 and 12", with an **Undo**
+button. That matters most for a swap between spreads that are never on screen together. A
+change the book refuses is reported the same way, with the reason. Each photo is re-cropped
+for its new slot, so a crop you set by hand does not travel with the photo.
+
+To **use a photo the book left out**, click the photo to replace, then **Choose any photo…**
+in the bar at the bottom. The dialog opens on the
 photos no page uses, each shown cropped the way that slot would print it; **In the book** and
 **All** show the rest, sorted **Best first** or by **Time taken**. Pick one and press
 **Replace**, or double-click it. Picking a photo that is already on another page reads **Swap
@@ -376,7 +396,8 @@ The same button is on the cover picker. One caveat: a photo added this way belon
 book, not to its folders, so if you later run **Edit photos** and **Update "<name>"**, the
 book is rebuilt from the folders and hand-added photos are not carried across.
 
-To **crop a photo**, click it, then **Crop…** in the bar at the bottom. The crop dialog
+To **crop a photo**, double-click it, or click it and then **Crop…** in the bar at the
+bottom. The crop dialog
 shows the whole photo, with the part that prints lit and the rest dimmed. Drag the frame to
 choose what prints, and zoom with the slider, the **−** and **+** buttons, or by scrolling or
 pinching over the photo; the arrow keys nudge the frame. The frame keeps the slot's shape.
@@ -385,14 +406,11 @@ Nothing changes until **Save crop** (or Enter), and then as one change you can u
 without saving. Scrolling over the book itself always scrolls the book; it never zooms a
 photo.
 
-For a quick nudge without the dialog, drag the photo inside its slot to move the window; it
-is saved when you let go. A press only counts as a drag once it has travelled about 10px, so
-an ordinary click still selects the photo however much the trackpad wobbles, and a press
-that wanders and comes back to where it started is a click too. Regenerating that opening or swapping the photo away recomputes
-its crop, because the slot it was chosen for is gone.
+Regenerating that opening or swapping the photo away recomputes its crop, because the slot
+it was chosen for is gone.
 
-To **move or resize the boxes themselves**, switch the bar above the book from **Crop and
-swap** to **Move and resize boxes**. Drag a box to move it, drag a corner to resize it;
+To **move or resize the boxes themselves**, switch the bar above the book from **Arrange
+photos** to **Move and resize boxes**. Drag a box to move it, drag a corner to resize it;
 edges and centres snap to the guides. An edge catches on the trim, safe and gutter guides,
 on the page edge (which prints as bleed), and on the edges of the other boxes on the page.
 Moving a box also catches its centre on the middle of the printed page and on the centre of
@@ -406,11 +424,11 @@ about the opposite corner and keeps the proportions it started with. Snapping is
 shift is held, because pulling one edge onto a guide is exactly what would change the shape.
 Shift is read as you drag, so you can take or drop the lock part-way through. Nudges of a
 few pixels work here: a drag counts from about three pixels, rather than the ten a click on
-a photo has to clear to count as a drag instead of a swap. Below that the box does not move
+a photo has to clear in **Arrange photos** to count as a drag. Below that the box does not move
 at all, so resting a hand on it does not quietly shift the layout. A box
 cannot leave the page, shrink below 5% of it, or overlap another box, and the photo is
-re-cropped for the new shape under the same rules as everything else. Switch back to **Crop
-and swap** to go back to swapping and cropping. A change that would cut a face, put one in the
+re-cropped for the new shape under the same rules as everything else. Switch back to **Arrange
+photos** to go back to swapping and cropping. A change that would cut a face, put one in the
 gutter or the safe margin, or print below the book's lowest print resolution is refused with
 the reason, and the book stays as it was.
 

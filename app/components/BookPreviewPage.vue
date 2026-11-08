@@ -1,7 +1,5 @@
 <script setup lang="ts">
 import {
-  cropMoved,
-  cropStyle,
   insideCover,
   NO_HOLD,
   pageGuides,
@@ -10,7 +8,6 @@ import {
   pressIsDrag,
   SLOT_DRAG_THRESHOLD_PX,
   rectStyle,
-  releaseAction,
   samePlacement,
   slotMoved,
   slotResized,
@@ -25,6 +22,7 @@ import {
   type PreviewRect,
   type SnapLine,
 } from "~/types/preview";
+import { photoAt, placementKey } from "~/types/photoDrag";
 
 const {
   layout,
@@ -35,6 +33,8 @@ const {
   editSlots = false,
   busy = false,
   geometry = null,
+  locked = false,
+  flash = [],
 } = defineProps<{
   layout: BookLayout;
   /**
@@ -65,6 +65,10 @@ const {
    * types. `null` draws the book as saved.
    */
   geometry?: PreviewGeometry | null;
+  /** On a locked spread: a press says so instead of doing nothing. */
+  locked?: boolean;
+  /** `placementKey`s that just changed, flashed so the eye finds them. */
+  flash?: string[];
 }>();
 
 const graphics = useGraphics();
@@ -72,10 +76,12 @@ const graphics = useGraphics();
 const shown = computed(() => geometry ?? layout.geometry);
 
 const emit = defineEmits<{
-  /** The user clicked a photo while swapping -- see `nextSwapStep`. */
+  /** The user clicked a photo -- see `swapStepFor`. */
   select: [placement: PlacementRef];
-  /** The user dragged a photo inside its slot and let go. */
-  crop: [placement: PlacementRef, crop: PreviewRect];
+  /** The user double-clicked a photo: open the crop dialog on it. */
+  cropOpen: [placement: PlacementRef];
+  /** The user pressed a photo on a locked spread. */
+  locked: [];
   /** The user moved or resized a slot in layout mode and let go. */
   slot: [placement: PlacementRef, rect: PreviewRect];
   /** "Add a photo…" on a page that prints blank. */
@@ -187,90 +193,80 @@ const cornerClass: Record<Corner, string> = {
 };
 
 /**
- * Quick cropping, as a gesture on the slot itself: drag the photo to move the
- * window. Zooming lives in the crop dialog (`CropPhotoDialog`), where a wheel or
- * pinch has nothing to scroll; on the page it fought the book's own scrolling.
- * The window is drawn live from a local copy while
- * the pointer is down and sent as ONE edit on release, so a drag is one save
- * and one round trip, not one per pixel. Rust re-derives the height from the
- * slot, keeps the window inside the photo and re-runs the hard constraints;
- * whatever it returns is what stays on screen. A press that never travels
- * `DRAG_THRESHOLD_PX` is a click, which selects the photo for a swap. That is
- * decided once, on the way out, and `moved` carries it to release: a crop the
- * user dragged out and brought back near where it started is still a crop they
- * chose, and release commits what is on screen.
- *
- * `liveCrops` holds the windows mid-gesture, keyed like `PreviewSlot.key`.
+ * Arranging, as a gesture on the slot itself: drag the photo onto another photo
+ * anywhere in the book to swap them. The drag is the book's (`usePhotoDrag`),
+ * because it leaves this page; this component only decides when a press has
+ * become one. A press that never travels `DRAG_THRESHOLD_PX` is a click, which
+ * selects the photo. Cropping is a double-click, into `CropPhotoDialog`: the
+ * same drag cannot both move a photo and pan it, and moving is what every
+ * other photobook editor makes it do.
  */
-const liveCrops = ref<Record<string, PreviewRect>>({});
-interface Drag {
-  key: string;
+const photoDrag = usePhotoDrag();
+interface Press {
   ref: PlacementRef;
   startX: number;
   startY: number;
-  origin: PreviewRect;
-  slotW: number;
-  slotH: number;
-  moved: boolean;
+  src: string | null;
 }
-let drag: Drag | null = null;
+let press: Press | null = null;
 
-function cropOf(key: string, fallback: PreviewRect): PreviewRect {
-  return liveCrops.value[key] ?? fallback;
-}
-
-function onPointerDown(event: PointerEvent, key: string, ref: PlacementRef, crop: PreviewRect) {
-  if (!selectable || event.button !== 0) return;
-  const el = event.currentTarget as HTMLElement;
-  const box = el.getBoundingClientRect();
-  drag = {
-    key,
-    ref,
-    startX: event.clientX,
-    startY: event.clientY,
-    origin: cropOf(key, crop),
-    slotW: box.width || 1,
-    slotH: box.height || 1,
-    moved: false,
-  };
-  el.setPointerCapture(event.pointerId);
+function onPointerDown(event: PointerEvent, ref: PlacementRef, src: string | null) {
+  if (event.button !== 0) return;
+  if (locked) {
+    emit("locked");
+    return;
+  }
+  if (!selectable) return;
+  press = { ref, startX: event.clientX, startY: event.clientY, src };
+  (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
 }
 
 function onPointerMove(event: PointerEvent) {
-  if (!drag) return;
-  const dxPx = event.clientX - drag.startX;
-  const dyPx = event.clientY - drag.startY;
-  if (!drag.moved && !pressIsDrag(dxPx, dyPx)) return;
-  drag.moved = true;
-  liveCrops.value = {
-    ...liveCrops.value,
-    [drag.key]: cropMoved(drag.origin, { dx: dxPx / drag.slotW, dy: dyPx / drag.slotH }),
-  };
+  if (!press) return;
+  if (!pressIsDrag(event.clientX - press.startX, event.clientY - press.startY)) return;
+  const el = event.currentTarget as HTMLElement;
+  el.releasePointerCapture(event.pointerId);
+  const started = press;
+  press = null;
+  photoDrag?.start({ placement: started.ref, src: started.src, from: el, x: event.clientX, y: event.clientY });
 }
 
 function onPointerUp(event: PointerEvent) {
-  if (!drag) return;
-  const finished = drag;
-  drag = null;
+  if (!press) return;
+  const clicked = press;
+  press = null;
   (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
-  const crop = liveCrops.value[finished.key];
-  if (crop && releaseAction(finished.moved, true) === "save") {
-    emit("crop", finished.ref, crop);
-    return;
-  }
-  const { [finished.key]: _abandoned, ...rest } = liveCrops.value;
-  liveCrops.value = rest;
-  emit("select", finished.ref);
+  emit("select", clicked.ref);
 }
 
 function onPointerCancel() {
-  if (!drag) return;
-  const cancelled = drag;
-  drag = null;
-  const { [cancelled.key]: _dropped, ...rest } = liveCrops.value;
-  liveCrops.value = rest;
+  press = null;
 }
 
+/** The slot's place in the drag: being carried, hovered as a target, or neither. */
+function dragRole(ref: PlacementRef): "source" | "swap" | "locked" | null {
+  if (!photoDrag) return null;
+  const { source, hover } = photoDrag;
+  if (source.value && samePlacement(source.value, ref)) return "source";
+  if (hover.value && samePlacement(hover.value.placement, ref)) return hover.value.locked ? "locked" : "swap";
+  return null;
+}
+
+/**
+ * The photo a slot WOULD hold if the drag were released now, drawn over it
+ * so the swap can be seen before it is made: the source shows the hovered
+ * photo and the hovered slot shows the source. Filled to the slot rather than
+ * cropped the way Rust will crop it -- close enough to judge, and Rust's crop
+ * arrives the moment the drop lands.
+ */
+function previewSrc(ref: PlacementRef): string | null {
+  if (!photoDrag?.source.value || !photoDrag.hover.value || photoDrag.hover.value.locked) return null;
+  const role = dragRole(ref);
+  const other = role === "source" ? photoDrag.hover.value.placement : role === "swap" ? photoDrag.source.value : null;
+  if (!other) return null;
+  const photo = photoAt(layout, other);
+  return photo?.thumbnailPath ? convertFileSrc(photo.thumbnailPath) : null;
+}
 
 // The saved book is the truth. Once the edit a gesture produced has been
 // answered -- a new layout arrived, or `busy` fell back to false because the
@@ -280,7 +276,6 @@ function onPointerCancel() {
 watch(
   () => layout,
   () => {
-    liveCrops.value = {};
     liveRects.value = {};
   },
 );
@@ -288,7 +283,6 @@ watch(
   () => busy,
   (now, before) => {
     if (before && !now) {
-      liveCrops.value = {};
       liveRects.value = {};
     }
   },
@@ -304,9 +298,7 @@ const boxes = computed(() => {
   if (!page) return [];
   return pageSlots(layout, page).map((box) => {
     const placement = page.placements.find((p) => p.z === box.z);
-    const saved = placement?.crop ?? { x: 0, y: 0, w: 1, h: 1 };
     const savedRect = placement?.slotRect ?? { x: 0, y: 0, w: 1, h: 1 };
-    const live = liveCrops.value[box.key];
     const liveRect = liveRects.value[box.key];
     return {
       ...box,
@@ -316,10 +308,9 @@ const boxes = computed(() => {
       // will composite.
       src: box.photo ? graphics.src(box.photo) : null,
       ref: { page: page.number, z: box.z } satisfies PlacementRef,
-      saved,
       savedRect,
-      // Mid-gesture the live window and box are drawn; otherwise the saved ones.
-      crop: live ? cropStyle(live) : box.crop,
+      // Mid-gesture the live box is drawn; otherwise the saved one.
+      crop: box.crop,
       slot: liveRect ? rectStyle(liveRect) : box.slot,
     };
   });
@@ -371,21 +362,24 @@ const titleJustify = { left: "justify-start", center: "justify-center", right: "
         v-for="box in boxes"
         :key="box.key"
         :type="selectable ? 'button' : undefined"
+        :data-placement="placementKey(box.ref)"
+        :data-locked="locked ? 'true' : undefined"
         class="absolute overflow-hidden bg-neutral-100 text-left"
         :class="[
           selectable && 'touch-none focus-visible:outline-2 focus-visible:outline-primary',
           selectable && (editSlots ? 'cursor-move' : 'cursor-grab'),
-          isSelected(box.ref) && 'z-10 ring-3 ring-primary ring-inset',
+          (isSelected(box.ref) || dragRole(box.ref) === 'swap') && 'z-10',
           editSlots && 'outline-2 outline-dashed outline-primary/60 -outline-offset-2',
         ]"
         :style="box.slot"
         :title="[box.photo?.path, box.filename].filter(Boolean).join('\n')"
-        :aria-label="selectable ? `Photo on page ${page.number}, slot ${box.z}: ${editSlots ? 'drag to move the box, drag a corner to resize it, hold shift to keep its shape' : isSelected(box.ref) ? 'selected for swap' : 'click to select it, drag to move the crop'}` : undefined"
+        :aria-label="selectable ? `Photo on page ${page.number}, slot ${box.z}: ${editSlots ? 'drag to move the box, drag a corner to resize it, hold shift to keep its shape' : isSelected(box.ref) ? 'selected' : 'drag onto another photo to swap them, double-click to crop'}` : undefined"
         :aria-pressed="selectable && !editSlots ? isSelected(box.ref) : undefined"
-        @pointerdown="editSlots ? onSlotPointerDown($event, box.key, box.ref, box.savedRect, null) : onPointerDown($event, box.key, box.ref, box.saved)"
+        @pointerdown="editSlots ? onSlotPointerDown($event, box.key, box.ref, box.savedRect, null) : onPointerDown($event, box.ref, box.src)"
         @pointermove="editSlots ? onSlotPointerMove($event) : onPointerMove($event)"
         @pointerup="editSlots ? onSlotPointerUp($event) : onPointerUp($event)"
         @pointercancel="editSlots ? onSlotPointerCancel() : onPointerCancel()"
+        @dblclick="selectable && !editSlots && emit('cropOpen', box.ref)"
         @keydown.enter.space.prevent="selectable && !editSlots && emit('select', box.ref)"
       >
         <!--
@@ -407,6 +401,35 @@ const titleJustify = { left: "justify-start", center: "justify-center", right: "
         <div v-else class="flex size-full items-center justify-center">
           <UIcon name="i-lucide-image-off" class="size-4 text-neutral-500" />
         </div>
+        <!--
+          The drag, drawn on the slots it involves: what each would hold if
+          released now, and the source dimmed while it has no target.
+        -->
+        <img
+          v-if="previewSrc(box.ref)"
+          :src="previewSrc(box.ref) ?? undefined"
+          alt=""
+          draggable="false"
+          class="pointer-events-none absolute inset-0 size-full object-cover"
+        />
+        <div
+          v-else-if="dragRole(box.ref) === 'source'"
+          class="pointer-events-none absolute inset-0 bg-white/60 dark:bg-neutral-900/60"
+        />
+        <!--
+          Rings and the flash are inset box-shadows, which paint under an
+          element's children: on the slot itself the photo would hide them.
+          So they live here, after the photo. What a drop does is said on the
+          ghost instead, which the pointer can never cover.
+        -->
+        <span
+          class="pointer-events-none absolute inset-0"
+          :class="[
+            (isSelected(box.ref) || dragRole(box.ref) === 'swap') && 'ring-3 ring-primary ring-inset',
+            dragRole(box.ref) === 'locked' && 'bg-neutral-900/20',
+            flash.includes(placementKey(box.ref)) && 'slot-flash',
+          ]"
+        />
         <!--
           Corner handles, layout mode only. Each starts a resize with its
           opposite corner fixed; the slot body starts a move.

@@ -6,7 +6,6 @@ import {
   chapterOpening,
   cropSubject,
   leftOutPhotos,
-  nextSwapStep,
   openingFor,
   pageSide,
   setCoverCropEdit,
@@ -25,6 +24,8 @@ import {
   type PreviewRect,
   escapeDeselects,
 } from "~/types/preview";
+import { dropTargetAt, placementKey, swapStepFor, type DropOutcome } from "~/types/photoDrag";
+import { RETURN_MS } from "~/composables/usePhotoDrag";
 
 const {
   layout,
@@ -89,11 +90,13 @@ const anyToShuffle = computed(() => layout.openings.some(canRelayout));
 const shuffleLabel = computed(() => (anyLocked.value ? "Shuffle unlocked spreads" : "Shuffle every spread"));
 
 /**
- * The photo picked for a swap, or `null`. One selection for the whole book,
- * so a photo can be swapped across spreads; the gesture itself is
- * `nextSwapStep`, which is unit-tested.
+ * The selected photo, or `null`, and whether "Swap with…" is waiting for the
+ * photo to exchange it with. One selection for the whole book, so a photo can
+ * be swapped across spreads; the gesture is `swapStepFor`, which is
+ * unit-tested. This is the click and keyboard route; dragging is the other.
  */
 const selected = ref<PlacementRef | null>(null);
+const armed = ref(false);
 
 /**
  * Layout mode: drag moves a photo box and its corners resize it, instead of
@@ -106,6 +109,7 @@ const selected = ref<PlacementRef | null>(null);
 const editSlots = defineModel<boolean>("editSlots", { default: false });
 watch(editSlots, () => {
   selected.value = null;
+  armed.value = false;
 });
 
 /**
@@ -120,16 +124,157 @@ function onEscape(event: KeyboardEvent) {
     inField: !!target?.closest("input, textarea, select, [contenteditable]"),
     inOverlay: !!target?.closest('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]'),
   };
-  if (escapeDeselects(press)) selected.value = null;
+  if (!escapeDeselects(press)) return;
+  // One step back at a time: Esc first abandons "Swap with…", then the selection.
+  if (armed.value) armed.value = false;
+  else selected.value = null;
 }
 onMounted(() => window.addEventListener("keydown", onEscape));
 onBeforeUnmount(() => window.removeEventListener("keydown", onEscape));
 
 function onSelect(placement: PlacementRef) {
-  const step = nextSwapStep(selected.value, placement);
-  selected.value = step.selected;
-  if (step.edit) emit("edit", step.edit);
+  const step = swapStepFor({ selected: selected.value, armed: armed.value }, placement);
+  selected.value = step.next.selected;
+  armed.value = step.next.armed;
+  if (step.edit) send(step.edit);
 }
+
+/**
+ * Slots that just changed, flashed once the book that changed them arrives.
+ * `pendingFlash` holds them while the edit is in flight; a refused edit
+ * returns the same layout, so it never flashes.
+ */
+const flash = ref<string[]>([]);
+let pendingFlash: string[] = [];
+let flashTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Sends an edit and remembers which slots to flash when it lands. */
+function send(edit: BookEdit) {
+  pendingFlash = edit.kind === "swapPhotos" ? [placementKey(edit.a), placementKey(edit.b)] : [];
+  emit("edit", edit);
+}
+
+watch(
+  () => busy,
+  (now, before) => {
+    if (before && !now) pendingFlash = [];
+  },
+);
+
+const toast = useToast();
+
+/** The opening a page belongs to, for unlocking it from a toast. */
+function openingOfPage(page: number): number | null {
+  return spreads.value.find((s) => s.left?.number === page || s.right?.number === page)?.index ?? null;
+}
+
+/** A press or a drop on a locked spread says why nothing happened, and how to change that. */
+function onLocked(opening: number | null) {
+  toast.add({
+    id: "spread-locked",
+    title: "This spread is locked",
+    description: "Unlock it to move or swap its photos.",
+    icon: "i-lucide-lock",
+    color: "neutral",
+    actions:
+      opening === null
+        ? []
+        : [
+            {
+              label: "Unlock",
+              color: "neutral",
+              variant: "outline",
+              onClick: () => emit("edit", { kind: "setLocked", opening, locked: false }),
+            },
+          ],
+  });
+}
+
+const photoDrag = providePhotoDrag((outcome: DropOutcome) => {
+  if (outcome.kind === "swap") {
+    selected.value = null;
+    armed.value = false;
+    send(outcome.edit);
+  } else if (outcome.kind === "locked") {
+    const target = lastHover;
+    onLocked(target ? openingOfPage(target.page) : null);
+  }
+});
+/** The last slot hovered, which `photoDrag.hover` has already cleared by the time a drop lands. */
+let lastHover: PlacementRef | null = null;
+watch(photoDrag.hover, (hover) => {
+  if (hover) lastHover = hover.placement;
+});
+
+/** The ghost's style: following the pointer, or sliding home after a miss. */
+const ghostStyle = computed(() => {
+  const g = photoDrag.ghost.value;
+  if (!g) return null;
+  return {
+    left: `${g.x}px`,
+    top: `${g.y}px`,
+    width: `${g.w}px`,
+    height: `${g.h}px`,
+    transition: g.returning ? `all ${RETURN_MS}ms ease-out` : "none",
+    opacity: g.returning ? "0" : "0.92",
+  };
+});
+
+/**
+ * Right-click on a photo: the same actions as the bar, without selecting
+ * first. The photo is read off the element under the pointer when the menu
+ * opens; off any photo, the event is stopped before the menu sees it.
+ */
+const menuTarget = ref<{ placement: PlacementRef; locked: boolean } | null>(null);
+function onContextMenu(event: MouseEvent) {
+  const target = dropTargetAt(event.target instanceof Element ? event.target : null);
+  if (!target || busy || editSlots.value) {
+    event.stopPropagation();
+    event.preventDefault();
+    menuTarget.value = null;
+    return;
+  }
+  menuTarget.value = target;
+}
+const photoMenu = computed(() => {
+  const target = menuTarget.value;
+  if (!target) return [];
+  const { placement } = target;
+  if (target.locked) {
+    const opening = openingOfPage(placement.page);
+    return [
+      [
+        {
+          label: "Unlock this spread",
+          icon: "i-lucide-lock-open",
+          disabled: opening === null,
+          onSelect: () => opening !== null && emit("edit", { kind: "setLocked", opening, locked: false }),
+        },
+      ],
+    ];
+  }
+  return [
+    [
+      {
+        label: "Swap with…",
+        icon: "i-lucide-arrow-left-right",
+        onSelect: () => {
+          selected.value = placement;
+          armed.value = true;
+        },
+      },
+      { label: "Crop…", icon: "i-lucide-crop", onSelect: () => openCrop({ kind: "slot", placement }) },
+      {
+        label: "Choose any photo…",
+        icon: "i-lucide-images",
+        onSelect: () => {
+          selected.value = placement;
+          chooseFromAll();
+        },
+      },
+    ],
+  ];
+});
 
 // A new layout means the swap either happened or was refused; either way the
 // selection belongs to the previous book.
@@ -137,8 +282,18 @@ watch(
   () => layout,
   () => {
     selected.value = null;
+    armed.value = false;
+    if (pendingFlash.length > 0) {
+      flash.value = pendingFlash;
+      pendingFlash = [];
+      if (flashTimer) clearTimeout(flashTimer);
+      flashTimer = setTimeout(() => (flash.value = []), 700);
+    }
   },
 );
+onBeforeUnmount(() => {
+  if (flashTimer) clearTimeout(flashTimer);
+});
 
 /**
  * The slot the "choose from all photos" dialog is filling. Its own ref, not
@@ -279,19 +434,19 @@ const leftOut = computed(() =>
       -->
       <UFieldGroup aria-label="What dragging a photo does">
         <UTooltip
-          text="Drag a photo to move its crop, ⌘-scroll over it to zoom. Click a photo, then another anywhere in the book, to swap them"
+          text="Drag a photo onto another photo anywhere in the book to swap them. Double-click a photo to crop it"
           :content="{ side: 'bottom', align: 'start' }"
         >
           <UButton
-            icon="i-lucide-crop"
+            icon="i-lucide-arrow-left-right"
             color="neutral"
             :variant="editSlots ? 'outline' : 'solid'"
             :aria-pressed="!editSlots"
             :disabled="busy"
-            aria-label="Crop and swap"
+            aria-label="Arrange photos"
             @click="editSlots = false"
           >
-            <span class="hidden @[30rem]:inline">Crop and swap</span>
+            <span class="hidden @[30rem]:inline">Arrange photos</span>
           </UButton>
         </UTooltip>
         <UTooltip
@@ -398,7 +553,8 @@ const leftOut = computed(() =>
         @crop-open="openCrop({ kind: 'cover', side: $event })"
         @spine="onSpine"
       />
-      <ol class="space-y-10">
+      <UContextMenu :items="photoMenu" :disabled="busy">
+      <ol class="space-y-10" @contextmenu.capture="onContextMenu">
         <li
           v-for="spread in spreads"
           :id="spread.chapter ? `chapter-${spread.chapter.number}` : undefined"
@@ -516,11 +672,14 @@ const leftOut = computed(() =>
                 :page="spread.left"
                 :side="pageSide(spread.left, 'left')"
                 :selectable="!busy && !spread.opening.locked"
+                :locked="spread.opening.locked"
+                :flash
                 :selected
                 :edit-slots="editSlots"
                 :busy
                 @select="onSelect"
-                @crop="onCrop"
+                @crop-open="openCrop({ kind: 'slot', placement: $event })"
+                @locked="onLocked(spread.index)"
                 @slot="onSlot"
                 @add="spread.left && addToPage(spread.index, spread.left.number)"
               />
@@ -532,11 +691,14 @@ const leftOut = computed(() =>
                 :page="spread.right"
                 :side="pageSide(spread.right, 'right')"
                 :selectable="!busy && !spread.opening.locked"
+                :locked="spread.opening.locked"
+                :flash
                 :selected
                 :edit-slots="editSlots"
                 :busy
                 @select="onSelect"
-                @crop="onCrop"
+                @crop-open="openCrop({ kind: 'slot', placement: $event })"
+                @locked="onLocked(spread.index)"
                 @slot="onSlot"
                 @add="spread.right && addToPage(spread.index, spread.right.number)"
               />
@@ -544,6 +706,7 @@ const leftOut = computed(() =>
           </div>
         </li>
       </ol>
+      </UContextMenu>
 
       <BookPageViewer v-if="viewing !== null" v-model:index="viewing" :layout />
 
@@ -587,12 +750,28 @@ const leftOut = computed(() =>
     >
       <UIcon name="i-lucide-arrow-left-right" class="size-4 shrink-0 text-muted" />
       <p class="min-w-0 truncate whitespace-nowrap">
-        <span class="font-medium text-highlighted">Photo on page {{ selected.page }} selected.</span>
-        <span class="hidden text-muted @2xl:inline"> Click another photo to swap them.</span>
+        <template v-if="armed">
+          <span class="font-medium text-highlighted">Click the photo to swap with page {{ selected.page }}'s.</span>
+        </template>
+        <template v-else>
+          <span class="font-medium text-highlighted">Photo on page {{ selected.page }} selected.</span>
+          <span class="hidden text-muted @2xl:inline"> Drag it onto another photo to swap them.</span>
+        </template>
       </p>
       <span class="h-5 shrink-0 border-l border-default" aria-hidden="true" />
       <div class="flex shrink-0 items-center gap-1">
         <UButton
+          v-if="!armed"
+          icon="i-lucide-arrow-left-right"
+          color="neutral"
+          variant="outline"
+          :disabled="busy"
+          @click="armed = true"
+        >
+          Swap with…
+        </UButton>
+        <UButton
+          v-if="!armed"
           icon="i-lucide-crop"
           color="neutral"
           variant="outline"
@@ -605,17 +784,43 @@ const leftOut = computed(() =>
           icon="i-lucide-images"
           color="neutral"
           variant="outline"
+          v-if="!armed"
           :disabled="busy"
           @click="chooseFromAll"
         >
           Choose any photo…
         </UButton>
-        <UButton color="neutral" variant="ghost" @click="selected = null">
+        <UButton color="neutral" variant="ghost" @click="armed ? (armed = false) : (selected = null)">
           Cancel
           <UKbd value="esc" />
         </UButton>
       </div>
     </div>
+
+    <!-- The photo being dragged, following the pointer over every page. -->
+    <Teleport to="body">
+      <div
+        v-if="ghostStyle"
+        class="pointer-events-none fixed z-50 overflow-hidden rounded-sm bg-neutral-200 shadow-xl ring-2 ring-white"
+        :style="ghostStyle"
+        aria-hidden="true"
+      >
+        <img
+          v-if="photoDrag.ghost.value?.src"
+          :src="photoDrag.ghost.value.src"
+          alt=""
+          draggable="false"
+          class="size-full object-cover"
+        />
+        <span
+          v-if="photoDrag.hover.value && !photoDrag.ghost.value?.returning"
+          class="absolute bottom-1.5 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-md bg-neutral-900/85 px-2 py-1 text-sm font-medium whitespace-nowrap text-white shadow"
+        >
+          <UIcon :name="photoDrag.hover.value.locked ? 'i-lucide-lock' : 'i-lucide-arrow-left-right'" class="size-4" />
+          {{ photoDrag.hover.value.locked ? "Locked" : "Swap" }}
+        </span>
+      </div>
+    </Teleport>
 
     <CropPhotoDialog
       v-if="cropping"

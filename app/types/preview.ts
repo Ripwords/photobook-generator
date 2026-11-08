@@ -689,28 +689,6 @@ export function samePlacement(a: PlacementRef, b: PlacementRef): boolean {
   return a.page === b.page && a.z === b.z;
 }
 
-/** What a click on a photo does while swapping: the next selection, and the edit to send if any. */
-export interface SwapStep {
-  selected: PlacementRef | null;
-  edit: BookEdit | null;
-}
-
-/**
- * The swap gesture as a pure function: the first click selects a photo, a
- * second click on the SAME photo deselects it, and a click on any other photo
- * -- on any page of the book -- swaps the two and clears the selection.
- *
- * Nothing about which swaps are allowed lives here. Rust refuses a swap that
- * would cut a face, put one in the gutter or the margin, or print below 200
- * DPI, and returns the untouched book with the reason; the webview shows the
- * reason and the book it was given.
- */
-export function nextSwapStep(selected: PlacementRef | null, clicked: PlacementRef): SwapStep {
-  if (selected === null) return { selected: clicked, edit: null };
-  if (samePlacement(selected, clicked)) return { selected: null, edit: null };
-  return { selected: null, edit: { kind: "swapPhotos", a: selected, b: clicked } };
-}
-
 /**
  * A template id as a menu label: `07-two-up-symmetric-margin` reads
  * "two-up symmetric margin", and a page half `...:right` says which half. The
