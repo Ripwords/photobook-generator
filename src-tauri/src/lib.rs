@@ -3,6 +3,7 @@ pub mod book;
 pub mod cache;
 pub mod cluster;
 pub mod commands;
+pub mod custom_layouts;
 pub mod db;
 pub mod export;
 pub mod geometry;

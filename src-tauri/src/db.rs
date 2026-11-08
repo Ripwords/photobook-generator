@@ -205,6 +205,14 @@ impl Db {
                  lon_e2 INTEGER NOT NULL,
                  name   TEXT NOT NULL,
                  PRIMARY KEY (lat_e2, lon_e2)
+             );
+             CREATE TABLE IF NOT EXISTS custom_layouts (
+                 id         TEXT PRIMARY KEY,
+                 name       TEXT NOT NULL,
+                 shape_json TEXT NOT NULL,
+                 auto       INTEGER NOT NULL DEFAULT 0,
+                 created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                 updated_at INTEGER NOT NULL DEFAULT (unixepoch())
              );",
         )?;
         let has_deleted_at: bool = self

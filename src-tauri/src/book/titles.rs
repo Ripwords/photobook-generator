@@ -440,7 +440,7 @@ mod tests {
     }
 
     fn empty_lib() -> Library {
-        Library { spreads: Vec::new() }
+        Library::default()
     }
 
     fn real_lib() -> Library {

@@ -71,6 +71,7 @@ layout.openings[1] = {
   locked: false,
   rejected: [],
   alternatives: ["07-two-up-symmetric-margin", "08-two-up-symmetric-bleed-outer"],
+  refused: [],
 };
 // Their sketches, and the current template's, as Rust would send them: each
 // slot of `templates/*.json` decomposed onto its own page.
