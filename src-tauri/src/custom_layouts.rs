@@ -985,6 +985,86 @@ mod tests {
             .unwrap();
         assert_eq!(list(&db).unwrap(), vec![a]);
     }
+
+    // --- the wire ---
+
+    /// The Rust half of `tests/fixtures/wire/custom-layouts.json`; the
+    /// TypeScript half is `tests/customLayouts.test.ts`. Layouts and problems
+    /// are literals (ids and timestamps are random and clock-bound); every
+    /// error but `storage` comes from a real store call, so its wording is
+    /// the store's own. Every float is an exact binary fraction, so
+    /// `to_value` compares directly.
+    #[test]
+    fn custom_layouts_serialise_exactly_the_keys_the_webview_reads() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/wire/custom-layouts.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("missing wire fixture {path:?}: {e}"));
+        let fixture: serde_json::Value =
+            serde_json::from_str(&text).expect("wire fixture must be valid JSON");
+
+        let support = |x, y, w, h| LayoutBox { rect: Rect::new(x, y, w, h), role: Role::Support };
+        let layouts = vec![
+            CustomLayout {
+                id: "user-0123456789abcdef0123456789abcdef".into(),
+                name: "Two halves".into(),
+                shape: two_up(),
+                auto: false,
+                created_at: 1_762_560_000,
+                updated_at: 1_762_560_000,
+            },
+            CustomLayout {
+                id: "user-fedcba9876543210fedcba9876543210".into(),
+                name: "Corner".into(),
+                shape: page(Side::Right, vec![b(0.25, 0.25, 0.5, 0.5), support(0.75, 0.75, 0.25, 0.25)]),
+                auto: true,
+                created_at: 1_762_560_000,
+                updated_at: 1_762_563_600,
+            },
+        ];
+        let problems: Vec<Problem> = vec![
+            LayoutProblem::NoBoxes,
+            LayoutProblem::TooManyBoxes { count: 9, max: MAX_BOXES },
+            LayoutProblem::NotFinite { slot: 0 },
+            LayoutProblem::OffCanvas { slot: 1 },
+            LayoutProblem::TooSmall { slot: 2 },
+            LayoutProblem::CrossesFold { slot: 0 },
+            LayoutProblem::Overlap { slot: 0, other: 1 },
+            LayoutProblem::EdgeInBleed { slot: 1, edge: BleedEdge::Top, bleed_mm: 5.0 },
+            LayoutProblem::EdgeInGutter { slot: 0, gutter_mm: 5.0 },
+            LayoutProblem::MostlyHidden { slot: 3 },
+        ]
+        .into_iter()
+        .map(Problem::from)
+        .collect();
+        let refused = crate::templates::RefusedLayout {
+            template_id: "user-0123456789abcdef0123456789abcdef".into(),
+            problems: vec![LayoutProblem::EdgeInBleed { slot: 0, edge: BleedEdge::Left, bleed_mm: 5.0 }.into()],
+        };
+
+        let db = db();
+        let errors = vec![
+            get(&db, "user-gone").unwrap_err(),
+            create(&db, "  ", &two_up()).unwrap_err(),
+            create(&db, &"x".repeat(MAX_NAME_CHARS + 1), &two_up()).unwrap_err(),
+            create(&db, "Empty", &spread(vec![])).unwrap_err(),
+            CustomLayoutError::Storage { message: "disk I/O error".into() },
+        ];
+
+        let value = serde_json::json!({
+            "layouts": layouts,
+            "problems": problems,
+            "refused": refused,
+            "errors": errors,
+        });
+        assert_eq!(value, fixture);
+
+        // And the other direction: the shapes the webview sends back parse.
+        for (sent, layout) in fixture["layouts"].as_array().unwrap().iter().zip(&layouts) {
+            let shape: LayoutShape = serde_json::from_value(sent["shape"].clone()).unwrap();
+            assert_eq!(shape, layout.shape);
+        }
+    }
 }
 
 /// User layouts inside the engine: what auto layout may pick, what the menu

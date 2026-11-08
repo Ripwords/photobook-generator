@@ -1,0 +1,75 @@
+{
+  "layouts": [
+    {
+      "id": "user-0123456789abcdef0123456789abcdef",
+      "name": "Two halves",
+      "shape": {
+        "kind": "spread",
+        "boxes": [
+          { "rect": { "x": 0.0, "y": 0.0, "w": 0.5, "h": 1.0 }, "role": "hero" },
+          { "rect": { "x": 0.5, "y": 0.0, "w": 0.5, "h": 1.0 }, "role": "hero" }
+        ]
+      },
+      "auto": false,
+      "createdAt": 1762560000,
+      "updatedAt": 1762560000
+    },
+    {
+      "id": "user-fedcba9876543210fedcba9876543210",
+      "name": "Corner",
+      "shape": {
+        "kind": "page",
+        "side": "right",
+        "boxes": [
+          { "rect": { "x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5 }, "role": "hero" },
+          { "rect": { "x": 0.75, "y": 0.75, "w": 0.25, "h": 0.25 }, "role": "support" }
+        ]
+      },
+      "auto": true,
+      "createdAt": 1762560000,
+      "updatedAt": 1762563600
+    }
+  ],
+  "problems": [
+    { "kind": "noBoxes", "message": "A layout needs at least one photo box." },
+    { "kind": "tooManyBoxes", "count": 9, "max": 8, "message": "A layout can hold at most 8 photo boxes; this one has 9." },
+    { "kind": "notFinite", "slot": 0, "message": "Box 1 has a position or size that is not a number." },
+    { "kind": "offCanvas", "slot": 1, "message": "Box 2 runs off the page." },
+    { "kind": "tooSmall", "slot": 2, "message": "Box 3 is too small to print. Make it at least 5% of the page each way." },
+    { "kind": "crossesFold", "slot": 0, "message": "Box 1 crosses the fold. A box must stay on one page." },
+    { "kind": "overlap", "slot": 0, "other": 1, "message": "Box 1 overlaps box 2." },
+    {
+      "kind": "edgeInBleed",
+      "slot": 1,
+      "edge": "top",
+      "bleedMm": 5.0,
+      "message": "Box 2's top edge stops inside the 5 mm bleed, so the trim would cut it unevenly. Take it to the paper edge or pull it inside the trim line."
+    },
+    {
+      "kind": "edgeInGutter",
+      "slot": 0,
+      "gutterMm": 5.0,
+      "message": "Box 1's edge by the fold stops inside the 5 mm gutter, where the binding hides it. Take it to the fold or clear of the gutter."
+    },
+    { "kind": "mostlyHidden", "slot": 3, "message": "Box 4 is almost all in the trim or the gutter, so too little of it would print." }
+  ],
+  "refused": {
+    "templateId": "user-0123456789abcdef0123456789abcdef",
+    "problems": [
+      {
+        "kind": "edgeInBleed",
+        "slot": 0,
+        "edge": "left",
+        "bleedMm": 5.0,
+        "message": "Box 1's left edge stops inside the 5 mm bleed, so the trim would cut it unevenly. Take it to the paper edge or pull it inside the trim line."
+      }
+    ]
+  },
+  "errors": [
+    { "kind": "notFound", "id": "user-gone" },
+    { "kind": "emptyName" },
+    { "kind": "nameTooLong", "max": 60 },
+    { "kind": "invalid", "problems": [{ "kind": "noBoxes", "message": "A layout needs at least one photo box." }] },
+    { "kind": "storage", "message": "disk I/O error" }
+  ]
+}

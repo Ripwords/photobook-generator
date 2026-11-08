@@ -11,6 +11,7 @@ use crate::book::pace::{Book, BookOptions};
 use crate::book::pack::{recommend_pages, Capacity};
 use crate::book::preflight::{Finding, Severity};
 use crate::book::titles::Chapter;
+use crate::custom_layouts::{CustomLayout, CustomLayoutError, LayoutShape, Problem};
 use crate::export::build_items;
 use crate::preview::BookLayout;
 use crate::print_spec::PrintSpec;
@@ -1326,6 +1327,15 @@ fn load_library(app: &AppHandle) -> Result<Library, String> {
     Library::load(&template_dir(app)?).map_err(|e| e.to_string())
 }
 
+/// The built-in templates plus the user's layouts, as a book at `spec` sees
+/// them. Read from the database on every call, so a layout created, edited,
+/// switched or deleted reaches the very next command without a restart.
+/// `load_library` alone is for capacity questions that never pick a layout.
+fn book_library(app: &AppHandle, db: &Db, spec: &PrintSpec) -> Result<Library, String> {
+    let layouts = crate::custom_layouts::list(db).map_err(|e| e.to_string())?;
+    Ok(load_library(app)?.with_custom(&layouts, spec))
+}
+
 /// Soft-term weights, hot-reloadable from `templates/weights.json`.
 ///
 /// A missing or malformed weights file degrades to `Weights::default()` with
@@ -2131,6 +2141,8 @@ pub async fn generate_book(
         // One of the three audited `pixajoy()` call sites: a caller that names
         // no geometry gets the printer this app was built against.
         let spec = spec.unwrap_or_else(PrintSpec::pixajoy);
+        let layouts = crate::custom_layouts::list(&db).map_err(|e| e.to_string())?;
+        let lib = lib.with_custom(&layouts, &spec);
         let meta = NewProject { name: &name, source_folders, pages, seed, spec, options: options.unwrap_or_default() };
         generate_and_save(&db, &meta, &parsed, &lib, &weights, &overrides, &tiers.unwrap_or_default())
     })
@@ -2710,7 +2722,7 @@ pub async fn book_layout(app: AppHandle, project_id: i64) -> Result<BookLayout, 
             .load_project(project_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("project {project_id} no longer exists"))?;
-        let lib = load_library(&app)?;
+        let lib = book_library(&app, &db, &project.book.spec)?;
         layout_of(&db, &project, &lib)
     })
     .await
@@ -2740,7 +2752,8 @@ fn load_for_agent(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    Ok((project, load_library(app)?, photos))
+    let lib = book_library(app, db, &project.book.spec)?;
+    Ok((project, lib, photos))
 }
 
 /// The saved book as the agent may see it -- see `agent::view`. Fails with
@@ -2861,7 +2874,8 @@ pub async fn edit_book(
             .load_project(project_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("project {project_id} no longer exists"))?;
-        let lib = load_library(&app)?;
+        let lib = book_library(&app, &db, &project.book.spec)?;
+        let spec_before = project.book.spec;
         let weights = load_weights(&app);
         let parsed = book_photos(&db, &project)?;
         // Asked before the edit lands: the label for a slot edit depends on
@@ -2875,6 +2889,12 @@ pub async fn edit_book(
         if changed == 0 {
             return Err(format!("project {project_id} no longer exists"));
         }
+        // A new print size admits and refuses user layouts afresh.
+        let lib = if project.book.spec == spec_before {
+            lib
+        } else {
+            book_library(&app, &db, &project.book.spec)?
+        };
         layout_of(&db, &project, &lib)
     })
     .await
@@ -2902,11 +2922,104 @@ pub async fn step_book(app: AppHandle, project_id: i64, step: Step) -> Result<Bo
             .load_project(project_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("project {project_id} no longer exists"))?;
-        let lib = load_library(&app)?;
+        let lib = book_library(&app, &db, &project.book.spec)?;
         layout_of(&db, &project, &lib)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+// --- user layouts -------------------------------------------------------------
+//
+// One global library in the app database, shared by every book. Each command
+// rejects with a structured `CustomLayoutError` rather than text, so the
+// webview can tell "not found" from "invalid" and mark the boxes at fault.
+
+/// Runs `work` against the app's database off the async runtime, failing as
+/// `CustomLayoutError::Storage` when the database cannot be opened.
+async fn with_layouts<T: Send + 'static>(
+    app: AppHandle,
+    work: impl FnOnce(&Db) -> Result<T, CustomLayoutError> + Send + 'static,
+) -> Result<T, CustomLayoutError> {
+    let storage = |message: String| CustomLayoutError::Storage { message };
+    tauri::async_runtime::spawn_blocking(move || {
+        let db = Db::open(&database_path(&app).map_err(storage)?)?;
+        work(&db)
+    })
+    .await
+    .map_err(|e| storage(e.to_string()))?
+}
+
+/// Every user layout, oldest first.
+#[tauri::command]
+pub async fn list_custom_layouts(app: AppHandle) -> Result<Vec<CustomLayout>, CustomLayoutError> {
+    with_layouts(app, |db| crate::custom_layouts::list(db)).await
+}
+
+/// Saves a new layout with "Use in auto layout" off. Refused with `invalid`
+/// when the shape breaks a structural rule; print rules never refuse a save.
+#[tauri::command]
+pub async fn create_custom_layout(
+    app: AppHandle,
+    name: String,
+    shape: LayoutShape,
+) -> Result<CustomLayout, CustomLayoutError> {
+    with_layouts(app, move |db| crate::custom_layouts::create(db, &name, &shape)).await
+}
+
+/// Replaces a layout's boxes. Books already on it keep their rects until
+/// that opening is laid out again.
+#[tauri::command]
+pub async fn update_custom_layout(
+    app: AppHandle,
+    id: String,
+    shape: LayoutShape,
+) -> Result<CustomLayout, CustomLayoutError> {
+    with_layouts(app, move |db| crate::custom_layouts::update(db, &id, &shape)).await
+}
+
+#[tauri::command]
+pub async fn rename_custom_layout(
+    app: AppHandle,
+    id: String,
+    name: String,
+) -> Result<CustomLayout, CustomLayoutError> {
+    with_layouts(app, move |db| crate::custom_layouts::rename(db, &id, &name)).await
+}
+
+/// A copy named "<name> copy", under a new id, with auto off.
+#[tauri::command]
+pub async fn duplicate_custom_layout(app: AppHandle, id: String) -> Result<CustomLayout, CustomLayoutError> {
+    with_layouts(app, move |db| crate::custom_layouts::duplicate(db, &id)).await
+}
+
+/// Removes a layout. Books on it are not rewritten: their pages keep their
+/// rects and the id stops resolving.
+#[tauri::command]
+pub async fn delete_custom_layout(app: AppHandle, id: String) -> Result<(), CustomLayoutError> {
+    with_layouts(app, move |db| crate::custom_layouts::delete(db, &id)).await
+}
+
+/// Turns "Use in auto layout" on or off.
+#[tauri::command]
+pub async fn set_custom_layout_auto(
+    app: AppHandle,
+    id: String,
+    auto: bool,
+) -> Result<CustomLayout, CustomLayoutError> {
+    with_layouts(app, move |db| crate::custom_layouts::set_auto(db, &id, auto)).await
+}
+
+/// Every problem with a shape still being drawn: the structural ones that
+/// would refuse a save, then, given a print size, the ones that size would
+/// refuse. Pure and cheap, so an editor may call it on every change.
+#[tauri::command]
+pub fn check_custom_layout(shape: LayoutShape, spec: Option<PrintSpec>) -> Vec<Problem> {
+    let problems = match spec {
+        Some(spec) => crate::custom_layouts::check(&shape, &spec),
+        None => crate::custom_layouts::structural(&shape),
+    };
+    problems.into_iter().map(Problem::from).collect()
 }
 
 /// What the Undo and Redo controls may offer this book right now.
@@ -2972,7 +3085,7 @@ pub async fn slot_candidates(
             .load_project(project_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("project {project_id} no longer exists"))?;
-        let lib = load_library(&app)?;
+        let lib = book_library(&app, &db, &project.book.spec)?;
         let parsed = book_photos(&db, &project)?;
         crate::book::edit::slot_candidates(&project.book, &lib, &parsed, placement)
             .map_err(|e| e.to_string())
