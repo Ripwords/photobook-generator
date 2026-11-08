@@ -115,6 +115,7 @@
       "index": 0,
       "locked": false,
       "refused": [],
+      "regenerable": false,
       "rejected": []
     },
     {
@@ -122,6 +123,7 @@
       "index": 1,
       "locked": false,
       "refused": [],
+      "regenerable": false,
       "rejected": []
     },
     {
@@ -129,6 +131,7 @@
       "index": 2,
       "locked": false,
       "refused": [],
+      "regenerable": false,
       "rejected": []
     }
   ],

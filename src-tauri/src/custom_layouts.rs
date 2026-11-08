@@ -420,6 +420,19 @@ pub fn shape_of(t: &SpreadTemplate) -> LayoutShape {
     LayoutShape::Spread { boxes }
 }
 
+/// A built-in template as the Layouts screen lists it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuiltinLayout {
+    pub id: String,
+    pub shape: LayoutShape,
+}
+
+/// Every built-in template in library order, as a shape a user can copy.
+pub fn builtins(lib: &crate::templates::Library) -> Vec<BuiltinLayout> {
+    lib.spreads.iter().map(|t| BuiltinLayout { id: t.id.clone(), shape: shape_of(t) }).collect()
+}
+
 // --- the store ------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -890,6 +903,26 @@ mod tests {
         assert!(lib.spreads.iter().all(|t| !t.id.starts_with(ID_PREFIX)));
     }
 
+    /// The Layouts screen lists the shipped library through `builtins`, so
+    /// it must be every built-in, in library order, each one's boxes being
+    /// `shape_of` that template: a skipped or reshaped entry would show the
+    /// user a built-in that does not print as drawn.
+    #[test]
+    fn custom_layouts_builtins_are_every_shipped_template_as_its_shape() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../templates");
+        let lib = crate::templates::Library::load(&dir).unwrap();
+        let listed = builtins(&lib);
+        assert!(listed.len() > 5, "the shipped library has more than a handful");
+        assert_eq!(
+            listed.iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            lib.spreads.iter().map(|t| t.id.as_str()).collect::<Vec<_>>()
+        );
+        for (l, t) in listed.iter().zip(&lib.spreads) {
+            assert_eq!(l.shape, shape_of(t), "{}", t.id);
+            assert_eq!(l.shape.boxes().len(), t.photo_count(), "{}", t.id);
+        }
+    }
+
     #[test]
     fn custom_layouts_store_updates_renames_and_sets_auto() {
         let db = db();
@@ -1241,6 +1274,33 @@ mod engine_tests {
                 assert_eq!(alternatives(&b, &lib, o), vec![PAIR.to_string()], "the menu still offers it");
             }
         }
+    }
+
+    /// The menu still lists a user layout with auto off, so `alternatives`
+    /// alone cannot say whether Regenerate and Reject have anything to pick.
+    /// `regenerable` does: with only that layout left, it is false until the
+    /// layout's auto is on.
+    #[test]
+    fn custom_layouts_engine_preview_says_regenerate_has_nothing_when_only_an_auto_off_layout_is_left() {
+        for auto in [false, true] {
+            let lib = all(auto);
+            let mut b = generate(&frozen_library(), 1234);
+            let o = spread_with(&b, 2);
+            let other = ["07-two-up-symmetric-margin", "08-two-up-symmetric-bleed-outer"]
+                .into_iter()
+                .find(|id| *id != template_of(&b, o))
+                .unwrap();
+            b.controls.entry(o).or_default().rejected.push(other.to_string());
+            let preview = crate::preview::book_layout(1, &b, Vec::new(), &lib, &[]);
+            let opening = &preview.openings[o];
+            assert_eq!(opening.alternatives, vec![PAIR.to_string()]);
+            assert_eq!(opening.regenerable, auto, "auto = {auto}");
+        }
+        // And a built-in alternative alone is regenerable.
+        let lib = all(false);
+        let b = generate(&frozen_library(), 1234);
+        let o = spread_with(&b, 2);
+        assert!(crate::preview::book_layout(1, &b, Vec::new(), &lib, &[]).openings[o].regenerable);
     }
 
     #[test]

@@ -74,6 +74,7 @@ pub fn run() {
             commands::cancel_model_request,
             commands::edit_book,
             commands::slot_candidates,
+            commands::list_builtin_layouts,
             commands::list_custom_layouts,
             commands::create_custom_layout,
             commands::update_custom_layout,

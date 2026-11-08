@@ -2950,6 +2950,12 @@ async fn with_layouts<T: Send + 'static>(
     .map_err(|e| storage(e.to_string()))?
 }
 
+/// The shipped templates, for the Layouts screen to draw and copy from.
+#[tauri::command]
+pub fn list_builtin_layouts(app: AppHandle) -> Result<Vec<crate::custom_layouts::BuiltinLayout>, String> {
+    Ok(crate::custom_layouts::builtins(&load_library(&app)?))
+}
+
 /// Every user layout, oldest first.
 #[tauri::command]
 pub async fn list_custom_layouts(app: AppHandle) -> Result<Vec<CustomLayout>, CustomLayoutError> {

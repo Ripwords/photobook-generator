@@ -38,7 +38,7 @@
 use crate::book::cover::{self, CoverPhoto, Rgb};
 use crate::book::crop::choose_crop;
 use crate::book::cull::Photo;
-use crate::book::pace::{blank_page, half_id, place, rebuild, single_fit, tie_break, Book, Page};
+use crate::book::pace::{blank_page, place, rebuild, single_fit, tie_break, Book, Page};
 use crate::book::score::{best_spread_ordered, rejects, slot_aspect, Rejection};
 use crate::book::story;
 use crate::book::titles::{self, TitleError};
@@ -522,7 +522,7 @@ pub fn alternatives(book: &Book, lib: &Library, o: usize) -> Vec<String> {
 
 /// `alternatives` that automatic layout may pick: Regenerate, Reject and
 /// Shuffle draw from these, never from a user layout with auto off.
-fn auto_alternatives(book: &Book, lib: &Library, o: usize) -> Vec<String> {
+pub fn auto_alternatives(book: &Book, lib: &Library, o: usize) -> Vec<String> {
     alternatives(book, lib, o).into_iter().filter(|id| lib.in_auto(id)).collect()
 }
 

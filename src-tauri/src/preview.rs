@@ -25,7 +25,7 @@
 //!   the engine, and the user would meet them for the first time in print.
 
 use crate::book::cull::Photo;
-use crate::book::edit::{alternatives, opening_count, refused};
+use crate::book::edit::{alternatives, auto_alternatives, opening_count, refused};
 use crate::book::pace::{Book, BookOptions};
 use crate::templates::{Align, Library};
 use crate::book::cover::Rgb;
@@ -167,6 +167,10 @@ pub struct PreviewOpening {
     /// rejected. "Regenerate" draws only from the ones auto layout may use,
     /// so it can run out while this still lists a user layout.
     pub alternatives: Vec<String>,
+    /// Whether Regenerate and Reject have a layout to pick: some alternative
+    /// is one auto layout may use. False while `alternatives` holds only
+    /// user layouts with auto off, which the menu still offers.
+    pub regenerable: bool,
     /// The user's layouts that hold this opening's photos but that this
     /// book's print size refuses, each with its reasons. The menu shows them
     /// dimmed; `SetTemplate` with one fails.
@@ -403,6 +407,7 @@ pub fn book_layout(
                 locked: controls.is_some_and(|c| c.locked),
                 rejected: controls.map(|c| c.rejected.clone()).unwrap_or_default(),
                 alternatives: alternatives(book, lib, index),
+                regenerable: !auto_alternatives(book, lib, index).is_empty(),
                 refused: refused(book, lib, index),
             }
         })
