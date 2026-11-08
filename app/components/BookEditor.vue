@@ -14,6 +14,7 @@ import { sizeLabel, type PrintSpec } from "~/types/printSpec";
 import {
   canStep,
   stepLabel,
+  toSpreads,
   type BookEdit,
   type HistoryStep,
   type PreviewGeometry,
@@ -120,7 +121,10 @@ async function onEdit(edit: BookEdit) {
     });
     return;
   }
-  const done = doneToast(edit);
+  const done = doneToast(edit, (opening) => {
+    const label = before ? toSpreads(before.pages)[opening]?.label : undefined;
+    return label ? label.charAt(0).toLowerCase() + label.slice(1) : "the book";
+  });
   if (done && layout.value !== before) {
     toast.add({
       id: "edit-done",

@@ -8,51 +8,133 @@
  * untouched book with the reason. The one thing settled before sending is a
  * locked target, because the drag has to show it as refused while hovering.
  */
-import { photoFor, type BookEdit, type BookLayout, type PlacementRef, type PreviewPhoto } from "~/types/preview";
+import {
+  photoFor,
+  type BookEdit,
+  type BookLayout,
+  type CoverSide,
+  type PlacementRef,
+  type PreviewPhoto,
+} from "~/types/preview";
 
 /** The `data-placement` value on a photo slot: `"page:z"`. */
 export function placementKey(ref: PlacementRef): string {
   return `${ref.page}:${ref.z}`;
 }
 
-/** A photo slot under the pointer. */
-export interface DropTarget {
-  placement: PlacementRef;
-  /** On a locked spread: shown as refused, never sent. */
-  locked: boolean;
-}
+/** What is being dragged: a photo on a page, or a left-out photo from the tray. */
+export type DragSource =
+  | {
+      kind: "slot";
+      placement: PlacementRef;
+      /** Its index in `layout.photos`, for dropping on the cover; `null` if unknown. */
+      photo: number | null;
+    }
+  | { kind: "tray"; photo: number };
+
+/** What is under the pointer. `locked` targets are shown as refused, never sent. */
+export type DropTarget =
+  | { kind: "slot"; placement: PlacementRef; locked: boolean }
+  | { kind: "page"; opening: number; page: number; locked: boolean }
+  | { kind: "cover"; side: CoverSide };
 
 /** The slice of `Element` that hit-testing needs, so tests can pass a fake. */
 export interface HitElement {
   closest(selector: string): { getAttribute(name: string): string | null } | null;
 }
 
+const PAIR = /^(\d+):(\d+)$/;
+
 /**
- * The slot an element under the pointer belongs to. The element is usually
- * the slot's `<img>`, or a badge drawn over it, so this walks up to the
- * nearest `data-placement`. `null` off every photo, and for a key that does not
- * parse, so a malformed attribute can never become a swap with page NaN.
+ * What an element under the pointer belongs to. The element is usually a
+ * slot's `<img>`, or a layer drawn over it, so this walks up: a photo slot
+ * first, then the page it sits on, then a cover panel. `null` off all three,
+ * and for a key that does not parse, so a malformed attribute can never
+ * become an edit with page NaN.
  */
 export function dropTargetAt(el: HitElement | null): DropTarget | null {
-  const slot = el?.closest("[data-placement]");
-  if (!slot) return null;
-  const match = /^(\d+):(\d+)$/.exec(slot.getAttribute("data-placement") ?? "");
-  if (!match) return null;
-  return {
-    placement: { page: Number(match[1]), z: Number(match[2]) },
-    locked: slot.getAttribute("data-locked") === "true",
-  };
+  if (!el) return null;
+  const slot = el.closest("[data-placement]");
+  if (slot) {
+    const match = PAIR.exec(slot.getAttribute("data-placement") ?? "");
+    if (!match) return null;
+    return {
+      kind: "slot",
+      placement: { page: Number(match[1]), z: Number(match[2]) },
+      locked: slot.getAttribute("data-locked") === "true",
+    };
+  }
+  const page = el.closest("[data-drop-page]");
+  if (page) {
+    const match = PAIR.exec(page.getAttribute("data-drop-page") ?? "");
+    if (!match) return null;
+    return {
+      kind: "page",
+      opening: Number(match[1]),
+      page: Number(match[2]),
+      locked: page.getAttribute("data-locked") === "true",
+    };
+  }
+  const side = el.closest("[data-cover-side]")?.getAttribute("data-cover-side");
+  if (side === "front" || side === "back") return { kind: "cover", side };
+  return null;
 }
 
-export type DropOutcome = { kind: "swap"; edit: BookEdit } | { kind: "locked" } | { kind: "none" };
+export type DropOutcome =
+  | { kind: "edit"; edit: BookEdit }
+  | { kind: "locked"; target: DropTarget }
+  | { kind: "none" };
 
-/** What releasing the dragged photo over `target` does. */
-export function dropOutcome(source: PlacementRef, target: DropTarget | null): DropOutcome {
+/** What releasing `source` over `target` does. */
+export function dropOutcome(source: DragSource, target: DropTarget | null): DropOutcome {
   if (!target) return { kind: "none" };
-  const { placement } = target;
-  if (placement.page === source.page && placement.z === source.z) return { kind: "none" };
-  if (target.locked) return { kind: "locked" };
-  return { kind: "swap", edit: { kind: "swapPhotos", a: source, b: placement } };
+  if (target.kind === "cover") {
+    return source.photo === null
+      ? { kind: "none" }
+      : { kind: "edit", edit: { kind: "setCoverPhoto", side: target.side, photo: source.photo } };
+  }
+  if (target.kind === "slot" && source.kind === "slot") {
+    const a = source.placement;
+    const b = target.placement;
+    if (a.page === b.page && a.z === b.z) return { kind: "none" };
+    if (target.locked) return { kind: "locked", target };
+    return { kind: "edit", edit: { kind: "swapPhotos", a, b } };
+  }
+  if (target.locked) return { kind: "locked", target };
+  // A page photo dropped on a page's empty area would be a move, which has no edit yet.
+  if (source.kind !== "tray") return { kind: "none" };
+  return target.kind === "slot"
+    ? { kind: "edit", edit: { kind: "replacePhoto", placement: target.placement, photo: source.photo } }
+    : { kind: "edit", edit: { kind: "addPhoto", opening: target.opening, photo: source.photo } };
+}
+
+/** The label riding on the dragged photo: what letting go here would do. */
+export interface DropBadge {
+  label: string;
+  icon: string;
+  refused: boolean;
+}
+
+export function dropBadge(outcome: DropOutcome, target: DropTarget | null): DropBadge | null {
+  if (outcome.kind === "none") return null;
+  if (outcome.kind === "locked") return { label: "Locked", icon: "i-lucide-lock", refused: true };
+  const { edit } = outcome;
+  switch (edit.kind) {
+    case "swapPhotos":
+      return { label: "Swap", icon: "i-lucide-arrow-left-right", refused: false };
+    case "replacePhoto":
+      return { label: "Replace", icon: "i-lucide-replace", refused: false };
+    case "addPhoto":
+      return {
+        label: target?.kind === "page" ? `Add to page ${target.page}` : "Add to page",
+        icon: "i-lucide-image-plus",
+        refused: false,
+      };
+    case "setCoverPhoto":
+      return { label: `Use on ${edit.side} cover`, icon: "i-lucide-book", refused: false };
+    default:
+      return null;
+  }
 }
 
 /** How close to the desk's top or bottom edge a drag starts scrolling it. */
@@ -100,7 +182,7 @@ export function swapStepFor(
  * is already plain on screen. A swap across a long book changes two spreads
  * that may never both be in view, so it is said out loud, next to Undo.
  */
-export function doneToast(edit: BookEdit): string | null {
+export function doneToast(edit: BookEdit, pagesOf?: (opening: number) => string): string | null {
   switch (edit.kind) {
     case "swapPhotos":
       return edit.a.page === edit.b.page
@@ -108,6 +190,10 @@ export function doneToast(edit: BookEdit): string | null {
         : `Swapped photos on pages ${edit.a.page} and ${edit.b.page}`;
     case "replacePhoto":
       return `Replaced the photo on page ${edit.placement.page}`;
+    case "addPhoto":
+      return pagesOf ? `Added a photo to ${pagesOf(edit.opening)}` : "Added a photo";
+    case "setCoverPhoto":
+      return edit.photo === null ? null : `Put a photo on the ${edit.side} cover`;
     default:
       return null;
   }

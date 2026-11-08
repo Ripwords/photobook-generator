@@ -320,25 +320,6 @@ export function stepLabel(step: HistoryStep, status: HistoryStatus): string {
   return named ? `${step === "undo" ? "Undo" : "Redo"} ${named}` : `Nothing to ${step}`;
 }
 
-/**
- * What releasing the pointer on a photo does.
- *
- * "save" commits the window on screen as the slot's crop and keeps drawing it
- * until the saved book answers. "select" throws the window away and picks the
- * photo for a swap. Never both: `BookPreview.onCrop` drops the selection on
- * any crop, so a release that saves cannot also leave a photo selected.
- */
-export type Release = "save" | "select";
-
-/**
- * Decide it from whether the press travelled `DRAG_THRESHOLD_PX` and so
- * counts as a drag (`moved`), and whether a window is being drawn that the
- * saved book does not have (`live`).
- */
-export function releaseAction(moved: boolean, live: boolean): Release {
-  return live && moved ? "save" : "select";
-}
-
 /** Mirrors `score::Rejection`: the hard constraints an edit can break. */
 export type Rejection = "faceClipped" | "faceInGutter" | "faceInSafeMargin" | "tooLowResolution";
 
@@ -659,11 +640,11 @@ export function pageSlots(layout: BookLayout, page: PreviewPage): PreviewSlot[] 
  * overflow), and the preview carries the full photo list precisely so the
  * count can be turned back into pictures.
  */
-export function leftOutPhotos(layout: BookLayout): PreviewPhoto[] {
+export function leftOutPhotos(layout: BookLayout): (PreviewPhoto & { index: number })[] {
   const placed = new Set(
     layout.pages.flatMap((page) => page.placements.map((placement) => placement.photoIndex)),
   );
-  return layout.photos.filter((_, index) => !placed.has(index));
+  return layout.photos.flatMap((photo, index) => (placed.has(index) ? [] : [{ ...photo, index }]));
 }
 
 /** No decisions and nothing to offer: what a payload without controls means. */
@@ -734,21 +715,6 @@ export interface SlotDelta {
 }
 
 /**
- * The crop after dragging the photo by `delta` slot-widths and slot-heights.
- *
- * Dragging the photo right shows more of its left, so the window moves the
- * other way; and because the window is drawn scaled to `1/crop.w` of the slot,
- * one slot-width of pointer travel is `crop.w` of photo. The window stays
- * inside the photo and keeps its size, so a drag can never distort or reveal
- * pixels the photo does not have.
- */
-export function cropMoved(crop: PreviewRect, delta: SlotDelta): PreviewRect {
-  const x = clamp(crop.x - delta.dx * crop.w, 0, 1 - crop.w);
-  const y = clamp(crop.y - delta.dy * crop.h, 0, 1 - crop.h);
-  return { x, y, w: crop.w, h: crop.h };
-}
-
-/**
  * The crop after zooming by `factor` about its centre: `factor > 1` shows LESS
  * of the photo (the window shrinks), `factor < 1` shows more. The window never
  * grows past the photo on either axis, never shrinks below 2% of it, and keeps
@@ -796,8 +762,7 @@ export function cropAtZoom(crop: PreviewRect, zoom: number): PreviewRect {
 /**
  * The crop after dragging the WINDOW by `delta` photo-widths and
  * photo-heights, as the crop dialog draws it: the whole photo, the window on
- * top, following the pointer one to one. `cropMoved` is the other gesture,
- * dragging the photo under a fixed slot, which runs the opposite way.
+ * top, following the pointer one to one.
  */
 export function windowMoved(crop: PreviewRect, delta: SlotDelta): PreviewRect {
   return {

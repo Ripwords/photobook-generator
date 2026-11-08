@@ -1,14 +1,5 @@
 <script setup lang="ts">
-import {
-  cropMoved,
-  cropStyle,
-  pressIsDrag,
-  rectStyle,
-  releaseAction,
-  type BookLayout,
-  type CoverSide,
-  type PreviewRect,
-} from "~/types/preview";
+import { cropStyle, rectStyle, type BookLayout, type CoverSide } from "~/types/preview";
 
 const { layout, busy = false } = defineProps<{
   layout: BookLayout;
@@ -21,8 +12,6 @@ const graphics = useGraphics();
 const emit = defineEmits<{
   /** Open the photo picker for one side. */
   choose: [side: CoverSide];
-  /** The user dragged a cover photo and let go. */
-  crop: [side: CoverSide, crop: PreviewRect];
   /** Open the crop dialog for one side. */
   cropOpen: [side: CoverSide];
   /** A new plain spine colour, `#rrggbb`. */
@@ -30,88 +19,16 @@ const emit = defineEmits<{
 }>();
 
 /**
- * The same gesture as a page photo: drag moves the window, one edit on
- * release; zooming is in the crop dialog. A press that never travels
- * `DRAG_THRESHOLD_PX` is a click, which opens the picker for that side instead
- * of selecting for a swap -- the cover holds a copy of a photo, so there is nothing to swap it with.
- *
- * Release decides, on where the pointer ENDED. A press that drifts out past
- * the threshold and comes back is a click, not a one-pixel crop nudge.
+ * A click opens the picker for that side; framing is the crop button's. The
+ * cover is also a drop target for the book's photo drag: a photo from any page
+ * or from the left-out tray, let go over a panel, goes on that side. The cover
+ * keeps its own copy, so nothing leaves the page it came from.
  */
-const live = ref<Partial<Record<CoverSide, PreviewRect>>>({});
-interface Drag {
-  side: CoverSide;
-  startX: number;
-  startY: number;
-  origin: PreviewRect;
-  w: number;
-  h: number;
-  moved: boolean;
+const photoDrag = usePhotoDrag();
+function isDropTarget(side: CoverSide): boolean {
+  const hover = photoDrag?.hover.value;
+  return hover?.kind === "cover" && hover.side === side && photoDrag?.outcome.value.kind === "edit";
 }
-let drag: Drag | null = null;
-
-function onPointerDown(event: PointerEvent, side: CoverSide, crop: PreviewRect) {
-  if (busy || event.button !== 0) return;
-  const el = event.currentTarget as HTMLElement;
-  const box = el.getBoundingClientRect();
-  drag = {
-    side,
-    startX: event.clientX,
-    startY: event.clientY,
-    origin: live.value[side] ?? crop,
-    w: box.width || 1,
-    h: box.height || 1,
-    moved: false,
-  };
-  el.setPointerCapture(event.pointerId);
-}
-
-function onPointerMove(event: PointerEvent) {
-  if (!drag) return;
-  const dx = event.clientX - drag.startX;
-  const dy = event.clientY - drag.startY;
-  if (!drag.moved && !pressIsDrag(dx, dy)) return;
-  drag.moved = true;
-  live.value = { ...live.value, [drag.side]: cropMoved(drag.origin, { dx: dx / drag.w, dy: dy / drag.h }) };
-}
-
-function onPointerUp(event: PointerEvent) {
-  if (!drag) return;
-  const finished = drag;
-  drag = null;
-  (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
-  const crop = live.value[finished.side];
-  if (crop && releaseAction(finished.moved, true) === "save") {
-    emit("crop", finished.side, crop);
-    return;
-  }
-  const { [finished.side]: _abandoned, ...rest } = live.value;
-  live.value = rest;
-  emit("choose", finished.side);
-}
-
-function onPointerCancel() {
-  if (!drag) return;
-  const cancelled = drag;
-  drag = null;
-  const { [cancelled.side]: _dropped, ...rest } = live.value;
-  live.value = rest;
-}
-
-// As on the pages: once an edit is answered, by a new layout or by a refusal
-// that leaves `busy` false and the layout unchanged, the saved book is the truth.
-watch(
-  () => layout,
-  () => {
-    live.value = {};
-  },
-);
-watch(
-  () => busy,
-  (now, before) => {
-    if (before && !now) live.value = {};
-  },
-);
 
 /** Back on the left, front on the right, as the flat cover lies face down. */
 const panels = computed(() =>
@@ -119,15 +36,13 @@ const panels = computed(() =>
     const cover = layout.cover[side];
     const photo = cover.photo;
     const shot = photo ? layout.photos[photo.photoIndex] : undefined;
-    const liveCrop = live.value[side];
     return {
       side,
       label: side === "front" ? "Front" : "Back",
       board: rectStyle(cover.board),
       visible: rectStyle(cover.visible),
       photo: photo && {
-        saved: photo.crop,
-        crop: cropStyle(liveCrop ?? photo.crop),
+        crop: cropStyle(photo.crop),
         src: shot ? graphics.src(shot) : null,
         title: [shot?.path, photo.filename].filter(Boolean).join("\n"),
       },
@@ -192,16 +107,12 @@ function onSpine(event: Event) {
           <button
             v-if="panel.photo"
             type="button"
-            class="absolute inset-0 touch-none overflow-hidden bg-neutral-100 text-left focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
-            :class="busy ? 'cursor-wait' : 'cursor-grab'"
+            class="absolute inset-0 overflow-hidden bg-neutral-100 text-left focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+            :class="busy ? 'cursor-wait' : 'cursor-pointer'"
             :disabled="busy"
             :title="panel.photo.title"
-            :aria-label="`${panel.label} cover photo: click to change or remove it, drag to move the crop`"
-            @pointerdown="onPointerDown($event, panel.side, panel.photo.saved)"
-            @pointermove="onPointerMove"
-            @pointerup="onPointerUp"
-            @pointercancel="onPointerCancel"
-            @keydown.enter.space.prevent="emit('choose', panel.side)"
+            :aria-label="`${panel.label} cover photo: click to change or remove it`"
+            @click="emit('choose', panel.side)"
           >
             <img
               v-if="panel.photo.src"
@@ -239,7 +150,9 @@ function onSpine(event: Event) {
             />
             <div class="absolute border border-dashed border-sky-500/70" :style="panel.visible" />
           </div>
-          <!-- Zoom and framing, in the crop dialog; dragging the photo here only moves it. -->
+          <!-- A photo dragged over this side: letting go puts it here. -->
+          <div v-if="isDropTarget(panel.side)" class="pointer-events-none absolute inset-0 ring-3 ring-primary ring-inset" />
+          <!-- Zoom and framing, in the crop dialog. -->
           <div
             v-if="panel.photo"
             class="pointer-events-none absolute flex items-start justify-end p-2"

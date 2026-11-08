@@ -5,6 +5,7 @@ import {
   pageGuides,
   pageSlots,
   pageTitle,
+  photoFor,
   pressIsDrag,
   SLOT_DRAG_THRESHOLD_PX,
   rectStyle,
@@ -35,6 +36,7 @@ const {
   geometry = null,
   locked = false,
   flash = [],
+  opening = null,
 } = defineProps<{
   layout: BookLayout;
   /**
@@ -69,6 +71,8 @@ const {
   locked?: boolean;
   /** `placementKey`s that just changed, flashed so the eye finds them. */
   flash?: string[];
+  /** The opening this page belongs to: set, its empty area takes a dropped photo. */
+  opening?: number | null;
 }>();
 
 const graphics = useGraphics();
@@ -228,7 +232,14 @@ function onPointerMove(event: PointerEvent) {
   el.releasePointerCapture(event.pointerId);
   const started = press;
   press = null;
-  photoDrag?.start({ placement: started.ref, src: started.src, from: el, x: event.clientX, y: event.clientY });
+  const photo = page?.placements.find((p) => p.z === started.ref.z)?.photoIndex ?? null;
+  photoDrag?.start({
+    source: { kind: "slot", placement: started.ref, photo },
+    src: started.src,
+    from: el,
+    x: event.clientX,
+    y: event.clientY,
+  });
 }
 
 function onPointerUp(event: PointerEvent) {
@@ -244,29 +255,42 @@ function onPointerCancel() {
 }
 
 /** The slot's place in the drag: being carried, hovered as a target, or neither. */
-function dragRole(ref: PlacementRef): "source" | "swap" | "locked" | null {
+function dragRole(ref: PlacementRef): "source" | "target" | "locked" | null {
   if (!photoDrag) return null;
-  const { source, hover } = photoDrag;
-  if (source.value && samePlacement(source.value, ref)) return "source";
-  if (hover.value && samePlacement(hover.value.placement, ref)) return hover.value.locked ? "locked" : "swap";
-  return null;
+  const { source, hover, outcome } = photoDrag;
+  if (source.value?.kind === "slot" && samePlacement(source.value.placement, ref)) return "source";
+  if (hover.value?.kind !== "slot" || !samePlacement(hover.value.placement, ref)) return null;
+  if (outcome.value.kind === "locked") return "locked";
+  return outcome.value.kind === "edit" ? "target" : null;
 }
 
 /**
  * The photo a slot WOULD hold if the drag were released now, drawn over it
- * so the swap can be seen before it is made: the source shows the hovered
- * photo and the hovered slot shows the source. Filled to the slot rather than
- * cropped the way Rust will crop it -- close enough to judge, and Rust's crop
- * arrives the moment the drop lands.
+ * so the change can be seen before it is made: on a swap the source shows the
+ * hovered photo and the hovered slot shows the source; on a replace from the
+ * tray the hovered slot shows the incoming photo. Filled to the slot rather
+ * than cropped the way Rust will crop it -- close enough to judge, and Rust's
+ * crop arrives the moment the drop lands.
  */
 function previewSrc(ref: PlacementRef): string | null {
-  if (!photoDrag?.source.value || !photoDrag.hover.value || photoDrag.hover.value.locked) return null;
-  const role = dragRole(ref);
-  const other = role === "source" ? photoDrag.hover.value.placement : role === "swap" ? photoDrag.source.value : null;
-  if (!other) return null;
-  const photo = photoAt(layout, other);
+  const edit = photoDrag?.outcome.value.kind === "edit" ? photoDrag.outcome.value.edit : null;
+  let photo = null;
+  if (edit?.kind === "swapPhotos") {
+    const other = samePlacement(edit.a, ref) ? edit.b : samePlacement(edit.b, ref) ? edit.a : null;
+    photo = other && photoAt(layout, other);
+  } else if (edit?.kind === "replacePhoto" && samePlacement(edit.placement, ref)) {
+    photo = photoFor(layout, edit.photo);
+  }
   return photo ? graphics.src(photo) : null;
 }
+
+/** This page's empty area is what the drag would drop on. */
+const pageRole = computed<"target" | "locked" | null>(() => {
+  const hover = photoDrag?.hover.value;
+  if (!page || hover?.kind !== "page" || hover.page !== page.number) return null;
+  const outcome = photoDrag?.outcome.value.kind;
+  return outcome === "locked" ? "locked" : outcome === "edit" ? "target" : null;
+});
 
 // The saved book is the truth. Once the edit a gesture produced has been
 // answered -- a new layout arrived, or `busy` fell back to false because the
@@ -345,6 +369,8 @@ const titleJustify = { left: "justify-start", center: "justify-center", right: "
     ref="pageEl"
     class="@container relative overflow-hidden"
     :style="{ aspectRatio: `${shown.pageWIn} / ${shown.pageHIn}` }"
+    :data-drop-page="page && opening !== null ? `${opening}:${page.number}` : undefined"
+    :data-locked="page && opening !== null && locked ? 'true' : undefined"
     :class="page ? 'bg-white' : 'bg-neutral-200 dark:bg-neutral-800'"
   >
     <template v-if="page">
@@ -368,7 +394,7 @@ const titleJustify = { left: "justify-start", center: "justify-center", right: "
         :class="[
           selectable && 'touch-none focus-visible:outline-2 focus-visible:outline-primary',
           selectable && (editSlots ? 'cursor-move' : 'cursor-grab'),
-          (isSelected(box.ref) || dragRole(box.ref) === 'swap') && 'z-10',
+          (isSelected(box.ref) || dragRole(box.ref) === 'target') && 'z-10',
           editSlots && 'outline-2 outline-dashed outline-primary/60 -outline-offset-2',
         ]"
         :style="box.slot"
@@ -425,7 +451,7 @@ const titleJustify = { left: "justify-start", center: "justify-center", right: "
         <span
           class="pointer-events-none absolute inset-0"
           :class="[
-            (isSelected(box.ref) || dragRole(box.ref) === 'swap') && 'ring-3 ring-primary ring-inset',
+            (isSelected(box.ref) || dragRole(box.ref) === 'target') && 'ring-3 ring-primary ring-inset',
             dragRole(box.ref) === 'locked' && 'bg-neutral-900/20',
             flash.includes(placementKey(box.ref)) && 'slot-flash',
           ]"
@@ -489,6 +515,13 @@ const titleJustify = { left: "justify-start", center: "justify-center", right: "
           Add a photo…
         </UButton>
       </div>
+
+      <!-- A drop on the page's empty area: the whole page is the target. -->
+      <div
+        v-if="pageRole"
+        class="pointer-events-none absolute inset-0 z-20"
+        :class="pageRole === 'locked' ? 'bg-neutral-900/20' : 'ring-3 ring-primary ring-inset bg-primary/5'"
+      />
 
       <!-- Guides, above the photos and inert to the pointer. -->
       <div class="pointer-events-none absolute inset-0">

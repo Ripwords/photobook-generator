@@ -9,8 +9,6 @@ import {
   viewerStep,
   escapeDeselects,
   titleEdit,
-  releaseAction,
-  cropMoved,
   cropStyle,
   cropZoomed,
   cropZoom,
@@ -653,6 +651,13 @@ describe("leftOutPhotos", () => {
     expect(left.map((photo) => photo.path)).toEqual(["/c.jpg", "/e.jpg"]);
     expect(left).toHaveLength(layout.droppedPhotos);
   });
+
+  it("carries each photo's index in the layout's photo list, which a drag from the tray sends", () => {
+    for (const photo of leftOutPhotos(layout)) {
+      expect(layout.photos[photo.index]?.path).toBe(photo.path);
+    }
+    expect(leftOutPhotos(layout).map((photo) => photo.index)).toEqual([2, 4]);
+  });
 });
 
 describe("openings", () => {
@@ -770,20 +775,6 @@ describe("the edit wire", () => {
 describe("hand cropping", () => {
   // A wide window on a tall photo: room to move on both axes.
   const crop = { x: 0.2, y: 0.1, w: 0.5, h: 0.25 };
-
-  it("drags the window the other way from the pointer, scaled by the window", () => {
-    // Half a slot-width to the right shows the LEFT of the photo: x falls by 0.25.
-    expect(cropMoved(crop, { dx: 0.5, dy: 0 })).toEqual({ x: 0, y: 0.1, w: 0.5, h: 0.25 });
-    const moved = cropMoved(crop, { dx: 0.2, dy: -0.2 });
-    expect(moved.x).toBeCloseTo(0.1, 12);
-    expect(moved.y).toBeCloseTo(0.15, 12);
-    expect([moved.w, moved.h]).toEqual([0.5, 0.25]);
-  });
-
-  it("stops at the photo's edges without changing size", () => {
-    expect(cropMoved(crop, { dx: 5, dy: 5 })).toEqual({ x: 0, y: 0, w: 0.5, h: 0.25 });
-    expect(cropMoved(crop, { dx: -5, dy: -5 })).toEqual({ x: 0.5, y: 0.75, w: 0.5, h: 0.25 });
-  });
 
   it("zooms about the centre and keeps the shape", () => {
     const zoomed = cropZoomed(crop, 2);
@@ -1325,47 +1316,6 @@ describe("the snap indicator goes dark when the gesture ends", () => {
 });
 
 /**
- * The threshold is asked once, on the way out, and the `moved` flag it sets
- * carries that answer to release.
- *
- * Release used to re-test the NET offset instead, so a gesture dragged out and
- * brought back within ten pixels of where it began was thrown away: the user
- * watched the crop travel for the whole gesture, let go, and got the old crop
- * back with nothing on the undo timeline to explain it. Driven in the browser
- * harness, a crop went 12.5% -> 25% -> 13.7% and snapped back to 12.5% on
- * release. The crop path also emitted a swap selection on the way out.
- *
- * The jitter this was meant to stop is already handled where it belongs: a
- * press that never travels ten pixels never sets `moved`, so it stays a click.
- *
- * A pointer gesture is out of reach of a unit test, so this pins the three
- * release handlers as source, the way `tests/overrides.test.ts` pins
- * `GenerateBook`'s watcher.
- */
-describe("a press that became a drag stays one until release", () => {
-  const sources = ["BookPreviewCover.vue"].map((file) => ({
-    file,
-    text: readFileSync(new URL(`../app/components/${file}`, import.meta.url), "utf8"),
-  }));
-
-  it.each(sources)("$file asks the threshold only while the pointer moves", ({ text }) => {
-    const asks = [...text.matchAll(/pressIsDrag\(/g)].length;
-    const inMove = [...text.matchAll(/if \(!\w+\.moved && !pressIsDrag\(/g)].length;
-    expect(asks).toBeGreaterThan(0);
-    expect(asks).toBe(inMove);
-  });
-
-  it.each(sources)("$file commits on release from the moved flag", ({ text }) => {
-    const ups = [...text.matchAll(/function on\w*PointerUp\([\s\S]*?\n}/g)].map((m) => m[0]);
-    expect(ups.length).toBeGreaterThan(0);
-    for (const up of ups) {
-      expect(up).toMatch(/finished\.moved/);
-      expect(up).not.toMatch(/pressIsDrag/);
-    }
-  });
-});
-
-/**
  * On a page, a press that becomes a drag is handed to the book's photo drag
  * (`usePhotoDrag`), which owns the release from then on. The page must forget
  * the press BEFORE handing it over: otherwise the page's own pointerup would
@@ -1389,10 +1339,6 @@ describe("a page photo drag is handed over, not also clicked", () => {
     const up = body("onPointerUp");
     expect(up).toMatch(/if \(!press\) return;/);
     expect(up).toContain('emit("select"');
-  });
-
-  it("no longer pans the crop on a page", () => {
-    expect(text).not.toContain("cropMoved(");
   });
 });
 
@@ -1517,26 +1463,6 @@ describe("a photo imported from disk", () => {
   it("does not disturb the photos the book already held", () => {
     expect(shown.photos.slice(0, index)).toEqual(layout.photos);
     expect(layout.photos).toHaveLength(index);
-  });
-});
-
-describe("releaseAction", () => {
-  it("saves what a drag left on screen", () => {
-    expect(releaseAction(true, true)).toBe("save");
-  });
-
-  it("selects for a swap when a click found nothing live", () => {
-    expect(releaseAction(false, false)).toBe("select");
-  });
-
-  it("drops a live window when the press never became a drag", () => {
-    // A drag abandoned below the threshold: the window on screen is stale,
-    // and the saved crop is the truth.
-    expect(releaseAction(false, true)).toBe("select");
-  });
-
-  it("never saves a window that is not there", () => {
-    expect(releaseAction(true, false)).toBe("select");
   });
 });
 
@@ -1667,8 +1593,7 @@ describe("crop dialog geometry", () => {
   });
 
   it("moves the window the way it is dragged, in fractions of the photo", () => {
-    // Unlike `cropMoved`, which drags the PHOTO inside a slot: here the user
-    // drags the window over the whole photo, so it follows the pointer 1:1.
+    // The user drags the window over the whole photo, so it follows the pointer 1:1.
     const moved = windowMoved(crop, { dx: 0.1, dy: 0.05 });
     expect(moved.x).toBeCloseTo(0.3, 12);
     expect(moved.y).toBeCloseTo(0.15, 12);

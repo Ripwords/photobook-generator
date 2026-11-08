@@ -150,7 +150,12 @@ let flashTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** Sends an edit and remembers which slots to flash when it lands. */
 function send(edit: BookEdit) {
-  pendingFlash = edit.kind === "swapPhotos" ? [placementKey(edit.a), placementKey(edit.b)] : [];
+  pendingFlash =
+    edit.kind === "swapPhotos"
+      ? [placementKey(edit.a), placementKey(edit.b)]
+      : edit.kind === "replacePhoto"
+        ? [placementKey(edit.placement)]
+        : [];
   emit("edit", edit);
 }
 
@@ -191,19 +196,16 @@ function onLocked(opening: number | null) {
 }
 
 const photoDrag = providePhotoDrag((outcome: DropOutcome) => {
-  if (outcome.kind === "swap") {
+  if (outcome.kind === "edit") {
     selected.value = null;
     armed.value = false;
     send(outcome.edit);
   } else if (outcome.kind === "locked") {
-    const target = lastHover;
-    onLocked(target ? openingOfPage(target.page) : null);
+    const { target } = outcome;
+    onLocked(
+      target.kind === "slot" ? openingOfPage(target.placement.page) : target.kind === "page" ? target.opening : null,
+    );
   }
-});
-/** The last slot hovered, which `photoDrag.hover` has already cleared by the time a drop lands. */
-let lastHover: PlacementRef | null = null;
-watch(photoDrag.hover, (hover) => {
-  if (hover) lastHover = hover.placement;
 });
 
 /** The ghost's style: following the pointer, or sliding home after a miss. */
@@ -228,7 +230,7 @@ const ghostStyle = computed(() => {
 const menuTarget = ref<{ placement: PlacementRef; locked: boolean } | null>(null);
 function onContextMenu(event: MouseEvent) {
   const target = dropTargetAt(event.target instanceof Element ? event.target : null);
-  if (!target || busy || editSlots.value) {
+  if (target?.kind !== "slot" || busy || editSlots.value) {
     event.stopPropagation();
     event.preventDefault();
     menuTarget.value = null;
@@ -417,6 +419,12 @@ const leftOut = computed(() =>
     src: photo.thumbnailPath ? convertFileSrc(photo.thumbnailPath) : null,
   })),
 );
+
+/** A left-out photo pressed: dragged, it can replace a photo, join a page or go on the cover. */
+function onTrayPointerDown(event: PointerEvent, photo: (typeof leftOut.value)[number]) {
+  if (busy) return;
+  photoDrag.pressToDrag(event, { source: { kind: "tray", photo: photo.index }, src: graphics.src(photo) });
+}
 </script>
 
 <template>
@@ -549,7 +557,6 @@ const leftOut = computed(() =>
         :layout
         :busy
         @choose="chooseCover"
-        @crop="onCoverCrop"
         @crop-open="openCrop({ kind: 'cover', side: $event })"
         @spine="onSpine"
       />
@@ -671,6 +678,7 @@ const leftOut = computed(() =>
                 :geometry
                 :page="spread.left"
                 :side="pageSide(spread.left, 'left')"
+                :opening="spread.index"
                 :selectable="!busy && !spread.opening.locked"
                 :locked="spread.opening.locked"
                 :flash
@@ -690,6 +698,7 @@ const leftOut = computed(() =>
                 :geometry
                 :page="spread.right"
                 :side="pageSide(spread.right, 'right')"
+                :opening="spread.index"
                 :selectable="!busy && !spread.opening.locked"
                 :locked="spread.opening.locked"
                 :flash
@@ -715,21 +724,30 @@ const leftOut = computed(() =>
           Left out <span class="font-normal text-muted tabular-nums">{{ leftOut.length }}</span>
         </h4>
         <p class="text-sm text-muted">
-          Culled, trimmed to fit the page count, or not placeable in any template.
+          Culled, trimmed to fit the page count, or not placeable in any template. Drag one onto a
+          photo to replace it, onto a page's empty space to add it there, or onto the cover.
         </p>
         <ul class="flex flex-wrap gap-2">
           <li
             v-for="photo in leftOut"
             :key="photo.path"
-            class="size-16 overflow-hidden rounded-sm bg-elevated ring ring-default"
+            class="group size-16 touch-none overflow-hidden rounded-sm bg-elevated ring ring-default"
+            :class="busy ? 'cursor-wait' : 'cursor-grab'"
             :title="photo.path"
+            @pointerdown="onTrayPointerDown($event, photo)"
           >
             <img
               v-if="photo.src"
               :src="photo.src"
               alt=""
               loading="lazy"
-              class="size-full object-cover opacity-45 grayscale"
+              draggable="false"
+              class="size-full object-cover transition"
+              :class="
+                photoDrag.source.value?.kind === 'tray' && photoDrag.source.value.photo === photo.index
+                  ? 'opacity-20'
+                  : 'opacity-45 grayscale group-hover:opacity-100 group-hover:grayscale-0'
+              "
             />
             <div v-else class="flex size-full items-center justify-center">
               <UIcon name="i-lucide-image-off" class="size-4 text-muted" />
@@ -799,25 +817,26 @@ const leftOut = computed(() =>
 
     <!-- The photo being dragged, following the pointer over every page. -->
     <Teleport to="body">
-      <div
-        v-if="ghostStyle"
-        class="pointer-events-none fixed z-50 overflow-hidden rounded-sm bg-neutral-200 shadow-xl ring-2 ring-white"
-        :style="ghostStyle"
-        aria-hidden="true"
-      >
-        <img
-          v-if="photoDrag.ghost.value?.src"
-          :src="photoDrag.ghost.value.src"
-          alt=""
-          draggable="false"
-          class="size-full object-cover"
-        />
+      <!--
+        The ghost clips only its photo: the label hangs below it, so a long
+        one ("Use on front cover") is never cut off by a small ghost.
+      -->
+      <div v-if="ghostStyle" class="pointer-events-none fixed z-50" :style="ghostStyle" aria-hidden="true">
+        <div class="size-full overflow-hidden rounded-sm bg-neutral-200 shadow-xl ring-2 ring-white">
+          <img
+            v-if="photoDrag.ghost.value?.src"
+            :src="photoDrag.ghost.value.src"
+            alt=""
+            draggable="false"
+            class="size-full object-cover"
+          />
+        </div>
         <span
-          v-if="photoDrag.hover.value && !photoDrag.ghost.value?.returning"
-          class="absolute bottom-1.5 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-md bg-neutral-900/85 px-2 py-1 text-sm font-medium whitespace-nowrap text-white shadow"
+          v-if="photoDrag.badge.value && !photoDrag.ghost.value?.returning"
+          class="absolute top-full left-1/2 mt-1.5 flex -translate-x-1/2 items-center gap-1.5 rounded-md bg-neutral-900/85 px-2 py-1 text-sm font-medium whitespace-nowrap text-white shadow"
         >
-          <UIcon :name="photoDrag.hover.value.locked ? 'i-lucide-lock' : 'i-lucide-arrow-left-right'" class="size-4" />
-          {{ photoDrag.hover.value.locked ? "Locked" : "Swap" }}
+          <UIcon :name="photoDrag.badge.value.icon" class="size-4" />
+          {{ photoDrag.badge.value.label }}
         </span>
       </div>
     </Teleport>

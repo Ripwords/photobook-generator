@@ -363,11 +363,21 @@ other photo. Escape backs out one step at a time, first the swap, then the selec
 
 After a swap or a replaced photo, the slots that changed flash, and a notice at the bottom
 right names the pages, for example "Swapped photos on pages 3 and 12", with an **Undo**
-button. That matters most for a swap between spreads that are never on screen together. A
+button. Adding a photo to a page and putting one on the cover get the same notice. That matters most for a swap between spreads that are never on screen together. A
 change the book refuses is reported the same way, with the reason. Each photo is re-cropped
 for its new slot, so a crop you set by hand does not travel with the photo.
 
-To **use a photo the book left out**, click the photo to replace, then **Choose any photo…**
+To **use a photo the book left out**, drag it from **Left out**, below the last spread. The
+desk scrolls when you hold it near the top edge. Drop it on a photo to replace that photo:
+the slot shows the incoming photo while you hover, the label under the dragged photo reads
+**Replace**, and the replaced photo goes back to **Left out**. Drop it on a page's empty
+space, where the whole page is outlined and the label reads **Add to page N**, to add it
+there: the spread is laid out again with one more photo, or the change is refused with the
+reason when no layout holds that many. Drop it on the cover (**Use on front cover**) to put
+it there. A left-out photo shows in grey until you point at it. Locked spreads read
+**Locked**, as for a swap.
+
+You can also click the photo to replace, then **Choose any photo…**
 in the bar at the bottom. The dialog opens on the
 photos no page uses, each shown cropped the way that slot would print it; **In the book** and
 **All** show the rest, sorted **Best first** or by **Time taken**. Pick one and press
@@ -451,11 +461,12 @@ cover photo** (or back); click it to open the same photo dialog as a page, title
 the front cover photo**, with every analysed photo shown cropped to the cover's shape.
 Any photo can go on the cover, including one already on a page: the cover uses a copy and
 the pages are left alone. Pick one and press **Use on the front cover**, or double-click it.
+You can also drag a photo onto either cover panel, from a page or from **Left out**; the panel
+is outlined and the label reads **Use on front cover** (or back). The page keeps its photo.
 A photo that would put a face in the wrap or too near the board's edge, cut a face, or print
 too small for the panel is dimmed with the reason and cannot be picked. Click a cover photo
 to change it, or to take it off with **Remove** at the bottom of the dialog. The crop button
-in the top corner of a cover photo opens the same crop dialog as a page, and dragging a cover
-photo moves its crop, exactly as on a page; a crop
+in the top corner of a cover photo opens the same crop dialog as a page, and a crop
 that would cut a face, push one into the wrap or too near the board's edge, or zoom in below
 the lowest print resolution is refused with the reason, and the cover stays as it was.
 
