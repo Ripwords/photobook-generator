@@ -767,6 +767,7 @@ describe("the edit wire", () => {
       { kind: "setChapterTitle", event: 4, title: "Reykjavík" },
       { kind: "setChapterTitle", event: 9, title: null },
       { kind: "addPhoto", opening: 10, photo: 31 },
+      { kind: "movePhoto", from: { page: 4, z: 2 }, opening: 7 },
     ];
     expect(fixture).toEqual(typed);
   });

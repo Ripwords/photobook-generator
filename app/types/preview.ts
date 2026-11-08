@@ -283,7 +283,16 @@ export type BookEdit =
    * Put a left-out photo on this opening, which is laid out again on the
    * best layout for one more photo. How a blank page gets filled.
    */
-  | { kind: "addPhoto"; opening: number; photo: number };
+  | { kind: "addPhoto"; opening: number; photo: number }
+  /**
+   * Take the photo in slot `from` off its page and put it on opening
+   * `opening`: the target is laid out again for one more photo, the source
+   * for one fewer, and a source left with none prints blank. The page count
+   * never changes. Refused, with nothing changed, if either opening is
+   * locked, the target is the photo's own opening, or either side has no
+   * layout for its new count. Withheld from the chat agent, like `addPhoto`.
+   */
+  | { kind: "movePhoto"; from: PlacementRef; opening: number };
 
 /** Mirrors `geometry::CoverSide`. */
 export type CoverSide = "front" | "back";

@@ -257,6 +257,10 @@ describe("doneToast", () => {
     expect(doneToast({ kind: "addPhoto", opening: 3, photo: 4 }, () => "pages 6–7")).toBe("Added a photo to pages 6–7");
     expect(doneToast({ kind: "addPhoto", opening: 3, photo: 4 })).toBe("Added a photo");
     expect(doneToast({ kind: "setCoverPhoto", side: "back", photo: 4 })).toBe("Put a photo on the back cover");
+    expect(doneToast({ kind: "movePhoto", from: a, opening: 4 }, () => "pages 8–9")).toBe(
+      "Moved a photo from page 2 to pages 8–9",
+    );
+    expect(doneToast({ kind: "movePhoto", from: a, opening: 4 })).toBe("Moved a photo to another page");
   });
 
   it("stays quiet for edits whose result is already plain on screen", () => {

@@ -194,6 +194,10 @@ export function doneToast(edit: BookEdit, pagesOf?: (opening: number) => string)
       return pagesOf ? `Added a photo to ${pagesOf(edit.opening)}` : "Added a photo";
     case "setCoverPhoto":
       return edit.photo === null ? null : `Put a photo on the ${edit.side} cover`;
+    case "movePhoto":
+      return pagesOf
+        ? `Moved a photo from page ${edit.from.page} to ${pagesOf(edit.opening)}`
+        : "Moved a photo to another page";
     default:
       return null;
   }

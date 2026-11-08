@@ -211,7 +211,9 @@ pub(crate) fn place(
         .collect()
 }
 
-fn blank_page(side: Side) -> Page {
+/// A page that prints white: no template, no placements. The number is a
+/// placeholder; whoever writes the page into a book keeps the printed one.
+pub(crate) fn blank_page(side: Side) -> Page {
     Page { number: 0, side, template_id: BLANK_TEMPLATE_ID.to_string(), placements: Vec::new() }
 }
 

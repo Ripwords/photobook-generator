@@ -39,6 +39,7 @@ import type {
 } from "../../app/types/preview";
 import type { PrintSpec, SpecCheck, SpecError } from "../../app/types/printSpec";
 import { DEFAULT_BOOK_OPTIONS } from "../../app/types/book";
+import { toSpreads } from "../../app/types/preview";
 import type {
   BookOptions,
   BookRecommendation,
@@ -495,6 +496,8 @@ export function editLabel(edit: BookEdit, before: BookLayout): string {
       return edit.title === null ? "automatic title" : "title";
     case "addPhoto":
       return "photo added";
+    case "movePhoto":
+      return "photo move";
   }
 }
 
@@ -680,6 +683,38 @@ function applyEditTo(edit: BookEdit): void {
       page.blank = false;
       layout.placedPhotos += 1;
       layout.droppedPhotos = Math.max(0, layout.droppedPhotos - 1);
+      break;
+    }
+    case "movePhoto": {
+      // The harness cannot re-run `lay_out` on either side, so the photo
+      // leaves its slot and joins the target's first page inside its safe
+      // area, overlapping whatever is there. Enough to see the move land.
+      const source = layout.pages.find((page) => page.number === edit.from.page);
+      const moving = placement(edit.from);
+      if (!source || !moving) throw new Error(`there is no photo at page ${edit.from.page} slot ${edit.from.z}`);
+      const spreads = toSpreads(layout.pages);
+      const target = spreads[edit.opening];
+      if (!target) throw new Error(`this book has no opening ${edit.opening}`);
+      const pages = [target.left, target.right].filter((page) => page !== null);
+      if (pages.some((page) => page.number === source.number)) {
+        throw new Error("that photo is already on this page; choose a different page to move it to");
+      }
+      const from = spreads.findIndex((s) => s.left?.number === source.number || s.right?.number === source.number);
+      if (layout.openings[from]?.locked || layout.openings[edit.opening]?.locked) {
+        throw new Error("this spread is locked; unlock it to change it");
+      }
+      const onto = pages[0]!;
+      const safe = layout.geometry[onto.side].safe;
+      source.placements = source.placements.filter((pl) => pl !== moving);
+      source.blank =
+        source.placements.length === 0 && !layout.chapters.some((c) => c.titleBox?.page === source.number);
+      onto.placements.push({
+        ...moving,
+        z: Math.max(0, ...onto.placements.map((pl) => pl.z)) + 1,
+        slotRect: { ...safe },
+        crop: centred(moving.photoIndex, (safe.w * layout.spec.pageWIn) / (safe.h * layout.spec.pageHIn)),
+      });
+      onto.blank = false;
       break;
     }
     case "setChapterTitle": {

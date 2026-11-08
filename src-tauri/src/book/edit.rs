@@ -38,7 +38,7 @@
 use crate::book::cover::{self, CoverPhoto, Rgb};
 use crate::book::crop::choose_crop;
 use crate::book::cull::Photo;
-use crate::book::pace::{half_id, place, rebuild, single_fit, tie_break, Book, Page};
+use crate::book::pace::{blank_page, half_id, place, rebuild, single_fit, tie_break, Book, Page};
 use crate::book::score::{best_spread_ordered, rejects, slot_aspect, Rejection};
 use crate::book::story;
 use crate::book::titles::{self, TitleError};
@@ -174,6 +174,15 @@ pub enum BookEdit {
         opening: usize,
         photo: usize,
     },
+    /// Take the photo in slot `from` off its opening and put it on opening
+    /// `opening`, laying the target out again for one more photo and the
+    /// source for one fewer. A source left with no photos prints blank; the
+    /// page count never changes. Both halves are checked before either is
+    /// written.
+    MovePhoto {
+        from: PlacementRef,
+        opening: usize,
+    },
 }
 
 /// What one photo would look like in one slot: the crop it would get, and
@@ -216,6 +225,14 @@ pub enum EditError {
     },
     /// No layout holds one more photo than this opening has.
     OpeningFull {
+        opening: usize,
+        photos: usize,
+    },
+    /// `MovePhoto` onto the opening the photo is already on.
+    SameOpening(usize),
+    /// `MovePhoto` would leave `photos` photos behind on `opening`, and no
+    /// layout it may use holds that many.
+    CannotShrink {
         opening: usize,
         photos: usize,
     },
@@ -297,6 +314,16 @@ impl std::fmt::Display for EditError {
             Self::OpeningFull { photos, .. } => write!(
                 f,
                 "no layout holds more than {photos} photos on one spread"
+            ),
+            Self::SameOpening(_) => write!(
+                f,
+                "that photo is already on this page; choose a different page to move it to"
+            ),
+            Self::CannotShrink { photos, .. } => write!(
+                f,
+                "no layout holds the {photos} photo{} that would be left behind, so this photo \
+                 cannot leave its page; swap it instead",
+                if *photos == 1 { "" } else { "s" }
             ),
             Self::SamePlacement => write!(f, "choose two different photos to swap"),
             Self::SwapRejected { placement, reason } => write!(
@@ -555,6 +582,7 @@ pub fn apply(
             Ok(())
         }
         BookEdit::AddPhoto { opening, photo } => add_photo(book, lib, photos, w, *opening, *photo),
+        BookEdit::MovePhoto { from, opening } => move_photo(book, lib, photos, w, *from, *opening),
         BookEdit::SetChapterTitle { event, title } => {
             titles::set_title(book, photos, lib, *event, title.as_deref()).map_err(|e| match e {
                 TitleError::NoSuchChapter(e) => EditError::NoSuchChapter(e),
@@ -627,14 +655,28 @@ fn add_photo(
     }
     let mut indices = opening_photos(book, &pages);
     indices.push(photo);
-    let n = indices.len();
+    let full = EditError::OpeningFull {
+        opening: o,
+        photos: indices.len() - 1,
+    };
+    let laid = lay_out_count(book, lib, photos, w, o, &pages, &indices, full)?;
+    commit(book, &pages, laid);
+    book.dropped = left_out(book, photos.len());
+    Ok(())
+}
+
+/// The templates opening `o` may be laid out on with `n` photos: the right
+/// side for a single page, never one the user rejected here. Unlike
+/// `alternatives` the current template is allowed, since the photo count is
+/// what changed.
+fn templates_for(book: &Book, lib: &Library, o: usize, pages: &[usize], n: usize) -> Vec<String> {
     let rejected = book
         .controls
         .get(&o)
-        .map(|c| c.rejected.clone())
-        .unwrap_or_default();
+        .map(|c| c.rejected.as_slice())
+        .unwrap_or(&[]);
     let allowed = |id: &str| !rejected.iter().any(|r| r == id);
-    let candidates: Vec<String> = if is_single(book, o) {
+    if is_single(book, o) {
         let side = book.pages[pages[0]].side;
         halves(lib)
             .into_iter()
@@ -647,16 +689,79 @@ fn add_photo(
             .filter(|t| allowed(&t.id))
             .map(|t| t.id.clone())
             .collect()
-    };
+    }
+}
+
+/// Opening `o` laid out afresh for exactly `indices`, on the best template
+/// that holds that many: what `AddPhoto` and both halves of `MovePhoto` do.
+/// `none` is the refusal when no template may be used at all. Reads the
+/// book and writes nothing, so a caller can check two of these before it
+/// commits either.
+#[allow(clippy::too_many_arguments)]
+fn lay_out_count(
+    book: &Book,
+    lib: &Library,
+    photos: &[Photo],
+    w: &Weights,
+    o: usize,
+    pages: &[usize],
+    indices: &[usize],
+    none: EditError,
+) -> Result<Vec<Page>, EditError> {
+    let candidates = templates_for(book, lib, o, pages, indices.len());
     if candidates.is_empty() {
-        return Err(EditError::OpeningFull {
-            opening: o,
-            photos: n - 1,
-        });
+        return Err(none);
     }
     let seed = opening_seed(book.seed, o, 0);
-    let laid = lay_out(book, lib, photos, w, o, &pages, &indices, &candidates, seed)?;
-    commit(book, &pages, laid);
+    lay_out(book, lib, photos, w, o, pages, indices, &candidates, seed)
+}
+
+/// Moves the photo at `from` onto opening `target`. Both openings are laid
+/// out against the book as it stands and only then written, so a refusal
+/// from either half -- including the second -- leaves the book unchanged.
+fn move_photo(
+    book: &mut Book,
+    lib: &Library,
+    photos: &[Photo],
+    w: &Weights,
+    from: PlacementRef,
+    target: usize,
+) -> Result<(), EditError> {
+    let (pi, si) = locate(book, from)?;
+    let source = opening_of(book, pi);
+    opening_pages(book, target).ok_or(EditError::NoSuchOpening(target))?;
+    if source == target {
+        return Err(EditError::SameOpening(target));
+    }
+    let source_pages = unlocked(book, source)?;
+    let target_pages = unlocked(book, target)?;
+    let photo = book.pages[pi].placements[si].photo_index;
+
+    let mut onto = opening_photos(book, &target_pages);
+    onto.push(photo);
+    let full = EditError::OpeningFull {
+        opening: target,
+        photos: onto.len() - 1,
+    };
+    let target_laid = lay_out_count(book, lib, photos, w, target, &target_pages, &onto, full)?;
+
+    // The book never holds a photo twice, so this removes exactly the one.
+    let left: Vec<usize> = opening_photos(book, &source_pages)
+        .into_iter()
+        .filter(|&i| i != photo)
+        .collect();
+    let source_laid = if left.is_empty() {
+        source_pages.iter().map(|&p| blank_page(book.pages[p].side)).collect()
+    } else {
+        let stuck = EditError::CannotShrink {
+            opening: source,
+            photos: left.len(),
+        };
+        lay_out_count(book, lib, photos, w, source, &source_pages, &left, stuck)?
+    };
+
+    commit(book, &target_pages, target_laid);
+    commit(book, &source_pages, source_laid);
     book.dropped = left_out(book, photos.len());
     Ok(())
 }
@@ -2231,6 +2336,209 @@ mod tests {
         );
     }
 
+    // --- move a photo to another opening ----------------------------------------
+
+    /// Every opening's pages except `skip`, for "nothing else moved".
+    fn openings_except(b: &Book, skip: &[usize]) -> Vec<Vec<Page>> {
+        (0..opening_count(b))
+            .filter(|k| !skip.contains(k))
+            .map(|k| opening_pages(b, k).unwrap().iter().map(|&p| b.pages[p].clone()).collect())
+            .collect()
+    }
+
+    /// The first placement on opening `o`, as the preview would name it.
+    fn first_on(b: &Book, o: usize) -> PlacementRef {
+        let pages = opening_pages(b, o).unwrap();
+        let page = pages.iter().map(|&p| &b.pages[p]).find(|p| !p.placements.is_empty()).unwrap();
+        PlacementRef { page: page.number, z: page.placements[0].z }
+    }
+
+    fn photo_at(b: &Book, r: PlacementRef) -> usize {
+        placement(b, r).photo_index
+    }
+
+    #[test]
+    fn edit_move_photo_grows_the_target_shrinks_the_source_and_leaves_the_rest() {
+        let ps = photos(25);
+        let mut b = book(&ps);
+        let lib = frozen_library();
+        let from_o = spread_with(&b, 3);
+        let to_o = spread_with(&b, 2);
+        let from = first_on(&b, from_o);
+        let moved = photo_at(&b, from);
+        let source_before = photos_of(&b, from_o);
+        let target_before = photos_of(&b, to_o);
+        let others = openings_except(&b, &[from_o, to_o]);
+        let numbers: Vec<u32> = b.pages.iter().map(|p| p.number).collect();
+        let dropped = b.dropped;
+
+        apply(&mut b, &BookEdit::MovePhoto { from, opening: to_o }, &lib, &ps, &Weights::default())
+            .unwrap();
+
+        let mut target = target_before.clone();
+        target.push(moved);
+        target.sort_unstable();
+        assert_eq!(photos_of(&b, to_o), target, "the target gains exactly the moved photo");
+        let source: Vec<usize> = source_before.iter().copied().filter(|&i| i != moved).collect();
+        assert_eq!(photos_of(&b, from_o), source, "the source keeps the rest and loses the moved photo");
+        assert_eq!(
+            lib.spreads.iter().find(|t| t.id == template_of(&b, to_o)).map(|t| t.photo_count()),
+            Some(3),
+            "the target is laid out on a three-photo template: {}",
+            template_of(&b, to_o)
+        );
+        assert_eq!(
+            lib.spreads.iter().find(|t| t.id == template_of(&b, from_o)).map(|t| t.photo_count()),
+            Some(2),
+            "the source is laid out on a two-photo template: {}",
+            template_of(&b, from_o)
+        );
+        assert_eq!(openings_except(&b, &[from_o, to_o]), others, "no other opening changed");
+        assert_eq!(b.pages.iter().map(|p| p.number).collect::<Vec<_>>(), numbers);
+        assert_eq!(b.dropped, dropped, "the photo stays in the book");
+    }
+
+    /// The last photo off an opening leaves its pages printing white, the
+    /// state `pace` builds a blank page in. The page count is the SKU's and
+    /// never changes.
+    #[test]
+    fn edit_move_photo_that_empties_its_source_leaves_its_pages_blank() {
+        let ps = photos(25);
+        let (mut b, from_o, _) = half_blank(&ps);
+        b.dropped = left_out(&b, ps.len());
+        let to_o = spread_with(&b, 2);
+        let from = first_on(&b, from_o);
+        let moved = photo_at(&b, from);
+        let others = openings_except(&b, &[from_o, to_o]);
+        let numbers: Vec<u32> = b.pages.iter().map(|p| p.number).collect();
+        let dropped = b.dropped;
+
+        apply(&mut b, &BookEdit::MovePhoto { from, opening: to_o }, &frozen_library(), &ps, &Weights::default())
+            .unwrap();
+
+        assert!(photos_of(&b, to_o).contains(&moved));
+        for &p in &opening_pages(&b, from_o).unwrap() {
+            assert!(b.pages[p].placements.is_empty(), "page {} still holds a photo", b.pages[p].number);
+            assert_eq!(b.pages[p].template_id, crate::book::pace::BLANK_TEMPLATE_ID);
+        }
+        assert_eq!(b.pages.iter().map(|p| p.number).collect::<Vec<_>>(), numbers, "no page added or lost");
+        assert_eq!(openings_except(&b, &[from_o, to_o]), others);
+        assert_eq!(b.dropped, dropped);
+    }
+
+    #[test]
+    fn edit_move_photo_refuses_a_locked_source_or_target_and_changes_nothing() {
+        let ps = photos(25);
+        let b = book(&ps);
+        let lib = frozen_library();
+        let w = Weights::default();
+        let from_o = spread_with(&b, 3);
+        let to_o = spread_with(&b, 2);
+        let from = first_on(&b, from_o);
+
+        for locked_o in [from_o, to_o] {
+            let mut locked = b.clone();
+            locked.controls.entry(locked_o).or_default().locked = true;
+            let before = locked.clone();
+            assert_eq!(
+                apply(&mut locked, &BookEdit::MovePhoto { from, opening: to_o }, &lib, &ps, &w),
+                Err(EditError::Locked(locked_o))
+            );
+            assert_eq!(locked, before, "a refused move leaves the book unchanged");
+        }
+    }
+
+    #[test]
+    fn edit_move_photo_refuses_its_own_opening_and_slots_or_openings_that_do_not_exist() {
+        let ps = photos(25);
+        let b = book(&ps);
+        let lib = frozen_library();
+        let w = Weights::default();
+        let o = spread_with(&b, 3);
+        let from = first_on(&b, o);
+
+        let mut same = b.clone();
+        assert_eq!(
+            apply(&mut same, &BookEdit::MovePhoto { from, opening: o }, &lib, &ps, &w),
+            Err(EditError::SameOpening(o))
+        );
+        assert_eq!(same, b);
+
+        let mut nowhere = b.clone();
+        let count = opening_count(&b);
+        assert_eq!(
+            apply(&mut nowhere, &BookEdit::MovePhoto { from, opening: count }, &lib, &ps, &w),
+            Err(EditError::NoSuchOpening(count))
+        );
+        assert_eq!(nowhere, b);
+
+        let missing = PlacementRef { page: 2, z: 99 };
+        let mut ghost = b.clone();
+        assert_eq!(
+            apply(&mut ghost, &BookEdit::MovePhoto { from: missing, opening: o }, &lib, &ps, &w),
+            Err(EditError::NoSuchPlacement(missing))
+        );
+        assert_eq!(ghost, b);
+    }
+
+    /// The frozen library tops out at three photos, so a three-photo spread
+    /// cannot take a fourth. The source (2 -> 1) WOULD succeed on its own, so
+    /// a move that wrote the source before checking the target changes the
+    /// book here.
+    #[test]
+    fn edit_move_photo_onto_a_full_opening_is_refused_and_changes_nothing() {
+        let ps = photos(25);
+        let b = book(&ps);
+        let from = first_on(&b, spread_with(&b, 2));
+        let to_o = spread_with(&b, 3);
+
+        let mut full = b.clone();
+        assert_eq!(
+            apply(&mut full, &BookEdit::MovePhoto { from, opening: to_o }, &frozen_library(), &ps, &Weights::default()),
+            Err(EditError::OpeningFull { opening: to_o, photos: 3 })
+        );
+        assert_eq!(full, b, "the source must not have been laid out for one fewer");
+    }
+
+    /// The other half of atomicity: the TARGET (2 -> 3) succeeds, the source
+    /// (3 -> 2) has had both two-photo layouts rejected and so has nowhere
+    /// to go. A move that wrote the target before checking the source
+    /// changes the book here.
+    #[test]
+    fn edit_move_photo_off_an_opening_that_cannot_shrink_is_refused_and_changes_nothing() {
+        let ps = photos(25);
+        let mut b = book(&ps);
+        let lib = frozen_library();
+        let from_o = spread_with(&b, 3);
+        let to_o = spread_with(&b, 2);
+        let from = first_on(&b, from_o);
+        b.controls.entry(from_o).or_default().rejected =
+            lib.spreads_with(2).into_iter().map(|t| t.id.clone()).collect();
+        let before = b.clone();
+
+        assert_eq!(
+            apply(&mut b, &BookEdit::MovePhoto { from, opening: to_o }, &lib, &ps, &Weights::default()),
+            Err(EditError::CannotShrink { opening: from_o, photos: 2 })
+        );
+        assert_eq!(b, before, "the target must not have been laid out for one more");
+    }
+
+    #[test]
+    fn edit_move_photo_errors_read_as_sentences() {
+        assert_eq!(
+            EditError::SameOpening(3).to_string(),
+            "that photo is already on this page; choose a different page to move it to"
+        );
+        assert_eq!(
+            EditError::CannotShrink { opening: 3, photos: 2 }.to_string(),
+            "no layout holds the 2 photos that would be left behind, so this photo cannot leave its page; swap it instead"
+        );
+        assert_eq!(
+            EditError::CannotShrink { opening: 3, photos: 1 }.to_string(),
+            "no layout holds the 1 photo that would be left behind, so this photo cannot leave its page; swap it instead"
+        );
+    }
+
     /// Every photo is cut to the page's inch ratio, not the normalised 1:1
     /// of the unit rect: on Pixajoy's 11.197 x 8.894 page a landscape 4:3
     /// photo keeps its full width and loses a sliver of height.
@@ -2655,6 +2963,7 @@ mod tests {
                 BookEdit::SetChapterTitle { event: 4, title: Some("Reykjavík".into()) },
                 BookEdit::SetChapterTitle { event: 9, title: None },
                 BookEdit::AddPhoto { opening: 10, photo: 31 },
+                BookEdit::MovePhoto { from: PlacementRef { page: 4, z: 2 }, opening: 7 },
             ]
         );
         // The panel sends a spec, and it goes through `TryFrom<RawPrintSpec>`
