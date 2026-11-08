@@ -317,9 +317,34 @@ fn current_rows(db: &Db) -> rusqlite::Result<HashMap<String, (u64, i64)>> {
     rows
 }
 
-/// Thumbnails by hash. Only `<64 lowercase hex>.jpg` files are the sidecar's;
-/// anything else in the directory is left alone.
+/// Each photo's image bytes by hash: its contact-sheet thumbnail plus the
+/// editor's larger previews in `<dir>/<px>/` (see `graphics.rs`). Only
+/// `<64 lowercase hex>.jpg` files, in `dir` or an all-digit subfolder, are
+/// the sidecar's; anything else is left alone.
 fn thumbnails(dir: &Path) -> HashMap<String, u64> {
+    let mut sized: HashMap<String, u64> = HashMap::new();
+    for folder in image_dirs(dir) {
+        for (hash, bytes) in images_in(&folder) {
+            *sized.entry(hash).or_default() += bytes;
+        }
+    }
+    sized
+}
+
+/// `dir` and its preview-size subfolders (`1600`, `2400`, ...).
+fn image_dirs(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut dirs = vec![dir.to_path_buf()];
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        dirs.extend(entries.flatten().filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let is_size = !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit());
+            (is_size && entry.file_type().ok()?.is_dir()).then(|| entry.path())
+        }));
+    }
+    dirs
+}
+
+fn images_in(dir: &Path) -> HashMap<String, u64> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(err) => {
@@ -344,7 +369,17 @@ fn thumbnails(dir: &Path) -> HashMap<String, u64> {
         .collect()
 }
 
+/// Removes each hash's thumbnail and previews. Counts the hashes that lost
+/// their thumbnail, which is what the report has always meant.
 fn remove_thumbnails(dir: &Path, hashes: &[String]) -> usize {
+    let previews = &image_dirs(dir)[1..];
+    for folder in previews {
+        remove_in(folder, hashes);
+    }
+    remove_in(dir, hashes)
+}
+
+fn remove_in(dir: &Path, hashes: &[String]) -> usize {
     hashes
         .iter()
         .filter(
@@ -654,6 +689,53 @@ mod tests {
         );
         assert_eq!(rows(&db).len(), 3);
         assert_eq!(files(dir.path()).len(), 2);
+    }
+
+    fn preview(dir: &Path, size: &str, hash: &str, bytes: usize) {
+        std::fs::create_dir_all(dir.join(size)).unwrap();
+        thumb(&dir.join(size), &format!("{hash}.jpg"), bytes);
+    }
+
+    /// The editor's larger previews (`thumbnails/<px>/<hash>.jpg`) take far
+    /// more space than the thumbnails, so a limit that ignored them would be
+    /// a limit in name only.
+    #[test]
+    fn status_counts_each_photos_larger_previews_toward_the_limit() {
+        let db = Db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        put(&db, &h(1), 100, 1);
+        thumb(dir.path(), &format!("{}.jpg", h(1)), 30);
+        preview(dir.path(), "1600", &h(1), 300);
+        preview(dir.path(), "2400", &h(1), 700);
+        preview(dir.path(), "1600", &h(2), 11);
+        preview(dir.path(), "notes", &h(1), 5000);
+
+        let status = status(&db, dir.path(), &pinned(&[&h(1)]), 10_000).unwrap();
+
+        assert_eq!(status.used_bytes, 100 + 30 + 300 + 700 + 11, "a non-size folder is not ours");
+        assert_eq!(status.pinned_bytes, 100 + 30 + 300 + 700);
+    }
+
+    #[test]
+    fn enforce_removes_a_photos_previews_with_its_thumbnail_and_keeps_a_pinned_photos() {
+        let db = Db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let (old, book, orphan) = (h(1), h(2), h(3));
+        put(&db, &old, 100, 10);
+        put(&db, &book, 100, 1);
+        for hash in [&old, &book, &orphan] {
+            thumb(dir.path(), &format!("{hash}.jpg"), 10);
+            preview(dir.path(), "1600", hash, 50);
+            preview(dir.path(), "2400", hash, 90);
+        }
+
+        let report = enforce(&db, dir.path(), &pinned(&[&book]), 300).unwrap();
+
+        assert_eq!(report.evicted, 1);
+        for size in ["1600", "2400"] {
+            assert_eq!(files(&dir.path().join(size)), vec![format!("{book}.jpg")], "in {size}");
+        }
+        assert_eq!(report.bytes_after, 100 + 10 + 50 + 90);
     }
 
     #[test]
