@@ -832,6 +832,21 @@ export function defaultProjectName(folder: string): string {
 }
 
 /**
+ * Each folder's name for a list of them: its last segment, with its parent's
+ * in front where two share a name, so two memory cards' `DCIM` folders do
+ * not read as one folder listed twice.
+ */
+export function folderNames(folders: readonly string[]): string[] {
+  const names = folders.map(defaultProjectName);
+  return folders.map((folder, i) => {
+    const name = names[i]!;
+    if (names.indexOf(name) === names.lastIndexOf(name)) return name;
+    const segments = folder.replace(/\/+$/, "").split("/");
+    return segments.slice(-2).join("/");
+  });
+}
+
+/**
  * The folders a book draws from, as one short label: the first folder's
  * name, and how many more there are. Several folders are one population --
  * every photo is ranked against all of them -- so the label says "and 2

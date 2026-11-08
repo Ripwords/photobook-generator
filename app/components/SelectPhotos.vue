@@ -41,7 +41,8 @@ const emit = defineEmits<{
   discarded: [];
 }>();
 
-const { changeFolders, retry: retryJob, rename, setSpec, setOptions, remove } = useAnalysisJobs();
+const { changeFolders, addFolders, removeFolder, retry: retryJob, rename, setSpec, setOptions, remove } =
+  useAnalysisJobs();
 
 const summary = computed(() => job.stream.summary);
 const runId = computed(() => jobRunId(job));
@@ -53,6 +54,12 @@ const streamedGroups = computed(() => [{ eventCluster: 0, photos: job.stream.par
 async function chooseOtherFolders() {
   const folders = await pickFolders();
   if (folders.length > 0) changeFolders(job.id, folders);
+}
+
+/** More folders into the same book: its decisions and the book it updates stay. */
+async function addMoreFolders() {
+  const folders = await pickFolders();
+  if (folders.length > 0) addFolders(job.id, folders);
 }
 
 function retry() {
@@ -263,18 +270,6 @@ function onGenerated(projectId: number) {
     :subtitle="folderLabel"
     :subtitle-title="folderTitle"
   >
-    <UTooltip text="Analyse other folders instead">
-      <UButton
-        icon="i-lucide-folder-open"
-        color="neutral"
-        variant="outline"
-        :loading="job.running"
-        :disabled="job.running"
-        @click="chooseOtherFolders"
-      >
-        Choose different folders
-      </UButton>
-    </UTooltip>
     <UTooltip text="Throw this draft away">
       <UButton
         icon="i-lucide-trash-2"
@@ -511,8 +506,14 @@ function onGenerated(projectId: number) {
     <aside
       v-if="stage === 'ready' && summary"
       aria-label="Book settings"
-      class="w-80 shrink-0 space-y-8 overflow-y-auto border-l border-default bg-default p-5"
+      class="w-80 shrink-0 space-y-6 overflow-y-auto border-l border-default bg-default p-5"
     >
+      <SourceFolders
+        :folders="job.folders"
+        :busy="job.running"
+        @add="addMoreFolders"
+        @remove="removeFolder(job.id, $event)"
+      />
       <GenerateBook
         :photos
         :overrides

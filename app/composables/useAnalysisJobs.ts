@@ -337,6 +337,38 @@ export function createAnalysisJobs() {
     void run(job);
   }
 
+  /**
+   * Analyses the job again over a grown or shrunk folder list. The set is the
+   * same book's, so it keeps re-editing that book, and every decision about a
+   * photo still in the set carries into the new run. Decisions about photos
+   * that left are kept too: they apply to nothing, and come back into force
+   * if the folder is added again.
+   */
+  function refold(job: AnalysisJob, folders: string[]) {
+    const analysed = !job.running && job.stream.summary !== null;
+    if (analysed) {
+      job.restoreOverrides = { ...job.overrides };
+      job.restoreTiers = { ...job.tiers };
+    }
+    job.folders = folders;
+    void run(job);
+  }
+
+  /** Adds folders to the job's set, first picked first, skipping any it has. */
+  function addFolders(id: number, folders: string[]) {
+    const job = find(id);
+    if (!job) return;
+    const next = [...new Set([...job.folders, ...folders])];
+    if (next.length > job.folders.length) refold(job, next);
+  }
+
+  /** Takes a folder out of the job's set. A job always keeps at least one. */
+  function removeFolder(id: number, folder: string) {
+    const job = find(id);
+    if (!job || job.folders.length < 2 || !job.folders.includes(folder)) return;
+    refold(job, job.folders.filter((other) => other !== folder));
+  }
+
   function rename(id: number, name: string) {
     const job = find(id);
     if (job) job.name = name;
@@ -449,6 +481,8 @@ export function createAnalysisJobs() {
     startJob,
     retry,
     changeFolders,
+    addFolders,
+    removeFolder,
     rename,
     setSpec,
     setOptions,

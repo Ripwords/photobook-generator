@@ -16,7 +16,7 @@ const emit = defineEmits<{ reveal: [event: number] }>();
 
 <template>
   <div class="flex flex-col gap-1 text-sm">
-    <h3 class="font-semibold text-highlighted">Events</h3>
+    <h3 class="font-semibold text-highlighted">Events <span class="font-normal text-muted tabular-nums">{{ rows.length }}</span></h3>
     <!--
       This inspector column already holds the name, length, print size,
       switches and the Update button below it -- so only the row list itself

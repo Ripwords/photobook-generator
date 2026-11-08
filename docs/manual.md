@@ -121,20 +121,31 @@ while you scroll it: **All photos** or **In the book**, the placed count, and th
 size. Once a length is chosen, both the count and **In the book** switch to that length too,
 so "N of M in the book" always matches what is undimmed and **In the book** hides exactly what
 the book would leave out at the length you picked, not just what culling excluded. The panel on the
-right is the book itself: name it, pick a length and, under **Print size**, **Change…** the
+right is the book itself, from the top down: where its photos come from, its settings, what made
+it in, its events, and **Advanced**.
+
+**Photos from** lists the folders the draft draws on, by name (hover one for its full path).
+A book can draw on as many folders as you like: **Add folders…** picks one or more, and the
+photos in every folder are ranked together as one set, so a phone's camera roll and a camera's
+card make one book. Once there are two or more, the **×** on a row takes that folder out. Either
+way the photos are analysed again (cached photos are quick), and your **+**/**−** marks and
+event tiers carry over: decisions about a folder you took out come back if you add it again,
+and a draft opened from a book's **Edit photos** still updates that book.
+
+Under it, name the book, pick a length and, beside **Print size**, **Change…** the
 page size (the same panel as in the editor, without the dry run). At the bottom of the panel,
 two closed sections open on a click: **How to read the sheet**, a key to the marks on the
 tiles, and **Technical details**, the selection counts (keepers, analysed and scanned, plus
 any that failed or came from the cache). Hover a tile and click the info button in its
 bottom corner for that photo's aesthetic and sharpness percentiles, ranked against every
 photo in the set, and the faces it found, if any; a photo shows "Not ranked yet" until every
-photo in its folders has been analysed. **Choose different folders** at the top starts
-again from other folders. The app recommends the shortest Pixajoy length that fits the keepers; the
-**Length** menu names each option by its page count and, under it, how many events get their own
-page and how many photos that length places. Every length it offers is one Pixajoy sells. Under
-the panel's settings, one sentence sums up the length you picked: how many of the keepers fit
-(and how many of those you marked **+**), how many would be left out, and whether this is the
-recommended length or which one is. **Generate book** (or, when you came from a book's **Edit
+photo in its folders has been analysed. The app recommends the shortest Pixajoy length that
+fits the keepers and marks it **(recommended)** in the **Length** menu, which names each option
+by its page count and, under it, how many events get their own page and how many photos that
+length places. Every length it offers is one Pixajoy sells. Under the settings, two figures sum
+up the length you picked: **In the book**, how many of the keepers fit (such as "21 of 29
+kept", noting how many of those you marked **+**), and **Left out**, how many would not.
+**Generate book** (or, when you came from a book's **Edit
 photos**, **Update "<name>"** and **Save as a new photobook**) stays pinned to the bottom of
 the panel however far it scrolls.
 
@@ -154,7 +165,7 @@ yourself always shows what you chose, even where the control would otherwise hav
 the app suggested something else. Marking a photo **+** always places it, even in a Skipped
 event.
 
-**The events panel**, above **Length**, lists every event at the chosen length: its tier and
+**The events panel**, under those two figures, lists every event at the chosen length: its tier and
 who chose it, and either why (a Skipped or empty event) or how many of its photos made it in,
 such as "6 kept → 4 placed". Click a row to scroll the contact sheet to that event. The
 **Length** menu counts the same thing for each length it offers: its page count, such as "40
@@ -212,7 +223,7 @@ chapter whose photos carry no date keeps its number, such as **Event 3**. With t
 off, every chapter is titled by its dates.
 
 **Featured events get at least** and **Brief events get at most**, the two steppers in the
-closed **Advanced** section under **Split chapters by place**, set the floor and cap the tiers above use: Featured from 2 to 12
+closed **Advanced** section under the events panel, set the floor and cap the tiers above use: Featured from 2 to 12
 photos (6 by default), Brief from 1 to 3 (2 by default). Changing either re-scores every
 event at every length.
 
@@ -259,8 +270,10 @@ again from these photos and settings. Changes you made in the editor -- swapped 
 photos, crops, layouts, moved boxes, the cover, chapter titles you typed, and photos added
 from disk -- are replaced;
 its undo history, export history and favourite star don't carry over, though files you
-already exported are not touched. **Save as a new photobook** keeps both. Choosing different
-folders makes it a new book again, since a book built from a different source is not an
+already exported are not touched. **Save as a new photobook** keeps both. Adding or taking out
+folders under **Photos from** still updates the same book. Only **Choose different folders**,
+offered when the folders hold no photos or the analysis fails, swaps every folder at once and
+makes it a new book again, since a book built from a wholly different source is not an
 update of the old one.
 
 ## 3. Editing the book

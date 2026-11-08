@@ -8,6 +8,7 @@ import {
   defaultProjectName,
   eventRowNote,
   folderListLabel,
+  folderNames,
   folderNotice,
   IMPORTABLE,
   exportOutcome,
@@ -469,6 +470,17 @@ describe("override toggling", () => {
     expect(toggledOverride("include", "exclude")).toBe("exclude");
     expect(toggledOverride("exclude", "include")).toBe("include");
     expect(toggledOverride("auto", "include")).toBe("include");
+  });
+});
+
+describe("folderNames", () => {
+  it("names each folder by its last segment", () => {
+    expect(folderNames(["/Users/jj/Pictures/Japan 2026", "/Volumes/SD/Drone/"])).toEqual(["Japan 2026", "Drone"]);
+  });
+
+  /** Two cards' DCIM folders would read as one folder listed twice. */
+  it("adds the parent to folders that share a name, and only to those", () => {
+    expect(folderNames(["/Volumes/A/DCIM", "/Volumes/B/DCIM", "/x/Japan"])).toEqual(["A/DCIM", "B/DCIM", "Japan"]);
   });
 });
 

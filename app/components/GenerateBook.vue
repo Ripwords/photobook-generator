@@ -149,13 +149,12 @@ const chosenOption = computed(() => {
     ? recommendedOption(recommendation.value)
     : optionFor(recommendation.value, pages.value);
 });
-/** True while the user is still on the recommended length. */
-const isRecommended = computed(
-  () => pages.value !== null && pages.value === recommendation.value?.recommendedPages,
-);
 const pageItems = computed(() =>
   (recommendation.value?.options ?? []).map((option) => ({
-    label: pageOptionLabel(option),
+    label:
+      option.pages === recommendation.value?.recommendedPages
+        ? `${pageOptionLabel(option)} (recommended)`
+        : pageOptionLabel(option),
     // A second line under the label -- Nuxt UI's `USelect` item `description`
     // -- rather than one combined string: "40 pages · 12 of 19 events, 85
     // photos" truncated at the menu's own width and lost the counts first.
@@ -290,65 +289,86 @@ async function confirmedUpdate() {
 </script>
 
 <template>
-  <section class="space-y-4">
+  <section class="space-y-6">
     <!--
-      A column, for the select screen's inspector: the fields, then what the
-      chosen length costs, then the action that commits to it.
+      A column, for the select screen's inspector, under the folders: the
+      book's own fields, then what the chosen length costs, then the events
+      it places, then the action that commits to it.
     -->
-    <div v-if="canGenerate" class="space-y-4">
-      <UFormField label="Book name">
-        <UInput v-model="name" :disabled="busy" placeholder="Untitled photobook" class="w-full" />
-      </UFormField>
+    <div v-if="canGenerate" class="space-y-6 border-t border-default pt-6">
+      <div class="space-y-4">
+        <UFormField label="Book name">
+          <UInput v-model="name" :disabled="busy" placeholder="Untitled photobook" class="w-full" />
+        </UFormField>
+
+        <UFormField label="Length">
+          <!--
+            `.nullable` widens the model's type to admit the `null` that means "no
+            length chosen yet". It is runtime-inert here: the modifier only maps a
+            nullish value to `null`, and this control only ever emits a `pages`.
+          -->
+          <USelect
+            v-model.nullable="chosenPages"
+            :items="pageItems"
+            :disabled="busy || pageItems.length === 0"
+            value-key="value"
+            class="w-full"
+          />
+        </UFormField>
+
+        <div class="flex items-center justify-between gap-2 text-sm">
+          <div>
+            <p class="font-medium text-default">Print size</p>
+            <p class="text-muted tabular-nums">{{ shownSpec ? sizeLabel(shownSpec, unit) : "…" }}</p>
+          </div>
+          <UButton color="neutral" variant="outline" :disabled="busy || !shownSpec" @click="printSizeOpen = true">
+            Change…
+          </UButton>
+        </div>
+
+        <USwitch
+          v-model="places"
+          label="Split chapters by place"
+          :description="
+            located === 0 ? 'None of these photos records where it was taken.' : 'A chapter also ends in each new town.'
+          "
+          color="neutral"
+          :disabled="busy || located === 0"
+        />
+      </div>
+
+      <!--
+        What the chosen length costs, stated before the user commits: a page
+        length is a purchase decision. The count placed is keepers minus
+        drops rather than `capacityPhotos`: a burst loses its surplus frames
+        even in a book with room for them.
+      -->
+      <div v-if="recommendation && chosenOption" class="space-y-2">
+        <dl class="grid grid-cols-2 rounded-lg border border-default text-sm tabular-nums">
+          <div class="p-3">
+            <dt class="text-muted">In the book</dt>
+            <dd>
+              <span class="text-lg font-semibold text-highlighted">{{
+                recommendation.keeperCount - chosenOption.droppedPhotos
+              }}</span>
+              <span class="text-muted"> of {{ recommendation.keeperCount }} kept</span>
+            </dd>
+          </div>
+          <div class="border-l border-default p-3">
+            <dt class="text-muted">Left out</dt>
+            <dd class="text-lg font-semibold text-highlighted">{{ chosenOption.droppedPhotos }}</dd>
+          </div>
+        </dl>
+        <p v-if="recommendation.includedCount > 0" class="text-sm text-muted">
+          Counts the {{ recommendation.includedCount }} you marked +.
+        </p>
+      </div>
 
       <div v-if="chosenOption && chosenOption.events.length > 0" class="space-y-1.5">
         <EventsPanel :rows="chosenOption.events" :title="titleOf" @reveal="emit('reveal', $event)" />
         <p v-if="tierOverflowMessage" class="text-sm text-muted">{{ tierOverflowMessage }}</p>
         <p v-if="risenMessage" class="text-sm text-muted">{{ risenMessage }}</p>
       </div>
-
-      <UFormField label="Length" help="Every length offered is a page count Pixajoy sells.">
-        <!--
-          `.nullable` widens the model's type to admit the `null` that means "no
-          length chosen yet". It is runtime-inert here: the modifier only maps a
-          nullish value to `null`, and this control only ever emits a `pages`.
-        -->
-        <USelect
-          v-model.nullable="chosenPages"
-          :items="pageItems"
-          :disabled="busy || pageItems.length === 0"
-          value-key="value"
-          class="w-full"
-        />
-      </UFormField>
-
-      <UFormField label="Print size">
-        <div class="flex items-center justify-between gap-2">
-          <span class="text-sm tabular-nums">{{ shownSpec ? sizeLabel(shownSpec, unit) : "…" }}</span>
-          <UButton
-            color="neutral"
-            variant="outline"
-            :disabled="busy || !shownSpec"
-            @click="printSizeOpen = true"
-          >
-            Change…
-          </UButton>
-        </div>
-      </UFormField>
-
-      <UFormField
-        :help="
-          located === 0
-            ? 'None of these photos records where it was taken.'
-            : 'A new chapter starts when you move to another town, not only after a break in time.'
-        "
-      >
-        <USwitch
-          v-model="places"
-          label="Split chapters by place"
-          color="neutral"
-          :disabled="busy || located === 0"
-        />
-      </UFormField>
 
       <!-- The tier knobs: rarely touched, so closed until asked for. -->
       <DisclosureSection label="Advanced">
@@ -408,39 +428,6 @@ async function confirmedUpdate() {
         <UButton color="primary" :loading="busy" @click="confirmedUpdate">Update</UButton>
       </template>
     </UModal>
-
-    <!--
-      The recommendation and its cost, stated before the user commits: a page
-      length is a purchase decision, and "26 keepers, 24 fit" is the only
-      thing that makes the two SKUs distinguishable. The count placed is keepers
-      minus drops rather than `capacityPhotos`: a burst loses its surplus frames
-      even in a book with room for them.
-    -->
-    <p v-if="canGenerate && recommendation" class="text-sm text-muted tabular-nums">
-      <template v-if="chosenOption">
-        <span class="text-default">{{ recommendation.keeperCount - chosenOption.droppedPhotos }}</span>
-        of
-      </template>
-      <span class="text-default">{{ recommendation.keeperCount }}</span>
-      keepers<template v-if="recommendation.includedCount > 0">
-        (<span class="text-default">{{ recommendation.includedCount }}</span> you picked)</template
-      ><template v-if="chosenOption">
-        fit in <span class="text-default">{{ chosenOption.pages }}</span> pages<template
-          v-if="chosenOption.droppedPhotos > 0"
-          >, so
-          <span class="font-medium text-highlighted"
-            >{{ chosenOption.droppedPhotos }} would be left out</span
-          ></template
-        ><template v-else>, nothing left out</template></template
-      ><template v-if="isRecommended">; this is the recommended length.</template
-      ><template v-else
-        >; the recommended length is
-        <span class="text-default">{{ recommendation.recommendedPages }}</span> pages.</template
-      >
-    </p>
-    <p v-if="canGenerate && replacing" class="text-sm text-muted">
-      Updating replaces the saved book and its export history. Saving as new keeps both.
-    </p>
 
     <!--
       The book's own update first: re-editing is usually to change it, not fork it.

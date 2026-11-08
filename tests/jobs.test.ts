@@ -46,7 +46,7 @@ const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke, Channel: FakeChannel }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
-const { createAnalysisJobs, jobProgress, jobRunId, parseSavedDraft } = await import(
+const { createAnalysisJobs, jobProgress, jobRunId, parseSavedDraft, savedDraft } = await import(
   "../app/composables/useAnalysisJobs"
 );
 const { usePhotoOverrides } = await import("../app/composables/usePhotoOverrides");
@@ -218,6 +218,90 @@ describe("analysis jobs", () => {
     runs[1]!.finish(summary(2, "a"));
     await settle();
     expect(job.overrides).toEqual({}, "a different set does not restore the old book's decisions");
+  });
+
+  /**
+   * Adding a folder grows the same set rather than starting another, so the
+   * book being re-edited and every decision about a photo still in the set
+   * carry into the new run.
+   */
+  it("adds folders to a job, keeping its book and its decisions", async () => {
+    const store = createAnalysisJobs();
+    const id = store.startJob({ name: "Kyoto", folders: ["/k"], replacing: { id: 4, name: "Kyoto" } });
+    runs[0]!.finish(summary(1, "a", "b"));
+    await settle();
+    const job = store.find(id)!;
+    job.overrides = { a: "include", b: "exclude" };
+    job.tiers = { a: "featured" };
+
+    store.addFolders(id, ["/osaka", "/k"]);
+    expect(runs[1]!.folders).toEqual(["/k", "/osaka"], "the union, first picked first, no repeats");
+    expect(job.replacing).toEqual({ id: 4, name: "Kyoto" });
+    expect(forgotten()).toEqual([1]);
+
+    runs[1]!.finish(summary(2, "a", "b", "c"));
+    await settle();
+    expect(job.overrides).toEqual({ a: "include", b: "exclude" });
+    expect(job.tiers).toEqual({ a: "featured" });
+  });
+
+  /**
+   * Decisions are keyed by content hash, so one about a photo that left with
+   * its folder applies to nothing -- and is kept, so a folder taken out by
+   * mistake comes back with its +/- and tiers when it is added again.
+   */
+  it("removes a folder from a job, and adding it back restores its decisions", async () => {
+    const store = createAnalysisJobs();
+    const id = store.startJob({ name: "Kyoto", folders: ["/k", "/osaka"], replacing: { id: 4, name: "Kyoto" } });
+    runs[0]!.finish(summary(1, "a", "c"));
+    await settle();
+    const job = store.find(id)!;
+    job.overrides = { a: "include", c: "exclude" };
+    job.tiers = { c: "brief" };
+
+    store.removeFolder(id, "/osaka");
+    expect(runs[1]!.folders).toEqual(["/k"]);
+    expect(job.replacing).toEqual({ id: 4, name: "Kyoto" });
+    runs[1]!.finish(summary(2, "a"));
+    await settle();
+    expect(savedDraft(job).overrides).toEqual({ a: "include", c: "exclude" });
+
+    store.addFolders(id, ["/osaka"]);
+    runs[2]!.finish(summary(3, "a", "c"));
+    await settle();
+    expect(job.overrides).toEqual({ a: "include", c: "exclude" });
+    expect(job.tiers).toEqual({ c: "brief" });
+  });
+
+  it("never removes a job's last folder", async () => {
+    const store = createAnalysisJobs();
+    const id = store.startJob({ name: "Kyoto", folders: ["/k"] });
+    runs[0]!.finish(summary(1, "a"));
+    await settle();
+
+    store.removeFolder(id, "/k");
+    expect(store.find(id)!.folders).toEqual(["/k"]);
+    expect(runs).toHaveLength(1);
+  });
+
+  /** Until the first run is done, the decisions are the reopened book's, still waiting. */
+  it("carries a reopened book's waiting decisions when a folder is added mid-run", async () => {
+    const store = createAnalysisJobs();
+    const id = store.startJob({
+      name: "Kyoto",
+      folders: ["/k"],
+      replacing: { id: 4, name: "Kyoto" },
+      restoreOverrides: { a: "include" },
+      restoreTiers: { a: "brief" },
+    });
+
+    store.addFolders(id, ["/osaka"]);
+    runs[0]!.finish(summary(1, "a"));
+    runs[1]!.finish(summary(2, "a", "c"));
+    await settle();
+    const job = store.find(id)!;
+    expect(job.overrides).toEqual({ a: "include" });
+    expect(job.tiers).toEqual({ a: "brief" });
   });
 
   it("forgets a removed job's run", async () => {
