@@ -18,9 +18,13 @@ import {
   type BookEdit,
   type HistoryStep,
   type PreviewGeometry,
+  type PreviewPage,
 } from "~/types/preview";
 import { shortcutCombo, shortcutKbds } from "~/types/shortcuts";
 import { doneToast } from "~/types/photoDrag";
+import type { LayoutShape } from "~/types/customLayouts";
+import { nextLayoutName, shapeFromPages } from "~/types/layoutEditor";
+import type { LayoutDraft } from "~/types/navigation";
 
 const { projectId, listedName } = defineProps<{
   projectId: number;
@@ -31,6 +35,10 @@ const { projectId, listedName } = defineProps<{
 const emit = defineEmits<{
   /** The name changed, so any list showing it is stale. */
   renamed: [];
+  /** "New layout…" from a page's layout menu: draw this on the Layouts screen. */
+  newLayout: [draft: LayoutDraft];
+  /** The Layouts screen, from the toast after "Save as layout…". */
+  openLayouts: [];
   /**
    * The user wants this project's photo selection back on the contact sheet.
    * Re-analyse its folders, then restore these decisions.
@@ -101,6 +109,45 @@ function step(which: HistoryStep) {
 }
 
 const toast = useToast();
+
+/**
+ * "Save as layout…": the opening's boxes, waiting for a name. Saved to the
+ * global library, then the book is drawn again so its menus list it.
+ */
+const customLayouts = useCustomLayouts();
+const savingShape = ref<LayoutShape | null>(null);
+const saveLayoutOpen = ref(false);
+const saveLayoutName = ref("");
+
+async function onSaveLayout(pages: PreviewPage[]) {
+  savingShape.value = shapeFromPages(pages);
+  await customLayouts.refresh().catch(() => undefined);
+  saveLayoutName.value = nextLayoutName(customLayouts.layouts.value.map((l) => l.name));
+  saveLayoutOpen.value = true;
+}
+
+async function saveLayout(name: string) {
+  const shape = savingShape.value;
+  if (!shape) return;
+  const made = await customLayouts.create(name, shape);
+  if (!made.ok) {
+    toast.add({ title: "The layout was not saved", description: made.message, icon: "i-lucide-circle-x", color: "error" });
+    return;
+  }
+  await refreshLayout();
+  toast.add({
+    title: `Saved “${made.value.name}”`,
+    description: "Every book's layout menu offers it for the same number of photos.",
+    icon: "i-lucide-check",
+    color: "neutral",
+    actions: [{ label: "Open Layouts", color: "neutral", variant: "outline", onClick: () => emit("openLayouts") }],
+  });
+}
+
+async function onNewLayout(shape: LayoutShape) {
+  await customLayouts.refresh().catch(() => undefined);
+  emit("newLayout", { name: nextLayoutName(customLayouts.layouts.value.map((l) => l.name)), shape, projectId });
+}
 
 /**
  * Every edit from the book, with what happened said beside the book rather
@@ -471,6 +518,8 @@ onMounted(() => {
           :busy
           :geometry="printSizeOpen ? proposedGeometry : null"
           @edit="onEdit"
+          @save-layout="onSaveLayout"
+          @new-layout="onNewLayout"
         />
       </main>
 
@@ -522,6 +571,14 @@ onMounted(() => {
       />
     </aside>
   </div>
+
+  <LayoutNameDialog
+    v-model:open="saveLayoutOpen"
+    :name="saveLayoutName"
+    title="Save as layout"
+    action="Save layout"
+    @save="saveLayout"
+  />
 
   <USlideover
     v-model:open="exportOpen"

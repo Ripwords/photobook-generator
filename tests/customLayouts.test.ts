@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   customLayoutErrorText,
+  isPrintRule,
   problemSlots,
   type CustomLayout,
   type CustomLayoutError,
@@ -84,5 +85,28 @@ describe("custom layouts on the wire", () => {
     expect(customLayoutErrorText({ kind: "invalid", problems: [first, second] })).toBe(
       `${first.message} ${second.message}`,
     );
+  });
+});
+
+describe("isPrintRule", () => {
+  // The editor saves past a print rule (it only refuses the layout for books
+  // whose size cannot print it) but never past a structural one, which Rust
+  // would reject. Listing every kind keeps a new one from defaulting either way.
+  it("splits the ten problems into seven structural and three print-size ones", () => {
+    const kinds: Record<Problem["kind"], boolean> = {
+      noBoxes: false,
+      tooManyBoxes: false,
+      notFinite: false,
+      offCanvas: false,
+      tooSmall: false,
+      crossesFold: false,
+      overlap: false,
+      edgeInBleed: true,
+      edgeInGutter: true,
+      mostlyHidden: true,
+    };
+    for (const [kind, print] of Object.entries(kinds)) {
+      expect(isPrintRule(kind as Problem["kind"]), kind).toBe(print);
+    }
   });
 });

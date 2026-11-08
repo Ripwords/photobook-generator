@@ -239,6 +239,12 @@ export interface PreviewOpening {
    */
   alternatives: string[];
   /**
+   * Whether Regenerate and Reject have a layout to pick. False while
+   * `alternatives` holds only user layouts with "Use in auto layout" off,
+   * which the menu still offers.
+   */
+  regenerable: boolean;
+  /**
    * User layouts with this opening's photo count (and, for a single page,
    * its side) that this book's print size cannot print. The menu shows them
    * dimmed with each problem's `message`; `setTemplate` refuses them.
@@ -667,7 +673,13 @@ export function leftOutPhotos(layout: BookLayout): (PreviewPhoto & { index: numb
 }
 
 /** No decisions and nothing to offer: what a payload without controls means. */
-const UNCONTROLLED: Omit<PreviewOpening, "index"> = { locked: false, rejected: [], alternatives: [], refused: [] };
+const UNCONTROLLED: Omit<PreviewOpening, "index"> = {
+  locked: false,
+  rejected: [],
+  alternatives: [],
+  regenerable: false,
+  refused: [],
+};
 
 /**
  * The controls for the opening at `index` of `toSpreads(layout.pages)`.
@@ -680,8 +692,13 @@ export function openingFor(layout: BookLayout, index: number): PreviewOpening {
   return layout.openings.find((opening) => opening.index === index) ?? { index, ...UNCONTROLLED };
 }
 
-/** Whether "regenerate", "reject" and "change layout" can do anything here. */
-export function canRelayout(opening: PreviewOpening): boolean {
+/** Whether Regenerate, Reject and Shuffle can do anything here. */
+export function canRegenerate(opening: PreviewOpening): boolean {
+  return !opening.locked && opening.regenerable;
+}
+
+/** Whether the layout menu has a layout to switch to, auto or not. */
+export function canChooseLayout(opening: PreviewOpening): boolean {
   return !opening.locked && opening.alternatives.length > 0;
 }
 

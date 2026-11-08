@@ -1,4 +1,5 @@
 import type { AnalysisSummary } from "~/types/features";
+import type { LayoutShape } from "~/types/customLayouts";
 
 /** The saved book a re-edited selection is on its way back to replace. */
 export interface ReplacedProject {
@@ -14,7 +15,19 @@ export type Screen =
   | { kind: "library" }
   /** A draft's contact sheet. The draft itself lives in `useAnalysisJobs`. */
   | { kind: "select"; jobId: number }
-  | { kind: "editor"; projectId: number };
+  | { kind: "editor"; projectId: number }
+  /** The layout library; `draft` opens the editor on a new layout at once. */
+  | { kind: "layouts"; draft: LayoutDraft | null };
+
+/**
+ * A layout to start the editor on, from a book's "New layout…". `projectId`
+ * is the book to go back to afterwards.
+ */
+export interface LayoutDraft {
+  name: string;
+  shape: LayoutShape;
+  projectId: number | null;
+}
 
 /** What the select screen is showing, once navigation has already put us there. */
 export type SelectStage = "running" | "error" | "no-images" | "no-analyzed" | "ready";

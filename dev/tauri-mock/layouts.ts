@@ -10,7 +10,36 @@
  * box can take one from the fixture's `problems`.
  */
 import fixture from "../../tests/fixtures/wire/custom-layouts.json";
-import type { CustomLayout, CustomLayoutError, LayoutShape, Problem } from "../../app/types/customLayouts";
+import type {
+  BuiltinLayout,
+  CustomLayout,
+  CustomLayoutError,
+  LayoutRole,
+  LayoutShape,
+  Problem,
+} from "../../app/types/customLayouts";
+
+interface TemplateFile {
+  id: string;
+  slots: { rect: [number, number, number, number]; role: LayoutRole }[];
+}
+
+// The shipped templates' slots as authored, on the spread. Rust splits each
+// onto its page and `shape_of` maps it back, so it sends the same rects up to
+// float rounding.
+const templateFiles = import.meta.glob<TemplateFile>("../../templates/[0-9]*.json", { eager: true, import: "default" });
+const builtins: BuiltinLayout[] = Object.values(templateFiles)
+  .toSorted((a, b) => a.id.localeCompare(b.id))
+  .map((t) => ({
+    id: t.id,
+    shape: {
+      kind: "spread",
+      boxes: t.slots.map((slot) => {
+        const [x, y, w, h] = slot.rect;
+        return { rect: { x, y, w, h }, role: slot.role };
+      }),
+    },
+  }));
 
 const MAX_BOXES = 8;
 const MAX_NAME_CHARS = 60;
@@ -76,6 +105,8 @@ function changed(id: string, change: (layout: CustomLayout) => void): CustomLayo
 export function layoutCommand(command: string, args: Args): { value: unknown } | undefined {
   const id = String(args?.id ?? "");
   switch (command) {
+    case "list_builtin_layouts":
+      return { value: structuredClone(builtins) };
     case "list_custom_layouts":
       return { value: structuredClone(layouts) };
     case "create_custom_layout": {

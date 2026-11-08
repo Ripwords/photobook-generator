@@ -24,15 +24,20 @@ deliberately-parked decision that this file is the only surviving record of.**
 
 ---
 
-## What changed on 2026-11-08: user-made layouts, backend only (UX phase 4)
+## What changed on 2026-11-08: user-made layouts (UX phase 4)
 
 **What was built.** Users can store their own page or spread layouts of normalised boxes in
 one global library, the `custom_layouts` table. Each layout has a **Use in auto layout**
 flag, off by default. Off means only the layout menu and `setTemplate` reach it. On means
 it is scored like a built-in. Validator, store, engine merge, 8 Tauri commands, TypeScript
-mirrors, a wire fixture and the browser-harness commands exist. **No UI exists yet**, and
-the manual has no entry. Design and command signatures:
-`docs/superpowers/plans/2026-11-08-custom-layouts.md`.
+mirrors, a wire fixture and the browser-harness commands exist. The UI is the sidebar's
+**Layouts** screen (`LayoutsScreen.vue`, list and `LayoutEditor.vue`) and **Save as
+layout…** / **New layout…** in a page's layout menu; the manual's "4. Layouts" covers it.
+Design and command signatures: `docs/superpowers/plans/2026-11-08-custom-layouts.md`.
+
+**Verified in the mock harness only** (`PBG_MOCK_TAURI=1`), not in the packaged app: the
+list, editor drag and snap, save from a book, New layout… round trip, rename, delete, Esc on
+both modals, copy a built-in, and the dimmed refused entry with its reason.
 
 **Things that will bite you:**
 
@@ -49,6 +54,13 @@ the manual has no entry. Design and command signatures:
   `alternatives`, and `setTemplate` with its id fails with `EditError::UnknownTemplate`.
 - **Deleting a layout leaves books alone.** Their pages keep the rects. The id stops
   resolving, so its sketch and name disappear from the preview.
+- **Regenerate's enabled state is `PreviewOpening.regenerable`, not `alternatives`.** The
+  menu lists auto-off layouts but Regenerate/Reject/Shuffle cannot reach them, so an
+  opening whose only other layout is auto-off has a usable menu and a disabled dice.
+  `regenerable` is `!auto_alternatives(..).is_empty()`; `canRegenerate` and
+  `canChooseLayout` in `app/types/preview.ts` are the two gates. Don't merge them back.
+- **Shapes cross `invoke` through `plainShape`.** A reactive proxy from the editor throws
+  `DataCloneError` in the real IPC; `useCustomLayouts` strips it. Keep it on new commands.
 - **Reserved ids.** `Library::load` refuses a built-in template whose id starts with
   `user-` or contains `:`.
 

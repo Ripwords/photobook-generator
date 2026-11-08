@@ -19,6 +19,7 @@
  * rasterised and inspected before it ships.
  */
 import layoutFixture from "../../tests/fixtures/wire/book-layout.json";
+import customLayoutsFixture from "../../tests/fixtures/wire/custom-layouts.json";
 import recommendationFixture from "../../tests/fixtures/wire/book-recommendation.json";
 import listFixture from "../../tests/fixtures/wire/project-list.json";
 import exportFixture from "../../tests/fixtures/wire/export-result.json";
@@ -73,7 +74,10 @@ layout.openings[1] = {
   locked: false,
   rejected: [],
   alternatives: ["07-two-up-symmetric-margin", "08-two-up-symmetric-bleed-outer"],
-  refused: [],
+  regenerable: true,
+  // One user layout this size refuses, as Rust lists it, so the menu's
+  // dimmed entry has something to show.
+  refused: [customLayoutsFixture.refused],
 };
 // Their sketches, and the current template's, as Rust would send them: each
 // slot of `templates/*.json` decomposed onto its own page.
@@ -87,7 +91,9 @@ layout.sketches = {
     [{ x: 0, y: 0, w: 0.982406, h: 1 }],
     [{ x: 0.017594, y: 0, w: 0.982406, h: 1 }],
   ],
+  [customLayoutsFixture.refused.templateId]: [[{ x: 0, y: 0, w: 1, h: 1 }], [{ x: 0, y: 0, w: 1, h: 1 }]],
 };
+layout.layoutNames = { [customLayoutsFixture.refused.templateId]: "Two halves" };
 // The fixture has one chapter, so give page 1 one of its own: the editor's
 // chapters menu needs two to appear, and this one's title has no clear band,
 // so it shows the "prints over a photo" warning as Rust would report it.
@@ -560,6 +566,7 @@ function applyEditTo(edit: BookEdit): void {
         opening.rejected.push(current);
         opening.alternatives = opening.alternatives.filter((id) => id !== current);
       }
+      opening.regenerable = opening.alternatives.length > 0;
       break;
     }
     case "shuffle":

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { EventTiers, PhotoOverrides } from "~/types/features";
-import type { Screen } from "~/types/navigation";
+import type { LayoutDraft, Screen } from "~/types/navigation";
 import type { BookOptions } from "~/types/book";
 import type { PrintSpec } from "~/types/printSpec";
 import { shortcutCombo } from "~/types/shortcuts";
@@ -104,6 +104,11 @@ defineShortcuts({
   [shortcutCombo("settings")]: { usingInput: true, handler: () => openSettings() },
 });
 
+/** The Layouts screen, or its editor on a draft from a book's "New layout…". */
+function openLayouts(draft: LayoutDraft | null) {
+  screen.value = { kind: "layouts", draft };
+}
+
 function onGenerated(projectId: number) {
   screen.value = { kind: "editor", projectId };
   // The sidebar lists every book, so the one just made belongs in it now.
@@ -185,6 +190,7 @@ onBeforeUnmount(() => {
       :drafts="jobs"
       @new="newBook"
       @library="toLibrary"
+      @layouts="openLayouts(null)"
       @open="openBook"
       :busy
       @open-draft="openJob"
@@ -217,6 +223,12 @@ onBeforeUnmount(() => {
         @generated="onGenerated"
         @discarded="toLibrary"
       />
+      <LayoutsScreen
+        v-else-if="screen.kind === 'layouts'"
+        :key="screen.draft ? `draft-${screen.draft.projectId}` : 'layouts'"
+        :draft="screen.draft"
+        @back="openBook"
+      />
       <BookEditor
         v-else-if="screen.kind === 'editor'"
         :key="screen.projectId"
@@ -224,6 +236,8 @@ onBeforeUnmount(() => {
         :listed-name
         @edit-photos="onEditPhotos"
         @renamed="reload"
+        @new-layout="openLayouts"
+        @open-layouts="openLayouts(null)"
       />
     </div>
     <SettingsModal />

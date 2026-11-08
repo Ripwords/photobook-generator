@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { editLabel, invoke } from "../dev/tauri-mock/core";
 import { mockPhotos } from "../dev/tauri-mock/photos";
@@ -9,7 +9,7 @@ import type { AnalysisEvent, AnalysisSummary, PhotoOverrides } from "../app/type
 import type { BookEdit, BookLayout, HistoryStatus, SlotCandidate } from "../app/types/preview";
 import type { BookRecommendation, ImportedPhoto } from "../app/types/book";
 import type { PrintSpec } from "../app/types/printSpec";
-import type { CustomLayout, CustomLayoutError, LayoutShape, Problem } from "../app/types/customLayouts";
+import type { BuiltinLayout, CustomLayout, CustomLayoutError, LayoutShape, Problem } from "../app/types/customLayouts";
 
 describe("the browser harness's commands", () => {
   it("analyses its folder to the end, with every mock photo", async () => {
@@ -507,5 +507,21 @@ describe("the harness's user layouts", () => {
     );
     expect(empty?.kind === "invalid" ? empty.problems.map((p) => p.kind) : empty).toEqual(["noBoxes"]);
     expect(await invoke<Problem[]>("check_custom_layout", { shape: halves })).toEqual([]);
+  });
+});
+
+describe("the harness's built-in layouts", () => {
+  it("lists every shipped template with its slots as boxes on the spread", async () => {
+    const files = readdirSync(new URL("../templates", import.meta.url)).filter((f) => /^\d+-.*\.json$/.test(f));
+    const listed = await invoke<BuiltinLayout[]>("list_builtin_layouts");
+    expect(listed.map((l) => l.id).toSorted()).toEqual(files.map((f) => f.replace(/\.json$/, "")).toSorted());
+    const margin = listed.find((l) => l.id === "07-two-up-symmetric-margin")!;
+    expect(margin.shape).toEqual({
+      kind: "spread",
+      boxes: [
+        { rect: { x: 0.04, y: 0.08, w: 0.42, h: 0.84 }, role: "support" },
+        { rect: { x: 0.54, y: 0.08, w: 0.42, h: 0.84 }, role: "support" },
+      ],
+    });
   });
 });

@@ -6,18 +6,20 @@ import { layoutSketch, type PreviewRect } from "~/types/preview";
  * instead of only naming it. Decorative: the menu item beside it carries the
  * name, so the drawing is hidden from assistive technology.
  */
-const { pages, aspect } = defineProps<{
+const { pages, aspect, large = false } = defineProps<{
   /** The template's `sketches` entry: one list of slot rects per page. */
   pages: PreviewRect[][];
   /** The book's page width over its height. */
   aspect: number;
+  /** Card size, for the Layouts screen; the menu's is the default. */
+  large?: boolean;
 }>();
 
 const sketch = computed(() => layoutSketch(pages, aspect));
 </script>
 
 <template>
-  <svg :viewBox="sketch.viewBox" class="h-10 w-auto shrink-0" aria-hidden="true">
+  <svg :viewBox="sketch.viewBox" class="w-auto shrink-0" :class="large ? 'h-24 max-w-full' : 'h-10'" aria-hidden="true">
     <rect
       v-for="(page, i) in sketch.pages"
       :key="`page-${i}`"

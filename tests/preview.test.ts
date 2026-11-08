@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
-  canRelayout,
+  canChooseLayout,
+  canRegenerate,
   layoutSketch,
   chapterOpening,
   pageTitle,
@@ -51,6 +52,7 @@ import {
   type BookEdit,
   type BookLayout,
   type PreviewGeometry,
+  type PreviewOpening,
   type PickTarget,
   type PreviewPage,
   type PreviewPhoto,
@@ -661,6 +663,18 @@ describe("leftOutPhotos", () => {
   });
 });
 
+function opening(over: Partial<PreviewOpening>): PreviewOpening {
+  return {
+    index: 0,
+    locked: false,
+    rejected: [],
+    alternatives: ["a"],
+    regenerable: true,
+    refused: [],
+    ...over,
+  };
+}
+
 describe("openings", () => {
   it("carries one entry per opening, in toSpreads order", () => {
     // The Rust side numbers openings the way `toSpreads` draws them; if the
@@ -670,14 +684,22 @@ describe("openings", () => {
   });
 
   it("reads an opening's controls off the payload, and falls back to nothing to offer", () => {
-    expect(openingFor(layout, 1)).toEqual({ index: 1, locked: false, rejected: [], alternatives: [], refused: [] });
-    expect(openingFor(layout, 42)).toEqual({ index: 42, locked: false, rejected: [], alternatives: [], refused: [] });
+    const none = { locked: false, rejected: [], alternatives: [], regenerable: false, refused: [] };
+    expect(openingFor(layout, 1)).toEqual({ index: 1, ...none });
+    expect(openingFor(layout, 42)).toEqual({ index: 42, ...none });
   });
 
-  it("can only re-lay an unlocked opening that has somewhere else to go", () => {
-    expect(canRelayout({ index: 0, locked: false, rejected: [], alternatives: ["a"], refused: [] })).toBe(true);
-    expect(canRelayout({ index: 0, locked: true, rejected: [], alternatives: ["a"], refused: [] })).toBe(false);
-    expect(canRelayout({ index: 0, locked: false, rejected: ["b"], alternatives: [], refused: [] })).toBe(false);
+  it("can only regenerate an unlocked opening auto layout has somewhere else to take", () => {
+    expect(canRegenerate(opening({}))).toBe(true);
+    expect(canRegenerate(opening({ locked: true }))).toBe(false);
+    // The menu still offers an auto-off user layout; Regenerate would refuse.
+    expect(canRegenerate(opening({ alternatives: ["user-1"], regenerable: false }))).toBe(false);
+  });
+
+  it("can choose from the menu whenever an unlocked opening has any alternative", () => {
+    expect(canChooseLayout(opening({ alternatives: ["user-1"], regenerable: false }))).toBe(true);
+    expect(canChooseLayout(opening({ locked: true }))).toBe(false);
+    expect(canChooseLayout(opening({ alternatives: [], regenerable: false }))).toBe(false);
   });
 });
 

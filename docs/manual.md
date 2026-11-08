@@ -13,7 +13,7 @@ check is quiet: offline, or with nothing newer out, it says nothing at all.
 ## The window
 
 The window is a sidebar and one screen beside it. The sidebar is always there (⌘B hides
-and shows it): **New photobook** at the top, **Library** under it, then **Drafts** (books
+and shows it): **New photobook** at the top, **Library** and **Layouts** (see [4. Layouts](#4-layouts)) under it, then **Drafts** (books
 still being analysed or chosen, shown only when there are any), then **Favourites** (books you
 starred, shown only when there are any), then every other book you have made, each with its
 cover, and **Settings** at the bottom. Click a book or a draft there to open it from wherever
@@ -335,13 +335,21 @@ back cover, the way the printed book opens.
 
 - **Regenerate** (dice) lays the same photos out on a layout this opening has not shown
   yet. Click again to see the next one; when every layout for that many photos has been
-  shown, the button is disabled.
+  shown, the button is disabled. It picks from the built-in layouts and from your own
+  layouts that have **Use in auto layout** on, never from the others.
 - **Reject** (thumbs down) does the same, and never offers the current layout here again.
-- **Choose a layout** (grid) lists the other layouts that hold this many photos. Each
+- **Choose a layout** (grid) lists the other layouts that hold this many photos, your own
+  layouts included whether or not **Use in auto layout** is on. Each
   one has a small drawing of the page or spread at the book's page shape, with a grey
   block for each photo, so you can see the layout before picking it. The menu's first
   line, **Now**, draws and names the layout the opening uses now. Its template id is
-  printed under it, one per page where the two pages are laid out separately.
+  printed under it, one per page where the two pages are laid out separately. One of your
+  layouts that this book's print size cannot print is listed dimmed with the reason, for
+  example a box edge that stops inside the bleed, and cannot be picked. At the bottom,
+  **Save as layout…** names the opening's current arrangement and adds it to your layouts,
+  with a notice offering **Open Layouts**; **New layout…** opens the layout editor on an
+  empty page or spread of the same kind, and saving or cancelling there brings you back to
+  the book.
 - **Lock** keeps the opening exactly as it is: **Shuffle** at the top of the book re-lays
   every unlocked opening at once and skips locked ones, and a locked opening refuses every
   other change until unlocked. Pressing or dragging a photo on a locked opening says so in
@@ -569,3 +577,49 @@ Export carries no titles: they are not drawn into the photo files, `manifest.jso
 text, and the **Export** sheet does not list them. To add one, open that page in Pixajoy's
 editor, add a text box, type the title, and place it where the editor shows the title spot.
 
+## 4. Layouts
+
+**Layouts** in the sidebar lists your own layouts and the built-in ones. Your layouts belong
+to the app, not to one book: every book offers them.
+
+**Your layouts** shows each one as a card with its drawing, name, kind (spread, left page or
+right page) and photo count. Click the drawing to edit it. **…** on a card offers **Edit**,
+**Rename…**, **Duplicate** (a copy named "… copy", with **Use in auto layout** off) and
+**Delete…**. Deleting asks first. Books stop offering the layout, and pages already laid
+out with it keep their photos where they are.
+
+**Use in auto layout** on a card is off for a new layout. Off, the layout only appears in a
+page's **Choose a layout** menu. On, the book can also pick it by itself: when it is made,
+and on **Regenerate**, **Reject** and **Shuffle**.
+
+**Built-in layouts** are the ones books use by themselves, grouped by photo count. They
+cannot be changed; the copy button beside one makes an editable copy in your layouts and
+opens it in the editor.
+
+**New layout** at the top right starts an empty **Spread** (both pages of an opening), **Left
+page** (the last page, or half a spread) or **Right page** (page 1, or half a spread). A
+book's **New layout…** opens the same editor; see [3. Editing the book](#3-editing-the-book).
+
+### The layout editor
+
+The editor shows the page or spread at the standard print size, with the trim, the gutter
+and the fold. **Add box** adds a photo box; drag a box to move it and its corner handles to
+resize it. Edges snap to the paper edge, the trim, the fold, the gutter and the other
+boxes. Arrow keys nudge the selected box (Shift for a bigger step), and Delete or Backspace
+removes it, as does **Remove box**. **Hero** marks the selected box as the one that gets
+the strongest photo. A layout holds 1 to 8 boxes.
+
+The panel on the right checks the layout as you work:
+
+- **Fix before saving** lists what stops a save: no boxes, more than 8, a box that
+  spills off the paper, is too small, or crosses the fold, or two boxes that overlap. The boxes concerned are marked.
+- **Won't print at the standard size** lists print rules the layout breaks at the standard
+  size, such as an edge that stops inside the 5 mm bleed or inside the gutter by the fold, or a
+  box that the trim and fold would mostly hide.
+  You can still save it. A book at a size the layout breaks lists it dimmed in **Choose a
+  layout** with the same reason and never picks it; a book at a size it fits uses it
+  normally.
+- **Prints at the standard size** when neither applies.
+
+Name the layout in the box at the top and press **Save layout** (**Save changes** when
+editing one), or **Cancel** to leave without saving.

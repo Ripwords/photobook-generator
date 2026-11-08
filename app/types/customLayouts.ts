@@ -49,6 +49,16 @@ export interface CustomLayout {
   updatedAt: number;
 }
 
+/**
+ * Mirrors `custom_layouts::BuiltinLayout`: a shipped template as the Layouts
+ * screen draws it, and the shape a copy of it starts from. Named by
+ * `templateLabel(id)`.
+ */
+export interface BuiltinLayout {
+  id: string;
+  shape: LayoutShape;
+}
+
 /** Mirrors `geometry::BleedEdge`. */
 export type BleedEdge = "left" | "right" | "top" | "bottom";
 
@@ -103,6 +113,14 @@ export function customLayoutErrorText(error: CustomLayoutError): string {
     case "storage":
       return `Could not save layouts: ${error.message}`;
   }
+}
+
+/**
+ * Whether a problem kind is a print rule: one that refuses the layout only
+ * for books whose size cannot print it, and never refuses a save.
+ */
+export function isPrintRule(kind: LayoutProblem["kind"]): boolean {
+  return kind === "edgeInBleed" || kind === "edgeInGutter" || kind === "mostlyHidden";
 }
 
 /** The boxes a problem points at, 0-based, so an editor can mark them. */

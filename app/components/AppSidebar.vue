@@ -23,6 +23,7 @@ const {
 const emit = defineEmits<{
   new: [];
   library: [];
+  layouts: [];
   open: [id: number];
   openDraft: [jobId: number];
   favourite: [id: number, favourite: boolean];
@@ -141,6 +142,15 @@ const itemClass = (active: boolean) => [
       >
         <UIcon name="i-lucide-library" class="size-4 shrink-0" />
         <span class="flex-1">Library</span>
+      </button>
+      <button
+        type="button"
+        :class="itemClass(screen.kind === 'layouts')"
+        :aria-current="screen.kind === 'layouts' ? 'page' : undefined"
+        @click="emit('layouts')"
+      >
+        <UIcon name="i-lucide-layout-template" class="size-4 shrink-0" />
+        <span class="flex-1">Layouts</span>
       </button>
     </div>
 

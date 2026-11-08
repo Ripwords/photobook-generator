@@ -2,7 +2,8 @@
 import { previewOrder } from "~/types/graphics";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
-  canRelayout,
+  canChooseLayout,
+  canRegenerate,
   chapterOpening,
   cropSubject,
   leftOutPhotos,
@@ -12,7 +13,7 @@ import {
   setCropEdit,
   setSlotEdit,
   spreadTemplates,
-  templateLabel,
+  layoutLabel,
   toSpreads,
   type BookEdit,
   type BookLayout,
@@ -21,11 +22,17 @@ import {
   type PickTarget,
   type PlacementRef,
   type PreviewGeometry,
+  type PreviewOpening,
+  type PreviewPage,
+  type PreviewSpread,
   type PreviewRect,
   escapeDeselects,
 } from "~/types/preview";
 import { dropTargetAt, placementKey, swapStepFor, type DropOutcome } from "~/types/photoDrag";
 import { RETURN_MS } from "~/composables/usePhotoDrag";
+import type { DropdownMenuItem } from "@nuxt/ui";
+import type { LayoutShape } from "~/types/customLayouts";
+import { openingBlankShape, openingPages } from "~/types/layoutEditor";
 
 const {
   layout,
@@ -42,6 +49,10 @@ const {
 const emit = defineEmits<{
   /** One spread-level edit for `useBook.editBook` to send and apply. */
   edit: [edit: BookEdit];
+  /** "Save as layout…": these pages' boxes, to name and keep. */
+  saveLayout: [pages: PreviewPage[]];
+  /** "New layout…": an empty layout of this opening's kind, to draw. */
+  newLayout: [shape: LayoutShape];
 }>();
 
 /**
@@ -86,7 +97,7 @@ const anyLocked = computed(() => layout.openings.some((opening) => opening.locke
 
 /** The opening shown large in the page viewer, or `null` when it is closed. */
 const viewing = ref<number | null>(null);
-const anyToShuffle = computed(() => layout.openings.some(canRelayout));
+const anyToShuffle = computed(() => layout.openings.some(canRegenerate));
 const shuffleLabel = computed(() => (anyLocked.value ? "Shuffle unlocked spreads" : "Shuffle every spread"));
 
 /**
@@ -361,29 +372,59 @@ function onSlot(placement: PlacementRef, rect: PreviewRect) {
   emit("edit", setSlotEdit(placement, rect));
 }
 
+/** A layout menu entry, drawn with its sketch when it has one. */
+type LayoutMenuItem = DropdownMenuItem & { sketch?: PreviewRect[][] };
+
 /**
  * The layout menu, headed by the template ids this opening uses now. The ids
  * used to sit beside the page label, where a template repeating across
  * consecutive openings was visible at a glance; they are machine data, so
  * they moved here, one click away for whoever is chasing that defect.
+ *
+ * Then every layout it can switch to, the user's own among them; then the
+ * user's layouts this book's print size refuses, dimmed, each with why; then
+ * saving this opening as a layout, or drawing a new one its shape.
  */
-function layoutMenu(index: number, alternatives: string[], current: string[]) {
+function layoutMenu(spread: PreviewSpread & { index: number; opening: PreviewOpening }): LayoutMenuItem[][] {
+  const current = spreadTemplates(spread);
   const [shown] = current;
+  const choosable = canChooseLayout(spread.opening);
+  const photos = openingPages(spread).some((page) => page.placements.length > 0);
   return [
     [
       {
         type: "label" as const,
-        label: shown ? `Now: ${templateLabel(shown)}` : "Now",
+        label: shown ? `Now: ${layoutLabel(layout, shown)}` : "Now",
         description: current.join(", "),
         sketch: shown ? layout.sketches[shown] : undefined,
       },
     ],
-    alternatives.map((templateId) => ({
-      label: templateLabel(templateId),
+    spread.opening.alternatives.map((templateId) => ({
+      label: layoutLabel(layout, templateId),
       sketch: layout.sketches[templateId],
-      onSelect: () => emit("edit", { kind: "setTemplate", opening: index, templateId }),
+      disabled: !choosable,
+      onSelect: () => emit("edit", { kind: "setTemplate", opening: spread.index, templateId }),
     })),
-  ];
+    spread.opening.refused.map((refused) => ({
+      label: layoutLabel(layout, refused.templateId),
+      description: refused.problems.map((problem) => problem.message).join(" "),
+      sketch: layout.sketches[refused.templateId],
+      disabled: true,
+    })),
+    [
+      {
+        label: "Save as layout…",
+        icon: "i-lucide-bookmark-plus",
+        disabled: !photos,
+        onSelect: () => emit("saveLayout", openingPages(spread)),
+      },
+      {
+        label: "New layout…",
+        icon: "i-lucide-pencil-ruler",
+        onSelect: () => emit("newLayout", openingBlankShape(spread)),
+      },
+    ],
+  ].filter((group) => group.length > 0);
 }
 
 /**
@@ -608,7 +649,7 @@ function onTrayPointerDown(event: PointerEvent, photo: (typeof leftOut.value)[nu
                   color="neutral"
                   variant="ghost"
                   :aria-label="`Regenerate ${spread.label}`"
-                  :disabled="busy || !canRelayout(spread.opening)"
+                  :disabled="busy || !canRegenerate(spread.opening)"
                   @click="emit('edit', { kind: 'regenerate', opening: spread.index })"
                 />
               </UTooltip>
@@ -618,24 +659,25 @@ function onTrayPointerDown(event: PointerEvent, photo: (typeof leftOut.value)[nu
                   color="neutral"
                   variant="ghost"
                   :aria-label="`Reject the layout of ${spread.label}`"
-                  :disabled="busy || !canRelayout(spread.opening)"
+                  :disabled="busy || !canRegenerate(spread.opening)"
                   @click="emit('edit', { kind: 'rejectTemplate', opening: spread.index })"
                 />
               </UTooltip>
               <UDropdownMenu
-                :items="layoutMenu(spread.index, spread.opening.alternatives, spreadTemplates(spread))"
+                :items="layoutMenu(spread)"
                 :content="{ align: 'end' }"
-                :ui="{ content: 'max-h-[70vh] min-w-72', item: 'gap-3 py-2', label: 'flex items-center gap-3 py-2' }"
+                :ui="{ content: 'max-h-[70vh] min-w-72 max-w-md', item: 'gap-3 py-2', label: 'flex items-center gap-3 py-2', itemDescription: 'whitespace-normal' }"
               >
                 <template #item-leading="{ item }">
                   <TemplateSketch v-if="item.sketch" :pages="item.sketch" :aspect="pageAspect" />
+                  <UIcon v-else-if="item.icon" :name="item.icon" class="size-5 shrink-0 text-dimmed" />
                 </template>
                 <UButton
                   icon="i-lucide-layout-template"
                   color="neutral"
                   variant="ghost"
                   :aria-label="`Choose a layout for ${spread.label}`"
-                  :disabled="busy || !canRelayout(spread.opening)"
+                  :disabled="busy"
                 />
               </UDropdownMenu>
               <UTooltip
