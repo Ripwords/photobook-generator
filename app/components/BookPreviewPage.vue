@@ -265,7 +265,7 @@ function previewSrc(ref: PlacementRef): string | null {
   const other = role === "source" ? photoDrag.hover.value.placement : role === "swap" ? photoDrag.source.value : null;
   if (!other) return null;
   const photo = photoAt(layout, other);
-  return photo?.thumbnailPath ? convertFileSrc(photo.thumbnailPath) : null;
+  return photo ? graphics.src(photo) : null;
 }
 
 // The saved book is the truth. Once the edit a gesture produced has been
