@@ -24,6 +24,36 @@ deliberately-parked decision that this file is the only surviving record of.**
 
 ---
 
+## What changed on 2026-11-08: user-made layouts, backend only (UX phase 4)
+
+**What was built.** Users can store their own page or spread layouts of normalised boxes in
+one global library, the `custom_layouts` table. Each layout has a **Use in auto layout**
+flag, off by default. Off means only the layout menu and `setTemplate` reach it. On means
+it is scored like a built-in. Validator, store, engine merge, 8 Tauri commands, TypeScript
+mirrors, a wire fixture and the browser-harness commands exist. **No UI exists yet**, and
+the manual has no entry. Design and command signatures:
+`docs/superpowers/plans/2026-11-08-custom-layouts.md`.
+
+**Things that will bite you:**
+
+- **Two questions, two queries.** `Library::auto_spreads_with` / `auto_pages` answer "what
+  may automatic layout pick". `menu_spreads_with` / `menu_pages` answer "what may the user
+  pick". Generate, Regenerate, Reject, Shuffle and Add photo must use `auto_*`. A new
+  engine path that picks a layout and calls `menu_*` silently puts auto-off layouts into
+  books. The engine tests in `custom_layouts.rs` catch that only for the five paths named.
+- **The library is per command.** `commands::book_library` merges the store at the book's
+  `spec` on every call. Do not cache a `Library` across commands, or edits to a layout stop
+  reaching books. `recommend_book` and capacity stay built-in only on purpose.
+- **Print rules refuse per book, not at save.** A layout valid at Pixajoy size can be
+  refused at another size. It then appears on `PreviewOpening.refused`, not in
+  `alternatives`, and `setTemplate` with its id fails with `EditError::UnknownTemplate`.
+- **Deleting a layout leaves books alone.** Their pages keep the rects. The id stops
+  resolving, so its sketch and name disappear from the preview.
+- **Reserved ids.** `Library::load` refuses a built-in template whose id starts with
+  `user-` or contains `:`.
+
+---
+
 ## What changed on 2026-11-08: the Graphics setting (branch `feat/story`)
 
 **The problem.** Every editor image drew from the 400 px analysis thumbnail

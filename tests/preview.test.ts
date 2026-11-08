@@ -45,6 +45,7 @@ import {
   NO_HOLD,
   spreadTemplates,
   templateLabel,
+  layoutLabel,
   toSpreads,
   wheelZoomFactor,
   type BookEdit,
@@ -669,14 +670,14 @@ describe("openings", () => {
   });
 
   it("reads an opening's controls off the payload, and falls back to nothing to offer", () => {
-    expect(openingFor(layout, 1)).toEqual({ index: 1, locked: false, rejected: [], alternatives: [] });
-    expect(openingFor(layout, 42)).toEqual({ index: 42, locked: false, rejected: [], alternatives: [] });
+    expect(openingFor(layout, 1)).toEqual({ index: 1, locked: false, rejected: [], alternatives: [], refused: [] });
+    expect(openingFor(layout, 42)).toEqual({ index: 42, locked: false, rejected: [], alternatives: [], refused: [] });
   });
 
   it("can only re-lay an unlocked opening that has somewhere else to go", () => {
-    expect(canRelayout({ index: 0, locked: false, rejected: [], alternatives: ["a"] })).toBe(true);
-    expect(canRelayout({ index: 0, locked: true, rejected: [], alternatives: ["a"] })).toBe(false);
-    expect(canRelayout({ index: 0, locked: false, rejected: ["b"], alternatives: [] })).toBe(false);
+    expect(canRelayout({ index: 0, locked: false, rejected: [], alternatives: ["a"], refused: [] })).toBe(true);
+    expect(canRelayout({ index: 0, locked: true, rejected: [], alternatives: ["a"], refused: [] })).toBe(false);
+    expect(canRelayout({ index: 0, locked: false, rejected: ["b"], alternatives: [], refused: [] })).toBe(false);
   });
 });
 
@@ -723,6 +724,19 @@ describe("templateLabel", () => {
     expect(templateLabel("35-portrait-triptych-hero-left:right")).toBe(
       "portrait triptych hero left (right half)",
     );
+  });
+});
+
+describe("layoutLabel", () => {
+  it("reads the fixture's layoutNames, which an empty library leaves empty", () => {
+    expect(layout.layoutNames).toEqual({});
+    expect(layoutLabel(layout, "07-two-up-symmetric-margin")).toBe("two up symmetric margin");
+  });
+
+  it("names a user layout by the name the user gave it", () => {
+    const named = { ...layout, layoutNames: { "user-0123": "Beach pair" } };
+    expect(layoutLabel(named, "user-0123")).toBe("Beach pair");
+    expect(layoutLabel(named, "07-two-up-symmetric-margin")).toBe("two up symmetric margin");
   });
 });
 

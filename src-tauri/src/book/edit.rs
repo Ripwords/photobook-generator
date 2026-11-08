@@ -480,17 +480,10 @@ fn previous_template(book: &Book, o: usize) -> Option<String> {
     (!id.contains(':') && id != crate::book::pace::BLANK_TEMPLATE_ID).then(|| id.clone())
 }
 
-/// Every half of every template, with the id the manifest names it by.
+/// Every page layout the menu may offer a single page, with the id the
+/// manifest names it by. See `Library::menu_pages`.
 fn halves(lib: &Library) -> Vec<(String, &PageLayout)> {
-    lib.spreads
-        .iter()
-        .flat_map(|t| {
-            [
-                (half_id(&t.id, Side::Left), &t.left),
-                (half_id(&t.id, Side::Right), &t.right),
-            ]
-        })
-        .collect()
+    lib.menu_pages()
 }
 
 /// The templates that could replace the current one on opening `o`, in
@@ -519,12 +512,33 @@ pub fn alternatives(book: &Book, lib: &Library, o: usize) -> Vec<String> {
             .map(|(id, _)| id)
             .collect()
     } else {
-        lib.spreads_with(n)
+        lib.menu_spreads_with(n)
             .into_iter()
             .filter(|t| allowed(&t.id))
             .map(|t| t.id.clone())
             .collect()
     }
+}
+
+/// `alternatives` that automatic layout may pick: Regenerate, Reject and
+/// Shuffle draw from these, never from a user layout with auto off.
+fn auto_alternatives(book: &Book, lib: &Library, o: usize) -> Vec<String> {
+    alternatives(book, lib, o).into_iter().filter(|id| lib.in_auto(id)).collect()
+}
+
+/// The user layouts the menu shows dimmed on opening `o`: they hold its
+/// photo count (and side, for a single page) but this book's print size
+/// refuses them. See `Library::refused_for`.
+pub fn refused(book: &Book, lib: &Library, o: usize) -> Vec<crate::templates::RefusedLayout> {
+    let Some(pages) = opening_pages(book, o) else {
+        return Vec::new();
+    };
+    let n = opening_photos(book, &pages).len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let side = is_single(book, o).then(|| book.pages[pages[0]].side);
+    lib.refused_for(n, side)
 }
 
 /// Applies one edit. On `Err` the book is unchanged.
@@ -613,7 +627,7 @@ fn regenerate(
     if indices.is_empty() {
         return Err(EditError::Empty(o));
     }
-    let candidates = alternatives(book, lib, o);
+    let candidates = auto_alternatives(book, lib, o);
     if candidates.is_empty() {
         return Err(EditError::NoAlternative {
             opening: o,
@@ -678,13 +692,13 @@ fn templates_for(book: &Book, lib: &Library, o: usize, pages: &[usize], n: usize
     let allowed = |id: &str| !rejected.iter().any(|r| r == id);
     if is_single(book, o) {
         let side = book.pages[pages[0]].side;
-        halves(lib)
+        lib.auto_pages()
             .into_iter()
             .filter(|(id, l)| l.side == side && l.slots.len() == n && allowed(id))
             .map(|(id, _)| id)
             .collect()
     } else {
-        lib.spreads_with(n)
+        lib.auto_spreads_with(n)
             .into_iter()
             .filter(|t| allowed(&t.id))
             .map(|t| t.id.clone())
@@ -790,7 +804,7 @@ fn reject(
     if indices.is_empty() {
         return Err(EditError::Empty(o));
     }
-    if alternatives(book, lib, o).is_empty() {
+    if auto_alternatives(book, lib, o).is_empty() {
         return Err(EditError::NoAlternative {
             opening: o,
             photos: indices.len(),
@@ -833,10 +847,7 @@ fn set_template(
                 }
             })
     } else {
-        lib.spreads
-            .iter()
-            .find(|t| t.id == template_id)
-            .map(|t| t.photo_count())
+        lib.spread(template_id).map(|t| t.photo_count())
     };
     let holds = holds.ok_or_else(|| EditError::UnknownTemplate(template_id.to_string()))?;
     if holds != indices.len() {
@@ -906,11 +917,8 @@ fn lay_out(
             placements: place(&book.spec, layout, indices, photos),
         }]);
     }
-    let eligible: Vec<&SpreadTemplate> = lib
-        .spreads
-        .iter()
-        .filter(|t| candidates.contains(&t.id))
-        .collect();
+    let eligible: Vec<&SpreadTemplate> =
+        candidates.iter().filter_map(|id| lib.spread(id)).collect();
     let refs: Vec<&Photo> = indices.iter().map(|&i| &photos[i]).collect();
     let previous = previous_template(book, o);
     // Recovered from the book, so a regenerate keeps the chapter's opening
@@ -943,20 +951,8 @@ fn slot_for<'a>(
     page_index: usize,
 ) -> Result<&'a PageLayout, EditError> {
     let page = &book.pages[page_index];
-    let (id, side) = match page.template_id.rsplit_once(':') {
-        Some((id, "left")) => (id, Side::Left),
-        Some((id, "right")) => (id, Side::Right),
-        _ => (page.template_id.as_str(), page.side),
-    };
-    let template = lib
-        .spreads
-        .iter()
-        .find(|t| t.id == id)
-        .ok_or_else(|| EditError::MissingLayout(page.template_id.clone()))?;
-    Ok(match side {
-        Side::Left => &template.left,
-        Side::Right => &template.right,
-    })
+    lib.half(&page.template_id, page.side)
+        .ok_or_else(|| EditError::MissingLayout(page.template_id.clone()))
 }
 
 /// The slot a placement prints in, as the constraints see it: the
@@ -991,7 +987,7 @@ fn placement_slot(
 
 /// The edges of a page-normalised rect that reach the canvas boundary and so
 /// print as bleed. The fold edge is not a boundary: the paper continues.
-fn bleed_edges(rect: &Rect, side: Side) -> Vec<BleedEdge> {
+pub(crate) fn bleed_edges(rect: &Rect, side: Side) -> Vec<BleedEdge> {
     const EPS: f64 = 1e-9;
     let mut edges = Vec::new();
     if rect.x <= EPS && side == Side::Left {
@@ -2513,7 +2509,7 @@ mod tests {
         let to_o = spread_with(&b, 2);
         let from = first_on(&b, from_o);
         b.controls.entry(from_o).or_default().rejected =
-            lib.spreads_with(2).into_iter().map(|t| t.id.clone()).collect();
+            lib.auto_spreads_with(2).into_iter().map(|t| t.id.clone()).collect();
         let before = b.clone();
 
         assert_eq!(
@@ -3393,10 +3389,10 @@ fn set_cover_crop(
 
 /// The smallest slot accepted, as a fraction of the page each way. Smaller
 /// than this is a sliver nobody meant to print.
-const MIN_SLOT: f64 = 0.05;
+pub(crate) const MIN_SLOT: f64 = 0.05;
 /// Two slots may touch; they may not overlap by more than this, the same
 /// tolerance the template validator allows for authored rounding.
-const OVERLAP_EPS: f64 = 0.0005;
+pub(crate) const OVERLAP_EPS: f64 = 0.0005;
 
 /// Moves or resizes a slot on the page and re-crops its photo for the new
 /// shape.

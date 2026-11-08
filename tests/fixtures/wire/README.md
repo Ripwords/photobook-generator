@@ -53,6 +53,17 @@ expect the other language's suite to tell you what else has to move.**
   `refusalField` and `checkSummary`. The checked case uses a 16 x 8 page with
   quarter-inch insets so every guide rect is an exact binary fraction and
   `to_value` compares directly, unlike `book-layout.json`.
+  **`custom-layouts.json`** pins the user-layout commands: two stored layouts
+  (a spread and a right page), one `Problem` of every kind with its message,
+  a `RefusedLayout` as an opening's `refused` carries it, and one
+  `CustomLayoutError` of every kind. Its Rust half is in
+  `src-tauri/src/custom_layouts.rs`. The layouts and problems are literals,
+  because ids and timestamps are random. Every error except `storage` comes
+  from a real store call, so the store's own wording is pinned. That half also
+  parses each fixture shape back as a `LayoutShape`, which is the direction the
+  webview sends. Its TypeScript half is `tests/customLayouts.test.ts`, which
+  feeds the problems and errors through `problemSlots` and
+  `customLayoutErrorText`.
 - **`book-layout.json` is the only fixture carrying an irrational float**
   (`PreviewGeometry`'s guide rects, which are `0.197 / 11.197` and friends
   derived from the book's `PrintSpec`). serde_json's *default* float parser is the fast approximate

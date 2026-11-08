@@ -29,6 +29,7 @@
  */
 
 import type { BookOptions } from "./book";
+import type { RefusedLayout } from "./customLayouts";
 import type { PrintSpec } from "./printSpec";
 
 /** Mirrors `geometry::Rect`, which serialises its fields unrenamed. */
@@ -145,9 +146,12 @@ export interface BookLayout {
   /**
    * Slot rects, page-normalised and page by page, for every template id the
    * layout menu can name: two pages for a spread, one for a single page's
-   * `<id>:<side>` half. Ids the library no longer has are missing.
+   * `<id>:<side>` half. Refused user layouts are included so the menu can
+   * draw them dimmed. Ids the library no longer has are missing.
    */
   sketches: Record<string, PreviewRect[][]>;
+  /** The user's name for every user layout id in `sketches` -- see `layoutLabel`. */
+  layoutNames: Record<string, string>;
 }
 
 /** Which edge of its box a title hugs. */
@@ -234,6 +238,12 @@ export interface PreviewOpening {
    * shown or rejected -- which is also when "regenerate" has nothing to do.
    */
   alternatives: string[];
+  /**
+   * User layouts with this opening's photo count (and, for a single page,
+   * its side) that this book's print size cannot print. The menu shows them
+   * dimmed with each problem's `message`; `setTemplate` refuses them.
+   */
+  refused: RefusedLayout[];
 }
 
 /** Mirrors `edit::PlacementRef`: a slot named by printed page number and z. */
@@ -657,7 +667,7 @@ export function leftOutPhotos(layout: BookLayout): (PreviewPhoto & { index: numb
 }
 
 /** No decisions and nothing to offer: what a payload without controls means. */
-const UNCONTROLLED: Omit<PreviewOpening, "index"> = { locked: false, rejected: [], alternatives: [] };
+const UNCONTROLLED: Omit<PreviewOpening, "index"> = { locked: false, rejected: [], alternatives: [], refused: [] };
 
 /**
  * The controls for the opening at `index` of `toSpreads(layout.pages)`.
@@ -688,6 +698,11 @@ export function templateLabel(id: string): string {
   const [base, side] = id.split(":");
   const words = (base ?? id).replace(/^\d+-/, "").replaceAll("-", " ");
   return side ? `${words} (${side} half)` : words;
+}
+
+/** A template's menu label: the user's name for a user layout, else `templateLabel`. */
+export function layoutLabel(layout: BookLayout, id: string): string {
+  return layout.layoutNames[id] ?? templateLabel(id);
 }
 
 /** A layout drawn small: page outlines and slots in one SVG's own units. */

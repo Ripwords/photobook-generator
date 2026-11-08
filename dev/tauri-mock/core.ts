@@ -61,6 +61,7 @@ import type {
   Tier,
 } from "../../app/types/features";
 import type { PreflightFinding } from "../../app/types/book";
+import { layoutCommand } from "./layouts";
 import { cancelModelRequest, modelRequest, type ModelRequestArgs } from "./model";
 import { mockPhotos, mockPlaceChapters, mockPlaceNames, thumbnail } from "./photos";
 
@@ -72,6 +73,7 @@ layout.openings[1] = {
   locked: false,
   rejected: [],
   alternatives: ["07-two-up-symmetric-margin", "08-two-up-symmetric-bleed-outer"],
+  refused: [],
 };
 // Their sketches, and the current template's, as Rust would send them: each
 // slot of `templates/*.json` decomposed onto its own page.
@@ -900,6 +902,8 @@ function writeDrafts(drafts: Record<number, string>) {
 }
 
 export async function invoke<T>(command: string, args?: Args): Promise<T> {
+  const userLayouts = layoutCommand(command, args);
+  if (userLayouts) return userLayouts.value as T;
   switch (command) {
     case "list_projects":
       return structuredClone(projects) as T;

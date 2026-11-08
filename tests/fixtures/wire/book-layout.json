@@ -108,23 +108,27 @@
       }
     }
   },
+  "layoutNames": {},
   "openings": [
     {
       "alternatives": [],
       "index": 0,
       "locked": false,
+      "refused": [],
       "rejected": []
     },
     {
       "alternatives": [],
       "index": 1,
       "locked": false,
+      "refused": [],
       "rejected": []
     },
     {
       "alternatives": [],
       "index": 2,
       "locked": false,
+      "refused": [],
       "rejected": []
     }
   ],

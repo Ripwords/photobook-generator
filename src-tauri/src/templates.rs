@@ -6,7 +6,10 @@
 //! two pages are authored together. The engine's atom is the page because
 //! Pixajoy's boxes are page-local. Decomposition at load reconciles the two.
 
+use crate::book::pace::half_id;
+use crate::custom_layouts::{self, CustomLayout, Problem};
 use crate::geometry::{spread_to_page, BleedEdge, Rect, Side};
+use crate::print_spec::PrintSpec;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -107,6 +110,11 @@ pub enum TemplateError {
     Parse(String),
     SpansFold { template: String, slot: usize },
     TextSpansFold { template: String, zone: usize },
+    /// A built-in id a user layout or a single page could be mistaken for:
+    /// one holding the `:` that names a page half, or one in the
+    /// `custom_layouts::ID_PREFIX` namespace. Refused at load so the two id
+    /// spaces can never meet, however the templates folder is edited.
+    ReservedId { template: String },
 }
 
 impl std::fmt::Display for TemplateError {
@@ -123,6 +131,12 @@ impl std::fmt::Display for TemplateError {
                 f,
                 "template '{template}' text zone {zone} spans the fold; Pixajoy text \
                  boxes are page-local and cannot cross it"
+            ),
+            TemplateError::ReservedId { template } => write!(
+                f,
+                "template id '{template}' is reserved: built-in ids may not contain ':' \
+                 or start with '{}'",
+                custom_layouts::ID_PREFIX
             ),
         }
     }
@@ -157,12 +171,214 @@ struct RawTemplate {
     energy: Energy,
 }
 
-#[derive(Debug)]
+/// The templates one book lays out from.
+///
+/// Two populations behind one door. `spreads` is the BUILT-IN set, loaded
+/// from `templates/*.json` -- it alone sizes the book (`pack` reads it for
+/// capacity), so a user layout never changes how many photos a book holds.
+/// The user's own layouts join through `with_custom`, per book, because
+/// whether one prints depends on the book's `PrintSpec`.
+///
+/// Every place that enumerates candidates must say which question it asks,
+/// and there are exactly two:
+/// - "what may automatic layout pick?" -- `auto_spreads_with`, `auto_pages`:
+///   built-ins plus user layouts with "Use in auto layout" on;
+/// - "what may the user pick from the menu?" -- `menu_spreads_with`,
+///   `menu_pages`: built-ins plus every user layout this book admits.
+///
+/// Lookups by id (`spread`, `half`, `pages_of`) resolve both populations.
+#[derive(Debug, Default)]
 pub struct Library {
+    /// Built-in templates only. Iterate it directly only for capacity
+    /// arithmetic or authoring checks, never to choose a layout.
     pub spreads: Vec<SpreadTemplate>,
+    custom: Vec<Admitted>,
+    refused: Vec<Refused>,
+    /// Every user layout's display name by id, admitted or refused.
+    names: Vec<(String, String)>,
+}
+
+/// A user layout, converted to the engine's types for one book.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CustomTemplate {
+    Spread(SpreadTemplate),
+    Page { id: String, layout: PageLayout },
+}
+
+impl CustomTemplate {
+    fn id(&self) -> &str {
+        match self {
+            CustomTemplate::Spread(t) => &t.id,
+            CustomTemplate::Page { id, .. } => id,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Admitted {
+    auto: bool,
+    template: CustomTemplate,
+}
+
+#[derive(Debug)]
+struct Refused {
+    photos: usize,
+    /// `None` for a spread layout, the page's side for a page layout.
+    side: Option<Side>,
+    /// Page-normalised box rects per page, for the dimmed menu entry.
+    sketch: Vec<Vec<Rect>>,
+    layout: RefusedLayout,
+}
+
+/// A user layout this book's print size cannot print, and why. The layout
+/// menu shows it dimmed with these reasons rather than hiding it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefusedLayout {
+    pub template_id: String,
+    pub problems: Vec<Problem>,
 }
 
 impl Library {
+    /// This library plus the user's layouts as one book at `spec` sees them:
+    /// each one either admitted (it passes `custom_layouts::check` at this
+    /// size) or refused with its problems. Built per command from the store,
+    /// so an edit to a layout reaches the next command without a restart.
+    pub fn with_custom(mut self, layouts: &[CustomLayout], spec: &PrintSpec) -> Library {
+        for l in layouts {
+            self.names.push((l.id.clone(), l.name.clone()));
+            let problems = custom_layouts::check(&l.shape, spec);
+            if problems.is_empty() {
+                self.custom.push(Admitted {
+                    auto: l.auto,
+                    template: custom_layouts::to_template(l, spec),
+                });
+            } else {
+                self.refused.push(Refused {
+                    photos: l.shape.boxes().len(),
+                    side: l.shape.side(),
+                    sketch: custom_layouts::sketch(&l.shape),
+                    layout: RefusedLayout {
+                        template_id: l.id.clone(),
+                        problems: problems.into_iter().map(Problem::from).collect(),
+                    },
+                });
+            }
+        }
+        self
+    }
+
+    fn custom_spreads(&self, auto_only: bool) -> impl Iterator<Item = &SpreadTemplate> {
+        self.custom.iter().filter(move |a| a.auto || !auto_only).filter_map(|a| match &a.template {
+            CustomTemplate::Spread(t) => Some(t),
+            CustomTemplate::Page { .. } => None,
+        })
+    }
+
+    fn pages(&self, auto_only: bool) -> Vec<(String, &PageLayout)> {
+        let built_in = self.spreads.iter().flat_map(|t| {
+            [(half_id(&t.id, Side::Left), &t.left), (half_id(&t.id, Side::Right), &t.right)]
+        });
+        let custom = self
+            .custom
+            .iter()
+            .filter(move |a| a.auto || !auto_only)
+            .filter_map(|a| match &a.template {
+                CustomTemplate::Page { id, layout } => Some((id.clone(), layout)),
+                CustomTemplate::Spread(_) => None,
+            });
+        built_in.chain(custom).collect()
+    }
+
+    /// The spreads automatic layout may choose for `n` photos: built-ins,
+    /// then user layouts with auto on. Templates are exact-count, so
+    /// eligibility is equality, not a range.
+    pub fn auto_spreads_with(&self, n: usize) -> Vec<&SpreadTemplate> {
+        self.spreads
+            .iter()
+            .chain(self.custom_spreads(true))
+            .filter(|t| t.photo_count() == n)
+            .collect()
+    }
+
+    /// The spreads the layout menu offers for `n` photos: built-ins, then
+    /// every user layout this book admits, auto or not.
+    pub fn menu_spreads_with(&self, n: usize) -> Vec<&SpreadTemplate> {
+        self.spreads
+            .iter()
+            .chain(self.custom_spreads(false))
+            .filter(|t| t.photo_count() == n)
+            .collect()
+    }
+
+    /// The page layouts automatic layout may put on a single page (1 and N),
+    /// with the id a page names them by: every built-in half as
+    /// `<id>:left|right`, then user page layouts with auto on, under their
+    /// own id.
+    pub fn auto_pages(&self) -> Vec<(String, &PageLayout)> {
+        self.pages(true)
+    }
+
+    /// `auto_pages` for the layout menu: every admitted user page layout.
+    pub fn menu_pages(&self) -> Vec<(String, &PageLayout)> {
+        self.pages(false)
+    }
+
+    /// A spread template by id, built-in or user.
+    pub fn spread(&self, id: &str) -> Option<&SpreadTemplate> {
+        self.spreads.iter().chain(self.custom_spreads(false)).find(|t| t.id == id)
+    }
+
+    /// Whether automatic layout may pick `id`. False only for a user layout
+    /// with auto off; an id this library does not hold is left to the
+    /// lookup that fails on it.
+    pub fn in_auto(&self, id: &str) -> bool {
+        self.custom.iter().find(|a| a.template.id() == id).is_none_or(|a| a.auto)
+    }
+
+    /// The user layouts this book refuses that would otherwise be offered to
+    /// an opening of `photos` photos. `side` is `None` for a spread and the
+    /// page's side for a single page.
+    pub fn refused_for(&self, photos: usize, side: Option<Side>) -> Vec<RefusedLayout> {
+        self.refused
+            .iter()
+            .filter(|r| r.photos == photos && r.side == side)
+            .map(|r| r.layout.clone())
+            .collect()
+    }
+
+    /// A user layout's name, or `None` for a built-in or unknown id.
+    pub fn custom_name(&self, id: &str) -> Option<&str> {
+        self.names.iter().find(|(i, _)| i == id).map(|(_, n)| n.as_str())
+    }
+
+    /// A refused user layout's box rects per page. Admitted layouts are
+    /// drawn from `pages_of` instead.
+    pub fn refused_sketch(&self, id: &str) -> Option<&Vec<Vec<Rect>>> {
+        self.refused.iter().find(|r| r.layout.template_id == id).map(|r| &r.sketch)
+    }
+
+    fn custom_page(&self, id: &str) -> Option<&PageLayout> {
+        self.custom.iter().find_map(|a| match &a.template {
+            CustomTemplate::Page { id: page_id, layout } if page_id == id => Some(layout),
+            _ => None,
+        })
+    }
+
+    /// Every page a template id lays out, in print order: one for a single
+    /// page's layout, two for a spread. `None` for an id this library does
+    /// not hold.
+    pub fn pages_of(&self, id: &str) -> Option<Vec<&PageLayout>> {
+        if let Some(layout) = self.custom_page(id) {
+            return Some(vec![layout]);
+        }
+        if id.contains(':') {
+            return Some(vec![self.half(id, Side::Left)?]);
+        }
+        let t = self.spread(id)?;
+        Some(vec![&t.left, &t.right])
+    }
+
     pub fn load(dir: &Path) -> Result<Library, TemplateError> {
         let mut files: Vec<_> = std::fs::read_dir(dir)
             .map_err(|e| TemplateError::Io(e.to_string()))?
@@ -183,19 +399,18 @@ impl Library {
                 std::fs::read_to_string(&path).map_err(|e| TemplateError::Io(e.to_string()))?;
             let raw: RawTemplate =
                 serde_json::from_str(&text).map_err(|e| TemplateError::Parse(e.to_string()))?;
+            if raw.id.contains(':') || raw.id.starts_with(custom_layouts::ID_PREFIX) {
+                return Err(TemplateError::ReservedId { template: raw.id });
+            }
             spreads.push(decompose(raw)?);
         }
-        Ok(Library { spreads })
+        Ok(Library { spreads, ..Library::default() })
     }
 
-    /// Templates are exact-count, so eligibility is equality, not a range.
-    pub fn spreads_with(&self, n: usize) -> Vec<&SpreadTemplate> {
-        self.spreads.iter().filter(|t| t.photo_count() == n).collect()
-    }
-
-    /// Every half of every template. Pages 1 and N draw from this: a half is
-    /// by construction a valid page layout, so the single pages get a
-    /// library for free and one that matches the book's style.
+    /// Every half of every BUILT-IN template, for capacity arithmetic. Pages
+    /// 1 and N draw from the halves: a half is by construction a valid page
+    /// layout, so the single pages get a library for free and one that
+    /// matches the book's style.
     pub fn page_half_pool(&self) -> Vec<&PageLayout> {
         self.spreads.iter().flat_map(|t| [&t.left, &t.right]).collect()
     }
@@ -203,23 +418,30 @@ impl Library {
     /// The layout a page prints with, from its `Page::template_id`. A spread
     /// page names its template and takes the half on its own `side`; a single
     /// page (1 and N) names `<id>:left|right`, the half it was cut from,
-    /// which need not be the side it prints on.
+    /// which need not be the side it prints on, or a user page layout's own
+    /// id. Only built-ins have halves: a user spread is never cut for a
+    /// single page.
     pub fn half(&self, template_id: &str, side: Side) -> Option<&PageLayout> {
-        let (id, side) = match template_id.rsplit_once(':') {
-            Some((id, "left")) => (id, Side::Left),
-            Some((id, "right")) => (id, Side::Right),
+        let t = match template_id.rsplit_once(':') {
+            Some((id, "left")) => &self.spreads.iter().find(|t| t.id == id)?.left,
+            Some((id, "right")) => &self.spreads.iter().find(|t| t.id == id)?.right,
             Some(_) => return None,
-            None => (template_id, side),
+            None => {
+                if let Some(layout) = self.custom_page(template_id) {
+                    return Some(layout);
+                }
+                let t = self.spread(template_id)?;
+                match side {
+                    Side::Left => &t.left,
+                    Side::Right => &t.right,
+                }
+            }
         };
-        let t = self.spreads.iter().find(|t| t.id == id)?;
-        Some(match side {
-            Side::Left => &t.left,
-            Side::Right => &t.right,
-        })
+        Some(t)
     }
 }
 
-fn edge_treatment(slots: &[Slot]) -> EdgeTreatment {
+pub(crate) fn edge_treatment(slots: &[Slot]) -> EdgeTreatment {
     if slots.iter().any(|s| !s.bleed.is_empty()) {
         EdgeTreatment::Bleed
     } else {
@@ -420,6 +642,23 @@ mod tests {
         assert!((t.right.slots[0].rect.w - 0.40).abs() < 1e-9);
     }
 
+    /// A built-in can never take an id a user layout or a page half could
+    /// hold, so a book's `template_id` names one thing whatever the library.
+    #[test]
+    fn templates_refuses_a_built_in_id_reserved_for_user_layouts_or_halves() {
+        for id in ["user-0123", "t-two-up:left"] {
+            let dir = tempfile::tempdir().unwrap();
+            write_template(dir.path(), "t.json", &TWO_UP.replace("t-two-up", id));
+            match Library::load(dir.path()) {
+                Err(TemplateError::ReservedId { template }) => assert_eq!(template, id),
+                other => panic!("{id} loaded: {other:?}"),
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write_template(dir.path(), "t.json", &TWO_UP.replace("t-two-up", "users-pick"));
+        assert!(Library::load(dir.path()).is_ok(), "only the exact `user-` prefix is reserved");
+    }
+
     #[test]
     fn templates_rejects_a_fold_spanning_slot() {
         let dir = tempfile::tempdir().unwrap();
@@ -510,10 +749,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_template(dir.path(), "t-two-up.json", TWO_UP);
         let lib = Library::load(dir.path()).unwrap();
-        assert_eq!(lib.spreads_with(2).len(), 1);
-        assert_eq!(lib.spreads_with(3).len(), 0);
-        // The gap that matters: no 5-photo template exists yet (spec 6.3).
-        assert_eq!(lib.spreads_with(5).len(), 0);
+        assert_eq!(lib.auto_spreads_with(2).len(), 1);
+        assert_eq!(lib.auto_spreads_with(3).len(), 0);
+        assert_eq!(lib.menu_spreads_with(2).len(), 1);
+        assert_eq!(lib.menu_spreads_with(5).len(), 0);
     }
 
     #[test]

@@ -25,7 +25,7 @@
 //!   the engine, and the user would meet them for the first time in print.
 
 use crate::book::cull::Photo;
-use crate::book::edit::{alternatives, opening_count};
+use crate::book::edit::{alternatives, opening_count, refused};
 use crate::book::pace::{Book, BookOptions};
 use crate::templates::{Align, Library};
 use crate::book::cover::Rgb;
@@ -153,18 +153,24 @@ pub struct PreviewGeometry {
 
 /// The editable state of one opening, numbered as `toSpreads` draws them:
 /// `0` is page 1, then each spread, then the last page. See `book::edit`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewOpening {
     pub index: usize,
     pub locked: bool,
     /// Templates the user has rejected here, never offered again.
     pub rejected: Vec<String>,
-    /// Templates that could replace the current one, in library order:
-    /// what the "change template" menu offers. Empty when the opening holds
-    /// nothing, or when every template for this many photos has been shown
-    /// or rejected -- which is also when "regenerate" has nothing to do.
+    /// Templates that could replace the current one, in library order --
+    /// built-ins, then the user's own layouts this book admits: what the
+    /// "change template" menu offers. Empty when the opening holds nothing,
+    /// or when every template for this many photos has been shown or
+    /// rejected. "Regenerate" draws only from the ones auto layout may use,
+    /// so it can run out while this still lists a user layout.
     pub alternatives: Vec<String>,
+    /// The user's layouts that hold this opening's photos but that this
+    /// book's print size refuses, each with its reasons. The menu shows them
+    /// dimmed; `SetTemplate` with one fails.
+    pub refused: Vec<crate::templates::RefusedLayout>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -204,11 +210,14 @@ pub struct BookLayout {
     /// text boxes are written from.
     pub chapters: Vec<PreviewChapter>,
     /// Slot rects, page-normalised and page by page, for every template id
-    /// the layout menu can name: each page's current template and every
-    /// opening's alternatives. A spread id has two pages, a single page's
+    /// the layout menu can name: each page's current template, every
+    /// opening's alternatives and every refused user layout. A spread id has two pages, a single page's
     /// `<id>:<side>` half has one. The menu draws each choice from these,
     /// so the user sees a layout rather than reading its name.
     pub sketches: BTreeMap<String, Vec<Vec<Rect>>>,
+    /// The user's name for every user layout id in `sketches`. A built-in
+    /// id is absent: its label is derived from the id itself.
+    pub layout_names: BTreeMap<String, String>,
 }
 
 /// One chapter as the editor shows it. Pages are PAGE NUMBERS here, not the
@@ -394,6 +403,7 @@ pub fn book_layout(
                 locked: controls.is_some_and(|c| c.locked),
                 rejected: controls.map(|c| c.rejected.clone()).unwrap_or_default(),
                 alternatives: alternatives(book, lib, index),
+                refused: refused(book, lib, index),
             }
         })
         .collect();
@@ -403,7 +413,12 @@ pub fn book_layout(
         .iter()
         .map(|p| &p.template_id)
         .chain(openings.iter().flat_map(|o| o.alternatives.iter()))
+        .chain(openings.iter().flat_map(|o| o.refused.iter().map(|r| &r.template_id)))
         .filter_map(|id: &String| Some((id.clone(), sketch(lib, id)?)))
+        .collect();
+    let layout_names: BTreeMap<String, String> = sketches
+        .keys()
+        .filter_map(|id| Some((id.clone(), lib.custom_name(id)?.to_string())))
         .collect();
 
     let cover = preview_cover(book, &photos);
@@ -423,20 +438,19 @@ pub fn book_layout(
         cover,
         chapters: chapters.iter().map(|c| preview_chapter(book, c)).collect(),
         sketches,
+        layout_names,
     }
 }
 
-/// The sketch of one template id: its halves' slot rects. `None` for blank
-/// and for an id the library no longer has.
+/// The sketch of one template id: its pages' slot rects, one list for a
+/// single page's layout and two for a spread. `None` for blank and for an
+/// id the library no longer has.
 fn sketch(lib: &Library, id: &str) -> Option<Vec<Vec<Rect>>> {
-    let rects = |side: Side| {
-        lib.half(id, side).map(|l| l.slots.iter().map(|s| s.rect).collect::<Vec<Rect>>())
-    };
-    if id.contains(':') {
-        Some(vec![rects(Side::Left)?])
-    } else {
-        Some(vec![rects(Side::Left)?, rects(Side::Right)?])
+    if let Some(rects) = lib.refused_sketch(id) {
+        return Some(rects.clone());
     }
+    let pages = lib.pages_of(id)?;
+    Some(pages.iter().map(|l| l.slots.iter().map(|s| s.rect).collect()).collect())
 }
 
 fn preview_cover(book: &Book, photos: &[PreviewPhoto]) -> PreviewCover {
@@ -495,14 +509,14 @@ mod tests {
 
     #[test]
     fn a_page_a_chapter_title_prints_on_is_not_blank() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[chapter()]);
+        let layout = book_layout(7, &book(), preview_photos(), &Library::default(), &[chapter()]);
         let blank: Vec<bool> = layout.pages.iter().map(|p| p.blank).collect();
         assert_eq!(blank, vec![false, false, false, true]);
     }
 
     #[test]
     fn chapters_address_pages_by_number_not_by_index() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[chapter()]);
+        let layout = book_layout(7, &book(), preview_photos(), &Library::default(), &[chapter()]);
         let c = &layout.chapters[0];
         assert_eq!((c.first_page, c.last_page), (2, 4));
         assert_eq!(c.title_box.as_ref().map(|b| b.page), Some(3));
@@ -656,7 +670,7 @@ mod tests {
     /// prints.
     #[test]
     fn preview_keeps_every_page_including_the_ones_that_hold_nothing() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[]);
+        let layout = book_layout(7, &book(), preview_photos(), &Library::default(), &[]);
 
         assert_eq!(layout.pages.len(), 4, "every page of the book is present");
         assert_eq!(layout.page_count, 4);
@@ -669,7 +683,7 @@ mod tests {
     /// still tells them apart.
     #[test]
     fn preview_flags_a_page_blank_for_a_text_zone_template_as_well_as_for_no_template() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[]);
+        let layout = book_layout(7, &book(), preview_photos(), &Library::default(), &[]);
         let blank: Vec<(&str, bool)> =
             layout.pages.iter().map(|p| (p.template_id.as_str(), p.blank)).collect();
 
@@ -690,7 +704,7 @@ mod tests {
     /// rather than letting the webview infer it from position alone.
     #[test]
     fn preview_carries_the_side_of_every_page_so_the_singles_are_not_halves_of_a_spread() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[]);
+        let layout = book_layout(7, &book(), preview_photos(), &Library::default(), &[]);
         let sides: Vec<Side> = layout.pages.iter().map(|p| p.side).collect();
 
         assert_eq!(sides, vec![Side::Right, Side::Left, Side::Right, Side::Left]);
@@ -712,7 +726,7 @@ mod tests {
         let book = book();
         let photos = photos();
         let manifest = manifest(&book, &photos, 7);
-        let layout = book_layout(7, &book, preview_photos(), &Library { spreads: Vec::new() }, &[]);
+        let layout = book_layout(7, &book, preview_photos(), &Library::default(), &[]);
 
         assert_eq!(layout.pages.len(), manifest.pages.len());
         for (page, manifest_page) in layout.pages.iter().zip(&manifest.pages) {
@@ -757,7 +771,7 @@ mod tests {
     /// different part of the picture than the exporter writes.
     #[test]
     fn preview_passes_the_engines_crop_window_through_untouched() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[]);
+        let layout = book_layout(7, &book(), preview_photos(), &Library::default(), &[]);
         let page = &layout.pages[1];
 
         assert_eq!(page.placements[0].crop, Rect::new(0.0, 0.125, 1.0, 0.75));
@@ -781,7 +795,7 @@ mod tests {
     /// is the engine's own figure rather than a recount.
     #[test]
     fn preview_counts_placements_across_every_page_and_reports_the_engines_dropped_figure() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[]);
+        let layout = book_layout(7, &book(), preview_photos(), &Library::default(), &[]);
 
         assert_eq!(layout.placed_photos, 3);
         assert_eq!(layout.dropped_photos, 2);
@@ -795,7 +809,7 @@ mod tests {
     /// "which ones were left out" answer has nothing to draw from.
     #[test]
     fn preview_photos_keep_their_original_indices_so_unplaced_ones_are_identifiable() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[]);
+        let layout = book_layout(7, &book(), preview_photos(), &Library::default(), &[]);
         let placed: std::collections::BTreeSet<usize> =
             layout.pages.iter().flat_map(|p| p.placements.iter().map(|s| s.photo_index)).collect();
         let left_out: Vec<&str> = layout
@@ -819,7 +833,7 @@ mod tests {
         let mut book = book();
         book.pages[0].placements[0].photo_index = 99;
 
-        let layout = book_layout(7, &book, preview_photos(), &Library { spreads: Vec::new() }, &[]);
+        let layout = book_layout(7, &book, preview_photos(), &Library::default(), &[]);
 
         assert_eq!(layout.pages[0].placements[0].filename, None);
         // The surviving placements still name theirs.
@@ -1004,7 +1018,7 @@ mod tests {
     fn book_layout_carries_the_books_own_spec_not_pixajoy() {
         let mut b = book();
         b.spec = odd_spec();
-        let layout = book_layout(7, &b, preview_photos(), &Library { spreads: Vec::new() }, &[]);
+        let layout = book_layout(7, &b, preview_photos(), &Library::default(), &[]);
 
         assert_eq!(layout.geometry.page_w_in, 8.0, "must be the book's page, not 11.197");
         assert_eq!(layout.geometry.page_h_in, 10.0, "must be the book's page, not 8.894");
@@ -1030,7 +1044,7 @@ mod tests {
     /// `book_json`, where the spelling must NOT change.
     #[test]
     fn preview_serialises_camel_case_keys_and_lowercase_sides() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[]);
+        let layout = book_layout(7, &book(), preview_photos(), &Library::default(), &[]);
         let value = serde_json::to_value(&layout).unwrap();
 
         assert_eq!(value["placedPhotos"], 3);
@@ -1053,7 +1067,7 @@ mod tests {
     /// has nothing to find.
     #[test]
     fn preview_carries_the_cover_the_book_chose() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[]);
+        let layout = book_layout(7, &book(), preview_photos(), &Library::default(), &[]);
         let front = layout.cover.front.photo.as_ref().expect("the book has a front cover");
 
         assert_eq!(front.photo_index, 4);
@@ -1064,7 +1078,7 @@ mod tests {
 
         let mut b = book();
         b.cover.back = Some(CoverPhoto { photo_index: 2, crop: Rect::new(0.1, 0.0, 0.8, 1.0) });
-        let layout = book_layout(7, &b, preview_photos(), &Library { spreads: Vec::new() }, &[]);
+        let layout = book_layout(7, &b, preview_photos(), &Library::default(), &[]);
         let back = layout.cover.back.photo.expect("the back now has a photo");
         assert_eq!((back.photo_index, back.filename.as_deref()), (2, Some("cover-back-hash-c")));
     }
@@ -1077,7 +1091,7 @@ mod tests {
         for spec in [pixajoy_spec(), odd_spec()] {
             let mut b = book();
             b.spec = spec;
-            let layout = book_layout(7, &b, preview_photos(), &Library { spreads: Vec::new() }, &[]);
+            let layout = book_layout(7, &b, preview_photos(), &Library::default(), &[]);
 
             assert_eq!(layout.cover.aspect, spec.cover_aspect());
             assert_eq!(layout.cover.front.visible, spec.cover_visible_rect(CoverSide::Front));
@@ -1158,7 +1172,7 @@ mod tests {
         // this fixture exists to pin; a real drift is orders of magnitude
         // larger than one ULP and still fails.
         let serialised =
-            serde_json::to_string(&book_layout(7, &book(), preview_photos(), &Library { spreads: Vec::new() }, &[chapter()])).unwrap();
+            serde_json::to_string(&book_layout(7, &book(), preview_photos(), &Library::default(), &[chapter()])).unwrap();
         let value: serde_json::Value = serde_json::from_str(&serialised).unwrap();
 
         assert_eq!(value, fixture);

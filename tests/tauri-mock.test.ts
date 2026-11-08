@@ -9,6 +9,7 @@ import type { AnalysisEvent, AnalysisSummary, PhotoOverrides } from "../app/type
 import type { BookEdit, BookLayout, HistoryStatus, SlotCandidate } from "../app/types/preview";
 import type { BookRecommendation, ImportedPhoto } from "../app/types/book";
 import type { PrintSpec } from "../app/types/printSpec";
+import type { CustomLayout, CustomLayoutError, LayoutShape, Problem } from "../app/types/customLayouts";
 
 describe("the browser harness's commands", () => {
   it("analyses its folder to the end, with every mock photo", async () => {
@@ -453,5 +454,58 @@ describe("mock thumbnails", () => {
     expect(new Set(burst).size).toBe(1);
     const singles = photos.filter((p) => p.nearDupCluster < 900).map(picture);
     expect(new Set(singles).size).toBe(singles.length);
+  });
+});
+
+/** What a rejected harness command threw, or `null` when it resolved. */
+function rejection(p: Promise<unknown>): Promise<CustomLayoutError | null> {
+  return p.then(
+    () => null,
+    (e: unknown) => e as CustomLayoutError,
+  );
+}
+
+describe("the harness's user layouts", () => {
+  const halves: LayoutShape = {
+    kind: "spread",
+    boxes: [
+      { rect: { x: 0, y: 0, w: 0.5, h: 1 }, role: "hero" },
+      { rect: { x: 0.5, y: 0, w: 0.5, h: 1 }, role: "hero" },
+    ],
+  };
+  it("starts from the wire fixture's layouts", async () => {
+    const listed = await invoke<CustomLayout[]>("list_custom_layouts");
+    expect(listed.map((l) => l.name)).toEqual(["Two halves", "Corner"]);
+  });
+
+  it("creates with auto off, then renames, toggles, duplicates and deletes", async () => {
+    const made = await invoke<CustomLayout>("create_custom_layout", { name: "  Mine  ", shape: halves });
+    expect(made.name).toBe("Mine");
+    expect(made.auto).toBe(false);
+    expect(made.id).toMatch(/^user-[0-9a-f]{32}$/);
+
+    expect((await invoke<CustomLayout>("rename_custom_layout", { id: made.id, name: "Ours" })).name).toBe("Ours");
+    expect((await invoke<CustomLayout>("set_custom_layout_auto", { id: made.id, auto: true })).auto).toBe(true);
+    const copy = await invoke<CustomLayout>("duplicate_custom_layout", { id: made.id });
+    expect([copy.name, copy.auto, copy.id === made.id]).toEqual(["Ours copy", false, false]);
+
+    await invoke("delete_custom_layout", { id: made.id });
+    const ids = (await invoke<CustomLayout[]>("list_custom_layouts")).map((l) => l.id);
+    expect(ids).toContain(copy.id);
+    expect(ids).not.toContain(made.id);
+    expect(await rejection(invoke("delete_custom_layout", { id: made.id }))).toEqual({ kind: "notFound", id: made.id });
+  });
+
+  it("rejects the way the store does", async () => {
+    expect(await rejection(invoke("create_custom_layout", { name: " ", shape: halves }))).toEqual({ kind: "emptyName" });
+    expect(await rejection(invoke("create_custom_layout", { name: "x".repeat(61), shape: halves }))).toEqual({
+      kind: "nameTooLong",
+      max: 60,
+    });
+    const empty = await rejection(
+      invoke("create_custom_layout", { name: "Empty", shape: { kind: "spread", boxes: [] } }),
+    );
+    expect(empty?.kind === "invalid" ? empty.problems.map((p) => p.kind) : empty).toEqual(["noBoxes"]);
+    expect(await invoke<Problem[]>("check_custom_layout", { shape: halves })).toEqual([]);
   });
 });

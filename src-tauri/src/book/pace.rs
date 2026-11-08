@@ -224,14 +224,12 @@ pub(crate) fn half_id(template_id: &str, side: Side) -> String {
     }
 }
 
-/// Every page-half paired with the template it came from.
-/// `Library::page_half_pool` drops the parent id, which is enough for
-/// capacity arithmetic but not for a manifest that has to name what it used.
-fn half_pool(lib: &Library) -> Vec<(&str, &PageLayout)> {
-    lib.spreads
-        .iter()
-        .flat_map(|t| [(t.id.as_str(), &t.left), (t.id.as_str(), &t.right)])
-        .collect()
+/// Every page layout automatic layout may put on a single page, with the id
+/// the page will name it by -- see `Library::auto_pages`.
+/// `Library::page_half_pool` drops the id, which is enough for capacity
+/// arithmetic but not for a manifest that has to name what it used.
+fn half_pool(lib: &Library) -> Vec<(String, &PageLayout)> {
+    lib.auto_pages()
 }
 
 /// Aspect fit of a group against one page half, or `None` when a hard
@@ -382,7 +380,7 @@ fn single_page(
     Page {
         number: 0,
         side,
-        template_id: half_id(id, side),
+        template_id: id.to_string(),
         placements: place(spec, layout, &indices, photos),
     }
 }
@@ -440,7 +438,7 @@ fn spread_pages<'a>(
     let mut indices = group.photos.clone();
     while !indices.is_empty() {
         let refs: Vec<&Photo> = indices.iter().map(|&i| &photos[i]).collect();
-        let eligible = lib.spreads_with(indices.len());
+        let eligible = lib.auto_spreads_with(indices.len());
         let order = anchors.order_for(&indices);
         if let Some((template, assignment, _)) =
             best_spread_ordered(spec, &eligible, &refs, previous, w, seed, order)
@@ -708,7 +706,8 @@ pub fn assemble_with(
     let in_order: Vec<usize> = groups.iter().flat_map(|g| g.photos.iter().copied()).collect();
     let anchors = story::anchors(&in_order, photos);
 
-    let pool = half_pool(lib);
+    let owned = half_pool(lib);
+    let pool: Vec<(&str, &PageLayout)> = owned.iter().map(|(id, l)| (id.as_str(), *l)).collect();
     let spread_count = (pages.saturating_sub(2) / 2) as usize;
     let mut out: Vec<Page> = Vec::with_capacity(pages as usize);
 
@@ -851,7 +850,7 @@ fn same_on(axis: Axis, a: &SpreadTemplate, b: &SpreadTemplate) -> bool {
 /// `2 + 2s`. `None` for a blank spread or a single page.
 fn spread_template<'a>(book: &Book, lib: &'a Library, s: usize) -> Option<&'a SpreadTemplate> {
     let page = book.pages.get(1 + 2 * s)?;
-    lib.spreads.iter().find(|t| t.id == page.template_id)
+    lib.spread(&page.template_id)
 }
 
 /// Sweeps the assembled book once and breaks flat stretches.
@@ -906,7 +905,7 @@ pub fn repace(book: &mut Book, lib: &Library, photos: &[Photo], w: &Weights, see
 
         let breaks = |t: &SpreadTemplate| flat.iter().filter(|&&ax| !same_on(ax, t, b)).count();
         let alternatives: Vec<&SpreadTemplate> =
-            lib.spreads_with(indices.len()).into_iter().filter(|t| t.id != b.id).collect();
+            lib.auto_spreads_with(indices.len()).into_iter().filter(|t| t.id != b.id).collect();
         let Some(most) = alternatives.iter().map(|t| breaks(t)).max().filter(|&m| m > 0) else {
             continue;
         };
@@ -1945,7 +1944,7 @@ mod tests {
 
         // Three photos onto a half that holds at most two.
         let group = Group { photos: vec![0, 1, 2], event_cluster: 0, slot: SlotKind::Single(Side::Right) };
-        let page = single_page(&pixajoy_spec(), Side::Right, Some(&group), &half_pool(&lib), &photos, 5, &Anchors::default());
+        let page = single_page(&pixajoy_spec(), Side::Right, Some(&group), &half_pool(&lib).iter().map(|(id, l)| (id.as_str(), *l)).collect::<Vec<_>>(), &photos, 5, &Anchors::default());
         assert_ne!(page.template_id, BLANK_TEMPLATE_ID, "a blank page is the wrong answer here");
         assert_eq!(
             page.placements.len(),
