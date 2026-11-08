@@ -7,6 +7,7 @@ enum RequestKind: String, Codable {
     case calibrate
     case export
     case geocode
+    case preview
 }
 
 /// One photo to crop and write, as decided by the Rust layout engine.
@@ -99,6 +100,8 @@ struct Request: Codable {
     var export: ExportRequest?
     /// `[lat, lon]` pairs for `.geocode` requests. Nil for every other kind.
     var coordinates: [[Double]]?
+    /// Payload for `.preview` requests. Nil for every other kind.
+    var preview: PreviewRequest?
 }
 
 struct PongResult: Codable { let version: String }
@@ -114,6 +117,8 @@ enum ResponseResult: Codable {
     /// One place name per requested coordinate, in order; null where the
     /// lookup failed.
     case geocoded([String?])
+    /// One preview path per requested item, in order; null where it failed.
+    case previewed([String?])
 
     private enum CodingKeys: String, CodingKey { case type, data }
 
@@ -141,6 +146,9 @@ enum ResponseResult: Codable {
         case .geocoded(let v):
             try c.encode("geocoded", forKey: .type)
             try c.encode(v, forKey: .data)
+        case .previewed(let v):
+            try c.encode("previewed", forKey: .type)
+            try c.encode(v, forKey: .data)
         }
     }
 
@@ -153,6 +161,7 @@ enum ResponseResult: Codable {
         case "calibrated": self = .calibrated(try c.decode([CalibrationRecord].self, forKey: .data))
         case "exported": self = .exported(try c.decode([ExportRecord].self, forKey: .data))
         case "geocoded": self = .geocoded(try c.decode([String?].self, forKey: .data))
+        case "previewed": self = .previewed(try c.decode([String?].self, forKey: .data))
         default: self = .error(try c.decode(ErrorResult.self, forKey: .data))
         }
     }

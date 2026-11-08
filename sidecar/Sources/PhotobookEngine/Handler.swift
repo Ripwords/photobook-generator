@@ -101,6 +101,15 @@ func handle(line: String) -> Response {
             return Response(id: request.id, result: .geocoded(
                 Geocoder.names(for: coordinates, lookup: Geocoder.appleLookup)
             ))
+        case .preview:
+            guard let preview = request.preview else {
+                return Response(id: request.id, result: .error(
+                    ErrorResult(message: "preview request is missing its `preview` payload")
+                ))
+            }
+            return Response(id: request.id, result: .previewed(
+                Previewer.preview(items: preview.items, directory: preview.directory, maxPixel: preview.maxPixel)
+            ))
         }
     }
     let id = (try? decoder.decode(RequestEnvelope.self, from: Data(line.utf8)))?.id ?? "unknown"
