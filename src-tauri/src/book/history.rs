@@ -78,6 +78,8 @@ pub fn edit_label(edit: &BookEdit, before: &Book) -> &'static str {
         }
         BookEdit::ReplacePhoto { .. } => "photo replacement",
         BookEdit::AddPhoto { .. } => "photo added",
+        // Not "move": that is `SetSlot` when a box only changed place.
+        BookEdit::MovePhoto { .. } => "photo move",
         BookEdit::SetPrintSpec { .. } => "print size change",
         BookEdit::SetCoverPhoto { photo: Some(_), .. } => "cover photo",
         BookEdit::SetCoverPhoto { photo: None, .. } => "cover photo removal",
@@ -162,6 +164,8 @@ mod tests {
             BookEdit::SetSpineColour { rgb: Rgb { r: 1, g: 2, b: 3 } },
             BookEdit::SetChapterTitle { event: 0, title: Some("Reykjavík".into()) },
             BookEdit::SetChapterTitle { event: 0, title: None },
+            BookEdit::AddPhoto { opening: 0, photo: 3 },
+            BookEdit::MovePhoto { from: at, opening: 2 },
         ]
     }
 
@@ -217,6 +221,19 @@ mod tests {
         };
 
         assert_eq!(edit_label(&moved, &book), "move");
+    }
+
+    /// `every_edit`'s `SetSlot` resizes, so `edit_label_tells_the_edits_apart`
+    /// never sees "move" and cannot catch a photo move borrowing it.
+    #[test]
+    fn edit_label_tells_moving_a_photo_to_another_page_from_moving_its_box() {
+        let book = book_with_slot(SLOT);
+        let at = PlacementRef { page: 1, z: 0 };
+        let dragged = BookEdit::SetSlot { placement: at, rect: Rect { x: 0.5, y: 0.6, ..SLOT } };
+        let moved = BookEdit::MovePhoto { from: at, opening: 2 };
+
+        assert_eq!(edit_label(&dragged, &book), "move");
+        assert_eq!(edit_label(&moved, &book), "photo move");
     }
 
     #[test]

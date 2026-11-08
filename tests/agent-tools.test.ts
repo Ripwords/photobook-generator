@@ -142,6 +142,10 @@ describe("the tool table", () => {
    * answer to a blank page the user is looking at, and growing the agent's
    * tools was not part of the change that added it.
    *
+   * `movePhoto` is withheld for the same reason: it is the editor's drag of
+   * a photo onto another page, and the chat agent still moves photos only
+   * by swapping them.
+   *
    * Naming them here rather than filtering by a predicate is the point: a new
    * variant lands in `wire` and fails this test until somebody decides which
    * side of the line it is on.
@@ -156,6 +160,7 @@ describe("the tool table", () => {
       "setSpineColour",
       "setChapterTitle",
       "addPhoto",
+      "movePhoto",
     ];
     const driven = Object.values(WRITE_INPUTS).map((w) => w.kind);
     const wire = EDITS.map((e) => e.kind).filter((k) => !withheld.includes(k));

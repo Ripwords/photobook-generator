@@ -108,6 +108,10 @@ export function doneToast(edit: BookEdit): string | null {
         : `Swapped photos on pages ${edit.a.page} and ${edit.b.page}`;
     case "replacePhoto":
       return `Replaced the photo on page ${edit.placement.page}`;
+    // The target is an opening, and which pages it shows needs the layout,
+    // which this is not given.
+    case "movePhoto":
+      return "Moved a photo to another page";
     default:
       return null;
   }

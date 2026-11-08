@@ -159,6 +159,7 @@ const EVERY_EDIT: BookEdit[] = [
   { kind: "setChapterTitle", event: 4, title: "Reykjavík" },
   { kind: "setChapterTitle", event: 4, title: null },
   { kind: "addPhoto", opening: 2, photo: 4 },
+  { kind: "movePhoto", from: { page: 1, z: 0 }, opening: 2 },
 ];
 
 /**
@@ -338,6 +339,26 @@ describe("the harness's undo timeline", () => {
       undo: "spine colour",
       redo: null,
     });
+  });
+
+  it("moves a photo onto another opening's page, refuses its own opening, and undoes as a photo move", async () => {
+    const before = await invoke<BookLayout>("book_layout");
+    const from = { page: 2, z: 1 };
+    const photo = before.pages[1]!.placements.find((pl) => pl.z === 1)!.photoIndex;
+
+    await expect(
+      invoke("edit_book", { edit: { kind: "movePhoto", from, opening: 1 } }),
+    ).rejects.toThrow("already on this page");
+
+    const moved = await invoke<BookLayout>("edit_book", { edit: { kind: "movePhoto", from, opening: 2 } });
+    expect(moved.pages.length).toBe(before.pages.length);
+    expect(moved.pages[1]!.placements.map((pl) => pl.photoIndex)).not.toContain(photo);
+    expect(moved.pages[3]!.placements.map((pl) => pl.photoIndex)).toContain(photo);
+    expect(moved.pages[3]!.blank).toBe(false);
+    expect((await invoke<HistoryStatus>("book_history")).undo).toBe("photo move");
+
+    const undone = await invoke<BookLayout>("step_book", { step: "undo" });
+    expect(undone.pages).toEqual(before.pages);
   });
 
   it("retitles a chapter, clears it to nothing, and hands it back to the automatic title", async () => {

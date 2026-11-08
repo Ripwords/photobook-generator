@@ -168,6 +168,9 @@ describe("doneToast", () => {
     expect(doneToast({ kind: "swapPhotos", a, b })).toBe("Swapped photos on pages 2 and 9");
     expect(doneToast({ kind: "swapPhotos", a, b: { page: 2, z: 2 } })).toBe("Swapped photos on page 2");
     expect(doneToast({ kind: "replacePhoto", placement: b, photo: 4 })).toBe("Replaced the photo on page 9");
+    // The edit names its target by opening, and an opening's page numbers
+    // need the layout, which `doneToast` is not given.
+    expect(doneToast({ kind: "movePhoto", from: a, opening: 4 })).toBe("Moved a photo to another page");
   });
 
   it("stays quiet for edits whose result is already plain on screen", () => {
