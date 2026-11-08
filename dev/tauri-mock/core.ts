@@ -72,6 +72,19 @@ layout.openings[1] = {
   rejected: [],
   alternatives: ["07-two-up-symmetric-margin", "08-two-up-symmetric-bleed-outer"],
 };
+// Their sketches, and the current template's, as Rust would send them: each
+// slot of `templates/*.json` decomposed onto its own page.
+layout.sketches = {
+  "03-hero-left-text-right": [[{ x: 0, y: 0, w: 0.982406, h: 1 }], []],
+  "07-two-up-symmetric-margin": [
+    [{ x: 0.08, y: 0.08, w: 0.84, h: 0.84 }],
+    [{ x: 0.08, y: 0.08, w: 0.84, h: 0.84 }],
+  ],
+  "08-two-up-symmetric-bleed-outer": [
+    [{ x: 0, y: 0, w: 0.982406, h: 1 }],
+    [{ x: 0.017594, y: 0, w: 0.982406, h: 1 }],
+  ],
+};
 // The fixture has one chapter, so give page 1 one of its own: the editor's
 // chapters menu needs two to appear, and this one's title has no clear band,
 // so it shows the "prints over a photo" warning as Rust would report it.

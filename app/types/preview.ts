@@ -142,6 +142,12 @@ export interface BookLayout {
   cover: PreviewCover;
   /** The book's chapters in order, with the title each prints and where. */
   chapters: PreviewChapter[];
+  /**
+   * Slot rects, page-normalised and page by page, for every template id the
+   * layout menu can name: two pages for a spread, one for a single page's
+   * `<id>:<side>` half. Ids the library no longer has are missing.
+   */
+  sketches: Record<string, PreviewRect[][]>;
 }
 
 /** Which edge of its box a title hugs. */
@@ -714,6 +720,33 @@ export function templateLabel(id: string): string {
   const [base, side] = id.split(":");
   const words = (base ?? id).replace(/^\d+-/, "").replaceAll("-", " ");
   return side ? `${words} (${side} half)` : words;
+}
+
+/** A layout drawn small: page outlines and slots in one SVG's own units. */
+export interface LayoutSketch {
+  viewBox: string;
+  pages: PreviewRect[];
+  slots: PreviewRect[];
+}
+
+const SKETCH_PAGE_H = 100;
+
+/**
+ * Draws a template's `sketches` entry at the book's page shape (`pageW/pageH`):
+ * pages side by side, each page's slots scaled into that page. The rects are
+ * page-normalised, so a slot never spans the fold here even when the template
+ * file authored it across both pages; the two halves meet at the fold line.
+ */
+export function layoutSketch(pages: PreviewRect[][], pageAspect: number): LayoutSketch {
+  const w = SKETCH_PAGE_H * pageAspect;
+  const h = SKETCH_PAGE_H;
+  return {
+    viewBox: `0 0 ${w * pages.length} ${h}`,
+    pages: pages.map((_, i) => ({ x: i * w, y: 0, w, h })),
+    slots: pages.flatMap((slots, i) =>
+      slots.map((r) => ({ x: i * w + r.x * w, y: r.y * h, w: r.w * w, h: r.h * h })),
+    ),
+  };
 }
 
 /** How far a pointer moved, as a fraction of the SLOT's rendered size. */

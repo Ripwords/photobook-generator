@@ -210,14 +210,26 @@ function onSlot(placement: PlacementRef, rect: PreviewRect) {
  * they moved here, one click away for whoever is chasing that defect.
  */
 function layoutMenu(index: number, alternatives: string[], current: string[]) {
+  const [shown] = current;
   return [
-    [{ type: "label" as const, label: `Current: ${current.join(", ")}`, class: "font-mono font-normal text-muted" }],
+    [
+      {
+        type: "label" as const,
+        label: shown ? `Now: ${templateLabel(shown)}` : "Now",
+        description: current.join(", "),
+        sketch: shown ? layout.sketches[shown] : undefined,
+      },
+    ],
     alternatives.map((templateId) => ({
       label: templateLabel(templateId),
+      sketch: layout.sketches[templateId],
       onSelect: () => emit("edit", { kind: "setTemplate", opening: index, templateId }),
     })),
   ];
 }
+
+/** The book's page width over its height, for the layout menu's sketches. */
+const pageAspect = computed(() => layout.geometry.pageWIn / layout.geometry.pageHIn);
 
 /**
  * The photos no page placed. `Book::dropped` is only a count; the layout
@@ -430,7 +442,11 @@ const leftOut = computed(() =>
               <UDropdownMenu
                 :items="layoutMenu(spread.index, spread.opening.alternatives, spreadTemplates(spread))"
                 :content="{ align: 'end' }"
+                :ui="{ content: 'max-h-[70vh] min-w-72', item: 'gap-3 py-2', label: 'flex items-center gap-3 py-2' }"
               >
+                <template #item-leading="{ item }">
+                  <TemplateSketch v-if="item.sketch" :pages="item.sketch" :aspect="pageAspect" />
+                </template>
                 <UButton
                   icon="i-lucide-layout-template"
                   color="neutral"

@@ -318,9 +318,11 @@ back cover, the way the printed book opens.
   yet. Click again to see the next one; when every layout for that many photos has been
   shown, the button is disabled.
 - **Reject** (thumbs down) does the same, and never offers the current layout here again.
-- **Choose a layout** (grid) lists the other layouts that hold this many photos by name.
-  The menu's first line names the layout the opening uses now (one per page where the two
-  pages are laid out separately).
+- **Choose a layout** (grid) lists the other layouts that hold this many photos. Each
+  one has a small drawing of the page or spread at the book's page shape, with a grey
+  block for each photo, so you can see the layout before picking it. The menu's first
+  line, **Now**, draws and names the layout the opening uses now. Its template id is
+  printed under it, one per page where the two pages are laid out separately.
 - **Lock** keeps the opening exactly as it is: **Shuffle** at the top of the book re-lays
   every unlocked opening at once and skips locked ones, and a locked opening refuses every
   other change until unlocked.

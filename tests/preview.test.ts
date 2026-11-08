@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   canRelayout,
+  layoutSketch,
   chapterOpening,
   pageTitle,
   viewerStep,
@@ -696,6 +697,40 @@ describe("nextSwapStep", () => {
 
   it("treats the same z on a different page as a different photo", () => {
     expect(nextSwapStep(a, { page: 3, z: 1 }).edit).not.toBeNull();
+  });
+});
+
+describe("layoutSketch", () => {
+  const spread = [
+    [{ x: 0.1, y: 0.2, w: 0.8, h: 0.6 }],
+    [
+      { x: 0, y: 0, w: 0.5, h: 1 },
+      { x: 0.5, y: 0.5, w: 0.5, h: 0.5 },
+    ],
+  ];
+
+  it("lays the pages side by side at the page's real shape", () => {
+    const sketch = layoutSketch(spread, 1.25);
+    expect(sketch.viewBox).toBe("0 0 250 100");
+    expect(sketch.pages).toEqual([
+      { x: 0, y: 0, w: 125, h: 100 },
+      { x: 125, y: 0, w: 125, h: 100 },
+    ]);
+  });
+
+  it("scales each page's slots into that page, not across the spread", () => {
+    const { slots } = layoutSketch(spread, 1.25);
+    expect(slots).toEqual([
+      { x: 12.5, y: 20, w: 100, h: 60 },
+      { x: 125, y: 0, w: 62.5, h: 100 },
+      { x: 187.5, y: 50, w: 62.5, h: 50 },
+    ]);
+  });
+
+  it("draws a single page alone, and a portrait page taller than wide", () => {
+    const sketch = layoutSketch([[{ x: 0, y: 0, w: 1, h: 1 }]], 0.8);
+    expect(sketch.viewBox).toBe("0 0 80 100");
+    expect(sketch.slots).toEqual([{ x: 0, y: 0, w: 80, h: 100 }]);
   });
 });
 

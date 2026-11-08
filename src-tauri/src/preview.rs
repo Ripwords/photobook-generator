@@ -34,6 +34,7 @@ use crate::export::{cover_filename, output_filename};
 use crate::geometry::{CoverSide, Rect, Side};
 use crate::print_spec::PrintSpec;
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 /// One photo of the set the book was assembled against, in the SAME ORDER as
 /// that slice -- so `PreviewPlacement::photo_index` indexes straight into
@@ -202,6 +203,12 @@ pub struct BookLayout {
     /// where. From `book::titles::chapters`, the same list the manifest's
     /// text boxes are written from.
     pub chapters: Vec<PreviewChapter>,
+    /// Slot rects, page-normalised and page by page, for every template id
+    /// the layout menu can name: each page's current template and every
+    /// opening's alternatives. A spread id has two pages, a single page's
+    /// `<id>:<side>` half has one. The menu draws each choice from these,
+    /// so the user sees a layout rather than reading its name.
+    pub sketches: BTreeMap<String, Vec<Vec<Rect>>>,
 }
 
 /// One chapter as the editor shows it. Pages are PAGE NUMBERS here, not the
@@ -379,7 +386,7 @@ pub fn book_layout(
         })
         .collect();
 
-    let openings = (0..opening_count(book))
+    let openings: Vec<PreviewOpening> = (0..opening_count(book))
         .map(|index| {
             let controls = book.controls.get(&index);
             PreviewOpening {
@@ -389,6 +396,14 @@ pub fn book_layout(
                 alternatives: alternatives(book, lib, index),
             }
         })
+        .collect();
+
+    let sketches: BTreeMap<String, Vec<Vec<Rect>>> = book
+        .pages
+        .iter()
+        .map(|p| &p.template_id)
+        .chain(openings.iter().flat_map(|o| o.alternatives.iter()))
+        .filter_map(|id: &String| Some((id.clone(), sketch(lib, id)?)))
         .collect();
 
     let cover = preview_cover(book, &photos);
@@ -407,6 +422,20 @@ pub fn book_layout(
         openings,
         cover,
         chapters: chapters.iter().map(|c| preview_chapter(book, c)).collect(),
+        sketches,
+    }
+}
+
+/// The sketch of one template id: its halves' slot rects. `None` for blank
+/// and for an id the library no longer has.
+fn sketch(lib: &Library, id: &str) -> Option<Vec<Vec<Rect>>> {
+    let rects = |side: Side| {
+        lib.half(id, side).map(|l| l.slots.iter().map(|s| s.rect).collect::<Vec<Rect>>())
+    };
+    if id.contains(':') {
+        Some(vec![rects(Side::Left)?])
+    } else {
+        Some(vec![rects(Side::Left)?, rects(Side::Right)?])
     }
 }
 
@@ -1056,6 +1085,52 @@ mod tests {
             assert_eq!(layout.cover.front.board, spec.cover_board_rect(CoverSide::Front));
             assert_eq!(layout.cover.back.board, spec.cover_board_rect(CoverSide::Back));
         }
+    }
+
+    /// The frozen five from `tests/fixtures/templates`: `03` (1 photo),
+    /// `07` and `08` (2), `13` and `35` (3).
+    fn frozen_library() -> Library {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/templates");
+        Library::load(&dir).expect("the frozen fixture library must decompose")
+    }
+
+    fn slot_rects(layout: &crate::templates::PageLayout) -> Vec<Rect> {
+        layout.slots.iter().map(|s| s.rect).collect()
+    }
+
+    /// The layout menu draws every choice as a sketch, so every id it can
+    /// show -- each opening's current template and every alternative --
+    /// needs its slots, page by page: two pages for a spread, one for a
+    /// single page's `<id>:<side>` half. Blank and ids the library does not
+    /// know get no sketch rather than an empty one.
+    #[test]
+    fn preview_sketches_every_template_the_layout_menu_can_name() {
+        let lib = frozen_library();
+        let layout = book_layout(7, &book(), preview_photos(), &lib, &[]);
+
+        let named: Vec<&String> = layout
+            .openings
+            .iter()
+            .flat_map(|o| o.alternatives.iter())
+            .collect();
+        assert!(named.len() >= 3, "the fixture must offer spread and half alternatives: {named:?}");
+        for id in named {
+            assert!(layout.sketches.contains_key(id), "no sketch for alternative {id}");
+        }
+
+        let hero = lib.spreads.iter().find(|t| t.id == "03-hero-left-text-right").unwrap();
+        assert_eq!(
+            layout.sketches["03-hero-left-text-right"],
+            vec![slot_rects(&hero.left), slot_rects(&hero.right)],
+        );
+        let pair = lib.spreads.iter().find(|t| t.id == "07-two-up-symmetric-margin").unwrap();
+        assert_eq!(
+            layout.sketches["07-two-up-symmetric-margin"],
+            vec![slot_rects(&pair.left), slot_rects(&pair.right)],
+        );
+        assert_eq!(layout.sketches["07-two-up-symmetric-margin:right"], vec![slot_rects(&pair.right)]);
+        assert!(!layout.sketches.contains_key(BLANK_TEMPLATE_ID));
+        assert!(!layout.sketches.contains_key("12-quad-right:right"), "not in the frozen library");
     }
 
     /// The Rust half of the wire pin -- see `tests/fixtures/wire/README.md`
