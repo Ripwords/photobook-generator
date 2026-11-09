@@ -66,10 +66,10 @@ API: `docs/providers/pixajoy.md`. Manual: "3. Editing the book".
 
 **Verified live, from the test only.** `providers::pixajoy::live` (ignored by default; needs
 `PIXAJOY_TOKEN`) passed on 2026-11-09. It created a project, uploaded two photos, saved the
-diff, reloaded the project and checked every box and a chapter title. The title
-`Kyoto, März <3 & >` came back byte for byte. Three test projects exist in that account
+diff, reloaded the project and checked every box. (It then also checked a chapter title,
+which came back byte for byte; titles were removed on 2026-11-09, below.) Three test projects exist in that account
 ("PhotobookGen test 2026-11-09 …"): one left empty by the pageData bug below, two filled.
-**Not verified:** how the title renders in Pixajoy's editor, the sign-in window, and the
+**Not verified:** the sign-in window, and the
 in-app send in the packaged app.
 
 The two earlier failures, and their fixes:
@@ -104,11 +104,7 @@ The two earlier failures, and their fixes:
   The 5 % is for books saved under the old 11.197 × 8.894 default, which are 2 % off.
 - **Page count is fixed at creation.** It is `max(pages, 20)` rounded up to even, at most
   150. Padding pages are left blank.
-- **Chapter titles go as cloned cover text boxes.** `plan.rs` copies the cover's
-  unprotected text box, puts it on the title's page above the photos, and replaces only
-  `styledtext.data`. The length in that string counts UTF-16 units, so "🗻" is 2. A project
-  with no such cover box fails the send. Titles are black Arial; the app has no font or
-  colour for them yet.
+- **No text is sent.** The project holds photo boxes only (titles were removed 2026-11-09).
 - **`PrintSpec::pixajoy()` is now Taopix's IHL8511 page**, taken from `load`'s `layout`:
   11.22047 × 8.74016 in, bleed 5 mm, `gutter_in` 9 mm (half the 18 mm `gutterwidth`, since
   the band is measured from each page's fold). Stored books keep their old spec. PrintSpec
@@ -251,6 +247,16 @@ cover; reordering within a chapter only; the UI stays monochrome).
   carries no text: `ManifestPage::texts`/`ManifestText` and the export sheet's title list are
   gone (an older manifest with `texts` still deserialises). A titled half no longer counts as
   occupied, so `blank` means what prints white.
+- **Titles removed entirely** (2026-11-09, user: "the title thing is superficial", then
+  "remove the titles from the app completely automatic title generation too"). Gone: the
+  title spot and its Guides entry, typed and automatic titles, `BookEdit::SetChapterTitle`,
+  `Book::titles` (an old book with `titles` still loads; serde ignores it), the Pixajoy title
+  text boxes, `place_names::cached_chapter_names`, and template `text_zones` with
+  `TextZone`/`Align` (`RawTemplate` still accepts an old file carrying the key).
+  `book::titles` became `book::chapter_pages`: where chapters land, nothing more. Chapter
+  headings and the Chapters menu stay, as number, pages, dates and event count. Geocoded
+  event names stay on the select screen. Consequence: a page that held only a title, such as
+  the empty half of 03/04 "hero-…-text-…", now reports `blank` and the editor says so.
 - **Crowded layouts** (user screenshot: a five-photo bleed mosaic with photos butted together).
   The ten zero-gap bleed templates (21, 22, 25, 44, 46, 49, 50, 52, 54, 56) now keep a 0.2"
   gutter between neighbouring photos on a page, the margin layouts' spacing; outer bleed edges
@@ -269,7 +275,7 @@ cover; reordering within a chapter only; the UI stays monochrome).
 **Measured after the revert and the gutters** (`book_report --db <copy> 14 10 16`; projects 14
 Iceland, 10 Vietnam, 16 Japan -- 15 is now in the trash, 16 is the same 1133 photos; seeds
 7/1234/99 identical). `blank_pages`, `dropped` and `floor_misses` are identical with and without
-the gutters on every row; the gutters move only `title_overlaps` (14: 3→2 and 5→4; 16: 2→3
+the gutters on every row; the gutters move only `title_overlaps` (a column removed with titles) (14: 3→2 and 5→4; 16: 2→3
 and 5→6). `--scenarios 14` 9/9 PASS; `--stability 14 10 16` 0 moved their own event.
 
 | project, pages | opener_hit | closer_hit | chrono_inv | role_cov | chapters | title_overlaps | blank_pages |
@@ -288,15 +294,9 @@ footer warns), unchanged from the baseline.
 
 **Still open, measured rather than assumed:**
 
-- **Title spots over photos.** 4 of Iceland's 12 title spots at 40 pages have no clear band
-  and sit on a photo (the chapter heading flags them). Less urgent now titles never print,
-  but the scorer still does not prefer layouts that leave a band.
 - **Closers on Vietnam** stay at 0: its chapters are short, and the closer rule needs four
   photos and a calm frame in the last 40%.
 - **Soft event boundaries (plan U7) were skipped**: `mixed_spreads` totals 30 over 18 books.
-- **Typed titles are not carried into a rebuilt book.** Regenerate and Shuffle keep them;
-  **Edit photos** → Update builds a new `Book` with an empty `titles`. The plan's
-  `carry_titles` (match chapters by member overlap) was not built.
 - **Whether the book now reads like a story** is the user's call, not a metric.
 
 ---

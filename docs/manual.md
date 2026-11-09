@@ -237,7 +237,7 @@ With the switch on, the contact sheet titles each chapter with its town, such as
 longitude, to Apple's map service. It never sends a photo, and it sends nothing while the
 switch is off. Names are kept on this Mac, so reopening a draft asks Apple nothing new. A
 chapter Apple cannot name, or any chapter while this Mac is offline, is titled by the dates
-its photos were taken, such as **12–14 Mar 2026**, the same title the book prints for it. A
+its photos were taken, such as **12–14 Mar 2026**. A
 chapter whose photos carry no date keeps its number, such as **Event 3**. With the switch
 off, every chapter is titled by its dates.
 
@@ -286,7 +286,7 @@ that book, with its decisions, print size, event tiers and **Split chapters by p
 restored once the analysis is done (**Edit photos** again reopens the same draft), and the
 generate control becomes two: **Update "<name>"** asks you to confirm, then builds the book
 again from these photos and settings. Changes you made in the editor -- swapped or replaced
-photos, crops, layouts, moved boxes, the cover, chapter titles you typed, and photos added
+photos, crops, layouts, moved boxes, the cover, and photos added
 from disk -- are replaced;
 its undo history, export history and favourite star don't carry over, though files you
 already exported are not touched. **Save as a new photobook** keeps both. Adding or taking out
@@ -297,7 +297,7 @@ update of the old one.
 
 ## 3. Editing the book
 
-![The book editor with both cover panels filled, the first chapter title, and the chat](screenshots/editor.png)
+![The book editor with both cover panels filled and the chat](screenshots/editor.png)
 
 The book, spread by spread, as it will print. **Everything on this screen is written to disk
 as you do it** (the cloud with a check, beside Undo and Redo, says it has saved; it reads **Saving…** while a change is being written), so there is nothing to
@@ -344,24 +344,12 @@ bar above the book. When the editor is narrow (the chat open in a small window),
 shows its buttons as icons; hover one for its name or, for the two modes, what a drag does.
 
 Each chapter starts with a heading above its first opening. The heading gives the chapter
-number, its pages, its dates (when the title is not already the dates) and how many events
-it merges. Below that are the chapter's title and, under it, the page its title spot is on.
-A book with two or more chapters also has a **Chapters** menu (the list icon) in the bar
-above the book. It lists every chapter's title and pages; pick one to scroll to it.
+number, its pages, its dates and how many events it merges. A book with two or more chapters
+also has a **Chapters** menu (the list icon) in the bar above the book. It lists every chapter
+and its pages; pick one to scroll to it.
 
-Titles are a guide, not part of the printed book: export never draws them. On the page, a
-violet dashed box marks the **title spot**, with a tag naming the title, so you can see where
-it would go if you add it in Pixajoy. The **Guides** legend lists it with the trim and safe
-lines. When the opening has no empty space for it, the spot sits over a photo and the
-heading says so.
-
-To **change a chapter's title**, press the pencil beside it, type, and press Enter. Clicking
-away also saves; Esc leaves the title as it was. Clear the box and save for no title: the
-heading then reads **No title** and the page shows no title spot. A title you have typed
-stays through **Regenerate** and **Shuffle**, but not through **Update** after **Edit
-photos**, which rebuilds the book. Undo takes it back like any other change. **Use automatic
-title** goes back to the place name or dates, and typing the automatic title back does the
-same. How to add a title in Pixajoy is under **Chapter titles** further down.
+The book prints no text: no chapter titles, captions or page numbers. Add any words you want
+in Pixajoy's editor after sending or exporting.
 
 Every opening (page 1, each pair of facing pages, the last page) has four controls on its
 right. Page 1 is shown facing the inside front cover and the last page facing the inside
@@ -611,8 +599,7 @@ three parts:
   email. The sign-in is kept in the macOS Keychain, never in a file, and lasts until Pixajoy
   ends it. **Sign out** forgets it, and signing in again can use another account.
 - **What happens.** A new project is created, each of the book's photos is uploaded whole to
-  Pixajoy's servers, once, and nothing is ordered. A later send reuses it. Chapter titles go onto their pages as text you
-  can edit on Pixajoy.
+  Pixajoy's servers, once, and nothing is ordered. A later send reuses it.
 - **Pages.** How many pages the Pixajoy project gets. Pixajoy's landscape book needs at least
   20 pages and an even count, so a shorter or odd book gets blank pages added at the end, and
   the dialog says how many. A book over 150 pages, or one whose print size is not Pixajoy's
@@ -627,42 +614,20 @@ account, at any time and from any book, is not uploaded again: the app keeps whi
 photo each of your photos became (a fingerprint of the file and Pixajoy's photo number, never
 the image), and Pixajoy adds it to the new project. If you deleted it from Pixajoy since, it
 is uploaded again. Every successful send is recorded with the book: which Pixajoy project it
-made and which photo went in which box. Deleting the book deletes that record. Each chapter title becomes a text box in its title spot, in black
-Arial at the suggested size, above the photos. Edit or move it in Pixajoy's editor like any
-other text box. The front and back cover photos go into Pixajoy's cover boxes. The
+made and which photo went in which box. Deleting the book deletes that record. No text is sent: the project holds photo boxes
+only. The front and back cover photos go into Pixajoy's cover boxes. The
 dialog shows each step and cannot be closed while it runs; the temporary folder is deleted
 when the send ends. When it finishes, **Open My Projects** opens Pixajoy's project list in your
 browser. If a send fails after the project was created, the message names it: a partly
 filled project with that name may be in My Projects, and you can delete it there.
 
-**Chapter titles.** The book is divided into chapters, and each chapter has a title and a
-title spot on the opening where it starts. **Send to Pixajoy** puts each title in its title
-spot as a text box. **Export** does not, so after an export you add titles yourself in
-Pixajoy. A chapter starts on an opening whose first photo, read left to right
-and top to bottom, comes from an event no earlier page has shown. An event that first appears
-part-way through an opening joins the chapter already running, so one spread never carries
-two titles. The title is the place name when the book was made with **Places** on and that
-place's name has already been looked up; titles never trigger a lookup of their own.
-Otherwise it is the dates the chapter's photos were taken, in the camera's local time, for
-example "12–14 Mar 2026", "28 Mar – 2 Apr 2026" or "30 Dec 2025 – 2 Jan 2026". A chapter
-with no capture dates is called "Chapter 2", and so on. The cover carries no text.
-
-Where the title spot goes is chosen in this order:
-
-1. The text area of a layout drawn with one, unless a photo has been moved onto it.
-2. The tallest clear strip across the top or bottom of either page of the opening, at least
-   0.35 in tall. It stays inside the safe margin, keeps out of the fold, and is never more
-   than 1 in tall.
-3. The widest clear column beside the photos, at least 1.5 in wide. Portrait pairs leave
-   one.
-4. Otherwise a strip across the top of the opening's first page, on top of a photo. The
-   chapter heading says so, so you can decide where to put the title, or leave it out.
-
-The suggested type size is between 14 and 28 pt, to suit the space.
-
-Export carries no titles: they are not drawn into the photo files, `manifest.json` holds no
-text, and the **Export** sheet does not list them. To add one after an export, open that page in Pixajoy's
-editor, add a text box, type the title, and place it where the editor shows the title spot.
+**Chapters.** The book is divided into chapters. A chapter starts on an opening whose first
+photo, read left to right and top to bottom, comes from an event no earlier page has shown. An
+event that first appears part-way through an opening joins the chapter already running, so a
+chapter never starts mid-spread. Chapters shape the editor's headings and the **Chapters**
+menu only. Nothing about them prints: the book carries no text, on the pages or the cover, and
+neither **Export** nor **Send to Pixajoy** adds any. To add a title or caption, use a text box
+in Pixajoy's editor.
 
 ## 4. Layouts
 

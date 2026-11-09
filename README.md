@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/editor.png" alt="The book editor with the front and back cover filled, the first chapter's title, and the chat offering a change" width="900" />
+  <img src="docs/screenshots/editor.png" alt="The book editor with the front and back cover filled and the chat offering a change" width="900" />
 </p>
 
 Pick your photo folders. PhotobookGen ranks every photo with Apple Vision, drops look-alikes
@@ -32,10 +32,10 @@ photo went. Add more folders, pick a length, and generate.
 
 ## A book that reads like a story
 
-<img src="docs/screenshots/drag-swap.png" alt="A chapter titled Reykjavík, with a photo being dragged onto another and a Swap label under it" width="900" />
+<img src="docs/screenshots/drag-swap.png" alt="A full spread, with a photo being dragged onto another and a Swap label under it" width="900" />
 
-Chapters open on a wide shot and close on a calm one, with a title you can edit printed on
-the opening. Drag a photo onto another to swap them, onto another spread to move it, or onto
+Chapters open on a wide shot and close on a calm one, and every page is filled with photos,
+not text. Drag a photo onto another to swap them, onto another spread to move it, or onto
 the cover. Edits that would cut a face or print blurry are refused with the reason.
 
 <table>
@@ -66,7 +66,7 @@ the cover. Edits that would cut a face or print blurry are refused with the reas
 
 <img src="docs/screenshots/send-to-pixajoy.png" alt="The Send to Pixajoy dialog after a send, with Open My Projects" width="900" />
 
-One click creates a Pixajoy project with every page, crop, cover and chapter title in place,
+One click creates a Pixajoy project with every page, crop and cover in place,
 ready to review and order. Each photo uploads once. A later send reuses it. Nothing is ever
 ordered for you.
 
@@ -78,7 +78,7 @@ photo plus a `manifest.json`.
 - **Your whole shelf.** Every book in one library, with favourites, search and drafts.
 - **Front and back cover.** Picked and cropped for you, wrap included, with a spine colour
   taken from the front photo.
-- **Chapters by place.** Optional. A move of more than 25 km ends a chapter, titled with its town.
+- **Chapters by place.** Optional. A move of more than 25 km ends a chapter, and the photo screen names it by its town.
 - **Optional AI chat.** Ask for a change in plain words. Every edit waits for your approval.
   Uses your own DeepSeek key.
 - **Sharper previews** when you want them, set under **Settings → General → Graphics**.
