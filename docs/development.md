@@ -64,7 +64,13 @@ driven by a browser automation tool, without a Tauri process. Every command the 
 reach is answered, from the wire fixtures where one exists and from
 `dev/tauri-mock/photos.ts` for a whole analysed folder, so all three screens and the flows
 between them can be driven end to end. Set `window.pbgCancelPicker = true` to make the next
-folder pick resolve to nothing. Nothing in the production build sees this alias.
+folder pick resolve to nothing. **Send to Pixajoy** is answered too: the account starts
+signed out, **Sign in** signs in as `you@example.com`, and a send walks through every stage
+with a short delay each, uploading only photos the session has not sent before. Nothing
+reaches Pixajoy. Nothing in the production build sees this alias.
+
+The screenshots in `docs/screenshots/` are taken from this mock, in light mode at 1280 x 800
+(the library at 1440 x 900), with the Nuxt devtools badge hidden.
 
 `bun run ui:dev` runs the plain Nuxt dev server without the mock.
 

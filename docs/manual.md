@@ -77,6 +77,8 @@ no longer use them.
 
 ## 1. The library
 
+![The library with two books as covers](screenshots/library.png)
+
 The screen the app opens on: every book you have made, as covers built from its own photos.
 The two buttons at the top right switch between covers and a list, which also shows each
 book's source folders and last export. Search matches a book's name or any of its folder
@@ -106,6 +108,8 @@ there is a folder. A blank name becomes the first folder's name, which the field
 placeholder.
 
 ## 2. Choosing the photos
+
+![The draft screen: photos grouped by event, with the Book tab on the right](screenshots/choose-photos.png)
 
 Starting a book opens it as a **draft**. Every supported image in them and in their subfolders is analysed
 on this Mac (nothing leaves the machine). Several folders are one set: every photo is ranked
@@ -293,6 +297,8 @@ update of the old one.
 
 ## 3. Editing the book
 
+![The book editor with both cover panels filled, the first chapter title, and the chat](screenshots/editor.png)
+
 The book, spread by spread, as it will print. **Everything on this screen is written to disk
 as you do it** (the cloud with a check, beside Undo and Redo, says it has saved; it reads **Saving…** while a change is being written), so there is nothing to
 save and you can leave whenever you like through the sidebar.
@@ -383,6 +389,8 @@ back cover, the way the printed book opens.
   other change until unlocked. Pressing or dragging a photo on a locked opening says so in
   a notice at the bottom right, with an **Unlock** button.
 
+![A photo dragged onto another, with the Swap label under it](screenshots/drag-swap.png)
+
 To **swap two photos**, drag one onto the other, anywhere in the book. While you drag, the
 photo travels with the pointer, the photo under it gets a ring, and the slot you started
 from shows the photo it would get, so you can see the swap before you let go. A label under
@@ -429,6 +437,8 @@ photos no page uses, each shown cropped the way that slot would print it; **In t
 with page N** and exchanges the two. A photo that would cut a face, put one in the fold or
 the trim margin, or print too small is dimmed with the reason and cannot be picked, and so
 are photos on a locked spread.
+
+![The photo chooser, with As it would print and Whole photo](screenshots/photo-picker.png)
 
 The panel on the right of the dialog shows a photo before you use it. At the top is the
 photo the slot holds now (**Now on page N**, or **Now on the front cover**). Click any photo
@@ -527,6 +537,8 @@ the lowest print resolution is refused with the reason, and the cover stays as i
 colour is shown beside it as a hex value (for example `#8a5a2b`) and fills the spine in the
 drawing. It is one plain colour. The app offers no suggested swatches.
 
+![The Print size panel with its drawing of bleed, safe margin and fold](screenshots/print-size.png)
+
 **Print size.** Click the size at the left of the bottom bar to open the **Print size** panel
 beside the book. It holds what a printer publishes: the **Book size** (width and height of
 the finished page after trimming), the **Bleed** on the three outer edges, the **Safe margin**
@@ -585,6 +597,8 @@ Upload the `cover-front-` and `cover-back-` files there and place each on its si
 the spine colour to the `spine_hex` value from the manifest. Pixajoy publishes no formula for
 the spine's width, so the app does not produce a spine image or a single wrap-around file;
 the spine is Pixajoy's to size.
+
+![The Send to Pixajoy dialog after a send](screenshots/send-to-pixajoy.png)
 
 **Send to Pixajoy**, beside **Export** in the editor's top bar, creates a
 new project in your Pixajoy account from the book. It never orders anything and never opens a
@@ -652,6 +666,8 @@ editor, add a text box, type the title, and place it where the editor shows the 
 
 ## 4. Layouts
 
+![The Layouts screen](screenshots/layouts.png)
+
 **Layouts** in the sidebar lists your own layouts and the built-in ones. Your layouts belong
 to the app, not to one book: every book offers them.
 
@@ -674,6 +690,8 @@ page** (the last page, or half a spread) or **Right page** (page 1, or half a sp
 book's **New layout…** opens the same editor; see [3. Editing the book](#3-editing-the-book).
 
 ### The layout editor
+
+![The layout editor with snapping guides and the check panel](screenshots/layout-editor.png)
 
 The editor shows the page or spread at the standard print size, with the trim, the gutter
 and the fold. **Add box** adds a photo box; drag a box to move it and its corner handles to
