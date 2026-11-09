@@ -42,7 +42,7 @@ numbers in inches.
 
 ## 1. Sign in
 
-The user signs in at `https://www.pixajoy.com.my/login`. The site stores an RS256 JWT in the
+The user signs in on `https://www.pixajoy.com.my/dashboard/projects`, which shows a login form when signed out. There is no login page: `/login` and similar paths render the site's 404. The site stores an RS256 JWT in the
 `mbtk` cookie on `www.pixajoy.com.my`. Its payload carries `emailaddress`, `userid` and
 `exp`, and it lasts about 30 days. Every call to `service.pixajoy.com` sends it as
 `Authorization: Bearer <mbtk>`.

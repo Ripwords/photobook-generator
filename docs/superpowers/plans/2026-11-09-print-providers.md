@@ -65,7 +65,7 @@ and replaces the styled text's `data`. The format is in `docs/providers/pixajoy.
    upload (create → POST → queue → poll), save and reauthenticate on 401. Use a Chrome
    User-Agent on the cart call. Upload with bounded concurrency (4).
 5. **`providers/pixajoy/auth.rs`.** "Sign in to Pixajoy" opens a Tauri webview window on
-   `https://www.pixajoy.com.my/login`. It polls `cookies_for_url` for `mbtk`, stores it in
+   `https://www.pixajoy.com.my/dashboard/projects` (its signed-out view is the login form). It polls `cookies_for_url` for `mbtk`, stores it in
    the Keychain and closes the window. Status comes from decoding the JWT payload (no
    signature check), giving the email and expiry. An expired token counts as signed out.
 6. **Commands.** `provider_status(provider)`, `provider_sign_in(provider)`,

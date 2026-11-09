@@ -10,7 +10,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 const ACCOUNT: &str = "pixajoy";
-const LOGIN_URL: &str = "https://www.pixajoy.com.my/login";
+/// Pixajoy has no login page: `/login` renders its 404. Signed out, My Projects
+/// shows the login form and, once signed in, the projects themselves.
+const LOGIN_URL: &str = "https://www.pixajoy.com.my/dashboard/projects";
 const COOKIE_URL: &str = "https://www.pixajoy.com.my/";
 const COOKIE: &str = "mbtk";
 const WINDOW: &str = "pixajoy-login";
