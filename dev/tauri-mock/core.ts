@@ -96,27 +96,15 @@ layout.sketches = {
 };
 layout.layoutNames = { [customLayoutsFixture.refused.templateId]: "Two halves" };
 // The fixture has one chapter, so give page 1 one of its own: the editor's
-// chapters menu needs two to appear, and this one's title has no clear band,
-// so it shows the "prints over a photo" warning as Rust would report it.
+// chapters menu needs two to appear.
 layout.chapters = [
   {
     number: 1,
-    event: 0,
     events: [0],
     firstPage: 1,
     lastPage: 1,
     start: 1_773_100_800,
     end: 1_773_187_200,
-    autoTitle: "10–11 Mar 2026",
-    title: "10–11 Mar 2026",
-    custom: false,
-    titleBox: {
-      page: 1,
-      rect: { x: 0.08, y: 0.06, w: 0.84, h: 0.11 },
-      align: "center",
-      pointSize: 20,
-      overlapsPhoto: true,
-    },
   },
   ...layout.chapters.map((chapter) => ({ ...chapter, number: chapter.number + 1 })),
 ];
@@ -501,8 +489,6 @@ export function editLabel(edit: BookEdit, before: BookLayout): string {
       return "cover crop";
     case "setSpineColour":
       return "spine colour";
-    case "setChapterTitle":
-      return edit.title === null ? "automatic title" : "title";
     case "addPhoto":
       return "photo added";
     case "movePhoto":
@@ -716,8 +702,7 @@ function applyEditTo(edit: BookEdit): void {
       const onto = pages[0]!;
       const safe = layout.geometry[onto.side].safe;
       source.placements = source.placements.filter((pl) => pl !== moving);
-      source.blank =
-        source.placements.length === 0 && !layout.chapters.some((c) => c.titleBox?.page === source.number);
+      source.blank = source.placements.length === 0;
       onto.placements.push({
         ...moving,
         z: Math.max(0, ...onto.placements.map((pl) => pl.z)) + 1,
@@ -727,37 +712,8 @@ function applyEditTo(edit: BookEdit): void {
       onto.blank = false;
       break;
     }
-    case "setChapterTitle": {
-      // Addressed by the LEAD event only, as `titles::set_title` is.
-      const chapter = layout.chapters.find((c) => c.event === edit.event);
-      if (!chapter) throw new Error("no chapter starts on that event any more");
-      const text = edit.title?.trim() ?? null;
-      // Characters, not UTF-16 units, as Rust counts them.
-      const chars = text === null ? 0 : [...text].length;
-      if (chars > MAX_TITLE_CHARS) {
-        throw new Error(
-          `a chapter title can be at most ${MAX_TITLE_CHARS} characters; this one is ${chars}`,
-        );
-      }
-      chapter.custom = text !== null;
-      chapter.title = text ?? chapter.autoTitle;
-      // Rust places no box for an empty title. The harness cannot re-run
-      // `title_box`, so it restores the box the fixture shipped instead.
-      chapter.titleBox = chapter.title === "" ? null : (titleBoxes.get(chapter.event) ?? null);
-      for (const page of layout.pages) {
-        page.blank =
-          page.placements.length === 0 && !layout.chapters.some((c) => c.titleBox?.page === page.number);
-      }
-      break;
-    }
   }
 }
-
-/** Mirrors `book::titles::MAX_TITLE_CHARS`. */
-const MAX_TITLE_CHARS = 60;
-
-/** Each chapter's title box as the fixture shipped it, keyed by lead event. */
-const titleBoxes = new Map(layout.chapters.map((c) => [c.event, c.titleBox]));
 
 /**
  * Which keys the keychain holds. Both start unset, so the chat panel opens on

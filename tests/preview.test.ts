@@ -6,10 +6,8 @@ import {
   canRegenerate,
   layoutSketch,
   chapterOpening,
-  pageTitle,
   viewerStep,
   escapeDeselects,
-  titleEdit,
   cropStyle,
   cropZoomed,
   cropZoom,
@@ -116,30 +114,19 @@ describe("the wire fixture", () => {
     expect(layout.options).toStrictEqual({ places: true, featuredFloor: 6, briefCap: 2 });
     expect(layout.pages).toHaveLength(4);
     expect(layout.photos).toHaveLength(5);
-    // The text-zone half of a real template holds no photo, and is not
-    // blank because the chapter title prints there.
+    // The half of a real template that once held a text zone holds no
+    // photo, and nothing else prints there, so it is blank.
     expect(layout.pages[2]?.templateId).toBe("03-hero-left-text-right");
     expect(layout.pages[2]?.placements).toHaveLength(0);
-    expect(layout.pages[2]?.blank).toBe(false);
+    expect(layout.pages[2]?.blank).toBe(true);
     expect(layout.chapters).toEqual([
       {
         number: 1,
-        event: 4,
         events: [4, 6],
         firstPage: 2,
         lastPage: 4,
         start: 1773273600,
         end: 1773446450,
-        autoTitle: "12–14 Mar 2026",
-        title: "Reykjavík",
-        custom: true,
-        titleBox: {
-          page: 3,
-          rect: { x: 0.125, y: 0.25, w: 0.75, h: 0.25 },
-          align: "center",
-          pointSize: 24,
-          overlapsPhoto: false,
-        },
       },
     ]);
     // A page that got no group at all still prints white.
@@ -224,8 +211,8 @@ describe("toSpreads", () => {
     const seen = spreads.flatMap((s) => [s.left, s.right]).filter((p) => p !== null);
 
     expect(seen.map((p) => p.number)).toEqual([1, 2, 3, 4]);
-    // p3 holds no photo but prints the chapter title, so only p4 is blank.
-    expect(seen.filter((p) => p.blank).map((p) => p.number)).toEqual([4]);
+    // p3 and p4 hold no photo and print nothing.
+    expect(seen.filter((p) => p.blank).map((p) => p.number)).toEqual([3, 4]);
   });
 
   it("labels a spread by both its page numbers and a single by its one", () => {
@@ -809,8 +796,6 @@ describe("the edit wire", () => {
       { kind: "setCoverPhoto", side: "back", photo: null },
       { kind: "setCoverCrop", side: "back", x: 0.125, y: 0.0625, w: 0.5 },
       { kind: "setSpineColour", rgb: "#1a2b3c" },
-      { kind: "setChapterTitle", event: 4, title: "Reykjavík" },
-      { kind: "setChapterTitle", event: 9, title: null },
       { kind: "addPhoto", opening: 10, photo: 31 },
       { kind: "movePhoto", from: { page: 4, z: 2 }, opening: 7 },
     ];
@@ -1541,55 +1526,10 @@ describe("the scrolling book leaves the wheel alone", () => {
   });
 });
 
-describe("chapter titles in the editor", () => {
-  const chapter = layout.chapters[0]!;
-
-  it("marks a chapter's title spot on the page its box is on, and only there", () => {
-    expect(chapter.titleBox?.page).toBe(3);
-    const drawn = pageTitle(layout, 3);
-    expect(drawn?.text).toBe("Reykjavík");
-    expect(drawn?.align).toBe("center");
-    expect(drawn?.box).toEqual(rectStyle(chapter.titleBox!.rect));
-    expect(pageTitle(layout, 2)).toBeNull();
-  });
-
-  it("draws nothing for a chapter the user left untitled", () => {
-    const untitled = structuredClone(layout);
-    untitled.chapters[0]!.title = "";
-    expect(pageTitle(untitled, 3)).toBeNull();
-  });
-
+describe("chapters in the editor", () => {
   it("heads the spread a chapter opens on, and no other", () => {
     const spreads = toSpreads(layout.pages);
     expect(spreads.map((spread) => chapterOpening(layout, spread)?.number ?? null)).toEqual([null, 1, null]);
-  });
-
-  describe("titleEdit", () => {
-    const auto = { ...chapter, custom: false, title: chapter.autoTitle };
-
-    it("sends nothing when the title did not change", () => {
-      expect(titleEdit(chapter, "Reykjavík")).toBeNull();
-      expect(titleEdit(chapter, "  Reykjavík ")).toBeNull();
-      expect(titleEdit(auto, auto.autoTitle)).toBeNull();
-    });
-
-    it("sends the trimmed new title", () => {
-      expect(titleEdit(auto, " Golden Circle ")).toEqual({
-        kind: "setChapterTitle",
-        event: 4,
-        title: "Golden Circle",
-      });
-    });
-
-    // Typing the automatic title back is going back to automatic, so a later
-    // place name can still replace it.
-    it("goes back to automatic when the automatic title is typed back", () => {
-      expect(titleEdit(chapter, chapter.autoTitle)).toEqual({ kind: "setChapterTitle", event: 4, title: null });
-    });
-
-    it("sends an empty title, which prints none", () => {
-      expect(titleEdit(chapter, "   ")).toEqual({ kind: "setChapterTitle", event: 4, title: "" });
-    });
   });
 });
 

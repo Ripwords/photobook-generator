@@ -201,7 +201,6 @@ mod tests {
         let slots = [Rect::new(0.08, 0.10, 0.50, 0.30), Rect::new(0.20, 0.55, 0.30, 0.35)];
         let ps = photos();
         Book {
-            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             controls: BTreeMap::new(),

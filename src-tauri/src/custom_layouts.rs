@@ -361,7 +361,7 @@ fn page_layout(side: Side, rects: Vec<(Rect, Role)>, spec: &PrintSpec) -> PageLa
             Slot { rect, role, bleed: bleed_edges(&rect, side), aspect_pref: (a, a) }
         })
         .collect();
-    PageLayout { side, edge_treatment: edge_treatment(&slots), slots, text: Vec::new() }
+    PageLayout { side, edge_treatment: edge_treatment(&slots), slots }
 }
 
 fn density(boxes: usize) -> Density {

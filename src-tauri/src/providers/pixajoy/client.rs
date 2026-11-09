@@ -450,7 +450,7 @@ fn upload_id() -> String {
 
 fn iso_now() -> String {
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-    let (y, m, d) = crate::book::titles::civil(secs.div_euclid(86_400));
+    let (y, m, d) = crate::book::chapter_pages::civil(secs.div_euclid(86_400));
     let s = secs.rem_euclid(86_400);
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z", s / 3600, s % 3600 / 60, s % 60)
 }

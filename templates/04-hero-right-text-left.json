@@ -20,17 +20,6 @@
       ]
     }
   ],
-  "text_zones": [
-    {
-      "rect": [
-        0.08,
-        0.4,
-        0.34,
-        0.2
-      ],
-      "align": "right"
-    }
-  ],
   "min_photos": 1,
   "max_photos": 1,
   "density": "sparse",

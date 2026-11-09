@@ -72,14 +72,14 @@ const spreads = computed(() =>
 );
 
 /**
- * The chapters menu: each chapter's title and pages, jumping to its header.
+ * The chapters menu: each chapter's number and pages, jumping to its header.
  * Only with a real choice -- a one-chapter book has nowhere to jump.
  */
 const chapterMenu = computed(() =>
   layout.chapters.length > 1
     ? [
         layout.chapters.map((chapter) => ({
-          label: chapter.title === "" ? `Chapter ${chapter.number}` : chapter.title,
+          label: `Chapter ${chapter.number}`,
           description:
             chapter.firstPage === chapter.lastPage
               ? `Page ${chapter.firstPage}`
@@ -430,7 +430,7 @@ function layoutMenu(spread: PreviewSpread & { index: number; opening: PreviewOpe
 /**
  * Sharpens the book's photos at the Graphics setting's size, cover first.
  * Keyed on the photos in order and the level, so an edit that moves no photo
- * (a crop, a title) starts no pass, and changing the setting starts one.
+ * (a crop) starts no pass, and changing the setting starts one.
  */
 const graphics = useGraphics();
 const sharpenItems = computed(() => previewOrder(layout));
@@ -554,10 +554,6 @@ function onTrayPointerDown(event: PointerEvent, photo: (typeof leftOut.value)[nu
                 <span class="h-2.5 w-4 shrink-0 bg-black/35" />
                 Cover wrap — folds under the board, never shows
               </li>
-              <li class="flex items-center gap-2">
-                <span class="h-2.5 w-4 shrink-0 border border-dashed border-violet-500" />
-                Title spot — not printed; add the title here in Pixajoy if you want one
-              </li>
               <!--
                 Said on screen, not only in a doc. These are the 400px contact-sheet
                 thumbnails, roughly 4x under-sampled against the 300 DPI export, so the
@@ -612,9 +608,7 @@ function onTrayPointerDown(event: PointerEvent, photo: (typeof leftOut.value)[nu
           <BookChapterHeader
             v-if="spread.chapter"
             :chapter="spread.chapter"
-            :busy
             class="mb-4"
-            @edit="emit('edit', $event)"
           />
           <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
             <p class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted tabular-nums">

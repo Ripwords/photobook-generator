@@ -120,14 +120,10 @@ mod live {
     //! `PIXAJOY_TOKEN=... cargo test --lib providers::pixajoy::live -- --ignored --nocapture`
     use super::*;
     use crate::geometry::Rect;
-    use crate::providers::{JobBox, JobCover, JobPage, JobPhoto, JobText, SentSlot};
-    use crate::templates::Align;
+    use crate::providers::{JobBox, JobCover, JobPage, JobPhoto, SentSlot};
     use serde_json::Value;
     use std::path::PathBuf;
 
-    /// Non-ASCII for the UTF-16 length, and `<`/`>` because the styled text
-    /// format uses them for its own tags.
-    const TITLE: &str = "Kyoto, März <3 & >";
     const FULL: Rect = Rect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 };
 
     fn fixture(name: &str, width: u32, height: u32) -> Upload {
@@ -141,7 +137,7 @@ mod live {
 
     fn timestamp() -> String {
         let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-        let (y, m, d) = crate::book::titles::civil(secs.div_euclid(86_400));
+        let (y, m, d) = crate::book::chapter_pages::civil(secs.div_euclid(86_400));
         let s = secs.rem_euclid(86_400);
         format!("{y}-{m:02}-{d:02} {:02}{:02}{:02}", s / 3600, s % 3600 / 60, s % 60)
     }
@@ -187,7 +183,6 @@ mod live {
                     number: 1,
                     // The top-left quadrant only: the editor should show one colour.
                     boxes: vec![JobBox { rect: FULL, photo: photo(&quadrants, Rect::new(0.0, 0.0, 0.5, 0.5)) }],
-                    texts: vec![],
                 },
                 JobPage {
                     number: 2,
@@ -196,17 +191,10 @@ mod live {
                         JobBox { rect: Rect::new(0.52, 0.07, 0.43, 0.41), photo: photo(&large, FULL) },
                         JobBox { rect: Rect::new(0.52, 0.52, 0.43, 0.41), photo: photo(&p3, FULL) },
                     ],
-                    texts: vec![JobText {
-                        rect: Rect::new(0.05, 0.93, 0.9, 0.06),
-                        text: TITLE.into(),
-                        align: Align::Center,
-                        point_size: 20.0,
-                    }],
                 },
                 JobPage {
                     number: 3,
                     boxes: vec![JobBox { rect: Rect::new(0.1, 0.1, 0.8, 0.8), photo: photo(&large, FULL) }],
-                    texts: vec![],
                 },
             ],
             cover: JobCover { front: Some(photo(&landscape, FULL)), back: None },
@@ -242,14 +230,6 @@ mod live {
         }
         let refs: HashSet<i64> = after.boxes.iter().filter(|b| b.picture).map(|b| b.reference).collect();
         assert!(record.boxes.iter().all(|b| refs.contains(&b.reference)), "a recorded ref is not in the project");
-        let texts: Vec<&str> = after
-            .boxes
-            .iter()
-            .filter(|b| b.page == 2 && b.fields["type"] == 1)
-            .filter_map(|b| b.fields["styledtext"]["data"].as_str())
-            .collect();
-        assert_eq!(texts.len(), 1);
-        assert!(texts[0].ends_with(&format!("<..>{TITLE}")), "title came back as {:?}", texts[0]);
         let page1 = pictures(1)[0];
         println!(
             "page 1 quadrant crop: magnification {} scroll ({}, {})",

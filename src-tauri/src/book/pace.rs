@@ -97,13 +97,6 @@ pub struct Book {
     /// saved before covers existed loads with none and a white spine.
     #[serde(default)]
     pub cover: Cover,
-    /// What the user typed over a chapter's automatic title, keyed by the
-    /// event that opens the chapter (see `book::titles`). An empty string
-    /// prints no title. Omitted while empty, so a book nobody has titled is
-    /// the same bytes it was before titles existed and the golden did not
-    /// move.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub titles: BTreeMap<u32, String>,
 }
 
 pub const DEFAULT_FEATURED_FLOOR: u8 = 6;
@@ -769,7 +762,6 @@ pub fn assemble_with(
     let candidates: Vec<usize> =
         kept.iter().filter_map(|p| by_path.get(p.path.as_str()).copied()).collect();
     let mut book = Book {
-        titles: Default::default(),
         pages: out,
         seed,
         dropped: 0,
@@ -960,7 +952,7 @@ mod tests {
             {"rect":[0.0,0.0,0.46,1.0],"role":"hero","bleed":["left","top","bottom"],
              "aspect_pref":[1.1,1.5]}
         ],
-        "text_zones": [],
+        
         "min_photos": 1, "max_photos": 1,
         "density": "sparse", "energy": "calm"
     }"#;
@@ -971,7 +963,7 @@ mod tests {
             {"rect":[0.04,0.08,0.42,0.84],"role":"support","bleed":[],"aspect_pref":[1.05,1.5]},
             {"rect":[0.54,0.08,0.42,0.84],"role":"support","bleed":[],"aspect_pref":[1.05,1.5]}
         ],
-        "text_zones": [],
+        
         "min_photos": 2, "max_photos": 2,
         "density": "medium", "energy": "calm"
     }"#;
@@ -983,7 +975,7 @@ mod tests {
              "aspect_pref":[1.1,1.5]},
             {"rect":[0.56,0.1,0.38,0.8],"role":"support","bleed":[],"aspect_pref":[1.0,1.4]}
         ],
-        "text_zones": [],
+        
         "min_photos": 2, "max_photos": 2,
         "density": "medium", "energy": "lively"
     }"#;
@@ -1010,7 +1002,7 @@ mod tests {
              "aspect_pref":[1.1,1.5]},
             {"rect":[0.56,0.1,0.38,0.8],"role":"support","bleed":[],"aspect_pref":[1.0,1.4]}
         ],
-        "text_zones": [],
+        
         "min_photos": 2, "max_photos": 2,
         "density": "medium", "energy": "lively"
     }"#;
@@ -1022,7 +1014,7 @@ mod tests {
             {"rect":[0.5,0.0,0.5,1.0],"role":"hero","bleed":["right","top","bottom"],
              "aspect_pref":[1.1,1.5]}
         ],
-        "text_zones": [],
+        
         "min_photos": 2, "max_photos": 2,
         "density": "dense", "energy": "neutral"
     }"#;
@@ -1035,7 +1027,7 @@ mod tests {
             {"rect":[0.56,0.06,0.4,0.42],"role":"support","bleed":[],"aspect_pref":[2.0,2.8]},
             {"rect":[0.56,0.52,0.4,0.42],"role":"support","bleed":[],"aspect_pref":[2.0,2.8]}
         ],
-        "text_zones": [],
+        
         "min_photos": 3, "max_photos": 3,
         "density": "medium", "energy": "neutral"
     }"#;
@@ -1048,7 +1040,7 @@ mod tests {
             {"rect":[0.04,0.06,0.4,0.42],"role":"support","bleed":[],"aspect_pref":[2.0,2.8]},
             {"rect":[0.04,0.52,0.4,0.42],"role":"support","bleed":[],"aspect_pref":[2.0,2.8]}
         ],
-        "text_zones": [],
+        
         "min_photos": 3, "max_photos": 3,
         "density": "medium", "energy": "lively"
     }"#;
@@ -1062,7 +1054,7 @@ mod tests {
             {"rect":[0.56,0.06,0.4,0.42],"role":"support","bleed":[],"aspect_pref":[2.0,2.8]},
             {"rect":[0.56,0.52,0.4,0.42],"role":"support","bleed":[],"aspect_pref":[2.0,2.8]}
         ],
-        "text_zones": [],
+        
         "min_photos": 3, "max_photos": 3,
         "density": "sparse", "energy": "lively"
     }"#;
@@ -1100,7 +1092,7 @@ mod tests {
             {"rect":[0.06,0.12,0.36,0.76],"role":"support","bleed":[],"aspect_pref":[1.03,1.36]},
             {"rect":[0.58,0.12,0.36,0.76],"role":"support","bleed":[],"aspect_pref":[1.03,1.36]}
         ],
-        "text_zones": [],
+        
         "min_photos": 2, "max_photos": 2,
         "density": "sparse", "energy": "calm"
     }"#;
@@ -1112,7 +1104,7 @@ mod tests {
             {"rect":[0.56,0.06,0.4,0.42],"role":"support","bleed":[],"aspect_pref":[2.0,2.8]},
             {"rect":[0.56,0.52,0.4,0.42],"role":"support","bleed":[],"aspect_pref":[2.0,2.8]}
         ],
-        "text_zones": [],
+        
         "min_photos": 3, "max_photos": 3,
         "density": "medium", "energy": "neutral"
     }"#;
@@ -2091,7 +2083,6 @@ mod tests {
     /// Photo indices of a laid spread in the order a reader meets them.
     fn read_on(pages: &[Page; 2]) -> Vec<usize> {
         let book = Book {
-            titles: Default::default(),
             pages: pages.to_vec(),
             seed: 0,
             dropped: 0,
@@ -2985,7 +2976,7 @@ mod spec_persistence_tests {
 
     #[test]
     fn a_book_states_its_options_only_when_one_is_on() {
-        let off = Book { pages: Vec::new(), seed: 7, dropped: 0, controls: BTreeMap::new(), spec: pixajoy_spec(), options: BookOptions::default(), cover: Default::default(), titles: Default::default() };
+        let off = Book { pages: Vec::new(), seed: 7, dropped: 0, controls: BTreeMap::new(), spec: pixajoy_spec(), options: BookOptions::default(), cover: Default::default() };
         let json = serde_json::to_value(&off).unwrap();
         assert!(json.get("options").is_none(), "all-off must be the bytes an old book has: {json}");
 
@@ -3003,7 +2994,6 @@ mod spec_persistence_tests {
     #[test]
     fn a_book_round_trips_a_non_default_spec() {
         let book = Book {
-            titles: Default::default(),
             spec: odd_spec(),
             cover: Default::default(),
             pages: Vec::new(),

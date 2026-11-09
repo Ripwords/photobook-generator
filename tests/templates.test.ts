@@ -19,7 +19,6 @@ type Density = "sparse" | "medium" | "dense";
 
 type Energy = "calm" | "neutral" | "lively";
 
-type Align = "left" | "center" | "right";
 
 interface Slot {
   rect: Rect;
@@ -28,15 +27,9 @@ interface Slot {
   aspect_pref: [number, number];
 }
 
-interface TextZone {
-  rect: Rect;
-  align: Align;
-}
-
 interface Template {
   id: string;
   slots: Slot[];
-  text_zones: TextZone[];
   min_photos: number;
   max_photos: number;
   density: Density;
@@ -47,7 +40,6 @@ const ROLES: readonly Role[] = ["hero", "support"];
 const BLEED_EDGES: readonly BleedEdge[] = ["left", "right", "top", "bottom"];
 const DENSITIES: readonly Density[] = ["sparse", "medium", "dense"];
 const ENERGIES: readonly Energy[] = ["calm", "neutral", "lively"];
-const ALIGNS: readonly Align[] = ["left", "center", "right"];
 
 function isRect(value: unknown): value is Rect {
   return (
@@ -72,12 +64,6 @@ function isSlot(value: unknown): value is Slot {
   );
 }
 
-function isTextZone(value: unknown): value is TextZone {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value as Record<string, unknown>;
-  return isRect(v.rect) && typeof v.align === "string" && ALIGNS.includes(v.align as Align);
-}
-
 function isTemplate(value: unknown): value is Template {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
@@ -85,8 +71,6 @@ function isTemplate(value: unknown): value is Template {
     typeof v.id === "string" &&
     Array.isArray(v.slots) &&
     v.slots.every(isSlot) &&
-    Array.isArray(v.text_zones) &&
-    v.text_zones.every(isTextZone) &&
     typeof v.min_photos === "number" &&
     typeof v.max_photos === "number" &&
     typeof v.density === "string" &&
@@ -105,9 +89,6 @@ function isTemplate(value: unknown): value is Template {
 
 const TAOPIX = 1e14;
 const PAGE_WIDTH_IN = 1122047244094486 / TAOPIX;
-const BLEED_IN = 19685039370078 / TAOPIX;
-/** Half of Taopix's `gutterwidth`, which is centred on the fold. */
-const GUTTER_IN = 70866141732283 / TAOPIX / 2;
 
 // The spread canvas in inches: two pages, about 22.441 x 8.740, a 2.568:1 ratio.
 // `rect` is normalised to the canvas ([0,1] on each axis), but `aspect_pref` is a
@@ -119,13 +100,6 @@ const GUTTER_IN = 70866141732283 / TAOPIX / 2;
 // scoring engine compares aspect_pref against a photo's real aspect ratio.
 const CANVAS_WIDTH_IN = 2 * PAGE_WIDTH_IN;
 const CANVAS_HEIGHT_IN = 874015748031494 / TAOPIX;
-
-const SAFE_X0 = BLEED_IN / CANVAS_WIDTH_IN;
-const SAFE_X1 = 1 - SAFE_X0;
-const SAFE_Y0 = BLEED_IN / CANVAS_HEIGHT_IN;
-const SAFE_Y1 = 1 - SAFE_Y0;
-const GUTTER_X0 = 0.5 - GUTTER_IN / CANVAS_WIDTH_IN;
-const GUTTER_X1 = 0.5 + GUTTER_IN / CANVAS_WIDTH_IN;
 
 /** The fold, normalised on the spread canvas. */
 const FOLD_X = 0.5;
@@ -173,15 +147,6 @@ function rectsOverlap(a: Rect, b: Rect): boolean {
   const overlapX = Math.min(ax + aw, bx + bw) - Math.max(ax, bx);
   const overlapY = Math.min(ay + ah, by + bh) - Math.max(ay, by);
   return overlapX > EPS && overlapY > EPS;
-}
-
-function rectOverlapsGutterBand(rect: Rect): boolean {
-  const [x, , w] = rect;
-  const x1 = x + w;
-  // A vertical strip spanning the full height of the canvas. Any rect whose
-  // x-range intersects [GUTTER_X0, GUTTER_X1] overlaps the band, regardless
-  // of its y-range.
-  return x1 > GUTTER_X0 + EPS && x < GUTTER_X1 - EPS;
 }
 
 /** A slot's real-world (inches) width/height ratio — see the comment on
@@ -238,10 +203,7 @@ describe("template library", () => {
       });
 
       it("every rect is well-formed with width and height > 0", () => {
-        const allRects: Array<{ kind: string; index: number; rect: Rect }> = [
-          ...template.slots.map((s, i) => ({ kind: "slots", index: i, rect: s.rect })),
-          ...template.text_zones.map((tz, i) => ({ kind: "text_zones", index: i, rect: tz.rect })),
-        ];
+        const allRects = template.slots.map((s, i) => ({ kind: "slots", index: i, rect: s.rect }));
         for (const { kind, index, rect } of allRects) {
           const [x, y, w, h] = rect;
           const label = rectLabel(filename, kind, index, rect);
@@ -250,35 +212,6 @@ describe("template library", () => {
           expect(Number.isFinite(x), `${label}: x must be finite`).toBe(true);
           expect(Number.isFinite(y), `${label}: y must be finite`).toBe(true);
         }
-      });
-
-      it("every text zone lies entirely within the safe area", () => {
-        template.text_zones.forEach((tz, i) => {
-          const [x, y, w, h] = tz.rect;
-          const label = rectLabel(filename, "text_zones", i, tz.rect);
-          expect(x, `${label}: left edge must be >= safe area x0`).toBeGreaterThanOrEqual(
-            SAFE_X0 - EPS,
-          );
-          expect(x + w, `${label}: right edge must be <= safe area x1`).toBeLessThanOrEqual(
-            SAFE_X1 + EPS,
-          );
-          expect(y, `${label}: top edge must be >= safe area y0`).toBeGreaterThanOrEqual(
-            SAFE_Y0 - EPS,
-          );
-          expect(y + h, `${label}: bottom edge must be <= safe area y1`).toBeLessThanOrEqual(
-            SAFE_Y1 + EPS,
-          );
-        });
-      });
-
-      it("no text zone overlaps the gutter dead band", () => {
-        template.text_zones.forEach((tz, i) => {
-          const label = rectLabel(filename, "text_zones", i, tz.rect);
-          expect(
-            rectOverlapsGutterBand(tz.rect),
-            `${label}: overlaps the gutter dead band [${GUTTER_X0}, ${GUTTER_X1}]`,
-          ).toBe(false);
-        });
       });
 
       it("no slot spans the fold", () => {
@@ -395,22 +328,6 @@ describe("template library", () => {
           template.density,
         );
         expect(ENERGIES, `${filename}: energy='${template.energy}'`).toContain(template.energy);
-      });
-
-      it("no slot overlaps a text zone", () => {
-        // Both template edits in Phase 2 completion moved a slot onto a text
-        // zone, and both were caught by a human computing the clearances by
-        // hand. The validator already holds both rectangles; this is the check
-        // that was missing (docs/PROJECT-STATUS.md open item 13).
-        template.slots.forEach((slot, i) => {
-          template.text_zones.forEach((tz, j) => {
-            expect(
-              rectsOverlap(slot.rect, tz.rect),
-              `${filename}: slots[${i}] rect=[${slot.rect.join(", ")}] overlaps ` +
-                `text_zones[${j}] rect=[${tz.rect.join(", ")}]`,
-            ).toBe(false);
-          });
-        });
       });
 
       it("slots do not overlap each other by more than a negligible epsilon", () => {

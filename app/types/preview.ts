@@ -85,10 +85,7 @@ export interface PreviewPage {
   number: number;
   side: PageSide;
   templateId: string;
-  /**
-   * True when this page prints with nothing on it -- see `preview.rs`. A page
-   * carrying a chapter title is not blank.
-   */
+  /** True when this page prints with nothing on it -- see `preview.rs`. */
   blank: boolean;
   placements: PreviewPlacement[];
 }
@@ -141,7 +138,7 @@ export interface BookLayout {
   /** One entry per opening, in `toSpreads` order -- see `openingFor`. */
   openings: PreviewOpening[];
   cover: PreviewCover;
-  /** The book's chapters in order, with the title each prints and where. */
+  /** The book's chapters in order and the pages each covers. */
   chapters: PreviewChapter[];
   /**
    * Slot rects, page-normalised and page by page, for every template id the
@@ -154,38 +151,18 @@ export interface BookLayout {
   layoutNames: Record<string, string>;
 }
 
-/** Which edge of its box a title hugs. */
-export type TextAlign = "left" | "center" | "right";
-
 /**
  * Mirrors `preview::PreviewChapter`. Pages are page NUMBERS, as everywhere
  * else in the webview.
  */
 export interface PreviewChapter {
   number: number;
-  /** The lead event: what `setChapterTitle` is addressed by. */
-  event: number;
   events: number[];
   firstPage: number;
   lastPage: number;
   /** Wall-clock capture range, Unix seconds. */
   start: number | null;
   end: number | null;
-  autoTitle: string;
-  /** What prints; empty when the user chose no title. */
-  title: string;
-  custom: boolean;
-  titleBox: PreviewTitleBox | null;
-}
-
-/** Mirrors `preview::PreviewTitleBox`. `rect` is page-normalised. */
-export interface PreviewTitleBox {
-  page: number;
-  rect: PreviewRect;
-  align: TextAlign;
-  /** The printed size in points; the preview scales it by the page box. */
-  pointSize: number;
-  overlapsPhoto: boolean;
 }
 
 /**
@@ -289,12 +266,6 @@ export type BookEdit =
   | { kind: "setCoverCrop"; side: CoverSide; x: number; y: number; w: number }
   /** The plain spine colour, `#rrggbb`. */
   | { kind: "setSpineColour"; rgb: string }
-  /**
-   * Print `title` over the chapter that opens on `event` (see `book::titles`),
-   * or go back to the automatic title with `null`. An empty string prints no
-   * title. Withheld from the chat agent, like the cover edits.
-   */
-  | { kind: "setChapterTitle"; event: number; title: string | null }
   /**
    * Put a left-out photo on this opening, which is laid out again on the
    * best layout for one more photo. How a blank page gets filled.
@@ -467,31 +438,6 @@ export function cropStyle(crop: PreviewRect): CropStyle {
 }
 
 /**
- * A chapter title as the page marks it -- see `pageTitle`. A guide, like the
- * trim and safe lines: where the title's box goes if the user adds it in
- * Pixajoy, not type the preview pretends is printed.
- */
-export interface PageTitle {
-  text: string;
-  box: BoxStyle;
-  align: TextAlign;
-  overlapsPhoto: boolean;
-}
-
-/** The title spot on page `page`, or `null` when no titled chapter's box is on it. */
-export function pageTitle(layout: BookLayout, page: number): PageTitle | null {
-  const chapter = layout.chapters.find((c) => c.titleBox?.page === page && c.title !== "");
-  const box = chapter?.titleBox;
-  if (!chapter || !box) return null;
-  return {
-    text: chapter.title,
-    box: rectStyle(box.rect),
-    align: box.align,
-    overlapsPhoto: box.overlapsPhoto,
-  };
-}
-
-/**
  * The opening the page viewer shows after stepping `delta` from `index`,
  * held inside `0..count`. It stops at either end rather than wrapping, and
  * pulls an index the book has since shrunk past back onto its last opening.
@@ -515,21 +461,6 @@ export function escapeDeselects(press: { key: string; inField: boolean; inOverla
 export function chapterOpening(layout: BookLayout, opening: PreviewSpread): PreviewChapter | null {
   const pages = [opening.left?.number, opening.right?.number];
   return layout.chapters.find((chapter) => pages.includes(chapter.firstPage)) ?? null;
-}
-
-/**
- * The edit committing `draft` as a chapter's title, or `null` when nothing
- * changes. Typing the automatic title back returns the chapter to automatic
- * (`title: null`), so a place name found later can still replace it; an
- * empty draft prints no title at all.
- */
-export function titleEdit(chapter: PreviewChapter, draft: string): BookEdit | null {
-  const text = draft.trim();
-  if (text === chapter.title.trim()) return null;
-  if (text === chapter.autoTitle) {
-    return chapter.custom ? { kind: "setChapterTitle", event: chapter.event, title: null } : null;
-  }
-  return { kind: "setChapterTitle", event: chapter.event, title: text };
 }
 
 /** Any page-normalised rect as an absolutely positioned box. */

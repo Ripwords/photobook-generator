@@ -20,12 +20,6 @@
       "aspect_pref": [1.29, 1.71]
     }
   ],
-  "text_zones": [
-    {
-      "rect": [0.131205, 0.902, 0.237591, 0.062],
-      "align": "left"
-    }
-  ],
   "min_photos": 3,
   "max_photos": 3,
   "density": "medium",

@@ -3,7 +3,7 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 /**
  * "12 Mar 2026", "12–14 Mar 2026", "28 Mar – 2 Apr 2026" or
  * "30 Dec 2025 – 2 Jan 2026", from wall-clock seconds. Mirrors Rust's
- * `book::titles::date_range`; `tests/fixtures/wire/date-ranges.json` pins both.
+ * `book::chapter_pages::date_range`; `tests/fixtures/wire/date-ranges.json` pins both.
  *
  * Capture times are the camera's local wall clock stored as if it were UTC,
  * so this reads the UTC fields: the machine's own zone must not shift a day.

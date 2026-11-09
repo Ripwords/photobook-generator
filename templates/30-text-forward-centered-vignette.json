@@ -16,17 +16,6 @@
       ]
     }
   ],
-  "text_zones": [
-    {
-      "rect": [
-        0.58,
-        0.56,
-        0.3,
-        0.12
-      ],
-      "align": "left"
-    }
-  ],
   "min_photos": 1,
   "max_photos": 1,
   "density": "sparse",

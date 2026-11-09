@@ -10,7 +10,7 @@ use crate::book::manifest::{manifest, Manifest};
 use crate::book::pace::{Book, BookOptions};
 use crate::book::pack::{recommend_pages, Capacity};
 use crate::book::preflight::{Finding, Severity};
-use crate::book::titles::Chapter;
+use crate::book::chapter_pages::Chapter;
 use crate::custom_layouts::{CustomLayout, CustomLayoutError, LayoutShape, Problem};
 use crate::export::build_items;
 use crate::preview::BookLayout;
@@ -1535,33 +1535,23 @@ pub(crate) fn with_chapters(photos: &[Photo], places: bool) -> std::borrow::Cow<
 ///
 /// Every command that runs the engine on a saved book, or reads its chapters,
 /// starts here. `resolve_photos` alone hands back time events, so a
-/// regenerate on a Places book used to group by time, and its titles would
-/// have started chapters the book does not have.
+/// regenerate on a Places book used to group by time, and its chapters would
+/// not have matched the book's.
 pub(crate) fn book_photos(db: &Db, project: &Project) -> Result<Vec<Photo>, String> {
     let photos = resolve_photos(db, &project.photo_hashes)?;
     Ok(with_chapters(&photos, project.book.options.places).into_owned())
 }
 
-/// The book's chapters and their titles. Place names come from the cache
-/// only, never a live geocode: see `place_names::cached_chapter_names`.
-/// `photos` is `book_photos`'s slice.
-pub(crate) fn book_chapters(db: &Db, book: &Book, photos: &[Photo], lib: &Library) -> Vec<Chapter> {
-    let names = if book.options.places { cached_names(db, photos) } else { BTreeMap::new() };
-    crate::book::titles::chapters(book, photos, lib, &names)
+/// Where the book's chapters landed. `photos` is `book_photos`'s slice.
+pub(crate) fn book_chapters(book: &Book, photos: &[Photo]) -> Vec<Chapter> {
+    crate::book::chapter_pages::chapter_pages(book, photos)
 }
 
 /// The preview payload for a saved book, chapters included.
 pub(crate) fn layout_of(db: &Db, project: &Project, lib: &Library) -> Result<BookLayout, String> {
-    let chapters = book_chapters(db, &project.book, &book_photos(db, project)?, lib);
+    let chapters = book_chapters(&project.book, &book_photos(db, project)?);
     let photos = resolve_preview_photos(db, &project.photo_hashes)?;
     Ok(crate::preview::book_layout(project.id, &project.book, photos, lib, &chapters))
-}
-
-fn cached_names(db: &Db, photos: &[Photo]) -> BTreeMap<u32, String> {
-    let locations: Vec<_> = photos.iter().map(|p| p.location).collect();
-    let ids: Vec<u32> = photos.iter().map(|p| p.event_cluster).collect();
-    let centres = crate::book::chapter::centroids(&locations, &ids);
-    crate::place_names::cached_chapter_names(db, &centres).into_iter().collect()
 }
 
 /// The recommended book length and what each length would cost.
@@ -3415,7 +3405,6 @@ mod tests {
     fn deleting_a_book_clears_only_what_has_been_in_the_trash_over_thirty_days() {
         let db = Db::open_in_memory().unwrap();
         let book = crate::book::pace::Book {
-            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             controls: Default::default(),
@@ -5741,7 +5730,6 @@ mod tests {
             z,
         };
         let book = Book {
-            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             controls: Default::default(),
@@ -7126,7 +7114,7 @@ mod tests {
     /// A Places book is built from photos restamped to place chapters, so
     /// whatever reopens it has to restamp them too. `resolve_photos` alone
     /// hands back the one time event, which would regenerate by time and
-    /// title one chapter where the book has two.
+    /// find one chapter where the book has two.
     #[test]
     fn a_places_book_reopens_with_the_place_chapters_it_was_built_from() {
         let db = Db::open_in_memory().unwrap();
@@ -7146,35 +7134,7 @@ mod tests {
         let reopened = book_photos(&db, &project).unwrap();
         let events: BTreeSet<u32> = reopened.iter().map(|p| p.event_cluster).collect();
         assert_eq!(events.len(), 2, "the two place chapters, not the one time event");
-        assert_eq!(book_chapters(&db, &project.book, &reopened, &lib).len(), 2);
-    }
-
-    /// Titles name a Places chapter from the cache and never ask Apple: a
-    /// chapter whose town is not cached falls back to its dates.
-    #[test]
-    fn chapter_titles_take_cached_place_names_only() {
-        let db = Db::open_in_memory().unwrap();
-        let records = two_place_records();
-        cache_records(&db, &records);
-        let photos = photos_from_records(&records).unwrap();
-        let lib = shipped_library();
-        let meta = NewProject {
-            options: BookOptions { places: true, ..BookOptions::default() },
-            ..new_project("Iceland", 20, 3)
-        };
-        let id = generate_and_save(&db, &meta, &photos, &lib, &Weights::default(), &Overrides::new(), &EventTiers::new())
-            .unwrap()
-            .project_id;
-        let project = db.load_project(id).unwrap().unwrap();
-        let reopened = book_photos(&db, &project).unwrap();
-        let first = crate::book::chapter::LatLon::new(64.14, -21.94).unwrap();
-        db.put_place_name(crate::place_names::PlaceKey::of(first), "Reykjavík").unwrap();
-
-        let titles: Vec<String> =
-            book_chapters(&db, &project.book, &reopened, &lib).into_iter().map(|c| c.title).collect();
-        assert_eq!(titles.len(), 2);
-        assert_eq!(titles[0], "Reykjavík");
-        assert!(titles[1].contains("2023"), "an uncached town falls back to its dates: {titles:?}");
+        assert_eq!(book_chapters(&project.book, &reopened).len(), 2);
     }
 
     /// A library cover is decoration, so a photo it cannot show is skipped
@@ -7203,7 +7163,6 @@ mod tests {
             z: 1,
         };
         let book = Book {
-            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             controls: Default::default(),

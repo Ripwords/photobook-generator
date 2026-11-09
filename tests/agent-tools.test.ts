@@ -134,10 +134,6 @@ describe("the tool table", () => {
    * the cover would be choosing a photo and a crop for a panel it has never
    * been shown. They join the tools when the book view describes the cover.
    *
-   * `setChapterTitle` is withheld because the agent's role is the layout:
-   * printed words are the user's, and the round that added titles kept the
-   * agent out of them on purpose.
-   *
    * `addPhoto` is withheld for now, like `replacePhoto`: it is the editor's
    * answer to a blank page the user is looking at, and growing the agent's
    * tools was not part of the change that added it.
@@ -158,7 +154,6 @@ describe("the tool table", () => {
       "setCoverPhoto",
       "setCoverCrop",
       "setSpineColour",
-      "setChapterTitle",
       "addPhoto",
       "movePhoto",
     ];

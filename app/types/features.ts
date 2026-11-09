@@ -388,8 +388,7 @@ export function eventHashes(
 
 /**
  * An event's display title: the place name when one exists, else the date
- * range its photos were taken over (as the printed chapter title falls back
- * to, `book::titles::auto_title`), else "Event N"
+ * range its photos were taken over, else "Event N"
  * numbered by position among ALL of the job's events -- never a filtered
  * subset, so the number stays the same whether "In the book" is on or off
  * and matches the events panel, which lists every event regardless of the

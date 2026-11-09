@@ -41,7 +41,6 @@ use crate::book::cull::Photo;
 use crate::book::pace::{blank_page, place, rebuild, single_fit, tie_break, Book, Page};
 use crate::book::score::{best_spread_ordered, rejects, slot_aspect, Rejection};
 use crate::book::story;
-use crate::book::titles::{self, TitleError};
 use crate::geometry::{BleedEdge, CoverSide, Rect, Side};
 use crate::templates::{Library, PageLayout, Role, Slot, SpreadTemplate, Weights};
 use serde::{Deserialize, Serialize};
@@ -159,13 +158,6 @@ pub enum BookEdit {
     SetSpineColour {
         rgb: Rgb,
     },
-    /// Print `title` over the chapter keyed by `event` (`book::titles`), or
-    /// go back to its automatic title when `None`. An empty string prints no
-    /// title at all.
-    SetChapterTitle {
-        event: u32,
-        title: Option<String>,
-    },
     /// Put photo `photo`, one the book does not hold yet, on this opening and
     /// lay the opening out again for one more photo. The only way to fill a
     /// blank page: Regenerate keeps the photo count, and every one-photo
@@ -271,9 +263,6 @@ pub enum EditError {
     CoverCropOutOfBounds(CoverSide),
     /// A cover crop was asked for on a side that has no photo.
     NoCoverPhoto(CoverSide),
-    /// No chapter opens on this event.
-    NoSuchChapter(u32),
-    TitleTooLong { chars: usize },
 }
 
 impl std::fmt::Display for EditError {
@@ -395,12 +384,6 @@ impl std::fmt::Display for EditError {
             Self::NoCoverPhoto(side) => {
                 write!(f, "the {} has no photo to crop", cover::side_name(*side))
             }
-            Self::NoSuchChapter(_) => write!(f, "no chapter starts on that event any more"),
-            Self::TitleTooLong { chars } => write!(
-                f,
-                "a chapter title can be at most {} characters; this one is {chars}",
-                titles::MAX_TITLE_CHARS
-            ),
         }
     }
 }
@@ -597,12 +580,6 @@ pub fn apply(
         }
         BookEdit::AddPhoto { opening, photo } => add_photo(book, lib, photos, w, *opening, *photo),
         BookEdit::MovePhoto { from, opening } => move_photo(book, lib, photos, w, *from, *opening),
-        BookEdit::SetChapterTitle { event, title } => {
-            titles::set_title(book, photos, lib, *event, title.as_deref()).map_err(|e| match e {
-                TitleError::NoSuchChapter(e) => EditError::NoSuchChapter(e),
-                TitleError::TooLong { chars } => EditError::TitleTooLong { chars },
-            })
-        }
     }
 }
 
@@ -2956,8 +2933,6 @@ mod tests {
                 BookEdit::SetCoverPhoto { side: CoverSide::Back, photo: None },
                 BookEdit::SetCoverCrop { side: CoverSide::Back, x: 0.125, y: 0.0625, w: 0.5 },
                 BookEdit::SetSpineColour { rgb: Rgb { r: 0x1a, g: 0x2b, b: 0x3c } },
-                BookEdit::SetChapterTitle { event: 4, title: Some("Reykjavík".into()) },
-                BookEdit::SetChapterTitle { event: 9, title: None },
                 BookEdit::AddPhoto { opening: 10, photo: 31 },
                 BookEdit::MovePhoto { from: PlacementRef { page: 4, z: 2 }, opening: 7 },
             ]
@@ -3044,28 +3019,6 @@ mod tests {
 
     fn edit(b: &mut Book, ps: &[Photo], e: BookEdit) -> Result<(), EditError> {
         apply(b, &e, &frozen_library(), ps, &Weights::default())
-    }
-
-    #[test]
-    fn set_chapter_title_saves_the_text_and_refuses_what_titles_refuses() {
-        let ps = photos(25);
-        let mut b = book(&ps);
-        let title = |t: Option<&str>| BookEdit::SetChapterTitle { event: 0, title: t.map(String::from) };
-
-        edit(&mut b, &ps, title(Some("Kyoto"))).unwrap();
-        assert_eq!(b.titles.get(&0).map(String::as_str), Some("Kyoto"));
-
-        let unknown = BookEdit::SetChapterTitle { event: 7, title: Some("x".into()) };
-        assert!(matches!(edit(&mut b, &ps, unknown), Err(EditError::NoSuchChapter(7))));
-        let long = "a".repeat(61);
-        assert!(matches!(
-            edit(&mut b, &ps, title(Some(&long))),
-            Err(EditError::TitleTooLong { chars: 61 })
-        ));
-        assert_eq!(b.titles.get(&0).map(String::as_str), Some("Kyoto"), "a refusal changes nothing");
-
-        edit(&mut b, &ps, title(None)).unwrap();
-        assert!(b.titles.is_empty());
     }
 
     fn cover_crop(ps: &[Photo], i: usize) -> Rect {

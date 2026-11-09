@@ -9,7 +9,6 @@ pub mod job;
 pub mod pixajoy;
 
 use crate::geometry::Rect;
-use crate::templates::Align;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -34,18 +33,6 @@ pub struct JobPage {
     pub number: u32,
     /// Bottom of the stack first.
     pub boxes: Vec<JobBox>,
-    /// Printed above every photo on the page.
-    pub texts: Vec<JobText>,
-}
-
-/// A chapter title, as `book::titles::TitleBox` places it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct JobText {
-    /// Page-normalised, like `JobBox::rect`.
-    pub rect: Rect,
-    pub text: String,
-    pub align: Align,
-    pub point_size: f64,
 }
 
 #[derive(Debug, Clone, PartialEq)]

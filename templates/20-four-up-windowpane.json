@@ -26,16 +26,6 @@
       "aspect_pref": [1.29, 1.71]
     }
   ],
-  "text_zones": [
-    {
-      "rect": [0.045, 0.44, 0.14, 0.12],
-      "align": "right"
-    },
-    {
-      "rect": [0.815, 0.44, 0.14, 0.12],
-      "align": "left"
-    }
-  ],
   "min_photos": 4,
   "max_photos": 4,
   "density": "medium",

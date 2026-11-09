@@ -76,15 +76,6 @@ pub fn name_chapters<E: Display>(
     keys.into_iter().filter_map(|(id, key)| Some((id, names.get(&key)?.clone()))).collect()
 }
 
-/// A name for each chapter whose centre is already cached, asking Apple
-/// nothing. What export and the editor's titles read: a title must never be
-/// the reason a coordinate leaves the Mac.
-pub fn cached_chapter_names(db: &Db, centroids: &BTreeMap<u32, LatLon>) -> HashMap<u32, String> {
-    let keys = keys_of(centroids);
-    let names = cached(db, &keys);
-    keys.into_iter().filter_map(|(id, key)| Some((id, names.get(&key)?.clone()))).collect()
-}
-
 fn keys_of(centroids: &BTreeMap<u32, LatLon>) -> BTreeMap<u32, PlaceKey> {
     centroids.iter().map(|(&id, &p)| (id, PlaceKey::of(p))).collect()
 }
@@ -240,13 +231,5 @@ mod tests {
         name_chapters(&db, &chapters(&places), |p| retried.geocode(p));
         let expected: Vec<PlaceKey> = (8..20).map(|i| key((10.0 + f64::from(i), 20.0))).collect();
         assert_eq!(retried.asked(), expected);
-    }
-
-    #[test]
-    fn cached_chapter_names_reads_the_cache_and_leaves_the_rest_unnamed() {
-        let db = Db::open_in_memory().unwrap();
-        db.put_place_name(key(KYOTO), "Kyoto").unwrap();
-        let names = cached_chapter_names(&db, &chapters(&[(1, KYOTO), (2, OSAKA)]));
-        assert_eq!(names, HashMap::from([(1, "Kyoto".to_string())]));
     }
 }

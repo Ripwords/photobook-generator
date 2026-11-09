@@ -100,8 +100,7 @@ pub struct ManifestCoverPhoto {
 
 /// Builds the manifest for `book`. `photos` is the ORIGINAL slice
 /// `Placement::photo_index` indexes into, matching `export::build_items`'s
-/// own contract. Export prints no chapter titles (only Send to Pixajoy
-/// places them), so the manifest carries no text.
+/// own contract. The book prints no text, so the manifest carries none.
 pub fn manifest(book: &Book, photos: &[Photo], project_id: i64) -> Manifest {
     // The book's own geometry, never a default: a manifest is the hand-off to
     // the printer, so naming the wrong page size here is the one bug nothing
@@ -202,7 +201,6 @@ mod tests {
     fn manifest_carries_the_project_id_seed_and_page_count() {
         let photos = vec![photo("/a.jpg", "haaa1111")];
         let book = Book {
-            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             controls: Default::default(),
@@ -228,15 +226,14 @@ mod tests {
         assert_eq!(m.page_count, m.pages.len());
     }
 
-    /// Export prints no chapter titles, so the manifest -- the hand-off to
-    /// the printer -- carries no text at all. A
-    /// manifest written while titles travelled in `texts` still reads.
+    /// The book prints no text, so the manifest -- the hand-off to the
+    /// printer -- carries none. A manifest written while chapter titles
+    /// travelled in `texts` still reads.
     #[test]
     fn manifest_carries_no_chapter_titles_and_reads_one_that_did() {
         let photos = vec![photo("/a.jpg", "haaa1111")];
         let blank = |number, side| Page { number, side, template_id: "blank".into(), placements: Vec::new() };
         let book = Book {
-            titles: Default::default(),
             spec: odd_spec(),
             cover: Default::default(),
             controls: Default::default(),
@@ -267,7 +264,6 @@ mod tests {
     fn manifest_records_a_page_with_zero_placements_as_an_empty_entry() {
         let photos = vec![photo("/a.jpg", "haaa1111")];
         let book = Book {
-            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             controls: Default::default(),
@@ -314,7 +310,6 @@ mod tests {
         let slot_rect = Rect::new(0.1, 0.2, 0.3, 0.4);
         let spec = odd_spec();
         let book = Book {
-            titles: Default::default(),
             controls: Default::default(),
             seed: 1,
             dropped: 0,
@@ -356,7 +351,6 @@ mod tests {
         let photos = vec![photo("/photos/a.jpg", "deadbeef99")];
         let crop = Rect::new(0.05, 0.1, 0.6, 0.7);
         let book = Book {
-            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Default::default(),
             controls: Default::default(),
@@ -392,7 +386,6 @@ mod tests {
             photo("/c.jpg", "hccc3333"),
         ];
         let book = Book {
-            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Cover {
                 front: Some(CoverPhoto { photo_index: 2, crop: Rect::new(0.0, 0.1, 1.0, 0.6) }),
@@ -443,7 +436,6 @@ mod tests {
         let photos = vec![photo("/a.jpg", "haaa1111"), photo("/b.png", "hbbb2222")];
         let crop = Rect::new(0.05, 0.1, 0.75, 0.8);
         let book = Book {
-            titles: Default::default(),
             spec: odd_spec(),
             options: Default::default(),
             cover: Cover {

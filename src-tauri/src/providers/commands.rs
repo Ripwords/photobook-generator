@@ -4,9 +4,7 @@
 
 use super::pixajoy::{self, auth, plan, Progress, MY_PROJECTS_URL};
 use super::{job, CachedAsset, ProviderId, Upload};
-use crate::commands::{
-    book_chapters, book_library, book_photos, database_path, expected_photo_count, export_items, split_findings,
-};
+use crate::commands::{book_photos, database_path, expected_photo_count, export_items, split_findings};
 use crate::db::Db;
 use crate::protocol::OutputFormat;
 use serde::Serialize;
@@ -132,7 +130,6 @@ struct Prepared {
     name: String,
     book: crate::book::pace::Book,
     photos: Vec<crate::book::cull::Photo>,
-    chapters: Vec<crate::book::titles::Chapter>,
     cached: HashMap<String, CachedAsset>,
     fresh: Vec<Upload>,
 }
@@ -192,7 +189,7 @@ async fn send(app: AppHandle, project_id: i64, on_event: &Channel<SendEvent>) ->
     assets.extend(new_assets.iter().map(|(h, a)| (h.clone(), a.asset_id.clone())));
 
     emit(on_event, SendEvent::LayingOut);
-    let job = job::build_job(&prepared.name, &prepared.book, &prepared.photos, &sizes, &prepared.chapters)
+    let job = job::build_job(&prepared.name, &prepared.book, &prepared.photos, &sizes)
         .map_err(|e| opened.fail(e))?;
     let record = opened.lay_out(&job, &account, &assets).await?;
 
@@ -256,9 +253,7 @@ fn prepare(
         .map_err(|e| e.to_string())?;
     let missing: Vec<String> = hashes.into_iter().filter(|h| !cached.contains_key(h)).collect();
     let fresh = export_uploads(app, &photos, &missing, out, &emit)?;
-    // The same chapters, with the same cached place names, the editor shows.
-    let chapters = book_chapters(&db, &project.book, &photos, &book_library(app, &db, &project.book.spec)?);
-    Ok(Prepared { project_id, name: project.name, book: project.book, photos, chapters, cached, fresh })
+    Ok(Prepared { project_id, name: project.name, book: project.book, photos, cached, fresh })
 }
 
 fn export_uploads(

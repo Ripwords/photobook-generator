@@ -67,15 +67,9 @@ interface Slot {
   aspect_pref: [number, number];
 }
 
-interface TextZone {
-  rect: Rect;
-  align: "left" | "center" | "right";
-}
-
 interface Template {
   id: string;
   slots: Slot[];
-  text_zones: TextZone[];
   min_photos: number;
   max_photos: number;
   density: "sparse" | "medium" | "dense";
@@ -106,12 +100,6 @@ function isSlot(value: unknown): value is Slot {
   );
 }
 
-function isTextZone(value: unknown): value is TextZone {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value as Record<string, unknown>;
-  return isRect(v.rect) && (v.align === "left" || v.align === "center" || v.align === "right");
-}
-
 function isTemplate(value: unknown): value is Template {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
@@ -119,8 +107,6 @@ function isTemplate(value: unknown): value is Template {
     typeof v.id === "string" &&
     Array.isArray(v.slots) &&
     v.slots.every(isSlot) &&
-    Array.isArray(v.text_zones) &&
-    v.text_zones.every(isTextZone) &&
     typeof v.min_photos === "number" &&
     typeof v.max_photos === "number" &&
     (v.density === "sparse" || v.density === "medium" || v.density === "dense") &&
@@ -222,13 +208,6 @@ function slotBox(slot: Slot, index: number): string {
     </div>`;
 }
 
-function textBox(zone: TextZone, index: number): string {
-  const [x, y, w, h] = zone.rect;
-  return `<div class="tz" style="left:${pct(x)};top:${pct(y)};width:${pct(w)};height:${pct(h)}">
-      <span>text ${index} · ${zone.align}</span>
-    </div>`;
-}
-
 function card(t: Template): string {
   const left = t.slots.filter((s) => sideOf(s.rect) === "left");
   const right = t.slots.filter((s) => sideOf(s.rect) === "right");
@@ -259,7 +238,6 @@ function card(t: Template): string {
       <div class="gutter"></div>
       <div class="fold"></div>
       ${t.slots.map(slotBox).join("\n")}
-      ${t.text_zones.map(textBox).join("\n")}
     </div>
   </section>`;
 }
@@ -375,8 +353,6 @@ code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; background: #e
 .pref, .flag { color: #4b5361; }
 .fit.good { color: #14733f; }
 .fit.bad { color: #b3261e; font-weight: 700; }
-.tz { position: absolute; border: 1px dashed #7a5af5; background: rgba(122,90,245,.10);
-  font: 10px ui-monospace, Menlo, monospace; color: #4c33b8; padding: 2px 3px; z-index: 2; }
 `;
 
 function render(templates: Template[]): string {

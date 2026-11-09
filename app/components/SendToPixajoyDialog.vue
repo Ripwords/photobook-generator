@@ -100,7 +100,6 @@ const percent = computed(() => {
             <li>A new project is created in your Pixajoy account.</li>
             <li>Each of the book's photos is uploaded whole to Pixajoy's servers, once. A later send reuses it.</li>
             <li>Nothing is ordered. You review and order the book on Pixajoy.</li>
-            <li>Chapter titles go onto their pages as text you can edit on Pixajoy.</li>
           </ul>
         </section>
 

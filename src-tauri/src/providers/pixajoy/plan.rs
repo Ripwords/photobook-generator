@@ -6,7 +6,6 @@ use crate::geometry::Rect;
 use crate::print_spec::PrintSpec;
 use crate::geometry::CoverSide;
 use crate::providers::{JobPhoto, PrintJob, SentBox, SentSlot};
-use crate::templates::Align;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeSet, HashMap};
 
@@ -22,12 +21,6 @@ const UNIT: f64 = 1e14;
 /// `project/load` carries items for the first slice only; later pages come
 /// from `project/pageData/<slice>`, `SLICE` page numbers at a time.
 const SLICE: u32 = 10;
-/// Arial, the font of the cover text box the titles are cloned from.
-const FONT: &str = "<fi0*0400*ARIALMT\tArialMT\tArial\tArial\tArial (TT)><fn0*0400*ARIALMT>";
-/// Titles print black: `TitleBox` has no colour.
-const BLACK: u32 = 0;
-/// Taopix's transparent `backcolour`.
-const TRANSPARENT: i64 = -1;
 /// The `itemstate` of a page record whose items came with the load.
 const LOADED: i64 = 2;
 /// How far a book's page shape may stray from Pixajoy's landscape page.
@@ -213,20 +206,6 @@ pub fn crop_fit(pw: u32, ph: u32, crop: Rect, bw: f64, bh: f64) -> Fit {
     }
 }
 
-/// A Taopix `styledtext.data` string: Arial at `point_size`, `colour` as
-/// 0xRRGGBB, aligned, then the text prefixed by its length. The length is in
-/// UTF-16 code units because the editor that reads it is JavaScript.
-pub fn styled_text_data(text: &str, align: Align, point_size: f64, colour: u32) -> String {
-    let pa = match align {
-        Align::Left => 0,
-        Align::Center => 1,
-        Align::Right => 2,
-    };
-    let ts = (point_size * 100.0).round() as i64;
-    let len = text.encode_utf16().count();
-    format!("{FONT}<ts{ts}><tc{colour}><pa{pa}>{len} <..>{text}")
-}
-
 /// A `project/save` body and the photo boxes it places. Added boxes carry
 /// their temporary negative refs until [`resolve_refs`] reads the real ones
 /// from the save's reply.
@@ -256,13 +235,6 @@ pub fn save_diff(
         t
     };
     let template = layout.boxes.iter().find(interior).map(clone);
-    // The cover's "Insert Your Text Here" box: the one text box a user may
-    // delete, so the only one not carrying a protected label.
-    let text_template = layout
-        .boxes
-        .iter()
-        .find(|b| b.page == COVER_PAGE && b.fields["type"] == 1 && b.fields["protectfromdelete"] == false)
-        .map(clone);
     let top = layout.boxes.iter().map(|b| b.zindex).max().unwrap_or(0);
     let mut added = Map::new();
     let mut sent = Vec::new();
@@ -272,37 +244,22 @@ pub fn save_diff(
             return Err(format!("Page {} is outside the {page_count}-page Pixajoy project.", page.number));
         }
         // Each box is placed on the page strip, stacked above everything
-        // before it: photos bottom first, then the titles.
-        let mut place = |mut item: Map<String, Value>, rect: &Rect| {
+        // before it, bottom first.
+        for b in &page.boxes {
+            let mut item = template.clone().ok_or("Pixajoy's project has no picture box to copy.")?;
             k += 1;
-            let (x, y) = ((page.number as f64 + rect.x) * layout.page_w, rect.y * layout.page_h);
-            let (w, h) = (rect.w * layout.page_w, rect.h * layout.page_h);
-            item.insert("ref".into(), json!(-k));
+            let r = -k;
+            let (x, y) = ((page.number as f64 + b.rect.x) * layout.page_w, b.rect.y * layout.page_h);
+            let (w, h) = (b.rect.w * layout.page_w, b.rect.h * layout.page_h);
+            item.insert("ref".into(), json!(r));
             item.insert("pagenumber".into(), json!(page.number));
             item.insert("zindex".into(), json!(top + k));
             item.extend(geometry(x, y, w, h));
-            (-k, item, w, h)
-        };
-        for b in &page.boxes {
-            let item = template.clone().ok_or("Pixajoy's project has no picture box to copy.")?;
-            let (r, mut item, w, h) = place(item, &b.rect);
             let (fields, asset_id) = fill(&b.photo, w, h, assets)?;
             item.extend(fields);
             added.insert(r.to_string(), Value::Object(item));
             let slot = SentSlot::Page { number: page.number, rect: b.rect };
             sent.push(SentBox { reference: r, slot, hash: b.photo.hash.clone(), asset_id, crop: b.photo.crop });
-        }
-        for t in &page.texts {
-            let item = text_template.clone().ok_or("Pixajoy's project has no cover text box to copy.")?;
-            let (r, mut item, _, _) = place(item, &t.rect);
-            item.insert("backcolour".into(), json!(TRANSPARENT));
-            item.insert("labelshort".into(), json!({}));
-            let styled = item
-                .get_mut("styledtext")
-                .and_then(Value::as_object_mut)
-                .ok_or("Pixajoy's cover text box has no styled text.")?;
-            styled.insert("data".into(), json!(styled_text_data(&t.text, t.align, t.point_size, BLACK)));
-            added.insert(r.to_string(), Value::Object(item));
         }
     }
 
@@ -404,72 +361,7 @@ fn fill(photo: &JobPhoto, bw: f64, bh: f64, assets: &HashMap<String, String>) ->
 mod tests {
     use super::*;
     use crate::print_spec::pixajoy_spec;
-    use crate::providers::{JobBox, JobCover, JobPage, JobPhoto, JobText};
-
-    /// The cover's one unprotected text box in the fixture.
-    const TEXT_TEMPLATE: i64 = 82447;
-
-    #[test]
-    fn styled_text_counts_utf16_units_and_codes_size_colour_and_alignment() {
-        // Saved through the real editor and round-tripped exactly.
-        assert_eq!(
-            styled_text_data("Align one: Kyoto, März 2026", Align::Center, 36.0, 0),
-            format!("{FONT}<ts3600><tc0><pa1>27 <..>Align one: Kyoto, März 2026")
-        );
-        assert_eq!(styled_text_data("Hi", Align::Left, 14.5, 65280), format!("{FONT}<ts1450><tc65280><pa0>2 <..>Hi"));
-        // Six chars, nine bytes, seven UTF-16 units.
-        assert_eq!(
-            styled_text_data("Fuji 🗻", Align::Right, 20.0, 0xFF0000),
-            format!("{FONT}<ts2000><tc16711680><pa2>7 <..>Fuji 🗻")
-        );
-    }
-
-    fn titled(text: JobText) -> PrintJob {
-        let photo = JobBox { rect: Rect::new(0.0, 0.0, 1.0, 1.0), photo: image("/t/a.jpg", 1200, 800) };
-        job(vec![JobPage { number: 2, boxes: vec![photo], texts: vec![text] }], JobCover::default())
-    }
-
-    fn kyoto() -> JobText {
-        JobText { rect: Rect::new(0.1, 0.05, 0.8, 0.1), text: "Kyoto".into(), align: Align::Center, point_size: 24.0 }
-    }
-
-    #[test]
-    fn a_title_is_the_cover_text_box_cloned_onto_its_page_above_its_photos() {
-        let l = layout();
-        let diff = save_diff(&l, &titled(kyoto()), 20, &assets(&["/t/a.jpg"])).unwrap().body;
-        let added = diff["items"]["added"].as_object().unwrap();
-        assert_eq!(added.len(), 2);
-        let (photo, t) = (&added["-1"], &added["-2"]);
-        let template = &l.boxes.iter().find(|b| b.reference == TEXT_TEMPLATE).unwrap().fields;
-
-        assert_eq!(t["ref"], json!(-2));
-        assert_eq!(t["type"], json!(1));
-        assert_eq!(t["pagenumber"], json!(2));
-        assert_eq!(t["backcolour"], json!(-1));
-        assert_eq!(t["labelshort"], json!({}));
-        assert!(t.get("recordid").is_none() && t.get("boxtype").is_none());
-        assert!(t["zindex"].as_i64().unwrap() > photo["zindex"].as_i64().unwrap());
-
-        let left = 2.1 * PAGE_W;
-        assert!(close(inches(&t["boxleft"]), left, 1e-9), "{}", t["boxleft"]);
-        assert!(close(inches(&t["boxtop"]), 0.05 * PAGE_H, 1e-9));
-        assert!(close(inches(&t["boxwidth"]), 0.8 * PAGE_W, 1e-9));
-        assert!(close(inches(&t["boxheight"]), 0.1 * PAGE_H, 1e-9));
-        assert!(close(inches(&t["boxlinex2"]), left + 0.8 * PAGE_W, 1e-9));
-
-        let mut want = template["styledtext"].clone();
-        want["data"] = json!(styled_text_data("Kyoto", Align::Center, 24.0, 0));
-        assert_eq!(t["styledtext"], want);
-        assert!(t.get("hirespath").is_none_or(|v| v == &template["hirespath"]));
-    }
-
-    #[test]
-    fn a_title_with_no_cover_text_box_to_copy_is_an_error() {
-        let mut l = layout();
-        l.boxes.retain(|b| b.reference != TEXT_TEMPLATE);
-        let err = save_diff(&l, &titled(kyoto()), 20, &assets(&["/t/a.jpg"])).unwrap_err();
-        assert!(err.contains("text box"), "{err}");
-    }
+    use crate::providers::{JobBox, JobCover, JobPage, JobPhoto};
 
     const LOAD: &str = include_str!("../../../tests/fixtures/pixajoy/load.json");
     const PAGE_W: f64 = 11.22047244094486;
@@ -648,9 +540,9 @@ mod tests {
         let l = layout();
         let rect = Rect::new(0.1, 0.2, 0.5, 0.25);
         let pages = vec![
-            JobPage { number: 1, boxes: vec![JobBox { rect, photo: image("/t/a.jpg", 1200, 800) }], texts: vec![] },
-            JobPage { number: 2, boxes: vec![JobBox { rect, photo: image("/t/a.jpg", 1200, 800) }], texts: vec![] },
-            JobPage { number: 3, boxes: vec![JobBox { rect, photo: image("/t/a.jpg", 1200, 800) }], texts: vec![] },
+            JobPage { number: 1, boxes: vec![JobBox { rect, photo: image("/t/a.jpg", 1200, 800) }] },
+            JobPage { number: 2, boxes: vec![JobBox { rect, photo: image("/t/a.jpg", 1200, 800) }] },
+            JobPage { number: 3, boxes: vec![JobBox { rect, photo: image("/t/a.jpg", 1200, 800) }] },
         ];
         let diff = save_diff(&l, &job(pages, JobCover::default()), 20, &assets(&["/t/a.jpg"])).unwrap().body;
         let added = diff["items"]["added"].as_object().unwrap();
@@ -676,16 +568,15 @@ mod tests {
         let l = layout();
         let full = Rect::new(0.0, 0.0, 1.0, 1.0);
         let pages = vec![
-            JobPage { number: 1, boxes: vec![], texts: vec![] },
+            JobPage { number: 1, boxes: vec![] },
             JobPage {
                 number: 2,
                 boxes: vec![
                     JobBox { rect: full, photo: image("/t/a.jpg", 1200, 800) },
                     JobBox { rect: Rect::new(0.5, 0.5, 0.25, 0.25), photo: image("/t/b.jpg", 600, 600) },
                 ],
-                texts: vec![],
             },
-            JobPage { number: 3, boxes: vec![JobBox { rect: full, photo: image("/t/a.jpg", 1200, 800) }], texts: vec![] },
+            JobPage { number: 3, boxes: vec![JobBox { rect: full, photo: image("/t/a.jpg", 1200, 800) }] },
         ];
         let ids = assets(&["/t/a.jpg", "/t/b.jpg"]);
         let diff = save_diff(&l, &job(pages, JobCover::default()), 20, &ids).unwrap().body;
@@ -786,7 +677,6 @@ mod tests {
         let pages = vec![JobPage {
             number: 21,
             boxes: vec![JobBox { rect: Rect::new(0.0, 0.0, 1.0, 1.0), photo: image("/t/a.jpg", 10, 10) }],
-            texts: vec![],
         }];
         assert!(save_diff(&l, &job(pages, JobCover::default()), 20, &assets(&["/t/a.jpg"])).is_err());
     }
@@ -797,7 +687,6 @@ mod tests {
         let pages = vec![JobPage {
             number: 1,
             boxes: vec![JobBox { rect: Rect::new(0.0, 0.0, 1.0, 1.0), photo: image("/t/a.jpg", 10, 10) }],
-            texts: vec![],
         }];
         assert!(save_diff(&l, &job(pages, JobCover::default()), 20, &HashMap::new()).is_err());
     }
@@ -842,7 +731,7 @@ mod tests {
         let crop = Rect::new(0.5, 0.0, 0.5, 1.0);
         let rect = Rect::new(0.1, 0.1, 0.4, 0.4);
         let cropped = JobPhoto { hash: "a".into(), width: 2000, height: 1000, crop };
-        let pages = vec![JobPage { number: 2, boxes: vec![JobBox { rect, photo: cropped }], texts: vec![kyoto()] }];
+        let pages = vec![JobPage { number: 2, boxes: vec![JobBox { rect, photo: cropped }], }];
         let cover = JobCover { front: Some(image("f", 1200, 1040)), back: None };
         let ids = assets(&["a", "f"]);
         let diff = save_diff(&l, &job(pages, cover), 20, &ids).unwrap();
@@ -853,7 +742,6 @@ mod tests {
         assert!(close(b["boxscrollleft"].as_f64().unwrap(), fit.scroll_left, 1e-9));
         assert_ne!(fit, crop_fit(2000, 1000, FULL, 0.4 * PAGE_W, 0.4 * PAGE_H), "the crop must matter");
 
-        // The title is not a photo box, so it is not recorded.
         assert_eq!(
             diff.boxes,
             vec![

@@ -4,7 +4,6 @@ import {
   NO_HOLD,
   pageGuides,
   pageSlots,
-  pageTitle,
   photoFor,
   pressIsDrag,
   SLOT_DRAG_THRESHOLD_PX,
@@ -353,9 +352,6 @@ const gutter = computed(() => rectStyle(shown.value[side].gutter));
 
 const snapped = computed<SnapLine[]>(() => snapLines(held.value));
 
-/** Where this page's chapter title goes, if the user adds it -- see `pageTitle`. */
-const title = computed(() => (page ? pageTitle(layout, page.number) : null));
-const titleJustify = { left: "justify-start", center: "justify-center", right: "justify-end" } as const;
 </script>
 
 <template>
@@ -475,24 +471,6 @@ const titleJustify = { left: "justify-start", center: "justify-center", right: "
           />
         </template>
       </component>
-
-      <!--
-        Where the chapter title goes, drawn as a guide like the trim and safe
-        lines: the export never prints it, so the preview must not pretend it
-        does. The tag names the title so the user can type it in Pixajoy.
-      -->
-      <div
-        v-if="title"
-        class="pointer-events-none absolute flex border border-dashed border-violet-500"
-        :class="titleJustify[title.align]"
-        :style="title.box"
-      >
-        <span
-          class="m-0.5 h-fit max-w-full truncate rounded-sm bg-violet-600 px-1.5 text-sm text-white"
-        >
-          Title: {{ title.text }}
-        </span>
-      </div>
 
       <!--
         A page that prints white, said out loud. It is a real printed page,

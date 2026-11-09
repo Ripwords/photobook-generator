@@ -27,9 +27,9 @@
 use crate::book::cull::Photo;
 use crate::book::edit::{alternatives, auto_alternatives, opening_count, refused};
 use crate::book::pace::{Book, BookOptions};
-use crate::templates::{Align, Library};
+use crate::templates::Library;
 use crate::book::cover::Rgb;
-use crate::book::titles::Chapter;
+use crate::book::chapter_pages::Chapter;
 use crate::export::{cover_filename, output_filename};
 use crate::geometry::{CoverSide, Rect, Side};
 use crate::print_spec::PrintSpec;
@@ -108,8 +108,7 @@ pub struct PreviewPage {
     /// Two different causes, one appearance: a `BLANK_TEMPLATE_ID` page (no
     /// group was available), and a real template whose slots all sit on the
     /// OTHER half of the spread (the text-zone layouts). Both print white,
-    /// so both are flagged -- `template_id` still says which happened. A
-    /// page carrying a chapter title is not blank: the title prints.
+    /// so both are flagged -- `template_id` still says which happened.
     pub blank: bool,
     pub placements: Vec<PreviewPlacement>,
 }
@@ -209,9 +208,8 @@ pub struct BookLayout {
     /// One entry per opening, in `toSpreads` order.
     pub openings: Vec<PreviewOpening>,
     pub cover: PreviewCover,
-    /// The book's chapters in order, each with the title that prints and
-    /// where. From `book::titles::chapters`, the same list the manifest's
-    /// text boxes are written from.
+    /// The book's chapters in order and the pages each covers. From
+    /// `book::chapter_pages`.
     pub chapters: Vec<PreviewChapter>,
     /// Slot rects, page-normalised and page by page, for every template id
     /// the layout menu can name: each page's current template, every
@@ -225,59 +223,29 @@ pub struct BookLayout {
 }
 
 /// One chapter as the editor shows it. Pages are PAGE NUMBERS here, not the
-/// indices into `Book::pages` that `titles::Chapter` carries, because the
+/// indices into `Book::pages` that `chapter_pages::Chapter` carries, because the
 /// webview addresses pages by number everywhere else.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewChapter {
     pub number: usize,
-    /// The lead event, which `SetChapterTitle` is addressed by.
-    pub event: u32,
     pub events: Vec<u32>,
     pub first_page: u32,
     pub last_page: u32,
     /// Wall-clock capture range, Unix seconds.
     pub start: Option<i64>,
     pub end: Option<i64>,
-    pub auto_title: String,
-    /// What prints; empty when the user chose no title.
-    pub title: String,
-    pub custom: bool,
-    pub title_box: Option<PreviewTitleBox>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PreviewTitleBox {
-    /// The page number the title prints on.
-    pub page: u32,
-    /// Page-normalised, like a slot.
-    pub rect: Rect,
-    pub align: Align,
-    pub point_size: f64,
-    pub overlaps_photo: bool,
 }
 
 fn preview_chapter(book: &Book, c: &Chapter) -> PreviewChapter {
     let number = |i: usize| book.pages.get(i).map_or(0, |p| p.number);
     PreviewChapter {
         number: c.number,
-        event: c.event,
         events: c.events.clone(),
         first_page: c.pages.first().map_or(0, |&i| number(i)),
         last_page: c.pages.last().map_or(0, |&i| number(i)),
         start: c.start,
         end: c.end,
-        auto_title: c.auto_title.clone(),
-        title: c.title.clone(),
-        custom: c.custom,
-        title_box: c.title_box.as_ref().map(|b| PreviewTitleBox {
-            page: number(b.page),
-            rect: b.rect,
-            align: b.align,
-            point_size: b.point_size,
-            overlaps_photo: b.overlaps_photo,
-        }),
     }
 }
 
@@ -363,7 +331,7 @@ pub fn preview_photo(photo: &Photo, thumbnail_path: Option<String>) -> PreviewPh
 /// the same contract `manifest::manifest` and `export::build_items` take, and
 /// the reason `preview_agrees_with_the_manifest_about_which_photo_is_in_which_slot`
 /// can check the two against each other. `chapters` is
-/// `titles::chapters` of the same book.
+/// `chapter_pages` of the same book.
 pub fn book_layout(
     project_id: i64,
     book: &Book,
@@ -371,18 +339,14 @@ pub fn book_layout(
     lib: &Library,
     chapters: &[Chapter],
 ) -> BookLayout {
-    let titled = |index: usize| {
-        chapters.iter().any(|c| c.title_box.as_ref().is_some_and(|b| b.page == index))
-    };
     let pages: Vec<PreviewPage> = book
         .pages
         .iter()
-        .enumerate()
-        .map(|(index, page)| PreviewPage {
+        .map(|page| PreviewPage {
             number: page.number,
             side: page.side,
             template_id: page.template_id.clone(),
-            blank: page.placements.is_empty() && !titled(index),
+            blank: page.placements.is_empty(),
             placements: page
                 .placements
                 .iter()
@@ -483,13 +447,11 @@ mod tests {
     use crate::book::cover::{Cover, CoverPhoto, Rgb};
     use crate::book::manifest::manifest;
     use crate::book::pace::{Page, Placement, BLANK_TEMPLATE_ID};
-    use crate::book::titles::TitleBox;
     use crate::print_spec::{odd_spec, pixajoy_spec, PrintSpec};
 
-    /// One chapter over the last three pages, titled on p3 -- the half
-    /// `book()`'s text-zone template leaves empty. Indices into `pages` are
-    /// one less than the page numbers, so a consumer that ships the index
-    /// as a page number is off by one.
+    /// One chapter over the last three pages. Indices into `pages` are one
+    /// less than the page numbers, so a consumer that ships the index as a
+    /// page number is off by one.
     fn chapter() -> Chapter {
         Chapter {
             number: 1,
@@ -499,24 +461,7 @@ mod tests {
             pages: vec![1, 2, 3],
             start: Some(1_773_273_600),
             end: Some(1_773_446_450),
-            auto_title: "12–14 Mar 2026".into(),
-            title: "Reykjavík".into(),
-            custom: true,
-            title_box: Some(TitleBox {
-                page: 2,
-                rect: Rect::new(0.125, 0.25, 0.75, 0.25),
-                align: Align::Center,
-                point_size: 24.0,
-                overlaps_photo: false,
-            }),
         }
-    }
-
-    #[test]
-    fn a_page_a_chapter_title_prints_on_is_not_blank() {
-        let layout = book_layout(7, &book(), preview_photos(), &Library::default(), &[chapter()]);
-        let blank: Vec<bool> = layout.pages.iter().map(|p| p.blank).collect();
-        assert_eq!(blank, vec![false, false, false, true]);
     }
 
     #[test]
@@ -524,7 +469,6 @@ mod tests {
         let layout = book_layout(7, &book(), preview_photos(), &Library::default(), &[chapter()]);
         let c = &layout.chapters[0];
         assert_eq!((c.first_page, c.last_page), (2, 4));
-        assert_eq!(c.title_box.as_ref().map(|b| b.page), Some(3));
     }
 
     /// NEVER square, and never the same shape twice -- a square photo makes
@@ -575,7 +519,6 @@ mod tests {
     /// `photo_index` produces different output.
     fn book() -> Book {
         Book {
-            titles: Default::default(),
             spec: pixajoy_spec(),
             cover: Cover {
                 front: Some(CoverPhoto { photo_index: 4, crop: Rect::new(0.0, 0.125, 1.0, 0.567) }),

@@ -6,6 +6,7 @@
 //! `percentiles` and `imageNormalizedTopLeft`.
 
 pub mod chapter;
+pub mod chapter_pages;
 pub mod cover;
 pub mod crop;
 pub mod cull;
@@ -19,4 +20,3 @@ pub mod preflight;
 pub mod reprint;
 pub mod score;
 pub mod story;
-pub mod titles;

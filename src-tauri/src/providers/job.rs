@@ -1,10 +1,9 @@
 //! Builds a [`PrintJob`] from a book, and the whole-photo exports a
 //! provider uploads.
 
-use super::{JobBox, JobCover, JobPage, JobPhoto, JobText, PrintJob, Upload};
+use super::{JobBox, JobCover, JobPage, JobPhoto, PrintJob, Upload};
 use crate::book::cull::Photo;
 use crate::book::pace::Book;
-use crate::book::titles::Chapter;
 use crate::geometry::{CoverSide, Rect};
 use crate::protocol::ExportItem;
 use std::collections::HashMap;
@@ -72,15 +71,7 @@ pub fn build_job(
     book: &Book,
     photos: &[Photo],
     sizes: &HashMap<String, (u32, u32)>,
-    chapters: &[Chapter],
 ) -> Result<PrintJob, String> {
-    let mut texts: HashMap<usize, Vec<JobText>> = HashMap::new();
-    for c in chapters {
-        if let Some(t) = &c.title_box {
-            let text = JobText { rect: t.rect, text: c.title.clone(), align: t.align, point_size: t.point_size };
-            texts.entry(t.page).or_default().push(text);
-        }
-    }
     let photo = |index: usize, crop: Rect| {
         let hash = &photos[index].hash;
         let &(width, height) = sizes.get(hash).ok_or_else(|| format!("Photo {hash} has no upload."))?;
@@ -89,15 +80,14 @@ pub fn build_job(
     let pages = book
         .pages
         .iter()
-        .enumerate()
-        .map(|(i, page)| {
+        .map(|page| {
             let mut placements: Vec<_> = page.placements.iter().collect();
             placements.sort_by_key(|pl| pl.z);
             let boxes = placements
                 .into_iter()
                 .map(|pl| Ok(JobBox { rect: pl.slot_rect, photo: photo(pl.photo_index, pl.crop)? }))
                 .collect::<Result<_, String>>()?;
-            Ok(JobPage { number: page.number, boxes, texts: texts.remove(&i).unwrap_or_default() })
+            Ok(JobPage { number: page.number, boxes })
         })
         .collect::<Result<_, String>>()?;
     let side = |side: CoverSide| book.cover.side(side).map(|c| photo(c.photo_index, c.crop)).transpose();
@@ -114,8 +104,6 @@ mod tests {
     use super::*;
     use crate::book::cover::{Cover, CoverPhoto};
     use crate::book::pace::{Page, Placement};
-    use crate::book::titles::{Chapter, TitleBox};
-    use crate::templates::Align;
     use crate::geometry::{Rect, Side};
     use crate::print_spec::pixajoy_spec;
     use serde_json::json;
@@ -157,7 +145,6 @@ mod tests {
 
     fn book(pages: Vec<Page>, front: Option<usize>) -> Book {
         Book {
-            titles: Default::default(),
             spec: pixajoy_spec(),
             options: Default::default(),
             cover: Cover {
@@ -233,11 +220,11 @@ mod tests {
         );
         let s = sizes(&[("aaaaaaaa11", 4032, 3024), ("bbbbbbbb22", 600, 600)]);
 
-        let job = build_job("Trip", &b, &photos, &s, &[]).unwrap();
+        let job = build_job("Trip", &b, &photos, &s).unwrap();
 
         assert_eq!(job.name, "Trip");
         assert_eq!(job.page_count, 2);
-        assert_eq!(job.pages[0], JobPage { number: 1, boxes: vec![], texts: vec![] });
+        assert_eq!(job.pages[0], JobPage { number: 1, boxes: vec![] });
         let photo = |hash: &str, width, height, crop| JobPhoto { hash: hash.into(), width, height, crop };
         assert_eq!(
             job.pages[1].boxes,
@@ -257,7 +244,7 @@ mod tests {
         b.cover.front = Some(CoverPhoto { photo_index: 1, crop });
         let s = sizes(&[("aaaaaaaa11", 1200, 800), ("cccccccc33", 900, 700)]);
 
-        let job = build_job("Trip", &b, &photos, &s, &[]).unwrap();
+        let job = build_job("Trip", &b, &photos, &s).unwrap();
 
         assert_eq!(job.cover.front, Some(JobPhoto { hash: "cccccccc33".into(), width: 900, height: 700, crop }));
         assert_eq!(job.cover.back, None);
@@ -267,41 +254,7 @@ mod tests {
     fn a_photo_with_no_upload_is_an_error() {
         let photos = vec![photo("aaaaaaaa11")];
         let b = book(vec![page(1, vec![placement(0, 1, FULL)])], None);
-        let err = build_job("Trip", &b, &photos, &HashMap::new(), &[]).unwrap_err();
+        let err = build_job("Trip", &b, &photos, &HashMap::new()).unwrap_err();
         assert!(err.contains("aaaaaaaa11"), "{err}");
-    }
-
-    fn chapter(number: usize, title: &str, title_box: Option<TitleBox>) -> Chapter {
-        Chapter {
-            number,
-            event: number as u32,
-            events: vec![number as u32],
-            opening: number - 1,
-            pages: Vec::new(),
-            start: None,
-            end: None,
-            auto_title: title.into(),
-            title: title.into(),
-            custom: false,
-            title_box,
-        }
-    }
-
-    #[test]
-    fn each_printed_chapter_title_lands_on_its_book_page() {
-        let photos = vec![photo("aaaaaaaa11")];
-        let b = book(vec![page(1, vec![]), page(2, vec![]), page(3, vec![])], None);
-        let rect = Rect::new(0.1, 0.05, 0.8, 0.1);
-        // `TitleBox::page` indexes `Book::pages`; the job wants page numbers.
-        let kyoto = TitleBox { page: 2, rect, align: Align::Right, point_size: 22.0, overlaps_photo: false };
-        let chapters = [chapter(1, "Untitled", None), chapter(2, "Kyoto", Some(kyoto))];
-
-        let job = build_job("Trip", &b, &photos, &HashMap::new(), &chapters).unwrap();
-
-        assert!(job.pages[0].texts.is_empty() && job.pages[1].texts.is_empty());
-        assert_eq!(
-            job.pages[2].texts,
-            vec![JobText { rect, text: "Kyoto".into(), align: Align::Right, point_size: 22.0 }]
-        );
     }
 }
