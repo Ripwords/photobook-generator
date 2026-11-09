@@ -1,6 +1,86 @@
 # Changelog
 
 
+## v0.3.0...master
+
+[compare changes](https://github.com/Ripwords/photobook-generator/compare/v0.3.0...master)
+
+### 🚀 Enhancements
+
+- **story:** Name each photo's shot role and measure how a book reads ([5b582c6](https://github.com/Ripwords/photobook-generator/commit/5b582c6))
+- **story:** Give each event a wide shot, a face and a detail when it has them ([d025f39](https://github.com/Ripwords/photobook-generator/commit/d025f39))
+- **story:** Read photos of different events in time order on a page ([175e289](https://github.com/Ripwords/photobook-generator/commit/175e289))
+- **story:** Open each chapter on a wide shot and close it on a calm one ([cfc231c](https://github.com/Ripwords/photobook-generator/commit/cfc231c))
+- **story:** Give each chapter a sparse-dense-quiet spread rhythm ([bff46ed](https://github.com/Ripwords/photobook-generator/commit/bff46ed))
+- **story:** Print a title on each chapter's opening ([caa54b2](https://github.com/Ripwords/photobook-generator/commit/caa54b2))
+- **story:** Open a featured chapter on a hero spread with its title opposite ([e2b18e0](https://github.com/Ripwords/photobook-generator/commit/e2b18e0))
+- **story:** Title contact-sheet chapters by their dates, as the book does ([f6e565e](https://github.com/Ripwords/photobook-generator/commit/f6e565e))
+- **story:** Edit chapter titles in the editor and see them on the page ([55e1a2a](https://github.com/Ripwords/photobook-generator/commit/55e1a2a))
+- **export:** ⚠️  Carry no chapter titles in manifest.json ([1fdecc9](https://github.com/Ripwords/photobook-generator/commit/1fdecc9))
+- **editor:** Show titles as a guide, crop in a dialog, open a page viewer ([d5ecc24](https://github.com/Ripwords/photobook-generator/commit/d5ecc24))
+- **editor:** Add a photo to a page that prints blank ([926ebfe](https://github.com/Ripwords/photobook-generator/commit/926ebfe))
+- **editor:** Draw each layout in the layout menu ([1f3e2ea](https://github.com/Ripwords/photobook-generator/commit/1f3e2ea))
+- **sidecar:** Write larger editor previews on request ([920ae38](https://github.com/Ripwords/photobook-generator/commit/920ae38))
+- **cache:** Count and evict editor previews with their photo ([afc8706](https://github.com/Ripwords/photobook-generator/commit/afc8706))
+- **graphics:** Store a Graphics setting and stream sharper previews ([b3a1f07](https://github.com/Ripwords/photobook-generator/commit/b3a1f07))
+- **graphics:** Draw the editor from sharper previews and add the setting ([a1068dd](https://github.com/Ripwords/photobook-generator/commit/a1068dd))
+- **editor:** Drag a photo onto another to swap them ([7bf2e77](https://github.com/Ripwords/photobook-generator/commit/7bf2e77))
+- **editor:** Drag left-out photos onto pages and photos onto the cover ([e440ec5](https://github.com/Ripwords/photobook-generator/commit/e440ec5))
+- **edit:** Move a photo to another page ([72765d2](https://github.com/Ripwords/photobook-generator/commit/72765d2))
+- **editor:** Drag a photo onto another spread's empty space to move it ([b021771](https://github.com/Ripwords/photobook-generator/commit/b021771))
+- **layouts:** Validate, store and merge user-made layouts ([da6349d](https://github.com/Ripwords/photobook-generator/commit/da6349d))
+- **layouts:** Commands, wire fixture and harness for user layouts ([084302e](https://github.com/Ripwords/photobook-generator/commit/084302e))
+- **layouts:** List built-ins and say when Regenerate has nothing left ([bbe4a3a](https://github.com/Ripwords/photobook-generator/commit/bbe4a3a))
+- **layouts:** Layouts screen, layout editor, and save/new from a book ([39cb7ab](https://github.com/Ripwords/photobook-generator/commit/39cb7ab))
+- **select:** Show and edit a draft's source folders, and tidy its settings panel ([4ac6c2f](https://github.com/Ripwords/photobook-generator/commit/4ac6c2f))
+- **select:** Split the settings panel into Book and Events tabs, with a bar of every photo ([dc0c789](https://github.com/Ripwords/photobook-generator/commit/dc0c789))
+- **editor:** Preview a photo before replacing it ([f038539](https://github.com/Ripwords/photobook-generator/commit/f038539))
+- **providers:** Send a book straight to Pixajoy ([2455cfd](https://github.com/Ripwords/photobook-generator/commit/2455cfd))
+- **providers:** Upload each photo once, reuse it across sends, record every send ([b097e00](https://github.com/Ripwords/photobook-generator/commit/b097e00))
+
+### 🩹 Fixes
+
+- **time:** Order photos by the real instant across time zones ([2dd4428](https://github.com/Ripwords/photobook-generator/commit/2dd4428))
+- **templates:** Keep a 0.2" gutter between photos in the bleed layouts ([816324e](https://github.com/Ripwords/photobook-generator/commit/816324e))
+- **window:** Line the traffic lights up with the header bar ([6546909](https://github.com/Ripwords/photobook-generator/commit/6546909))
+- **editor:** Let Esc clear the selected photo ([a7b1d72](https://github.com/Ripwords/photobook-generator/commit/a7b1d72))
+- **editor:** Draw the drag preview at the Graphics setting's size ([cdbd6e9](https://github.com/Ripwords/photobook-generator/commit/cdbd6e9))
+- **drafts:** Restore saved drafts once per store, and say "Left out" in the photo bar ([7a5c7fc](https://github.com/Ripwords/photobook-generator/commit/7a5c7fc))
+- **providers:** Open Pixajoy sign-in on My Projects, not the 404 /login path ([7a35f9d](https://github.com/Ripwords/photobook-generator/commit/7a35f9d))
+- **providers:** Open Google, Apple and Facebook sign-in popups in the Pixajoy login window ([4368c8d](https://github.com/Ripwords/photobook-generator/commit/4368c8d))
+- **providers:** Let WebKit load sign-in popups so window.opener survives ([7ee80a7](https://github.com/Ripwords/photobook-generator/commit/7ee80a7))
+- **providers:** Fill each Pixajoy cover panel instead of the template's photo frames ([8270ad5](https://github.com/Ripwords/photobook-generator/commit/8270ad5))
+
+### 💅 Refactors
+
+- **tiers:** One dropdown for an event's tier ([52a4279](https://github.com/Ripwords/photobook-generator/commit/52a4279))
+
+### 📖 Documentation
+
+- **readme:** Point the download button at v0.3.0 ([07187ec](https://github.com/Ripwords/photobook-generator/commit/07187ec))
+- **manual:** Describe the polished contact sheet, generate panel and editor ([8d095c6](https://github.com/Ripwords/photobook-generator/commit/8d095c6))
+- **status:** Record the story round and what it measured ([ab36dec](https://github.com/Ripwords/photobook-generator/commit/ab36dec))
+- **status:** Record the guide-only titles, the revert and the re-measured story table ([ac94e36](https://github.com/Ripwords/photobook-generator/commit/ac94e36))
+
+### 🏡 Chore
+
+- **dev:** Sign the dev app so the keychain's Always Allow sticks ([9a2bb95](https://github.com/Ripwords/photobook-generator/commit/9a2bb95))
+
+### 🎨 Styles
+
+- **ui:** 14px type and md controls across the app ([0d754bc](https://github.com/Ripwords/photobook-generator/commit/0d754bc))
+- **select:** Move machine data behind disclosures and popovers ([e53c143](https://github.com/Ripwords/photobook-generator/commit/e53c143))
+- **generate:** Sticky action, Advanced section, one-sentence summary ([0df9dfe](https://github.com/Ripwords/photobook-generator/commit/0df9dfe))
+- **editor:** Footer warnings, drag hints in mode tooltips ([74c0962](https://github.com/Ripwords/photobook-generator/commit/74c0962))
+
+#### ⚠️ Breaking Changes
+
+- **export:** ⚠️  Carry no chapter titles in manifest.json ([1fdecc9](https://github.com/Ripwords/photobook-generator/commit/1fdecc9))
+
+### ❤️ Contributors
+
+- JJ <teohjjteoh@gmail.com>
+
 ## v0.2.2...master
 
 [compare changes](https://github.com/Ripwords/photobook-generator/compare/v0.2.2...master)
