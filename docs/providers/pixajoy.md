@@ -42,7 +42,9 @@ numbers in inches.
 
 ## 1. Sign in
 
-The user signs in on `https://www.pixajoy.com.my/dashboard/projects`, which shows a login form when signed out. There is no login page: `/login` and similar paths render the site's 404. The site stores an RS256 JWT in the
+The user signs in on `https://www.pixajoy.com.my/dashboard/projects`, which shows a login form when signed out. There is no login page: `/login` and similar paths render the site's 404. Google, Apple and Facebook sign in through a `window.open` popup
+that posts back to its opener. PhotobookGen opens each popup in a window that shares the
+login window's WebKit configuration, so the popup sees the same private cookies. The site stores an RS256 JWT in the
 `mbtk` cookie on `www.pixajoy.com.my`. Its payload carries `emailaddress`, `userid` and
 `exp`, and it lasts about 30 days. Every call to `service.pixajoy.com` sends it as
 `Authorization: Bearer <mbtk>`.

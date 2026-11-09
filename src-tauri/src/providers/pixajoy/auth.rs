@@ -6,8 +6,10 @@
 use crate::agent::keys::KEYCHAIN_SERVICE;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::webview::NewWindowResponse;
+use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
 
 const ACCOUNT: &str = "pixajoy";
 /// Pixajoy has no login page: `/login` renders its 404. Signed out, My Projects
@@ -16,6 +18,9 @@ const LOGIN_URL: &str = "https://www.pixajoy.com.my/dashboard/projects";
 const COOKIE_URL: &str = "https://www.pixajoy.com.my/";
 const COOKIE: &str = "mbtk";
 const WINDOW: &str = "pixajoy-login";
+/// Google, Apple and Facebook sign in through a `window.open` popup that posts
+/// back to its opener, so popups get windows of their own.
+const POPUP_PREFIX: &str = "pixajoy-login-popup-";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,21 +91,21 @@ pub fn sign_out() -> Result<(), String> {
 /// and it gets no access to the app's commands: capabilities name `main`
 /// only.
 pub async fn sign_in(app: &AppHandle) -> Result<Status, String> {
-    if let Some(open) = app.get_webview_window(WINDOW) {
-        let _ = open.close();
-    }
+    close_login_windows(app);
     let login = LOGIN_URL.parse().map_err(|e| format!("{e}"))?;
     let cookie_url: tauri::Url = COOKIE_URL.parse().map_err(|e| format!("{e}"))?;
     let window = WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::External(login))
         .title("Sign in to Pixajoy")
         .inner_size(520.0, 760.0)
         .incognito(true)
+        .on_new_window(popup_handler(app.clone()))
         .build()
         .map_err(|e| e.to_string())?;
 
     loop {
         tokio::time::sleep(Duration::from_millis(750)).await;
         if app.get_webview_window(WINDOW).is_none() {
+            close_login_windows(app);
             return status();
         }
         let Ok(cookies) = window.cookies_for_url(cookie_url.clone()) else { continue };
@@ -111,10 +116,47 @@ pub async fn sign_in(app: &AppHandle) -> Result<Status, String> {
         let status = status_of(Some(&token), now());
         if status.signed_in {
             entry()?.set_password(&token).map_err(|e| e.to_string())?;
-            let _ = window.close();
+            close_login_windows(app);
             return Ok(status);
         }
     }
+}
+
+/// Opens a popup in a window that shares the login window's WebKit
+/// configuration, so it sees the same private cookies and keeps
+/// `window.opener`. WebKit's own `window.close()` does not reach Tauri, so
+/// popups are closed with the login window instead.
+fn popup_handler<R: Runtime>(
+    app: AppHandle<R>,
+) -> impl Fn(tauri::Url, tauri::webview::NewWindowFeatures) -> NewWindowResponse<R> + Send + 'static {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    move |url, features| {
+        let label = format!("{POPUP_PREFIX}{}", NEXT.fetch_add(1, Ordering::Relaxed));
+        let built = WebviewWindowBuilder::new(&app, label, WebviewUrl::External(url))
+            .title("Sign in to Pixajoy")
+            .inner_size(520.0, 680.0)
+            .window_features(features)
+            .build();
+        match built {
+            Ok(window) => NewWindowResponse::Create { window },
+            Err(err) => {
+                log::warn!("could not open a sign-in popup: {err}");
+                NewWindowResponse::Deny
+            }
+        }
+    }
+}
+
+fn close_login_windows<R: Runtime>(app: &AppHandle<R>) {
+    for (label, window) in app.webview_windows() {
+        if is_login_window(&label) {
+            let _ = window.close();
+        }
+    }
+}
+
+fn is_login_window(label: &str) -> bool {
+    label == WINDOW || label.starts_with(POPUP_PREFIX)
 }
 
 #[cfg(test)]
@@ -124,6 +166,13 @@ mod tests {
     fn jwt(payload: &str) -> String {
         let b = |s: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s);
         format!("{}.{}.{}", b(r#"{"alg":"RS256"}"#), b(payload), b("sig"))
+    }
+
+    #[test]
+    fn popups_close_with_the_login_window_and_nothing_else_does() {
+        assert!(is_login_window("pixajoy-login"));
+        assert!(is_login_window("pixajoy-login-popup-3"));
+        assert!(!is_login_window("main"));
     }
 
     #[test]

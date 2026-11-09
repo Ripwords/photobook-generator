@@ -592,7 +592,8 @@ project you already have; you review and order the book on Pixajoy afterwards. T
 three parts:
 
 - **Pixajoy account.** **Sign in** opens Pixajoy's own login page in a separate window. Sign in
-  there and the window closes by itself; the account section then reads "Signed in as" your
+  there with your email and password, or with Google, Apple or Facebook, which open in a
+  second window. Once you are signed in, every sign-in window closes by itself and the account section then reads "Signed in as" your
   email. The sign-in is kept in the macOS Keychain, never in a file, and lasts until Pixajoy
   ends it. **Sign out** forgets it, and signing in again can use another account.
 - **What happens.** A new project is created, the book's photos are exported and uploaded to
