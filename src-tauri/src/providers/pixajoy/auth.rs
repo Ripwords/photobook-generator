@@ -124,15 +124,18 @@ pub async fn sign_in(app: &AppHandle) -> Result<Status, String> {
 
 /// Opens a popup in a window that shares the login window's WebKit
 /// configuration, so it sees the same private cookies and keeps
-/// `window.opener`. WebKit's own `window.close()` does not reach Tauri, so
+/// `window.opener`. It starts blank because WebKit loads the popup's page
+/// itself; loading the URL from here too is a second, app-initiated
+/// navigation that drops `window.opener`. WebKit's own `window.close()` does not reach Tauri, so
 /// popups are closed with the login window instead.
 fn popup_handler<R: Runtime>(
     app: AppHandle<R>,
 ) -> impl Fn(tauri::Url, tauri::webview::NewWindowFeatures) -> NewWindowResponse<R> + Send + 'static {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
-    move |url, features| {
+    move |_url, features| {
         let label = format!("{POPUP_PREFIX}{}", NEXT.fetch_add(1, Ordering::Relaxed));
-        let built = WebviewWindowBuilder::new(&app, label, WebviewUrl::External(url))
+        let Ok(blank) = "about:blank".parse() else { return NewWindowResponse::Deny };
+        let built = WebviewWindowBuilder::new(&app, label, WebviewUrl::External(blank))
             .title("Sign in to Pixajoy")
             .inner_size(520.0, 680.0)
             .window_features(features)
