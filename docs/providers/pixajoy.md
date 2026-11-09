@@ -102,6 +102,13 @@ then `GET project/initialise`, then `GET project/load`. A token is refreshed wit
   8.64 × 6.48 in at (13.68, 1.40), and a 3.09 in square on the back. It also has text boxes
   (`type: 1`), several with `protectfromdelete: true`. One has `protectfromdelete: false` and
   `labelshort` "Insert Your Text Here". PhotobookGen copies that one for chapter titles.
+- `layout.cover` sizes the cover spread. For IHL8511 at 40 pages: `cover1width` 24.528 in,
+  `cover1height` 10.472 in, `cover1bleed` 0.807 in (the wrap on each outer edge),
+  `cover1paperwidth` × `cover1paperheight` 11.280 × 8.858 in (one board) and `cover1spine`
+  0.354 in. The spine grows with the page count (`cover1flexiblespinelist`). Left to right the
+  spread is back panel, spine, front panel, where a panel is `cover1bleed + cover1paperwidth`
+  wide and the full height. PhotobookGen moves the template's two cover picture boxes onto
+  those panels, because the book's cover photos are cropped to fill a whole panel.
 - **Pages load lazily.** `load` fills `items` only for records with `pagenumber < 10`. Later
   records have `itemstate: 0` and `items: []`. `GET project/pageData/<slice>`, where
   `slice = floor(pagenumber / 10)`, returns `{ pageItems: { "<record id>": { "<ref>": {...} } } }`

@@ -81,6 +81,34 @@ pub struct Layout {
     pub boxes: Vec<LoadBox>,
     /// `project/pageData` slices whose boxes the load did not include.
     pub unloaded_slices: Vec<u32>,
+    pub cover: Option<CoverCanvas>,
+}
+
+/// The cover spread in inches: back panel, spine, front panel, left to
+/// right. A panel is one board plus the wrap on its outer edges, the area
+/// PhotobookGen's cover photo fills.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CoverCanvas {
+    pub width: f64,
+    pub height: f64,
+    pub panel_w: f64,
+}
+
+impl CoverCanvas {
+    /// The panel on the left (back) or right (front) of the spread.
+    fn panel(&self, front: bool) -> (f64, f64, f64, f64) {
+        let x = if front { self.width - self.panel_w } else { 0.0 };
+        (x, 0.0, self.panel_w, self.height)
+    }
+}
+
+fn parse_cover(cover: &Value) -> Option<CoverCanvas> {
+    let get = |k: &str| length(&cover[k]).filter(|v| *v > 0.0);
+    Some(CoverCanvas {
+        width: get("cover1width")?,
+        height: get("cover1height")?,
+        panel_w: get("cover1bleed")? + get("cover1paperwidth")?,
+    })
 }
 
 pub fn parse_load(load: &Value) -> Result<Layout, String> {
@@ -96,7 +124,13 @@ pub fn parse_load(load: &Value) -> Result<Layout, String> {
             unloaded.insert(page / SLICE);
         }
     }
-    Ok(Layout { page_w, page_h, boxes, unloaded_slices: unloaded.into_iter().collect() })
+    Ok(Layout {
+        page_w,
+        page_h,
+        boxes,
+        unloaded_slices: unloaded.into_iter().collect(),
+        cover: parse_cover(&load["layout"]["cover"]),
+    })
 }
 
 /// A Taopix length string, in inches.
@@ -217,22 +251,10 @@ pub fn save_diff(
             k += 1;
             let (x, y) = ((page.number as f64 + rect.x) * layout.page_w, rect.y * layout.page_h);
             let (w, h) = (rect.w * layout.page_w, rect.h * layout.page_h);
-            let at = |v: f64| json!(((v * UNIT).round() as i64).to_string());
             item.insert("ref".into(), json!(-k));
             item.insert("pagenumber".into(), json!(page.number));
             item.insert("zindex".into(), json!(top + k));
-            for (key, v) in [
-                ("boxleft", x),
-                ("boxtop", y),
-                ("boxwidth", w),
-                ("boxheight", h),
-                ("boxlinex1", x),
-                ("boxliney1", y),
-                ("boxlinex2", x + w),
-                ("boxliney2", y + h),
-            ] {
-                item.insert(key.into(), at(v));
-            }
+            item.extend(geometry(x, y, w, h));
             (-k, item, w, h)
         };
         for b in &page.boxes {
@@ -257,11 +279,18 @@ pub fn save_diff(
 
     let mut cover: Vec<&LoadBox> = layout.boxes.iter().filter(|b| b.picture && b.page == COVER_PAGE).collect();
     cover.sort_by(|a, b| a.left.total_cmp(&b.left));
+    // The template's two cover boxes (a framed front, a small square back)
+    // become full panels, the shape the book's cover was cropped to.
     let mut changed = Map::new();
-    for (image, slot, side) in [(&job.cover.back, cover.first(), "back"), (&job.cover.front, cover.last(), "front")] {
+    for (image, slot, front) in [(&job.cover.back, cover.first(), false), (&job.cover.front, cover.last(), true)] {
         let Some(image) = image else { continue };
+        let side = if front { "front" } else { "back" };
         let slot = slot.filter(|_| cover.len() == 2).ok_or(format!("Pixajoy's cover has no {side} picture box."))?;
-        changed.insert(slot.reference.to_string(), Value::Object(fill(image, slot.width, slot.height, assets)?));
+        let canvas = layout.cover.ok_or("Pixajoy's layout has no cover size.")?;
+        let (x, y, w, h) = canvas.panel(front);
+        let mut item = geometry(x, y, w, h);
+        item.extend(fill(image, w, h, assets)?);
+        changed.insert(slot.reference.to_string(), Value::Object(item));
     }
 
     let empty = json!({ "deleted": {}, "added": {}, "changed": {} });
@@ -273,6 +302,25 @@ pub fn save_diff(
         "projectName": job.name,
         "autoSave": false,
     }))
+}
+
+/// A box's position and size, with its line coordinates set to the same
+/// rectangle.
+fn geometry(x: f64, y: f64, w: f64, h: f64) -> Map<String, Value> {
+    let at = |v: f64| json!(((v * UNIT).round() as i64).to_string());
+    [
+        ("boxleft", x),
+        ("boxtop", y),
+        ("boxwidth", w),
+        ("boxheight", h),
+        ("boxlinex1", x),
+        ("boxliney1", y),
+        ("boxlinex2", x + w),
+        ("boxliney2", y + h),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), at(v)))
+    .collect()
 }
 
 /// The fields that put `image` into a `bw × bh` inch box, centred to cover it.
@@ -608,23 +656,59 @@ mod tests {
         assert_eq!(added["-3"]["pagenumber"], json!(3));
     }
 
+    /// Pixajoy's IHL8511 cover at 40 pages, from the fixture: a 0.807 in
+    /// wrap round two 11.280 in boards and a 0.354 in spine.
+    const COVER_W: f64 = 24.52755905511807;
+    const COVER_H: f64 = 10.47244094488187;
+    const PANEL_W: f64 = 0.80708661417322 + 11.27952755905511;
+
+    fn rect_of(b: &Value) -> [f64; 4] {
+        ["boxleft", "boxtop", "boxwidth", "boxheight"].map(|k| inches(&b[k]))
+    }
+
     #[test]
-    fn the_cover_front_is_the_rightmost_picture_box_and_the_back_the_other() {
+    fn the_cover_canvas_comes_from_the_load() {
+        let c = layout().cover.unwrap();
+        assert!(close(c.width, COVER_W, 1e-9) && close(c.height, COVER_H, 1e-9));
+        assert!(close(c.panel_w, PANEL_W, 1e-9));
+    }
+
+    #[test]
+    fn each_cover_photo_fills_its_whole_panel_wrap_included() {
         let l = layout();
         let photos = ["/t/front.jpg", "/t/back.jpg"];
         let ids = assets(&photos);
-        let cover = JobCover { front: Some(image(photos[0], 900, 700)), back: Some(image(photos[1], 700, 700)) };
+        let cover = JobCover { front: Some(image(photos[0], 1200, 1040)), back: Some(image(photos[1], 700, 700)) };
         let diff = save_diff(&l, &job(vec![], cover), 20, &ids).unwrap();
         let changed = diff["items"]["changed"].as_object().unwrap();
-
         assert_eq!(changed.len(), 2);
+
+        // The rightmost template box is the front; it moves onto the right panel.
         let front = &changed["82448"];
         assert_eq!(front["hirespath"], json!(ids[&PathBuf::from(photos[0])]));
-        let fit = cover_fit(900, 700, 8.63893583502664, 6.47920187627016);
+        let want = [COVER_W - PANEL_W, 0.0, PANEL_W, COVER_H];
+        for (got, want) in rect_of(front).iter().zip(want) {
+            assert!(close(*got, want, 1e-9), "front {:?} != {want:?}", rect_of(front));
+        }
+        assert!(close(inches(&front["boxlinex2"]), COVER_W, 1e-9));
+        let fit = cover_fit(1200, 1040, PANEL_W, COVER_H);
         assert!(close(front["magnification"].as_f64().unwrap(), fit.magnification, 1e-9));
-        assert!(close(front["boxscrolltop"].as_f64().unwrap(), fit.scroll_top, 1e-9));
-        assert!(front.get("boxleft").is_none(), "the cover box keeps its place");
-        assert_eq!(changed["82449"]["hirespath"], json!(ids[&PathBuf::from(photos[1])]));
+        assert!(close(front["boxscrollleft"].as_f64().unwrap(), fit.scroll_left, 1e-9));
+
+        let back = &changed["82449"];
+        assert_eq!(back["hirespath"], json!(ids[&PathBuf::from(photos[1])]));
+        for (got, want) in rect_of(back).iter().zip([0.0, 0.0, PANEL_W, COVER_H]) {
+            assert!(close(*got, want, 1e-9), "back {:?}", rect_of(back));
+        }
+    }
+
+    #[test]
+    fn a_cover_photo_without_the_cover_canvas_is_an_error() {
+        let mut l = layout();
+        l.cover = None;
+        let cover = JobCover { front: Some(image("/t/front.jpg", 900, 700)), back: None };
+        let err = save_diff(&l, &job(vec![], cover), 20, &assets(&["/t/front.jpg"])).unwrap_err();
+        assert!(err.contains("cover"), "{err}");
     }
 
     #[test]

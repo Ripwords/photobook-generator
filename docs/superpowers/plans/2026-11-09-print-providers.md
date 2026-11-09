@@ -55,8 +55,9 @@ and replaces the styled text's `data`. The format is in `docs/providers/pixajoy.
      job box, cloned from a default box with `ref`/`recordid`/`boxtype` stripped and refs
      -1, -2, …
    - Cover. Finds the picture boxes (`type 0`) on page 100000. The front is the one with
-     the largest `boxleft` and the back is the other. Fills them in `changed`. Leaves text
-     boxes alone. An empty slot is left untouched.
+     the largest `boxleft` and the back is the other. Moves each onto its whole panel
+     (`layout.cover`: wrap plus board) and fills it in `changed`. Leaves text boxes alone.
+     An empty slot is left untouched.
    - Crop maths per `docs/providers/pixajoy.md`, centred (`ax = ay = 0.5`).
    - `page_count_for(book_pages) -> Result<u32>`. The book must fit 20..=150 pages. Below
      20, pad to 20 with blank pages, and delete the default boxes so they print blank. Odd
