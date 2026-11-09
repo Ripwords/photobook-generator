@@ -62,6 +62,7 @@ import type {
   Tier,
 } from "../../app/types/features";
 import type { PreflightFinding } from "../../app/types/book";
+import type { ProviderStatus, SendEvent, SendPlan } from "../../app/types/providers";
 import { layoutCommand } from "./layouts";
 import { cancelModelRequest, modelRequest, type ModelRequestArgs } from "./model";
 import { mockPhotos, mockPlaceChapters, mockPlaceNames, thumbnail } from "./photos";
@@ -764,6 +765,53 @@ const titleBoxes = new Map(layout.chapters.map((c) => [c.event, c.titleBox]));
  */
 const keys: Record<ModelProvider, boolean> = { deepseek: false, jev: false };
 
+/**
+ * The Pixajoy account. Signed out at first, so the dialog opens the way a new
+ * user sees it. `uploaded` stands in for the upload cache: a second send of
+ * the same book uploads nothing, as the real one does.
+ */
+const pixajoy = { signedIn: false, uploaded: new Set<string>() };
+
+function pixajoyStatus(): ProviderStatus {
+  return { signedIn: pixajoy.signedIn, email: pixajoy.signedIn ? "you@example.com" : null };
+}
+
+/** Mirrors `plan::page_count_for`: at least 20 pages, rounded up to even. */
+function pixajoyPlan(): SendPlan {
+  const bookPages = layout.pages.length;
+  const padded = Math.max(bookPages, 20);
+  return { bookPages, pageCount: padded + (padded % 2) };
+}
+
+async function pixajoySend(name: string, channel: Channel<SendEvent>): Promise<void> {
+  const hashes = [
+    ...new Set(
+      layout.pages
+        .flatMap((page) => page.placements.map((p) => layout.photos[p.photoIndex]?.hash))
+        .filter((hash): hash is string => !!hash),
+    ),
+  ];
+  const fresh = hashes.filter((hash) => !pixajoy.uploaded.has(hash));
+  for (let done = 0; done <= fresh.length; done++) {
+    channel.onmessage({ kind: "exporting", done, total: fresh.length });
+    await sleep(40);
+  }
+  channel.onmessage({ kind: "creating" });
+  await sleep(600);
+  for (let done = 0; done <= fresh.length; done++) {
+    channel.onmessage({ kind: "uploading", done, total: fresh.length });
+    await sleep(400);
+  }
+  for (const hash of fresh) pixajoy.uploaded.add(hash);
+  channel.onmessage({ kind: "layingOut" });
+  await sleep(600);
+  channel.onmessage({
+    kind: "done",
+    projectName: name,
+    openUrl: "https://www.pixajoy.com.my/dashboard/projects",
+  });
+}
+
 const fixturePhotos = (agentViewFixture as AgentView).photos;
 
 /** `agent_view` over the harness's book, shaped as `agent::view::agent_view` shapes it. */
@@ -1165,6 +1213,32 @@ export async function invoke<T>(command: string, args?: Args): Promise<T> {
       await sleep(400);
       evictTo(0);
       return cacheStatus() as T;
+
+    case "provider_status":
+      return pixajoyStatus() as T;
+
+    case "provider_sign_in":
+      await sleep(800);
+      pixajoy.signedIn = true;
+      return pixajoyStatus() as T;
+
+    case "provider_sign_out":
+      pixajoy.signedIn = false;
+      return undefined as T;
+
+    case "provider_send_plan":
+      return pixajoyPlan() as T;
+
+    case "send_to_provider":
+      if (!pixajoy.signedIn) throw new Error("Sign in to Pixajoy first.");
+      await pixajoySend(
+        projects.find((p) => p.id === (args?.projectId as number))?.name ?? "Photobook",
+        args?.onEvent as Channel<SendEvent>,
+      );
+      return undefined as T;
+
+    case "open_provider_projects":
+      return undefined as T;
 
     case "cancel_model_request":
       return cancelModelRequest(args?.id as string) as T;
