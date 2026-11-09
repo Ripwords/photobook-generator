@@ -165,6 +165,18 @@ export const TIER_LABELS: Record<Tier, string> = {
 };
 
 /**
+ * The tier button's text. The sheet's event header says who chose it --
+ * "Featured (auto)", "Brief (you)" -- but in the settings panel's narrow
+ * event list that suffix made every button a different width and doubled
+ * the words on each row, so `compact` drops it and the panel marks the
+ * user's own choice with an icon instead.
+ */
+export function tierButtonLabel(row: EventRow | undefined, compact: boolean): string {
+  if (!row) return "Auto";
+  return compact ? TIER_LABELS[row.tier] : `${TIER_LABELS[row.tier]} (${row.chosen ? "you" : "auto"})`;
+}
+
+/**
  * The sentence shown against an event's tier, explaining why `recommend`
  * suggested it (or, for `demoted`/`filled`, why `budget` overrode it).
  * `title` looks up an event's display name so the sentence can name a
@@ -514,6 +526,46 @@ export function isPlaced(photo: { path: string; kept: boolean }, option: PageOpt
  */
 export function placedCount(photos: readonly { path: string; kept: boolean }[], option: PageOption | undefined): number {
   return photos.filter((photo) => isPlaced(photo, option)).length;
+}
+
+/**
+ * Every photo the user has, split by where it ends up at one length: placed,
+ * good but out of room, or culled (screenshots and the repeats of a near-
+ * duplicate set). The three parts add up to `total`, so a 1,043-photo trip
+ * reads as 1,043 rather than as the 460 that survive culling -- which a user
+ * took for a miscount. `yours` is the user's own **+** picks, all placed.
+ */
+export interface PhotoFunnel {
+  total: number;
+  placed: number;
+  noRoom: number;
+  culled: number;
+  yours: number;
+}
+
+export function photoFunnel(total: number, recommendation: BookRecommendation, option: PageOption): PhotoFunnel {
+  const noRoom = option.droppedPhotos;
+  const placed = recommendation.keeperCount - noRoom;
+  return { total, placed, noRoom, culled: Math.max(0, total - recommendation.keeperCount), yours: recommendation.includedCount };
+}
+
+/**
+ * Each event's bar in the events panel, as fractions of the widest one: the
+ * whole bar is the event's kept photos, the filled part what this length
+ * places. Scaling to the largest event shows at a glance which events
+ * dominate the trip and how hard each one is cut.
+ */
+export function eventBars(rows: readonly EventRow[]): Map<number, { kept: number; placed: number }> {
+  const widest = Math.max(0, ...rows.map((row) => row.kept));
+  const bars = new Map<number, { kept: number; placed: number }>();
+  for (const row of rows) {
+    if (widest === 0) {
+      bars.set(row.event, { kept: 0, placed: 0 });
+      continue;
+    }
+    bars.set(row.event, { kept: row.kept / widest, placed: Math.min(row.selected, row.kept) / widest });
+  }
+  return bars;
 }
 
 /**

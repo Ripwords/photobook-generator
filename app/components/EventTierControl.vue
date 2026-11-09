@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { DropdownMenuItem } from "@nuxt/ui";
-import { TIER_LABELS, tierTooltipText, type EventRow } from "~/types/book";
+import { TIER_LABELS, tierButtonLabel, tierTooltipText, type EventRow } from "~/types/book";
 import type { Tier } from "~/types/features";
 
 /**
@@ -13,7 +13,7 @@ import type { Tier } from "~/types/features";
  * Monochrome by design (memory: ui-style-monochrome): the chosen item is told
  * apart by its check mark, never by colour.
  */
-const { row, title, titleOf } = defineProps<{
+const { row, title, titleOf, compact = false } = defineProps<{
   row: EventRow | undefined;
   title: string;
   /**
@@ -22,6 +22,11 @@ const { row, title, titleOf } = defineProps<{
    * real lookup rather than always naming this control's own `title`.
    */
   titleOf: (event: number) => string;
+  /**
+   * The settings panel's narrow form: a fixed-width button naming only the
+   * tier, with a pin when the user chose it -- see `tierButtonLabel`.
+   */
+  compact?: boolean;
 }>();
 const emit = defineEmits<{ set: [tier: Tier | "auto"] }>();
 
@@ -31,11 +36,9 @@ const CHOICES = ["featured", "brief", "skipped"] as const satisfies readonly Tie
 /** What the menu shows as checked: the user's own choice, or Auto while the app is still deciding. */
 const current = computed<Tier | "auto">(() => (row?.chosen ? row.tier : "auto"));
 
-/** The trigger's label, in the events panel's own "(auto)" / "(you)" wording. */
-const label = computed(() => {
-  if (!row) return "Auto";
-  return `${TIER_LABELS[row.tier]} (${row.chosen ? "you" : "auto"})`;
-});
+const label = computed(() => tierButtonLabel(row, compact));
+/** Read out in full whatever the button shows, so the pin is never the only sign of who chose. */
+const spoken = computed(() => tierButtonLabel(row, false));
 
 /**
  * Chosen or auto, per `tierTooltipText` -- never `tierReasonText(row.reason,
@@ -73,8 +76,11 @@ const items = computed<DropdownMenuItem[][]>(() => [
       <UButton
         color="neutral"
         variant="outline"
+        :leading-icon="compact && row?.chosen ? 'i-lucide-pin' : undefined"
         trailing-icon="i-lucide-chevron-down"
-        :aria-label="`Tier for ${title}: ${label}`"
+        :aria-label="`Tier for ${title}: ${spoken}`"
+        :class="compact ? 'w-32 justify-between' : undefined"
+        :ui="compact ? { trailingIcon: 'ms-auto' } : undefined"
       >
         {{ label }}
       </UButton>

@@ -6,6 +6,8 @@ import {
   blockingMessages,
   clampStepper,
   defaultProjectName,
+  eventBars,
+  tierButtonLabel,
   eventRowNote,
   folderListLabel,
   folderNames,
@@ -24,6 +26,7 @@ import {
   ownEventCount,
   pageOptionDescription,
   pageOptionLabel,
+  photoFunnel,
   placedCount,
   projectDetailLabel,
   selectionLabel,
@@ -1069,5 +1072,62 @@ describe("clampStepper", () => {
 
   it("passes a valid in-range integer through unchanged", () => {
     expect(clampStepper(7, range, 3)).toBe(7);
+  });
+});
+
+function recommendation(keeperCount: number, includedCount = 0): BookRecommendation {
+  return { keeperCount, includedCount, recommendedPages: 40, options: [] };
+}
+
+describe("photoFunnel", () => {
+  // The panel used to say "85 of 460 kept" to a user with 1,043 photos, who
+  // read the 460 as a miscount: it is what survived culling, not the set. The
+  // funnel names every photo the user has, in three parts that add up to it.
+  it("splits every photo into placed, no room and culled, adding up to the whole set", () => {
+    const funnel = photoFunnel(1043, recommendation(460, 12), pageOption({ droppedPhotos: 375 }));
+    expect(funnel).toEqual({ total: 1043, placed: 85, noRoom: 375, culled: 583, yours: 12 });
+    expect(funnel.placed + funnel.noRoom + funnel.culled).toBe(funnel.total);
+  });
+
+  it("never reports a negative cull when Includes push keepers past the analysed count", () => {
+    expect(photoFunnel(10, recommendation(11), pageOption({ droppedPhotos: 0 })).culled).toBe(0);
+  });
+});
+
+describe("eventBars", () => {
+  it("scales every event against the largest, filling what it places", () => {
+    const bars = eventBars([
+      makeEventRow({ event: 1, kept: 200, selected: 30 }),
+      makeEventRow({ event: 2, kept: 50, selected: 50 }),
+    ]);
+    expect(bars.get(1)).toEqual({ kept: 1, placed: 0.15 });
+    expect(bars.get(2)).toEqual({ kept: 0.25, placed: 0.25 });
+  });
+
+  it("is empty for a set with nothing kept, rather than dividing by zero", () => {
+    const bars = eventBars([makeEventRow({ event: 1, kept: 0, selected: 0 })]);
+    expect(bars.get(1)).toEqual({ kept: 0, placed: 0 });
+  });
+
+  it("never fills past an event's own bar", () => {
+    const bars = eventBars([makeEventRow({ event: 1, kept: 4, selected: 6 })]);
+    expect(bars.get(1)).toEqual({ kept: 1, placed: 1 });
+  });
+});
+
+describe("tierButtonLabel", () => {
+  it("says who chose the tier in the sheet's header", () => {
+    expect(tierButtonLabel(makeEventRow({ tier: "featured", chosen: false }), false)).toBe("Featured (auto)");
+    expect(tierButtonLabel(makeEventRow({ tier: "brief", chosen: true }), false)).toBe("Brief (you)");
+  });
+
+  it("names only the tier in the panel, where the pin marks the user's own", () => {
+    expect(tierButtonLabel(makeEventRow({ tier: "featured", chosen: false }), true)).toBe("Featured");
+    expect(tierButtonLabel(makeEventRow({ tier: "skipped", chosen: true }), true)).toBe("Skip");
+  });
+
+  it("is Auto with no row yet", () => {
+    expect(tierButtonLabel(undefined, true)).toBe("Auto");
+    expect(tierButtonLabel(undefined, false)).toBe("Auto");
   });
 });

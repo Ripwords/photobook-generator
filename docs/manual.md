@@ -121,8 +121,10 @@ while you scroll it: **All photos** or **In the book**, the placed count, and th
 size. Once a length is chosen, both the count and **In the book** switch to that length too,
 so "N of M in the book" always matches what is undimmed and **In the book** hides exactly what
 the book would leave out at the length you picked, not just what culling excluded. The panel on the
-right is the book itself, from the top down: where its photos come from, its settings, what made
-it in, its events, and **Advanced**.
+right is the book itself, in two tabs at its top: **Book** (where its photos come from, its
+settings and where every photo went) and **Events** (one row per event, with its tier and how
+much of it the book places). The **Events** tab carries the number of events and appears once
+there is a length to plan; the tabs stay at the top of the panel while it scrolls.
 
 **Photos from** lists the folders the draft draws on, by name (hover one for its full path).
 A book can draw on as many folders as you like: **Add folders…** picks one or more, and the
@@ -132,8 +134,8 @@ way the photos are analysed again (cached photos are quick), and your **+**/**�
 event tiers carry over: decisions about a folder you took out come back if you add it again,
 and a draft opened from a book's **Edit photos** still updates that book.
 
-Under it, name the book, pick a length and, beside **Print size**, **Change…** the
-page size (the same panel as in the editor, without the dry run). At the bottom of the panel,
+Under the folders, name the book, pick a length and, beside **Print size**, **Change…** the
+page size (the same panel as in the editor, without the dry run). At the bottom of the **Book** tab,
 two closed sections open on a click: **How to read the sheet**, a key to the marks on the
 tiles, and **Technical details**, the selection counts (keepers, analysed and scanned, plus
 any that failed or came from the cache). Hover a tile and click the info button in its
@@ -142,9 +144,15 @@ photo in the set, and the faces it found, if any; a photo shows "Not ranked yet"
 photo in its folders has been analysed. The app recommends the shortest Pixajoy length that
 fits the keepers and marks it **(recommended)** in the **Length** menu, which names each option
 by its page count and, under it, how many events get their own page and how many photos that
-length places. Every length it offers is one Pixajoy sells. Under the settings, two figures sum
-up the length you picked: **In the book**, how many of the keepers fit (such as "21 of 29
-kept", noting how many of those you marked **+**), and **Left out**, how many would not.
+length places. Every length it offers is one Pixajoy sells. Under the settings,
+**Your photos** gives the number of photos in the folders and one bar splits every one of them
+by where it ends up at the length you picked: **In the book** (the filled part), **No room at
+N pages** (the shaded part: good photos this length is too short for, which a longer book
+places) and **Repeats and screenshots** (the rest: screenshots and documents, plus the extra
+shots of a near-identical set, of which the app keeps the best one; hover the info icon). So a
+trip of 1,043 photos can read 85 in the book, 375 with no room and 583 repeats and
+screenshots. When you marked photos **+**, a line under **In the book** says how many of the
+placed photos are yours.
 **Generate book** (or, when you came from a book's **Edit
 photos**, **Update "<name>"** and **Save as a new photobook**) stays pinned to the bottom of
 the panel however far it scrolls.
@@ -154,28 +162,33 @@ book places: **Featured** gets at least your floor (2 to 12 photos, 6 by default
 gets at least 2, **Brief** gets at most your cap (1 to 3, 2 by default), and **Skip** gets
 none. The app suggests a tier for each event and gives a reason, such as "Stands out from the
 rest of the trip" or "Ranked 4 of 9". Each event's header in the contact sheet has one
-tier menu, labelled with the tier and who chose it, such as **Featured (auto)**; hover it to
+tier menu, labelled with the tier and who chose it, such as **Featured (auto)** (the
+**Events** tab's menus name only the tier, and add a pin when you chose it); hover it to
 read the reason, which also heads the menu when you open it. A Skipped event also shows its
 reason right in the header, since its tiles are dimmed and easy to pass over. Pick
 **Featured**, **Brief** or **Skip** in the menu to set the tier yourself, or **Auto** to hand
 it back to the app (while the app is choosing, that item names its pick, such as **Auto:
 Normal**); the
-menu and the events panel then show your choice as **(you)**. It is saved with the draft and, once you generate, with the book. Choosing a tier
+sheet's menu then shows your choice as **(you)**, and the **Events** tab's menu gets a pin. It is saved with the draft and, once you generate, with the book. Choosing a tier
 yourself always shows what you chose, even where the control would otherwise have shown why
 the app suggested something else. Marking a photo **+** always places it, even in a Skipped
 event.
 
-**The events panel**, under those two figures, lists every event at the chosen length: its tier and
-who chose it, and either why (a Skipped or empty event) or how many of its photos made it in,
-such as "6 kept → 4 placed". Click a row to scroll the contact sheet to that event. The
+**The Events tab** lists every event at the chosen length. Each row has the event's name
+(bold when Featured, dimmed when Skipped), its tier menu, the same choices as the sheet's, and
+a bar: the bar's length is the event's size next to the others, and its filled part is how
+many of its photos this length places, with the figures beside it, such as "4 of 6". A key
+over the list names the filled and empty parts, and the pin once you have set a tier. A Skipped
+or empty event shows why instead of a bar. Click a name or a bar to scroll the contact sheet
+to that event. The
 **Length** menu counts the same thing for each length it offers: its page count, such as "40
 pages", and under that, how many events get a page to themselves (Featured and Normal --
 Brief and Skipped events share space with others rather than getting one each) out of every
 event the book has, and how many photos that length places, such as "12 of 19 events · 85
-photos". If your tiers and **+** photos ask for more photos than a length can hold, the panel says so
+photos". If your tiers and **+** photos ask for more photos than a length can hold, the **Events** tab says so
 under the list; the book still generates, giving every event you haven't skipped at least one
 photo. Choosing a longer length that earns
-another event a page of its own says so too, for example "At 60 pages, 2 more events get their
+another event a page of its own says so too, under the bar on the **Book** tab, for example "At 60 pages, 2 more events get their
 own pages."
 
 **Split chapters by place**, under **Print size**, is off for a new book. The book is laid
@@ -223,7 +236,7 @@ chapter whose photos carry no date keeps its number, such as **Event 3**. With t
 off, every chapter is titled by its dates.
 
 **Featured events get at least** and **Brief events get at most**, the two steppers in the
-closed **Advanced** section under the events panel, set the floor and cap the tiers above use: Featured from 2 to 12
+closed **Tier sizes** section at the bottom of the **Events** tab, set the floor and cap the tiers above use: Featured from 2 to 12
 photos (6 by default), Brief from 1 to 3 (2 by default). Changing either re-scores every
 event at every length.
 

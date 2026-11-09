@@ -8,13 +8,14 @@ import {
   includeOverflowLabel,
   optionFor,
   pageOptionDescription,
+  photoFunnel,
   pageOptionLabel,
   recommendedOption,
   risenLabel,
   type BookOptions,
   type PageOption,
 } from "~/types/book";
-import type { AnalyzedPhoto, EventTiers, PhotoOverrides } from "~/types/features";
+import type { AnalyzedPhoto, EventTiers, PhotoOverrides, Tier } from "~/types/features";
 import type { ReplacedProject } from "~/types/navigation";
 import { sizeLabel, type PrintSpec } from "~/types/printSpec";
 
@@ -57,6 +58,8 @@ const emit = defineEmits<{
   option: [option: PageOption | undefined];
   /** An events-panel row was clicked; `SelectPhotos` scrolls the sheet to it. */
   reveal: [event: number];
+  /** An events-panel tier menu was used; `SelectPhotos` sets it like the sheet's own header menu. */
+  tier: [event: number, tier: Tier | "auto"];
 }>();
 
 // `toRef` rather than passing the props straight through: `useBook` holds
@@ -166,6 +169,30 @@ const pageItems = computed(() =>
     disabled: !canGenerateAt(option),
   })),
 );
+/** Every photo, split by where it lands at the chosen length -- see `photoFunnel`. */
+const funnel = computed(() =>
+  recommendation.value && chosenOption.value ? photoFunnel(photos.length, recommendation.value, chosenOption.value) : null,
+);
+const count = (n: number) => n.toLocaleString();
+/** A segment's width in the funnel bar. Shares are of the whole set, so the unfilled rest is what culling dropped. */
+const share = (n: number) => (funnel.value && funnel.value.total > 0 ? `${(n / funnel.value.total) * 100}%` : "0%");
+
+/**
+ * The panel's two tabs. Book holds what the book IS (its folders, name,
+ * length, size and where every photo went); Events holds how it is split
+ * (one row per event, with the tier knobs under it). They were one column,
+ * and a user found it "so cramped and confusing" -- eight equal blocks in a
+ * 320px strip, with the tier steppers far from the events they size.
+ */
+const tab = ref<"book" | "events">("book");
+const eventCount = computed(() => chosenOption.value?.events.length ?? 0);
+const tabItems = computed(() => [
+  { label: "Book", value: "book" as const },
+  { label: "Events", value: "events" as const, badge: { label: String(eventCount.value), color: "neutral" as const, variant: "subtle" as const } },
+]);
+/** Book is the only tab when there are no events to list. */
+const showing = computed(() => (eventCount.value > 0 ? tab.value : "book"));
+
 /** Why the chosen length cannot be generated, or `null` when it can. */
 const overflowMessage = computed(() =>
   chosenOption.value ? includeOverflowLabel(chosenOption.value) : null,
@@ -291,117 +318,159 @@ async function confirmedUpdate() {
 <template>
   <section class="space-y-6">
     <!--
-      A column, for the select screen's inspector, under the folders: the
-      book's own fields, then what the chosen length costs, then the events
-      it places, then the action that commits to it.
+      The select screen's inspector: the tabs, then the action that commits,
+      sticky under both. The draft's folders and the sheet's help are the
+      caller's, passed in as slots so they sit in the Book tab with the rest.
     -->
-    <div v-if="canGenerate" class="space-y-6 border-t border-default pt-6">
-      <div class="space-y-4">
-        <UFormField label="Book name">
-          <UInput v-model="name" :disabled="busy" placeholder="Untitled photobook" class="w-full" />
-        </UFormField>
-
-        <UFormField label="Length">
-          <!--
-            `.nullable` widens the model's type to admit the `null` that means "no
-            length chosen yet". It is runtime-inert here: the modifier only maps a
-            nullish value to `null`, and this control only ever emits a `pages`.
-          -->
-          <USelect
-            v-model.nullable="chosenPages"
-            :items="pageItems"
-            :disabled="busy || pageItems.length === 0"
-            value-key="value"
-            class="w-full"
-          />
-        </UFormField>
-
-        <div class="flex items-center justify-between gap-2 text-sm">
-          <div>
-            <p class="font-medium text-default">Print size</p>
-            <p class="text-muted tabular-nums">{{ shownSpec ? sizeLabel(shownSpec, unit) : "…" }}</p>
-          </div>
-          <UButton color="neutral" variant="outline" :disabled="busy || !shownSpec" @click="printSizeOpen = true">
-            Change…
-          </UButton>
-        </div>
-
-        <USwitch
-          v-model="places"
-          label="Split chapters by place"
-          :description="
-            located === 0 ? 'None of these photos records where it was taken.' : 'A chapter also ends in each new town.'
-          "
-          color="neutral"
-          :disabled="busy || located === 0"
-        />
-      </div>
-
+    <template v-if="canGenerate">
       <!--
-        What the chosen length costs, stated before the user commits: a page
-        length is a purchase decision. The count placed is keepers minus
-        drops rather than `capacityPhotos`: a burst loses its surplus frames
-        even in a book with room for them.
+        Sticky like the action bar, and for the same reason: `-top-5` reaches
+        the aside's real edge, since a sticky offset is measured inside the
+        scroller's padding. `-mx-5 px-5` paints it across that padding.
       -->
-      <div v-if="recommendation && chosenOption" class="space-y-2">
-        <dl class="grid grid-cols-2 rounded-lg border border-default text-sm tabular-nums">
-          <div class="p-3">
-            <dt class="text-muted">In the book</dt>
-            <dd>
-              <span class="text-lg font-semibold text-highlighted">{{
-                recommendation.keeperCount - chosenOption.droppedPhotos
-              }}</span>
-              <span class="text-muted"> of {{ recommendation.keeperCount }} kept</span>
-            </dd>
-          </div>
-          <div class="border-l border-default p-3">
-            <dt class="text-muted">Left out</dt>
-            <dd class="text-lg font-semibold text-highlighted">{{ chosenOption.droppedPhotos }}</dd>
-          </div>
-        </dl>
-        <p v-if="recommendation.includedCount > 0" class="text-sm text-muted">
-          Counts the {{ recommendation.includedCount }} you marked +.
-        </p>
+      <div v-if="eventCount > 0" class="sticky -top-5 z-10 -mx-5 bg-default px-5 pt-1 pb-2">
+        <UTabs v-model="tab" :items="tabItems" :content="false" color="neutral" class="w-full" />
       </div>
 
-      <div v-if="chosenOption && chosenOption.events.length > 0" class="space-y-1.5">
-        <EventsPanel :rows="chosenOption.events" :title="titleOf" @reveal="emit('reveal', $event)" />
-        <p v-if="tierOverflowMessage" class="text-sm text-muted">{{ tierOverflowMessage }}</p>
-        <p v-if="risenMessage" class="text-sm text-muted">{{ risenMessage }}</p>
-      </div>
+      <div v-show="showing === 'book'" class="space-y-8">
+        <slot name="source" />
 
-      <!-- The tier knobs: rarely touched, so closed until asked for. -->
-      <DisclosureSection label="Advanced">
-        <div class="space-y-3">
-          <UFormField label="Featured events get at least">
-            <div class="flex items-center gap-2 text-sm text-muted">
-              <UInputNumber
-                v-model="featuredFloor"
-                :min="FEATURED_FLOOR_RANGE.min"
-                :max="FEATURED_FLOOR_RANGE.max"
-                :disabled="busy"
-                class="w-28"
-                aria-label="Featured events get at least this many photos"
-              />
-              <span>photos</span>
-            </div>
+        <div class="space-y-5">
+          <UFormField label="Book name">
+            <UInput v-model="name" :disabled="busy" placeholder="Untitled photobook" class="w-full" />
           </UFormField>
-          <UFormField label="Brief events get at most">
-            <div class="flex items-center gap-2 text-sm text-muted">
-              <UInputNumber
-                v-model="briefCap"
-                :min="BRIEF_CAP_RANGE.min"
-                :max="BRIEF_CAP_RANGE.max"
-                :disabled="busy"
-                class="w-28"
-                aria-label="Brief events get at most this many photos"
-              />
-              <span>photos</span>
-            </div>
+
+          <UFormField label="Length">
+            <!--
+              `.nullable` widens the model's type to admit the `null` that means "no
+              length chosen yet". It is runtime-inert here: the modifier only maps a
+              nullish value to `null`, and this control only ever emits a `pages`.
+            -->
+            <USelect
+              v-model.nullable="chosenPages"
+              :items="pageItems"
+              :disabled="busy || pageItems.length === 0"
+              value-key="value"
+              class="w-full"
+            />
           </UFormField>
+
+          <div class="flex items-center justify-between gap-3 text-sm">
+            <div class="min-w-0">
+              <p class="font-medium text-default">Print size</p>
+              <p class="text-muted tabular-nums">{{ shownSpec ? sizeLabel(shownSpec, unit) : "…" }}</p>
+            </div>
+            <UButton color="neutral" variant="outline" :disabled="busy || !shownSpec" @click="printSizeOpen = true">
+              Change…
+            </UButton>
+          </div>
+
+          <USwitch
+            v-model="places"
+            label="Split chapters by place"
+            :description="
+              located === 0 ? 'None of these photos records where it was taken.' : 'A chapter also ends in each new town.'
+            "
+            color="neutral"
+            :disabled="busy || located === 0"
+          />
         </div>
-      </DisclosureSection>
-    </div>
+
+        <!--
+          What the chosen length costs, stated before the user commits: a page
+          length is a purchase decision. One bar of EVERY photo the user has --
+          not just the keepers, whose count a user with 1,043 photos read as
+          "460, so it lost half my trip" -- split by where each one ends up.
+          The heading carries the whole; the key carries the parts, once each.
+        -->
+        <section v-if="funnel" aria-labelledby="book-funnel" class="space-y-3 text-sm">
+          <h3 id="book-funnel" class="flex items-baseline justify-between gap-2 font-semibold text-highlighted">
+            Your photos
+            <span class="font-normal text-muted tabular-nums">{{ count(funnel.total) }}</span>
+          </h3>
+          <div class="flex h-3 overflow-hidden rounded-full bg-elevated ring ring-default" aria-hidden="true">
+            <div class="bg-inverted" :style="{ width: share(funnel.placed) }" />
+            <div class="border-l border-default bg-accented" :style="{ width: share(funnel.noRoom) }" />
+          </div>
+          <dl class="space-y-2 tabular-nums">
+            <div class="flex items-center gap-2">
+              <span class="size-3 shrink-0 rounded-sm bg-inverted" />
+              <dt class="min-w-0 flex-1 font-medium text-highlighted">In the book</dt>
+              <dd class="font-semibold text-highlighted">{{ count(funnel.placed) }}</dd>
+            </div>
+            <div v-if="funnel.yours > 0" class="flex items-center gap-2 pl-5 text-muted">
+              <UIcon name="i-lucide-circle-plus" class="size-4 shrink-0" />
+              <dt class="min-w-0 flex-1">You marked +</dt>
+              <dd>{{ count(funnel.yours) }}</dd>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="size-3 shrink-0 rounded-sm bg-accented ring ring-default" />
+              <dt class="min-w-0 flex-1 text-default">No room at {{ chosenOption?.pages }} pages</dt>
+              <dd class="text-default">{{ count(funnel.noRoom) }}</dd>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="size-3 shrink-0 rounded-sm bg-elevated ring ring-default" />
+              <dt class="flex min-w-0 flex-1 items-center gap-1 text-muted">
+                Repeats and screenshots
+                <UTooltip text="Screenshots and documents, and the extra shots of a near-identical set: the app keeps the best one.">
+                  <UIcon name="i-lucide-info" class="size-4 shrink-0" aria-label="What counts as a repeat" />
+                </UTooltip>
+              </dt>
+              <dd class="text-muted">{{ count(funnel.culled) }}</dd>
+            </div>
+          </dl>
+          <p v-if="risenMessage" class="text-muted">{{ risenMessage }}</p>
+        </section>
+
+        <slot name="footer" />
+      </div>
+
+      <div v-if="eventCount > 0 && chosenOption" v-show="showing === 'events'" class="space-y-6">
+        <EventsPanel
+          :rows="chosenOption.events"
+          :title="titleOf"
+          @reveal="emit('reveal', $event)"
+          @tier="(event, tier) => emit('tier', event, tier)"
+        />
+        <p v-if="tierOverflowMessage" class="text-sm text-muted">{{ tierOverflowMessage }}</p>
+
+        <!-- The tier knobs, beside the tiers they size: rarely touched, so closed until asked for. -->
+        <DisclosureSection label="Tier sizes">
+          <div class="space-y-3">
+            <UFormField label="Featured events get at least">
+              <div class="flex items-center gap-2 text-sm text-muted">
+                <UInputNumber
+                  v-model="featuredFloor"
+                  :min="FEATURED_FLOOR_RANGE.min"
+                  :max="FEATURED_FLOOR_RANGE.max"
+                  :disabled="busy"
+                  class="w-28"
+                  aria-label="Featured events get at least this many photos"
+                />
+                <span>photos</span>
+              </div>
+            </UFormField>
+            <UFormField label="Brief events get at most">
+              <div class="flex items-center gap-2 text-sm text-muted">
+                <UInputNumber
+                  v-model="briefCap"
+                  :min="BRIEF_CAP_RANGE.min"
+                  :max="BRIEF_CAP_RANGE.max"
+                  :disabled="busy"
+                  class="w-28"
+                  aria-label="Brief events get at most this many photos"
+                />
+                <span>photos</span>
+              </div>
+            </UFormField>
+          </div>
+        </DisclosureSection>
+      </div>
+    </template>
+    <template v-else>
+      <slot name="source" />
+      <slot name="footer" />
+    </template>
 
     <UModal v-model:open="printSizeOpen" title="Print size" :ui="{ content: 'max-w-md' }">
       <template #body>

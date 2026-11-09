@@ -506,14 +506,8 @@ function onGenerated(projectId: number) {
     <aside
       v-if="stage === 'ready' && summary"
       aria-label="Book settings"
-      class="w-80 shrink-0 space-y-6 overflow-y-auto border-l border-default bg-default p-5"
+      class="w-96 shrink-0 overflow-y-auto border-l border-default bg-default p-5"
     >
-      <SourceFolders
-        :folders="job.folders"
-        :busy="job.running"
-        @add="addMoreFolders"
-        @remove="removeFolder(job.id, $event)"
-      />
       <GenerateBook
         :photos
         :overrides
@@ -533,50 +527,62 @@ function onGenerated(projectId: number) {
         @generated="onGenerated"
         @option="chosenOption = $event"
         @reveal="revealEvent"
-      />
+        @tier="setEventTier"
+      >
+        <template #source>
+          <SourceFolders
+            :folders="job.folders"
+            :busy="job.running"
+            @add="addMoreFolders"
+            @remove="removeFolder(job.id, $event)"
+          />
+        </template>
+        <template #footer>
+          <div class="space-y-1 border-t border-default pt-4">
+            <DisclosureSection label="How to read the sheet">
+              <ul class="space-y-2 text-sm text-muted">
+                <li class="flex gap-2">
+                  <UIcon name="i-lucide-star" class="mt-0.5 size-4 shrink-0 text-highlighted" />
+                  The best photo of each event, outlined.
+                </li>
+                <li class="flex gap-2">
+                  <UIcon name="i-lucide-circle-plus" class="mt-0.5 size-4 shrink-0 text-highlighted" />
+                  Use + and &minus; on a photo to override what the engine chose.
+                </li>
+                <li class="flex gap-2">
+                  <UIcon name="i-lucide-images" class="mt-0.5 size-4 shrink-0 text-highlighted" />
+                  The best of a burst of near-duplicate frames.
+                </li>
+                <li class="flex gap-2">
+                  <UIcon name="i-lucide-info" class="mt-0.5 size-4 shrink-0 text-highlighted" />
+                  A photo&rsquo;s aesthetic and sharpness percentiles, ranked across everything you
+                  chose.
+                </li>
+              </ul>
+            </DisclosureSection>
 
-      <div class="space-y-1 border-t border-default pt-4">
-        <DisclosureSection label="How to read the sheet">
-          <ul class="space-y-2 text-sm text-muted">
-            <li class="flex gap-2">
-              <UIcon name="i-lucide-star" class="mt-0.5 size-4 shrink-0 text-highlighted" />
-              The best photo of each event, outlined.
-            </li>
-            <li class="flex gap-2">
-              <UIcon name="i-lucide-circle-plus" class="mt-0.5 size-4 shrink-0 text-highlighted" />
-              Use + and &minus; on a photo to override what the engine chose.
-            </li>
-            <li class="flex gap-2">
-              <UIcon name="i-lucide-images" class="mt-0.5 size-4 shrink-0 text-highlighted" />
-              The best of a burst of near-duplicate frames.
-            </li>
-            <li class="flex gap-2">
-              <UIcon name="i-lucide-info" class="mt-0.5 size-4 shrink-0 text-highlighted" />
-              A photo&rsquo;s aesthetic and sharpness percentiles, ranked across everything you
-              chose.
-            </li>
-          </ul>
-        </DisclosureSection>
+            <DisclosureSection label="Technical details">
+              <dl class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm tabular-nums">
+                <dt class="text-muted">Keepers</dt>
+                <dd class="text-right text-highlighted">{{ kept.length }}</dd>
+                <dt class="text-muted">Analyzed</dt>
+                <dd class="text-right">{{ summary.photos.length }}</dd>
+                <dt class="text-muted">Scanned</dt>
+                <dd class="text-right">{{ summary.total }}</dd>
+                <template v-if="summary.failed > 0">
+                  <dt class="text-muted">Failed</dt>
+                  <dd class="text-right">{{ summary.failed }}</dd>
+              </template>
+                <template v-if="summary.cached > 0">
+                  <dt class="text-muted">From cache</dt>
+                  <dd class="text-right">{{ summary.cached }}</dd>
+              </template>
+              </dl>
+            </DisclosureSection>
+          </div>
+        </template>
+      </GenerateBook>
 
-        <DisclosureSection label="Technical details">
-          <dl class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm tabular-nums">
-            <dt class="text-muted">Keepers</dt>
-            <dd class="text-right text-highlighted">{{ kept.length }}</dd>
-            <dt class="text-muted">Analyzed</dt>
-            <dd class="text-right">{{ summary.photos.length }}</dd>
-            <dt class="text-muted">Scanned</dt>
-            <dd class="text-right">{{ summary.total }}</dd>
-            <template v-if="summary.failed > 0">
-              <dt class="text-muted">Failed</dt>
-              <dd class="text-right">{{ summary.failed }}</dd>
-            </template>
-            <template v-if="summary.cached > 0">
-              <dt class="text-muted">From cache</dt>
-              <dd class="text-right">{{ summary.cached }}</dd>
-            </template>
-          </dl>
-        </DisclosureSection>
-      </div>
     </aside>
   </div>
 
