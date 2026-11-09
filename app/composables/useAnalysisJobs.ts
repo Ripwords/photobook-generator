@@ -434,8 +434,18 @@ export function createAnalysisJobs() {
    * Brings back the drafts saved when the app last quit, analyses each again,
    * and from then on saves every change. Their photos come from the analysis
    * cache, so a draft whose folders were analysed comes back in moments.
+   *
+   * Once per store: the page calls this on mount, and a dev hot reload
+   * remounts it against the same store, so a second call must not restore
+   * every draft again under fresh ids (it once left a user twelve copies).
    */
-  async function restoreDrafts() {
+  let restoring: Promise<void> | undefined;
+  function restoreDrafts(): Promise<void> {
+    restoring ??= loadDrafts();
+    return restoring;
+  }
+
+  async function loadDrafts() {
     let rows: string[] = [];
     try {
       rows = await invoke<string[]>("list_drafts");

@@ -146,11 +146,11 @@ fits the keepers and marks it **(recommended)** in the **Length** menu, which na
 by its page count and, under it, how many events get their own page and how many photos that
 length places. Every length it offers is one Pixajoy sells. Under the settings,
 **Your photos** gives the number of photos in the folders and one bar splits every one of them
-by where it ends up at the length you picked: **In the book** (the filled part), **No room at
-N pages** (the shaded part: good photos this length is too short for, which a longer book
-places) and **Repeats and screenshots** (the rest: screenshots and documents, plus the extra
+by where it ends up at the length you picked: **In the book** (the filled part), **Left out at
+N pages** (the shaded part: good photos this length has no space for, which a longer book
+places; hover the info icon) and **Repeats and screenshots** (the rest: screenshots and documents, plus the extra
 shots of a near-identical set, of which the app keeps the best one; hover the info icon). So a
-trip of 1,043 photos can read 85 in the book, 375 with no room and 583 repeats and
+trip of 1,043 photos can read 85 in the book, 375 left out and 583 repeats and
 screenshots. When you marked photos **+**, a line under **In the book** says how many of the
 placed photos are yours.
 **Generate book** (or, when you came from a book's **Edit

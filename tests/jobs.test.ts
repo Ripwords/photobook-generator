@@ -412,6 +412,23 @@ describe("analysis jobs", () => {
       expect(savedDrafts.size).toBe(0);
     });
 
+    // A dev hot reload remounts the page, which calls `restoreDrafts` again on
+    // the same store; each call used to restore every saved draft under a new
+    // id, and a burst of reloads left a user with twelve copies of one draft.
+    it("restores the saved drafts once however often it is called", async () => {
+      const before = createAnalysisJobs();
+      await before.restoreDrafts();
+      before.startJob({ name: "Kyoto", folders: ["/k"] });
+      await settle();
+
+      const after = createAnalysisJobs();
+      await Promise.all([after.restoreDrafts(), after.restoreDrafts()]);
+      await after.restoreDrafts();
+      await settle();
+      expect(after.jobs.value.map((job) => job.name)).toEqual(["Kyoto"]);
+      expect(savedNames()).toEqual(["Kyoto"]);
+    });
+
     it("brings a draft back after a restart, analyses it again and restores the decisions", async () => {
       const before = createAnalysisJobs();
       await before.restoreDrafts();

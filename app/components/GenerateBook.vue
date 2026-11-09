@@ -405,7 +405,12 @@ async function confirmedUpdate() {
             </div>
             <div class="flex items-center gap-2">
               <span class="size-3 shrink-0 rounded-sm bg-accented ring ring-default" />
-              <dt class="min-w-0 flex-1 text-default">No room at {{ chosenOption?.pages }} pages</dt>
+              <dt class="flex min-w-0 flex-1 items-center gap-1 text-default">
+                Left out at {{ chosenOption?.pages }} pages
+                <UTooltip text="Good photos this length has no space for. A longer book places more of them.">
+                  <UIcon name="i-lucide-info" class="size-4 shrink-0" aria-label="Why photos are left out" />
+                </UTooltip>
+              </dt>
               <dd class="text-default">{{ count(funnel.noRoom) }}</dd>
             </div>
             <div class="flex items-center gap-2">
