@@ -1,6 +1,32 @@
 # Changelog
 
 
+## v0.4.0...master
+
+[compare changes](https://github.com/Ripwords/photobook-generator/compare/v0.4.0...master)
+
+### 🚀 Enhancements
+
+- ⚠️  Remove chapter titles ([d61ee03](https://github.com/Ripwords/photobook-generator/commit/d61ee03))
+
+### 📖 Documentation
+
+- **readme:** Point the download button at v0.4.0 ([f61917c](https://github.com/Ripwords/photobook-generator/commit/f61917c))
+- **readme:** Show each v0.4.0 feature with a screenshot ([7c9dbdc](https://github.com/Ripwords/photobook-generator/commit/7c9dbdc))
+- Drop chapter titles from the manual and README, retake two screenshots ([485f5e4](https://github.com/Ripwords/photobook-generator/commit/485f5e4))
+
+### 🏡 Chore
+
+- **mock:** Answer the Pixajoy provider commands ([4749061](https://github.com/Ripwords/photobook-generator/commit/4749061))
+
+#### ⚠️ Breaking Changes
+
+- ⚠️  Remove chapter titles ([d61ee03](https://github.com/Ripwords/photobook-generator/commit/d61ee03))
+
+### ❤️ Contributors
+
+- JJ <teohjjteoh@gmail.com>
+
 ## v0.3.0...master
 
 [compare changes](https://github.com/Ripwords/photobook-generator/compare/v0.3.0...master)
