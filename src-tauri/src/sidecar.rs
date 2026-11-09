@@ -1,6 +1,7 @@
 use crate::book::chapter::LatLon;
 use crate::protocol::{
-    ExportItem, ExportRequest, PreviewRequest, Request, RequestKind, Response, ResponseResult,
+    ExportItem, ExportRequest, OutputFormat, PreviewRequest, Request, RequestKind, Response,
+    ResponseResult,
 };
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
@@ -549,6 +550,7 @@ impl SidecarPool {
         &mut self,
         app: &AppHandle,
         output_dir: &str,
+        output_format: OutputFormat,
         items: &[ExportItem],
         on_batch: P,
     ) -> Vec<serde_json::Value>
@@ -559,8 +561,11 @@ impl SidecarPool {
             items,
             EXPORT_BATCH_SIZE,
             |batch| {
-                let request =
-                    ExportRequest { output_dir: output_dir.to_string(), items: batch.to_vec() };
+                let request = ExportRequest {
+                    output_dir: output_dir.to_string(),
+                    output_format,
+                    items: batch.to_vec(),
+                };
                 let result =
                     self.ensure(app).and_then(|sidecar| sidecar.export(request));
                 if result.is_err() {

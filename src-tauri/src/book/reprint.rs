@@ -249,14 +249,14 @@ mod tests {
     /// numbers intact, not a string the webview would have to parse.
     #[test]
     fn check_returns_the_validators_own_refusal_as_a_value() {
-        let r = RawPrintSpec { bleed_in: 5.0, safe_margin_in: 3.0, gutter_in: 3.197, ..raw(&pixajoy_spec()) };
+        let r = RawPrintSpec { bleed_in: 5.0, safe_margin_in: 3.0, gutter_in: 3.5, ..raw(&pixajoy_spec()) };
         assert_eq!(
             check(r, Some((&book(), &photos()))),
             SpecCheck::Refused {
                 error: SpecError::NoSafeArea {
                     axis: crate::print_spec::Axis::Horizontal,
-                    insets_in: 11.197,
-                    page_in: 11.197,
+                    insets_in: 11.5,
+                    page_in: pixajoy_spec().page_w_in(),
                 },
             }
         );
@@ -512,10 +512,10 @@ mod tests {
         // pan the user can make and `choose_crop` will never return.
         assert!(panned.y > 0.0, "the fixture must start somewhere it can be panned away from");
         panned.y = 0.0;
-        // Same 11.197 x 8.894 page, wider bleed, tighter margin, new DPI band.
+        // Same page, wider bleed, tighter margin, new DPI band.
         let same_shape = PrintSpec::try_from(RawPrintSpec {
-            page_w_in: 11.197,
-            page_h_in: 8.894,
+            page_w_in: pixajoy_spec().page_w_in(),
+            page_h_in: pixajoy_spec().page_h_in(),
             bleed_in: 0.25,
             gutter_in: 0.30,
             safe_margin_in: 0.0625,

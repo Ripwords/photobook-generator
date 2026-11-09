@@ -2536,14 +2536,14 @@ mod tests {
     }
 
     /// Every photo is cut to the page's inch ratio, not the normalised 1:1
-    /// of the unit rect: on Pixajoy's 11.197 x 8.894 page a landscape 4:3
+    /// of the unit rect: on Pixajoy's 11.220 x 8.740 page a landscape 4:3
     /// photo keeps its full width and loses a sliver of height.
     #[test]
     fn page_candidates_frame_every_photo_at_the_page_shape() {
         let ps = photos(6);
         let b = book(&ps);
         let page = b.spec.page_aspect(&Rect::new(0.0, 0.0, 1.0, 1.0));
-        assert!((page - 11.197 / 8.894).abs() < 1e-9, "{page}");
+        assert!((page - 11.22047244094486 / 8.74015748031494).abs() < 1e-9, "{page}");
 
         let cs = page_candidates(&b, &ps);
 
@@ -3185,8 +3185,8 @@ mod tests {
         let mut b = book(&ps);
         edit(&mut b, &ps, BookEdit::SetCoverPhoto { side: CoverSide::Back, photo: Some(0) }).unwrap();
         let before = b.clone();
-        // w 0.8 gives h ~0.908, so y 0.1 runs off the bottom.
-        for (x, y, w) in [(0.3, 0.0, 0.8), (0.0, 0.1, 0.8), (-0.01, 0.0, 0.5), (0.0, 0.0, 0.01), (f64::NAN, 0.0, 0.5)] {
+        // w 0.8 gives h ~0.892, so y 0.15 runs off the bottom.
+        for (x, y, w) in [(0.3, 0.0, 0.8), (0.0, 0.15, 0.8), (-0.01, 0.0, 0.5), (0.0, 0.0, 0.01), (f64::NAN, 0.0, 0.5)] {
             assert_eq!(
                 edit(&mut b, &ps, BookEdit::SetCoverCrop { side: CoverSide::Back, x, y, w }),
                 Err(EditError::CoverCropOutOfBounds(CoverSide::Back)),

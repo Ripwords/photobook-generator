@@ -53,8 +53,8 @@ Nuxt's generated types, which is why the script runs `nuxt prepare` first.
 
 **Print geometry is per book.** Every size lives on `Book.spec`, a `PrintSpec`
 (`src-tauri/src/print_spec.rs`) that can only be built through its validator
-(`try_from = "RawPrintSpec"`); `PrintSpec::pixajoy()` (11.197" × 8.894" page, 22.394" ×
-8.894" spread) is the default for new books and for books saved before the field existed.
+(`try_from = "RawPrintSpec"`); `PrintSpec::pixajoy()` (Taopix IHL8511: 11.220" × 8.740" page,
+22.441" × 8.740" spread) is the default for new books and for books saved before the field existed.
 Engine code takes `&PrintSpec` or reads `book.spec`; never reintroduce a module-level page
 constant. Template rects are normalised, so they fit any spec. One exception:
 `aspect_pref` in `templates/*.json` is a **real-world inch ratio**, not the normalised rect

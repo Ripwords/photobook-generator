@@ -1169,7 +1169,7 @@ mod tests {
 
         // Serialised to TEXT and parsed back, rather than `to_value`d
         // directly. `PreviewGeometry` is the first wire type in this project
-        // to carry an irrational f64 (`0.197 / 11.197` and friends), and
+        // to carry an irrational f64 (`bleed / page width` and friends), and
         // serde_json's default float parser is the fast approximate one --
         // `float_roundtrip` is not enabled -- so reading the fixture back
         // lands up to one ULP from the constant that wrote it. Putting BOTH

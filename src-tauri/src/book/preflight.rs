@@ -793,7 +793,7 @@ mod tests {
         let spec = odd_spec();
         // `odd_spec` is 8.0" wide, so pixels for a DPI must be computed from
         // it -- `px_for_dpi` is Pixajoy's page and would silently land these
-        // fixtures at 11.197/8.0 = 1.4x the DPI they are named for.
+        // fixtures at 11.220/8.0 = 1.4x the DPI they are named for.
         let px_for = |dpi: f64| (dpi * clean_slot().w * spec.page_w_in()).round() as u32;
         let book = Book { spec, ..book_with(clean_slot(), full_crop(), Side::Left) };
 
@@ -1064,7 +1064,7 @@ mod tests {
         assert_eq!(core(&cover_book(CoverSide::Front), &photos, &[]), Vec::new());
     }
 
-    /// 195 DPI across the 11.75" panel is about 205 across the 11.197" page,
+    /// 195 DPI across the 11.774" panel is about 205 across the 11.220" page,
     /// so measuring over the page would let it through.
     #[test]
     fn preflight_measures_the_cover_dpi_over_the_panel_and_names_the_side() {

@@ -108,6 +108,8 @@ impl Drop for Guard {
 impl ModelRequests {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
+            // native-tls is also compiled in for Pixajoy and would otherwise be the default.
+            .tls_backend_rustls()
             .connect_timeout(Duration::from_secs(30))
             // DeepSeek keeps a connection open for up to 10 minutes before
             // inference starts, so only a peer silent for longer is dead.

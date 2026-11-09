@@ -815,6 +815,85 @@ private func exporterContainerType(_ path: String) -> String? {
     exporterExpectColor(ok.path, x: 300, y: 200, exporterRed, "handler dispatch")
 }
 
+// MARK: - outputFormat override
+
+private func exporterExportLine(dir: String, source: String, outputFormatKey: String) -> String {
+    """
+    {"id":"f1","kind":"export","export":{"outputDir":"\(dir)",\(outputFormatKey)"items":[\
+    {"sourcePath":"\(source)","filename":"p01","cropX":0,"cropY":0,"cropW":0.5,"cropH":0.5}]}}
+    """
+}
+
+private func exporterFileStartsWithJpegMagic(_ path: String) -> Bool {
+    guard let data = FileManager.default.contents(atPath: path), data.count >= 3 else { return false }
+    return Array(data.prefix(3)) == [0xFF, 0xD8, 0xFF]
+}
+
+/// Pixajoy only accepts JPEG, so `"outputFormat":"jpeg"` must re-encode a
+/// lossless source rather than follow the source container. Checked on the
+/// bytes, not the extension: a `.jpg` name on PNG bytes would pass a name check.
+@Test func exporterJpegOutputFormatWritesAJpegFromAPngSource() throws {
+    let dir = exporterTempDir("force-jpeg")
+    defer { try? FileManager.default.removeItem(atPath: dir) }
+    let response = handle(line: exporterExportLine(
+        dir: dir, source: exporterFixture("export-quadrants.png"), outputFormatKey: #""outputFormat":"jpeg","#
+    ))
+    guard case .exported(let records) = response.result else {
+        Issue.record("expected .exported, got \(response.result)")
+        return
+    }
+    guard let ok = exporterOnlyOk(records, "forced jpeg") else { return }
+    #expect((ok.path as NSString).lastPathComponent == "p01.jpg", "got \(ok.path)")
+    #expect(exporterFileStartsWithJpegMagic(ok.path), "\(ok.path) does not start with FF D8 FF")
+    #expect(exporterContainerType(ok.path) == UTType.jpeg.identifier,
+            "container was \(String(describing: exporterContainerType(ok.path)))")
+    #expect(ok.width == 600 && ok.height == 400, "record said \(ok.width)x\(ok.height)")
+    let source = try #require(CGImageSourceCreateWithURL(URL(fileURLWithPath: ok.path) as CFURL, nil))
+    let props = try #require(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+    #expect(props[kCGImagePropertyPixelWidth] as? Int == 600, "file width")
+    #expect(props[kCGImagePropertyPixelHeight] as? Int == 400, "file height")
+    #expect(exporterProfileName(ok.path) == "sRGB IEC61966-2.1")
+    exporterExpectColor(ok.path, x: 300, y: 200, exporterRed, "forced jpeg")
+    #expect(!FileManager.default.fileExists(atPath: (dir as NSString).appendingPathComponent("p01.png")))
+}
+
+/// `"auto"` and an absent key are both today's rule: a PNG source stays PNG.
+@Test func exporterAutoOrAbsentOutputFormatKeepsAPngSourceAsPng() throws {
+    for (label, key) in [("auto", #""outputFormat":"auto","#), ("absent", "")] {
+        let dir = exporterTempDir("auto-\(label)")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let response = handle(line: exporterExportLine(
+            dir: dir, source: exporterFixture("export-quadrants.png"), outputFormatKey: key
+        ))
+        guard case .exported(let records) = response.result else {
+            Issue.record("\(label): expected .exported, got \(response.result)")
+            continue
+        }
+        guard let ok = exporterOnlyOk(records, label) else { continue }
+        #expect((ok.path as NSString).pathExtension == "png", "\(label): got \(ok.path)")
+        #expect(exporterContainerType(ok.path) == UTType.png.identifier, "\(label): \(ok.path)")
+        #expect(!exporterFileStartsWithJpegMagic(ok.path), "\(label): wrote JPEG bytes")
+    }
+}
+
+@Test func exporterProtocolDecodesTheOutputFormat() throws {
+    func decode(_ key: String) throws -> ExportRequest {
+        try JSONDecoder().decode(ExportRequest.self, from: Data(#"{"outputDir":"/o",\#(key)"items":[]}"#.utf8))
+    }
+    #expect(try decode(#""outputFormat":"jpeg","#).outputFormat == .jpeg)
+    #expect(try decode(#""outputFormat":"auto","#).outputFormat == .auto)
+    #expect(try decode("").outputFormat == .auto)
+}
+
+/// An unknown value must fail loudly. Falling back to `auto` would hand
+/// Pixajoy PNGs it rejects, with nothing in the response saying why.
+@Test func exporterProtocolRejectsAnUnknownOutputFormat() {
+    let json = #"{"outputDir":"/o","outputFormat":"bogus","items":[]}"#
+    #expect(throws: DecodingError.self) {
+        try JSONDecoder().decode(ExportRequest.self, from: Data(json.utf8))
+    }
+}
+
 @Test func exporterHandlerReportsAnExportRequestWithNoPayload() throws {
     let response = handle(line: #"{"id":"h2","kind":"export"}"#)
     #expect(response.id == "h2")

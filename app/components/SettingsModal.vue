@@ -306,7 +306,8 @@ const checkLabel = computed(() => CHECK_LABELS[updater.value.phase] ?? "Check fo
 
             <p class="max-w-prose text-toned">
               Turns folders of photos into a print-ready photobook. Every photo is analysed on this
-              Mac, and no image is ever uploaded. The chat sends only a description of the book:
+              Mac. Images are uploaded only when you press Send in Send to Pixajoy, and then only
+              the book's exported photos, to your Pixajoy account. The chat sends only a description of the book:
               its layouts, page numbers and photo tags. With Split chapters by place on, each
               chapter's centre, a latitude and longitude and never a photo, goes to Apple to name
               its town. Nothing goes with the switch off.

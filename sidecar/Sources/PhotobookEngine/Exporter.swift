@@ -17,7 +17,9 @@ import UniformTypeIdentifiers
 /// 0.95; lossless source (PNG, TIFF, RAW) exports as PNG. Re-encoding a
 /// camera JPEG to PNG inflates it roughly fivefold without recovering
 /// quality that was already lost, and encoding a RAW-derived crop to JPEG
-/// introduces the first generation of loss for no reason.
+/// introduces the first generation of loss for no reason. A request with
+/// `outputFormat: .jpeg` overrides the rule and writes every item as JPEG,
+/// for print providers whose upload accepts nothing else.
 ///
 /// **Colour.** Output is sRGB with an embedded ICC profile, converted at
 /// export from whatever the source is. A wide-gamut source (Display P3, Adobe
@@ -134,7 +136,11 @@ enum Exporter {
 
         var claimed = Set<String>()
         let claims: [Result<(path: String, format: OutputFormat), ExportError>] = request.items.map { item in
-            let format = sourceFormat(of: item.sourcePath)
+            let format: OutputFormat
+            switch request.outputFormat {
+            case .auto: format = sourceFormat(of: item.sourcePath)
+            case .jpeg: format = .jpeg
+            }
             let path = outputPath(for: item.filename, format: format, in: request.outputDir)
             return claimed.insert(path).inserted
                 ? .success((path, format))
@@ -305,8 +311,8 @@ enum Exporter {
     ///
     /// The filename is reduced to its last path component first, so an item
     /// can never write outside the directory the caller named. Any extension
-    /// the caller supplied is replaced: the format follows the SOURCE, and a
-    /// `.png` name on a JPEG file would be a lie.
+    /// the caller supplied is replaced: the format follows the SOURCE (or the
+    /// request's override), and a `.png` name on a JPEG file would be a lie.
     private static func outputPath(for filename: String, format: OutputFormat, in outputDir: String) -> String {
         let base = (filename as NSString).lastPathComponent
         let stem = (base as NSString).deletingPathExtension

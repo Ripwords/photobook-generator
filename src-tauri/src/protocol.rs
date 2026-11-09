@@ -57,7 +57,20 @@ pub struct ExportItem {
 pub struct ExportRequest {
     #[serde(rename = "outputDir")]
     pub output_dir: String,
+    #[serde(rename = "outputFormat")]
+    pub output_format: OutputFormat,
     pub items: Vec<ExportItem>,
+}
+
+/// Mirrors Swift's `ExportOutputFormat`. `Auto` follows the source container
+/// (JPEG or HEIC to `.jpg`, anything else to `.png`); `Jpeg` writes every
+/// item as `.jpg`, which is what a print provider's upload takes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputFormat {
+    #[default]
+    Auto,
+    Jpeg,
 }
 
 /// One photo to write a larger editor preview of. Mirrors Swift's
@@ -325,10 +338,26 @@ mod tests {
 
     #[test]
     fn serializes_export_request_output_dir_as_camel_case() {
-        let req = ExportRequest { output_dir: "/tmp/out".into(), items: Vec::new() };
+        let req = ExportRequest {
+            output_dir: "/tmp/out".into(),
+            output_format: OutputFormat::Auto,
+            items: Vec::new(),
+        };
         let line = serde_json::to_string(&req).unwrap();
         assert!(line.contains(r#""outputDir":"/tmp/out""#), "{line}");
         assert!(!line.contains("output_dir"), "{line}");
+        assert!(line.contains(r#""outputFormat":"auto""#), "{line}");
+    }
+
+    #[test]
+    fn serializes_the_jpeg_output_format_as_swift_spells_it() {
+        let req = ExportRequest {
+            output_dir: "/o".into(),
+            output_format: OutputFormat::Jpeg,
+            items: Vec::new(),
+        };
+        let line = serde_json::to_string(&req).unwrap();
+        assert!(line.contains(r#""outputFormat":"jpeg""#), "{line}");
     }
 
     /// `export` must not appear on the wire at all when the request is not
@@ -363,6 +392,7 @@ mod tests {
             thumbnail_dir: None,
             export: Some(ExportRequest {
                 output_dir: "/tmp/out".into(),
+                output_format: OutputFormat::Auto,
                 items: vec![ExportItem {
                     source_path: "/photos/a.jpg".into(),
                     filename: "p04-z1-abcd1234".into(),

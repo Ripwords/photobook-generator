@@ -100,8 +100,8 @@ pub struct ManifestCoverPhoto {
 
 /// Builds the manifest for `book`. `photos` is the ORIGINAL slice
 /// `Placement::photo_index` indexes into, matching `export::build_items`'s
-/// own contract. Chapter titles are an on-screen guide and never print, so
-/// the manifest carries no text.
+/// own contract. Export prints no chapter titles (only Send to Pixajoy
+/// places them), so the manifest carries no text.
 pub fn manifest(book: &Book, photos: &[Photo], project_id: i64) -> Manifest {
     // The book's own geometry, never a default: a manifest is the hand-off to
     // the printer, so naming the wrong page size here is the one bug nothing
@@ -228,8 +228,8 @@ mod tests {
         assert_eq!(m.page_count, m.pages.len());
     }
 
-    /// Chapter titles are a guide in the editor and never print, so the
-    /// manifest -- the hand-off to the printer -- carries no text at all. A
+    /// Export prints no chapter titles, so the manifest -- the hand-off to
+    /// the printer -- carries no text at all. A
     /// manifest written while titles travelled in `texts` still reads.
     #[test]
     fn manifest_carries_no_chapter_titles_and_reads_one_that_did() {
@@ -302,7 +302,7 @@ mod tests {
     /// and never converted against Pixajoy's page.
     ///
     /// Runs under `odd_spec` (8.0 x 10.0), not the default: under Pixajoy's
-    /// numbers a hardcoded `11.197` is indistinguishable from reading
+    /// numbers a hardcoded `11.220` is indistinguishable from reading
     /// `spec.page_w_in()`. It is also PORTRAIT, so transposing the two axes
     /// is visible here too.
     ///
@@ -337,7 +337,7 @@ mod tests {
         assert!((dest.h - slot_rect.h * 10.0).abs() < 1e-9, "h was {}", dest.h);
 
         // The same book under Pixajoy's page must give different numbers, or
-        // this fixture cannot tell "reads the spec" from "hardcodes 11.197".
+        // this fixture cannot tell "reads the spec" from "hardcodes 11.220".
         let pixajoy = Book { spec: pixajoy_spec(), ..book };
         let other = manifest(&pixajoy, &photos, 1).pages[0].photos[0].dest_rect_in;
         assert!((other.w - dest.w).abs() > 0.1, "the two specs must be distinguishable");

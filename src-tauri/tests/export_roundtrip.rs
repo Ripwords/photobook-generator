@@ -38,7 +38,7 @@
 //! binary over a pipe and needs no `AppHandle`, so none of the
 //! `harness = false` reasoning in `Cargo.toml` applies.
 
-use app_lib::protocol::{ExportItem, ExportRequest, Request, RequestKind, Response, ResponseResult};
+use app_lib::protocol::{ExportItem, ExportRequest, OutputFormat, Request, RequestKind, Response, ResponseResult};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -121,6 +121,7 @@ fn real_sidecar_crops_and_writes_files_matching_the_requested_windows() {
         thumbnail_dir: None,
         export: Some(ExportRequest {
             output_dir: output_dir_str.clone(),
+            output_format: OutputFormat::Auto,
             items: vec![jpeg_item, png_item],
         }),
         coordinates: None,

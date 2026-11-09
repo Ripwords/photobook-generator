@@ -82,6 +82,8 @@ const {
 const chatOpen = ref(true);
 /** The export sheet: output folder, the export itself, and pre-flight's report. */
 const exportOpen = ref(false);
+/** The Send to Pixajoy dialog. */
+const sendOpen = ref(false);
 /** The Print size panel. Beside the book, not over it, so the guides it proposes show live. */
 const printSizeOpen = ref(false);
 /** The guides the panel's typed numbers would draw, while it is open. */
@@ -191,7 +193,12 @@ defineShortcuts({
   [shortcutCombo("undo")]: () => step("undo"),
   [shortcutCombo("redo")]: () => step("redo"),
   [shortcutCombo("chat")]: { usingInput: true, handler: () => (chatOpen.value = !chatOpen.value) },
-  [shortcutCombo("export")]: { usingInput: true, handler: () => (exportOpen.value = true) },
+  [shortcutCombo("export")]: {
+    usingInput: true,
+    handler: () => {
+      if (!sendOpen.value) exportOpen.value = true;
+    },
+  },
 });
 
 /** How many printed pages come out white -- see `BookPreviewPage`. */
@@ -439,6 +446,18 @@ onMounted(() => {
       </UButton>
     </UTooltip>
 
+    <UTooltip text="Create a project in your Pixajoy account from this book">
+      <UButton
+        icon="i-lucide-send"
+        color="neutral"
+        variant="outline"
+        :disabled="!activeProject"
+        @click="sendOpen = true"
+      >
+        Send to Pixajoy
+      </UButton>
+    </UTooltip>
+
     <USeparator orientation="vertical" class="mx-1.5 h-5" />
 
     <UTooltip :text="chatOpen ? 'Hide the chat' : 'Show the chat'" :kbds="shortcutKbds('chat')">
@@ -579,6 +598,8 @@ onMounted(() => {
     action="Save layout"
     @save="saveLayout"
   />
+
+  <SendToPixajoyDialog v-if="activeProject" :key="projectId" v-model:open="sendOpen" :project-id />
 
   <USlideover
     v-model:open="exportOpen"

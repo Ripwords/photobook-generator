@@ -83,6 +83,13 @@ const layout: BookLayout = JSON.parse(
 
 const geometry: PreviewGeometry = layout.geometry;
 
+/** Pixajoy's IHL8511 product, typed independently of the fixture: Taopix units are inches x 1e14. */
+const PAGE_W_IN = 11.22047244094486;
+const PAGE_H_IN = 8.74015748031494;
+const BLEED_IN = 0.19685039370078;
+/** Half the 18 mm gutter, measured from each page's fold edge. */
+const GUTTER_IN = 0.354330708661415;
+
 /** Page numbers, so a spread's contents read at a glance in a failure. */
 function shape(pages: (PreviewPage | null)[]): (number | null)[] {
   return pages.map((page) => page?.number ?? null);
@@ -90,7 +97,7 @@ function shape(pages: (PreviewPage | null)[]): (number | null)[] {
 
 describe("the wire fixture", () => {
   it("carries the cover: both panels, one empty, and the spine", () => {
-    expect(layout.cover.aspect).toBe(1.175);
+    expect(layout.cover.aspect).toBeCloseTo((PAGE_W_IN - BLEED_IN + 0.75) / (PAGE_H_IN - 2 * BLEED_IN + 1.5), 15);
     expect(layout.cover.spine).toBe("#1a2b3c");
     expect(layout.cover.front.photo).toEqual({
       photoIndex: 4,
@@ -151,10 +158,10 @@ describe("the wire fixture", () => {
    */
   it("carries the book's own spec in inches alongside the guides it implies", () => {
     expect(layout.spec).toEqual({
-      pageWIn: 11.197,
-      pageHIn: 8.894,
-      bleedIn: 0.197,
-      gutterIn: 0.197,
+      pageWIn: PAGE_W_IN,
+      pageHIn: PAGE_H_IN,
+      bleedIn: BLEED_IN,
+      gutterIn: GUTTER_IN,
       safeMarginIn: 0.125,
       minDpi: 200,
       warnDpi: 300,
@@ -444,8 +451,8 @@ describe("the guides", () => {
    */
   it("insets the trim on the outer edge but never at the fold", () => {
     const left = geometry.left.trim;
-    const trimU = 0.197 / 11.197;
-    const trimV = 0.197 / 8.894;
+    const trimU = BLEED_IN / PAGE_W_IN;
+    const trimV = BLEED_IN / PAGE_H_IN;
     // A LEFT page's outer edge is x=0; its fold edge is x=1.
     expect(left.x).toBeCloseTo(trimU, 12);
     expect(left.x + left.w).toBeCloseTo(1, 12);
@@ -476,11 +483,11 @@ describe("the guides", () => {
     expect(safe.y + safe.h).toBeLessThan(trim.y + trim.h);
     // The fold edge is NOT inset a second time -- the gutter band governs it.
     expect(safe.x + safe.w).toBeCloseTo(trim.x + trim.w, 12);
-    expect(safe.x).toBeCloseTo((0.197 + 0.125) / 11.197, 12);
+    expect(safe.x).toBeCloseTo((BLEED_IN + 0.125) / PAGE_W_IN, 12);
 
     const rightSafe = geometry.right.safe;
     expect(rightSafe.x).toBeCloseTo(0, 12);
-    expect(rightSafe.x + rightSafe.w).toBeCloseTo(1 - (0.197 + 0.125) / 11.197, 12);
+    expect(rightSafe.x + rightSafe.w).toBeCloseTo(1 - (BLEED_IN + 0.125) / PAGE_W_IN, 12);
   });
 
   /**
@@ -489,7 +496,7 @@ describe("the guides", () => {
    * it on the outer edge is the mistake this pins.
    */
   it("puts the gutter band against the fold on both pages, never the outer edge", () => {
-    const gutterU = 0.197 / 11.197;
+    const gutterU = GUTTER_IN / PAGE_W_IN;
     const left = geometry.left.gutter;
     expect(left.x).toBeCloseTo(1 - gutterU, 12);
     expect(left.x + left.w).toBeCloseTo(1, 12);
@@ -506,10 +513,10 @@ describe("the guides", () => {
   });
 
   it("uses the engine's real Pixajoy figures, not round numbers", () => {
-    // 5mm bleed on an 11.197" page, and Pixajoy's published 1/8" safe margin.
-    expect(geometry.left.safe.y).toBeCloseTo((0.197 + 0.125) / 8.894, 12);
-    expect(geometry.pageWIn).toBe(11.197);
-    expect(geometry.pageHIn).toBe(8.894);
+    // 5mm bleed on an 11.220" page, and Pixajoy's published 1/8" safe margin.
+    expect(geometry.left.safe.y).toBeCloseTo((BLEED_IN + 0.125) / PAGE_H_IN, 12);
+    expect(geometry.pageWIn).toBe(PAGE_W_IN);
+    expect(geometry.pageHIn).toBe(PAGE_H_IN);
   });
 
   /**
@@ -542,7 +549,7 @@ describe("the guides", () => {
     // The centre follows the payload too: this page's trim centre, not 0.5.
     expect(g.centres.xs).toEqual([0.25 / 8 + (1 - 0.25 / 8) / 2]);
     // Nothing of Pixajoy's leaks through.
-    expect(g.edges.xs.some((x) => Math.abs(x - 0.197 / 11.197) < 1e-6)).toBe(false);
+    expect(g.edges.xs.some((x) => Math.abs(x - BLEED_IN / PAGE_W_IN) < 1e-6)).toBe(false);
 
     const r = pageGuides(odd, "right", []);
     expect(r.edges.xs.some((x) => Math.abs(x - 0.4 / 8) < 1e-9)).toBe(true);
@@ -1059,13 +1066,13 @@ describe("slot editing", () => {
   /**
    * Exactly one horizontal centre, the trim centre. A left page is asymmetric
    * because the fold carries no bleed, so its canvas centre (0.5) and safe
-   * centre (0.514379) sit within one 0.012 threshold of the trim centre
-   * (0.508797); offering all three would make one snap three ways.
+   * centre (0.514342) sit within one 0.012 threshold of the trim centre
+   * (0.508772); offering all three would make one snap three ways.
    */
   it("offers one page centre per axis, the trim centre, plus the other slots'", () => {
     const g = pageGuides(geometry, "left", [{ x: 0.1, y: 0.3, w: 0.2, h: 0.2 }]);
     const cx = geometry.left.trim.x + geometry.left.trim.w / 2;
-    expect(cx).toBeCloseTo(0.508797, 6);
+    expect(cx).toBeCloseTo(0.508772, 6);
     expect(g.centres.xs).toEqual([0.2, Math.round(cx * 1e6) / 1e6]);
     expect(g.centres.ys).toEqual([0.4, 0.5]);
     // The trim centre is a target for an edge too; the other slots' are not.
@@ -1136,7 +1143,7 @@ describe("choosing a photo for a slot", () => {
   });
 
   it("frames each tile at the slot's printed shape and replaces the photo there", () => {
-    expect(pickAspect(layout, target)).toBeCloseTo((0.5 * 11.197) / (0.62 * 8.894), 12);
+    expect(pickAspect(layout, target)).toBeCloseTo((0.5 * PAGE_W_IN) / (0.62 * PAGE_H_IN), 12);
     expect(pickEdit(target, 2)).toEqual({ kind: "replacePhoto", placement: { page: 2, z: 1 }, photo: 2 });
   });
 

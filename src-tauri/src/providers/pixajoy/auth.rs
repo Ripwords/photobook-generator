@@ -1,0 +1,145 @@
+//! Signing in to Pixajoy. The user signs in on Pixajoy's own login page in a
+//! window of the app's; the `mbtk` cookie it sets is copied into the macOS
+//! Keychain and the window closes. The token is read only by Rust and never
+//! logged or written anywhere else.
+
+use crate::agent::keys::KEYCHAIN_SERVICE;
+use base64::Engine;
+use serde::{Deserialize, Serialize};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+
+const ACCOUNT: &str = "pixajoy";
+const LOGIN_URL: &str = "https://www.pixajoy.com.my/login";
+const COOKIE_URL: &str = "https://www.pixajoy.com.my/";
+const COOKIE: &str = "mbtk";
+const WINDOW: &str = "pixajoy-login";
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Status {
+    pub signed_in: bool,
+    pub email: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Claims {
+    emailaddress: Option<String>,
+    exp: Option<i64>,
+}
+
+/// Reads the JWT payload without checking its signature: Pixajoy checks it,
+/// and the app only needs the email and the expiry to show. An unreadable or
+/// expired token counts as signed out.
+pub fn status_of(token: Option<&str>, now: i64) -> Status {
+    let signed_out = Status { signed_in: false, email: None };
+    let Some(payload) = token.and_then(|t| t.split('.').nth(1)) else { return signed_out };
+    let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload.trim_end_matches('='))
+    else {
+        return signed_out;
+    };
+    let Ok(claims) = serde_json::from_slice::<Claims>(&bytes) else { return signed_out };
+    match claims.exp {
+        Some(exp) if exp > now => Status { signed_in: true, email: claims.emailaddress },
+        _ => signed_out,
+    }
+}
+
+fn now() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+fn entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, ACCOUNT).map_err(|e| e.to_string())
+}
+
+fn stored() -> Result<Option<String>, String> {
+    match entry()?.get_password() {
+        Ok(token) => Ok(Some(token)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+pub fn status() -> Result<Status, String> {
+    Ok(status_of(stored()?.as_deref(), now()))
+}
+
+/// The stored token, when it is still valid.
+pub fn token() -> Result<String, String> {
+    let token = stored()?.filter(|t| status_of(Some(t), now()).signed_in);
+    token.ok_or_else(|| "Sign in to Pixajoy first.".to_string())
+}
+
+pub fn sign_out() -> Result<(), String> {
+    match entry()?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Opens Pixajoy's login page and waits until it sets a valid `mbtk` cookie,
+/// or until the user closes the window. The window is private (no cookies
+/// kept between sign-ins), so signing out and in again can switch accounts,
+/// and it gets no access to the app's commands: capabilities name `main`
+/// only.
+pub async fn sign_in(app: &AppHandle) -> Result<Status, String> {
+    if let Some(open) = app.get_webview_window(WINDOW) {
+        let _ = open.close();
+    }
+    let login = LOGIN_URL.parse().map_err(|e| format!("{e}"))?;
+    let cookie_url: tauri::Url = COOKIE_URL.parse().map_err(|e| format!("{e}"))?;
+    let window = WebviewWindowBuilder::new(app, WINDOW, WebviewUrl::External(login))
+        .title("Sign in to Pixajoy")
+        .inner_size(520.0, 760.0)
+        .incognito(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    loop {
+        tokio::time::sleep(Duration::from_millis(750)).await;
+        if app.get_webview_window(WINDOW).is_none() {
+            return status();
+        }
+        let Ok(cookies) = window.cookies_for_url(cookie_url.clone()) else { continue };
+        let Some(token) = cookies.iter().find(|c| c.name() == COOKIE).map(|c| c.value().to_string())
+        else {
+            continue;
+        };
+        let status = status_of(Some(&token), now());
+        if status.signed_in {
+            entry()?.set_password(&token).map_err(|e| e.to_string())?;
+            let _ = window.close();
+            return Ok(status);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn jwt(payload: &str) -> String {
+        let b = |s: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s);
+        format!("{}.{}.{}", b(r#"{"alg":"RS256"}"#), b(payload), b("sig"))
+    }
+
+    #[test]
+    fn a_current_token_is_signed_in_with_its_email() {
+        let t = jwt(r#"{"emailaddress":"a@b.c","userid":"1","exp":2000}"#);
+        assert_eq!(status_of(Some(&t), 1999), Status { signed_in: true, email: Some("a@b.c".into()) });
+    }
+
+    #[test]
+    fn an_expired_token_is_signed_out() {
+        let t = jwt(r#"{"emailaddress":"a@b.c","exp":2000}"#);
+        assert_eq!(status_of(Some(&t), 2000), Status { signed_in: false, email: None });
+    }
+
+    #[test]
+    fn no_token_or_garbage_is_signed_out() {
+        assert!(!status_of(None, 0).signed_in);
+        assert!(!status_of(Some("not-a-jwt"), 0).signed_in);
+        assert!(!status_of(Some(&jwt(r#"{"emailaddress":"a@b.c"}"#)), 0).signed_in, "no exp");
+    }
+}

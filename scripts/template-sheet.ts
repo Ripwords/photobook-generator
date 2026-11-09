@@ -4,7 +4,7 @@
  *   bun scripts/template-sheet.ts > /tmp/templates.html && open /tmp/templates.html
  *
  * Emits ONE self-contained HTML page (no external assets, no script tags) that
- * draws every file in `templates/` to scale on the 22.394" x 8.894" spread
+ * draws every file in `templates/` to scale on the 22.441" x 8.740" spread
  * canvas: the fold, the gutter dead band, the trim/safe rectangle, every slot
  * with its real-world aspect and declared `aspect_pref`, and every bleed edge.
  *
@@ -20,16 +20,20 @@ import process from "node:process";
 
 // --- geometry, mirroring tests/templates.test.ts and src-tauri/src/geometry.rs
 
-const CANVAS_W_IN = 22.394;
-const CANVAS_H_IN = 8.894;
+// Taopix units (inches x 1e14) from Pixajoy's IHL8511 `project/load`.
+const TAOPIX = 1e14;
+const BLEED_IN = 19685039370078 / TAOPIX;
+const GUTTER_IN = 70866141732283 / TAOPIX / 2;
+const CANVAS_W_IN = (2 * 1122047244094486) / TAOPIX;
+const CANVAS_H_IN = 874015748031494 / TAOPIX;
 const CANVAS_RATIO = CANVAS_W_IN / CANVAS_H_IN;
 
-const SAFE_X0 = 0.008797;
-const SAFE_X1 = 0.991203;
-const SAFE_Y0 = 0.02215;
-const SAFE_Y1 = 0.97785;
-const GUTTER_X0 = 0.491203;
-const GUTTER_X1 = 0.508797;
+const SAFE_X0 = BLEED_IN / CANVAS_W_IN;
+const SAFE_X1 = 1 - SAFE_X0;
+const SAFE_Y0 = BLEED_IN / CANVAS_H_IN;
+const SAFE_Y1 = 1 - SAFE_Y0;
+const GUTTER_X0 = 0.5 - GUTTER_IN / CANVAS_W_IN;
+const GUTTER_X1 = 0.5 + GUTTER_IN / CANVAS_W_IN;
 const FOLD_X = 0.5;
 
 /**

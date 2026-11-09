@@ -781,7 +781,7 @@ mod tests {
     fn custom_layouts_refuses_a_fold_edge_inside_the_gutter() {
         let spec = pixajoy_spec();
         let g = spec.gutter_u();
-        let gutter_mm = 5.0;
+        let gutter_mm = 9.0;
         // Left page: the fold is its right edge.
         assert_eq!(print_rules(&page(Side::Left, vec![b(0.3, 0.3, 0.7 - g, 0.4)]), &spec), vec![], "clear of it");
         assert_eq!(print_rules(&page(Side::Left, vec![b(0.3, 0.3, 0.7, 0.4)]), &spec), vec![], "to the fold");

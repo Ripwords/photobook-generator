@@ -664,8 +664,8 @@ mod tests {
     /// A fixture where they coincide passes under the aspect_pref trap.
     fn wide_slot() -> Slot {
         Slot {
-            // On an 11.197 x 8.894 page: 0.5 x 0.5 normalised is
-            // 5.5985" x 4.447" = 1.259 real, not 1.0.
+            // On an 11.220 x 8.740 page: 0.5 x 0.5 normalised is
+            // 5.610" x 4.370" = 1.284 real, not 1.0.
             rect: Rect::new(0.2, 0.2, 0.5, 0.5),
             role: Role::Hero,
             bleed: Vec::<BleedEdge>::new(),
@@ -692,18 +692,18 @@ mod tests {
         let normalised = s.rect.w / s.rect.h;
         let real = slot_aspect(&pixajoy_spec(), &s);
         assert!((normalised - 1.0).abs() < 1e-9, "sanity: normalised is 1:1");
-        assert!((real - 1.259).abs() < 0.002, "real was {real}");
+        assert!((real - 1.284).abs() < 0.002, "real was {real}");
     }
 
     #[test]
     fn score_effective_dpi_accounts_for_the_crop() {
         let p = photo(4000, 3000);
-        let s = wide_slot(); // 5.5985" wide
+        let s = wide_slot(); // 5.610" wide
         let full = Rect::new(0.0, 0.0, 1.0, 1.0);
         let half = Rect::new(0.25, 0.0, 0.5, 1.0);
         let d_full = effective_dpi(&pixajoy_spec(), &p, &full, &s);
         let d_half = effective_dpi(&pixajoy_spec(), &p, &half, &s);
-        assert!((d_full - 4000.0 / 5.5985).abs() < 1.0, "was {d_full}");
+        assert!((d_full - 4000.0 / 5.610).abs() < 1.0, "was {d_full}");
         assert!((d_half - d_full / 2.0).abs() < 1.0, "cropping halves the DPI");
     }
 
@@ -720,8 +720,8 @@ mod tests {
 
     /// The floor pinned on BOTH sides, on a slot that can express it exactly.
     ///
-    /// `wide_slot` cannot: 5.5985" needs 1119.7 px for 200 DPI, which rounds
-    /// to 1120 px = 200.0357 DPI -- never on the boundary it was named for,
+    /// `wide_slot` cannot: 5.610" needs 1122.0 px for 200 DPI, which rounds
+    /// to 1122 px = 199.99 DPI -- never on the boundary it was named for,
     /// so `< min_dpi()` could be flipped to `<= min_dpi()` with the whole suite
     /// still green. A slot exactly 6.0" wide has an integer answer: 1200 px
     /// is exactly 200.0 DPI (verified in the first assertion, since only

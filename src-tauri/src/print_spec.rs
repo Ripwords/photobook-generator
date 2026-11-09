@@ -243,24 +243,33 @@ impl TryFrom<RawPrintSpec> for PrintSpec {
 }
 
 impl PrintSpec {
-    /// Pixajoy's 11" x 8.5" landscape book: the geometry every book was laid
-    /// out under before the spec became configurable, and the default for a
-    /// new one.
+    /// Pixajoy's 11" x 8.5" landscape book (product IHL8511), as its own
+    /// `project/load` reports it. Taopix lengths are inches x 10^14:
+    ///
+    /// - `width` 1122047244094486 and `height` 874015748031494 are the page
+    ///   with bleed. The new-book default, so a normalised rect lands on
+    ///   Pixajoy's page one to one.
+    /// - `bleed` 19685039370078 is 5 mm.
+    /// - `gutterwidth` 70866141732283 is 18 mm centred on the fold. Pages sit
+    ///   edge to edge there, so each page's dead band is half of it.
+    ///
+    /// Taopix also sets `insidebleeds`: the page carries a bleed at the fold
+    /// too, and its paper is 10.8268" x 8.3465". `PrintSpec` has no fold
+    /// bleed, so `trim_w_in` reads 0.197" wider than the paper. The gutter
+    /// band covers that strip on every interior page.
     ///
     /// Named after the printer, not `default`, so a reader at a call site can
     /// see that they hardcoded one lab rather than used the book's own. The
     /// call sites are meant to stay countable: the new-book default, `Book`'s
-    /// serde default, and tests.
-    ///
-    /// `0.197` is a rounded inch value of a 5 mm bleed (5 mm is exactly
-    /// 0.1968503937"). Do not "correct" it: it moves the golden for no
-    /// user-visible gain.
+    /// serde default, and tests. A saved book keeps the spec it was made
+    /// with.
     pub fn pixajoy() -> Self {
+        const TAOPIX: f64 = 1e14;
         Self {
-            page_w_in: 11.197,
-            page_h_in: 8.894,
-            bleed_in: 0.197,
-            gutter_in: 0.197,
+            page_w_in: 1_122_047_244_094_486.0 / TAOPIX,
+            page_h_in: 874_015_748_031_494.0 / TAOPIX,
+            bleed_in: 19_685_039_370_078.0 / TAOPIX,
+            gutter_in: 70_866_141_732_283.0 / TAOPIX / 2.0,
             safe_margin_in: 0.125,
             min_dpi: 200.0,
             warn_dpi: 300.0,
@@ -436,10 +445,10 @@ mod tests {
     /// Pixajoy's numbers as a raw payload, for tests that vary one field.
     fn raw() -> RawPrintSpec {
         RawPrintSpec {
-            page_w_in: 11.197,
-            page_h_in: 8.894,
-            bleed_in: 0.197,
-            gutter_in: 0.197,
+            page_w_in: 11.22047244094486,
+            page_h_in: 8.74015748031494,
+            bleed_in: 0.19685039370078,
+            gutter_in: 0.354330708661415,
             safe_margin_in: 0.125,
             min_dpi: 200.0,
             warn_dpi: 300.0,
@@ -607,7 +616,7 @@ mod tests {
         for spec in [PrintSpec::pixajoy(), odd_spec()] {
             assert!((spec.spread_w_in() - 2.0 * spec.page_w_in()).abs() < 1e-12);
         }
-        assert!((PrintSpec::pixajoy().spread_w_in() - 22.394).abs() < 1e-9);
+        assert!((PrintSpec::pixajoy().spread_w_in() - 22.44094488188972).abs() < 1e-9);
     }
 
     /// Pixajoy's numbers, pinned against typed literals rather than against a
@@ -616,10 +625,10 @@ mod tests {
     #[test]
     fn pixajoy_is_todays_numbers() {
         let s = PrintSpec::pixajoy();
-        assert_eq!(s.page_w_in(), 11.197);
-        assert_eq!(s.page_h_in(), 8.894);
-        assert_eq!(s.bleed_in(), 0.197);
-        assert_eq!(s.gutter_in(), 0.197);
+        assert_eq!(s.page_w_in(), 11.22047244094486);
+        assert_eq!(s.page_h_in(), 8.74015748031494);
+        assert_eq!(s.bleed_in(), 0.19685039370078);
+        assert_eq!(s.gutter_in(), 0.354330708661415);
         assert_eq!(s.safe_margin_in(), 0.125);
         assert_eq!(s.min_dpi(), 200.0);
         assert_eq!(s.warn_dpi(), 300.0);
@@ -630,8 +639,8 @@ mod tests {
     /// Derived insets are functions of the stored fields, on BOTH axes.
     ///
     /// `odd_spec` exists so no two derived values coincide: under Pixajoy's
-    /// numbers `gutter_u == trim_u`, so an axis swap or the old
-    /// gutter-equals-bleed coupling would survive any default-spec fixture.
+    /// old numbers `gutter_u == trim_u`, so an axis swap or the old
+    /// gutter-equals-bleed coupling survived any default-spec fixture.
     #[test]
     fn derived_insets_read_the_field_and_the_axis_they_name() {
         let s = odd_spec();
@@ -650,8 +659,7 @@ mod tests {
         }
     }
 
-    /// The gutter is no longer numerically tied to the bleed. Under Pixajoy
-    /// they coincide, which is why this asserts on a spec where they do not.
+    /// The gutter is not numerically tied to the bleed.
     #[test]
     fn the_gutter_is_independent_of_the_bleed() {
         let s = odd_spec();
@@ -659,8 +667,6 @@ mod tests {
             (s.gutter_u() - s.trim_u()).abs() > 1e-6,
             "gutter_u must not be bleed / page_w"
         );
-        assert!((PrintSpec::pixajoy().gutter_u() - PrintSpec::pixajoy().trim_u()).abs() < 1e-12,
-            "under Pixajoy they still coincide, which is why odd_spec exists");
     }
 
     #[test]
@@ -672,7 +678,7 @@ mod tests {
         let normalised = r.w / r.h;
         let real = s.page_aspect(&r);
         assert!((normalised - 1.0).abs() < 1e-9, "sanity: the fixture is 1:1 normalised");
-        assert!((real - 11.197 / 8.894).abs() < 1e-9, "real was {real}");
+        assert!((real - 11.22047244094486 / 8.74015748031494).abs() < 1e-9, "real was {real}");
         assert!(
             (real - normalised).abs() > 0.2,
             "the fixture must distinguish the two numbers"
@@ -750,13 +756,13 @@ mod tests {
         assert!(PrintSpec::try_from(r).is_ok());
     }
 
-    /// Pixajoy: an 11 x 8.5 trim plus 0.75" of wrap on three edges.
+    /// Pixajoy: a 11.024 x 8.346 trim plus 0.75" of wrap on three edges.
     #[test]
     fn the_cover_panel_is_the_trim_plus_wrap_on_three_edges() {
         let p = PrintSpec::pixajoy();
-        assert!((p.cover_panel_w_in() - 11.75).abs() < 1e-9, "{}", p.cover_panel_w_in());
-        assert!((p.cover_panel_h_in() - 10.0).abs() < 1e-9, "{}", p.cover_panel_h_in());
-        assert!((p.cover_aspect() - 1.175).abs() < 1e-9);
+        assert!((p.cover_panel_w_in() - 11.77362204724408).abs() < 1e-9, "{}", p.cover_panel_w_in());
+        assert!((p.cover_panel_h_in() - 9.84645669291338).abs() < 1e-9, "{}", p.cover_panel_h_in());
+        assert!((p.cover_aspect() - 11.77362204724408 / 9.84645669291338).abs() < 1e-9);
 
         // Portrait, and every number distinct, so a swapped axis shows.
         let o = odd_spec();

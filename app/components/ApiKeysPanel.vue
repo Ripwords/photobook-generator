@@ -47,7 +47,7 @@ onMounted(() => {
 <template>
   <div class="space-y-6">
     <p class="text-sm text-muted">
-      Your photos never leave this Mac. Only the book's description and your messages are sent.
+      The chat never sends your photos. Only the book's description and your messages are sent.
     </p>
     <section
       v-for="provider in PROVIDERS"

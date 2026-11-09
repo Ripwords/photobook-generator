@@ -29,9 +29,31 @@ struct ExportItem: Codable {
     let cropH: Double
 }
 
+/// The container the caller wants every item written as.
+///
+/// `auto` follows the source (see `Exporter.outputFormat(for:)`). `jpeg`
+/// forces JPEG for every item, because a print provider's upload accepts
+/// nothing else. An unknown value is a decode error, never a fallback.
+enum ExportOutputFormat: String, Codable {
+    case auto
+    case jpeg
+}
+
 struct ExportRequest: Codable {
     let outputDir: String
+    var outputFormat: ExportOutputFormat = .auto
     let items: [ExportItem]
+}
+
+extension ExportRequest {
+    /// Hand-written only so an absent `outputFormat` decodes as `.auto`; the
+    /// synthesised decoder requires every non-optional key.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        outputDir = try c.decode(String.self, forKey: .outputDir)
+        outputFormat = try c.decodeIfPresent(ExportOutputFormat.self, forKey: .outputFormat) ?? .auto
+        items = try c.decode([ExportItem].self, forKey: .items)
+    }
 }
 
 /// One record per `ExportItem`, in input order.

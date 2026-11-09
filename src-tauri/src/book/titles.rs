@@ -181,7 +181,7 @@ const MONTHS: [&str; 12] =
 
 /// Days since 1970-01-01 to (year, month 1-12, day 1-31). Howard Hinnant's
 /// `civil_from_days`; exact over the whole proleptic Gregorian calendar.
-fn civil(days: i64) -> (i64, usize, u32) {
+pub(crate) fn civil(days: i64) -> (i64, usize, u32) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
@@ -589,7 +589,7 @@ mod tests {
         book.pages[2].template_id = t.id.clone();
         let b = title_box(&book, &lib, &[1, 2]).unwrap();
         assert_eq!((b.page, b.rect, b.align, b.overlaps_photo), (2, zone.rect, zone.align, false));
-        // 0.2 of an 8.894" page is 1.78" tall: the largest point size.
+        // 0.2 of an 8.740" page is 1.75" tall: the largest point size.
         assert_eq!(b.point_size, MAX_POINT);
 
         // A photo moved onto the zone sends the title elsewhere.

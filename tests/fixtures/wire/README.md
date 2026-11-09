@@ -65,7 +65,7 @@ expect the other language's suite to tell you what else has to move.**
   feeds the problems and errors through `problemSlots` and
   `customLayoutErrorText`.
 - **`book-layout.json` is the only fixture carrying an irrational float**
-  (`PreviewGeometry`'s guide rects, which are `0.197 / 11.197` and friends
+  (`PreviewGeometry`'s guide rects, which are `bleed / page width` and friends
   derived from the book's `PrintSpec`). serde_json's *default* float parser is the fast approximate
   one -- the `float_roundtrip` feature is not enabled -- so reading the fixture
   back lands up to one ULP from the constant that wrote it. That test

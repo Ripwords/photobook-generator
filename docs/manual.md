@@ -31,7 +31,9 @@ you are. Right-click a book there for the same menu the library gives it (see be
 
 **Settings** has three tabs. **General** sets the appearance (System, Light or Dark) and
 the graphics level, manages storage, and lists the shortcuts above. **API keys** is where the chat's keys are saved. **About**
-shows the version and what leaves this Mac: no image ever does, and the chat sends only a
+shows the version and what leaves this Mac. No image does unless you press **Send** in
+**Send to Pixajoy** (see [3. Editing the book](#3-editing-the-book)), and then only the book's exported photos go, to your
+Pixajoy account. The chat sends only a
 description of the book (its layouts, page numbers and photo tags). With **Split chapters
 by place** on, each chapter's centre (a latitude and longitude, never a photo) goes to Apple
 to name its town, and nothing goes with the switch off. **About** also holds
@@ -584,9 +586,37 @@ the spine colour to the `spine_hex` value from the manifest. Pixajoy publishes n
 the spine's width, so the app does not produce a spine image or a single wrap-around file;
 the spine is Pixajoy's to size.
 
+**Send to Pixajoy**, beside **Export** in the editor's top bar, creates a
+new project in your Pixajoy account from the book. It never orders anything and never opens a
+project you already have; you review and order the book on Pixajoy afterwards. The dialog has
+three parts:
+
+- **Pixajoy account.** **Sign in** opens Pixajoy's own login page in a separate window. Sign in
+  there and the window closes by itself; the account section then reads "Signed in as" your
+  email. The sign-in is kept in the macOS Keychain, never in a file, and lasts until Pixajoy
+  ends it. **Sign out** forgets it, and signing in again can use another account.
+- **What happens.** A new project is created, the book's photos are exported and uploaded to
+  Pixajoy's servers, and nothing is ordered. Chapter titles go onto their pages as text you
+  can edit on Pixajoy.
+- **Pages.** How many pages the Pixajoy project gets. Pixajoy's landscape book needs at least
+  20 pages and an even count, so a shorter or odd book gets blank pages added at the end, and
+  the dialog says how many. A book over 150 pages, or one whose print size is not Pixajoy's
+  landscape shape, cannot be sent, and the dialog says why.
+
+**Send** runs pre-flight, exports every photo as JPEG to a temporary folder, creates the
+project (named after the book), uploads the photos and lays out each page with the same boxes
+and crops as the book. Each chapter title becomes a text box in its title spot, in black
+Arial at the suggested size, above the photos. Edit or move it in Pixajoy's editor like any
+other text box. The front and back cover photos go into Pixajoy's cover boxes. The
+dialog shows each step and cannot be closed while it runs; the temporary folder is deleted
+when the send ends. When it finishes, **Open My Projects** opens Pixajoy's project list in your
+browser. If a send fails after the project was created, the message names it: a partly
+filled project with that name may be in My Projects, and you can delete it there.
+
 **Chapter titles.** The book is divided into chapters, and each chapter has a title and a
-title spot on the opening where it starts. Neither is printed unless you add the title yourself
-in Pixajoy. A chapter starts on an opening whose first photo, read left to right
+title spot on the opening where it starts. **Send to Pixajoy** puts each title in its title
+spot as a text box. **Export** does not, so after an export you add titles yourself in
+Pixajoy. A chapter starts on an opening whose first photo, read left to right
 and top to bottom, comes from an event no earlier page has shown. An event that first appears
 part-way through an opening joins the chapter already running, so one spread never carries
 two titles. The title is the place name when the book was made with **Places** on and that
@@ -609,7 +639,7 @@ Where the title spot goes is chosen in this order:
 The suggested type size is between 14 and 28 pt, to suit the space.
 
 Export carries no titles: they are not drawn into the photo files, `manifest.json` holds no
-text, and the **Export** sheet does not list them. To add one, open that page in Pixajoy's
+text, and the **Export** sheet does not list them. To add one after an export, open that page in Pixajoy's
 editor, add a text box, type the title, and place it where the editor shows the title spot.
 
 ## 4. Layouts

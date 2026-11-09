@@ -13,6 +13,7 @@ pub mod preview;
 pub mod print_spec;
 pub mod project;
 pub mod protocol;
+pub mod providers;
 pub mod ranking;
 pub mod sidecar;
 pub mod templates;
@@ -96,6 +97,12 @@ pub fn run() {
             commands::set_graphics_mode,
             commands::photo_previews,
             commands::clear_unused_cache,
+            providers::commands::provider_status,
+            providers::commands::provider_sign_in,
+            providers::commands::provider_sign_out,
+            providers::commands::provider_send_plan,
+            providers::commands::send_to_provider,
+            providers::commands::open_provider_projects,
         ])
         .setup(|app| {
             commands::spawn_cache_enforcement(app.handle().clone());

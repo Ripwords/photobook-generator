@@ -16,7 +16,7 @@ use crate::export::build_items;
 use crate::preview::BookLayout;
 use crate::print_spec::PrintSpec;
 use crate::project::{ExportRecord, Project};
-use crate::protocol::ExportItem;
+use crate::protocol::{ExportItem, OutputFormat};
 use crate::templates::{Library, Weights};
 use crate::{cluster, db::{Db, FileStamp}, ranking, sidecar::SidecarPool};
 use serde::Serialize;
@@ -1331,7 +1331,7 @@ fn load_library(app: &AppHandle) -> Result<Library, String> {
 /// them. Read from the database on every call, so a layout created, edited,
 /// switched or deleted reaches the very next command without a restart.
 /// `load_library` alone is for capacity questions that never pick a layout.
-fn book_library(app: &AppHandle, db: &Db, spec: &PrintSpec) -> Result<Library, String> {
+pub(crate) fn book_library(app: &AppHandle, db: &Db, spec: &PrintSpec) -> Result<Library, String> {
     let layouts = crate::custom_layouts::list(db).map_err(|e| e.to_string())?;
     Ok(load_library(app)?.with_custom(&layouts, spec))
 }
@@ -1913,7 +1913,32 @@ where
     })
 }
 
-fn write_manifest_file(output_dir: &Path, manifest: &Manifest) -> Result<String, String> {
+/// Runs `items` through the sidecar pool one batch at a time, so an analysis
+/// running in another draft keeps moving meanwhile. `on_progress(completed,
+/// total)` follows each batch.
+pub(crate) fn export_items(
+    app: &AppHandle,
+    output_dir: &str,
+    output_format: OutputFormat,
+    items: &[ExportItem],
+    mut on_progress: impl FnMut(usize, usize),
+) -> Vec<serde_json::Value> {
+    let state = app.state::<AppState>();
+    let total = items.len();
+    let mut completed = 0usize;
+    let mut out = Vec::with_capacity(total);
+    for batch in items.chunks(crate::sidecar::EXPORT_BATCH_SIZE) {
+        out.extend(with_sidecar(&state, |pool| {
+            pool.export_all(app, output_dir, output_format, batch, |resolved| {
+                completed += resolved.len();
+                on_progress(completed, total);
+            })
+        }));
+    }
+    out
+}
+
+pub(crate) fn write_manifest_file(output_dir: &Path, manifest: &Manifest) -> Result<String, String> {
     std::fs::create_dir_all(output_dir).map_err(|e| e.to_string())?;
     let path = output_dir.join("manifest.json");
     let json = serde_json::to_string_pretty(manifest).map_err(|e| e.to_string())?;
@@ -2196,8 +2221,6 @@ pub async fn export_book(
         // anyway.
         let findings = crate::book::preflight::preflight(&project.book, &parsed, &output);
 
-        let mut completed = 0usize;
-
         let result = run_export(
             &project.book,
             &parsed,
@@ -2205,27 +2228,14 @@ pub async fn export_book(
             &output_dir,
             findings,
             |items| {
-                let total = items.len();
-                if let Err(err) = on_event.send(ExportEvent::Started { total }) {
+                if let Err(err) = on_event.send(ExportEvent::Started { total: items.len() }) {
                     log::warn!("failed to send export Started event: {err}");
                 }
-                let state = app.state::<AppState>();
-                // One sidecar batch at a time, so an analysis running in
-                // another draft keeps moving while this book exports.
-                let mut out = Vec::with_capacity(items.len());
-                for batch in items.chunks(crate::sidecar::EXPORT_BATCH_SIZE) {
-                    out.extend(with_sidecar(&state, |pool| {
-                        pool.export_all(&app, &output_dir, batch, |resolved| {
-                            completed += resolved.len();
-                            if let Err(err) =
-                                on_event.send(ExportEvent::Progress { completed, total })
-                            {
-                                log::warn!("failed to send export Progress event: {err}");
-                            }
-                        })
-                    }));
-                }
-                out
+                export_items(&app, &output_dir, OutputFormat::Auto, items, |completed, total| {
+                    if let Err(err) = on_event.send(ExportEvent::Progress { completed, total }) {
+                        log::warn!("failed to send export Progress event: {err}");
+                    }
+                })
             },
             |manifest| write_manifest_file(&output, manifest),
         )?;
@@ -6314,8 +6324,8 @@ mod tests {
     #[test]
     fn default_print_spec_is_the_printer_this_app_was_built_against() {
         assert_eq!(default_print_spec(), PrintSpec::pixajoy());
-        assert_eq!(default_print_spec().page_w_in(), 11.197);
-        assert_eq!(default_print_spec().page_h_in(), 8.894);
+        assert_eq!(default_print_spec().page_w_in(), 11.22047244094486);
+        assert_eq!(default_print_spec().page_h_in(), 8.74015748031494);
         assert_eq!(default_print_spec().min_dpi(), 200.0);
         assert_eq!(default_print_spec().warn_dpi(), 300.0);
     }

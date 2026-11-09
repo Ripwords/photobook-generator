@@ -11,16 +11,16 @@ Everything is normalised to the spread canvas as `[x, y, width, height]` in `[0,
 origin top-left, so a template fits whatever print size a book has. Templates are
 **authored and validated against the reference canvas**, Pixajoy's, and the numbers below
 are that canvas's; a book with another `PrintSpec` gets its own guides from Rust at run
-time. The reference canvas is 22.394 × 8.894 inches (a 2-page spread at 300 DPI =
-6718 × 2668 px), and **already includes** 5 mm of bleed on the outer, top, and bottom
+time. The reference canvas is Taopix's IHL8511 spread, 22.441 × 8.740 inches (a 2-page spread
+at 300 DPI = 6732 × 2622 px), and **already includes** 5 mm of bleed on the outer, top, and bottom
 edges — the canvas boundary (`0` and `1`) is the true edge of the printed sheet, not the
 trim line.
 
 | Region | Normalised x | Normalised y |
 |---|---|---|
-| Safe area | 0.008797 → 0.991203 | 0.022150 → 0.977850 |
+| Safe area | 0.008772 → 0.991228 | 0.022523 → 0.977477 |
 | Fold centre | 0.5 | — |
-| Gutter dead band | 0.491203 → 0.508797 | (full height) |
+| Gutter dead band (18 mm) | 0.484211 → 0.515789 | (full height) |
 
 These constants come from the print geometry in section 3 of the design doc and must be
 reproduced exactly — do not re-derive or round them differently. `tests/templates.test.ts`
@@ -46,34 +46,34 @@ disagree.
    `bleed` array must actually reach the canvas boundary on that side; every edge *not*
    named must stay inside `[0, 1]` on that side.
 4. **Two photos on one page never touch.** Neighbouring slots on a page sit at least
-   0.2" apart (`0.008931` across, `0.022487` down), the margin layouts' own spacing. A
+   0.2" apart (`0.008912` across, `0.022883` down), the margin layouts' own spacing. A
    bleed layout bleeds only at the page's outer edges; photos butted edge to edge read as
    one crowded collage. The fold is not a neighbour: a bleed slot may still run to `0.5`.
 
 ## Subdivide the PAGE, never the spread
 
 This is the rule that decides whether a template is usable or inert, and it is invisible in
-the JSON. The spread canvas is **2.518:1** — very wide and very short. A "2 × 3 grid"
+the JSON. The spread canvas is **2.568:1** — very wide and very short. A "2 × 3 grid"
 authored as two columns by three rows of the *spread* yields cells of 8.96" × 2.49", i.e.
 **3.6:1 letterbox bands**. A 4:3 photo loses about 65% of its frame in one, and because a
 clipped face is a *hard rejection* in the scorer, any such candidate containing a person is
 thrown out entirely. Six of the original 40 templates were deleted for exactly this, and
 seven more had to be recut.
 
-A **page** on the reference canvas, though, is 11.197" × 8.894" = **1.259:1** — close to 4:3. Cells that match real
+A **page** on the reference canvas, though, is 11.220" × 8.740" = **1.284:1** — close to 4:3. Cells that match real
 photographs come from subdividing a page. Subdividing a page into `m` columns and `n` rows
-gives cells of real aspect `1.259 × n / m`:
+gives cells of real aspect `1.284 × n / m`:
 
 | Page subdivision | Cell aspect | Suits |
 |---|---|---|
-| 1 × 1 (whole page) | 1.259 | 4:3 (94%), 3:2 (84%) |
-| 2 × 2 | 1.259 | 4:3 — the workhorse dense cell |
-| 3 × 3 | 1.259 | 4:3, very dense |
-| 2 cols × 1 row (side by side) | 0.630 | 2:3 (94%), 3:4 (84%) |
-| 3 cols × 2 rows | 0.839 | 3:4 (89%) |
-| half-page portrait + 2 stacked | 0.630 / 1.259 | the 3-up mosaic; both halves fit |
-| 1 col × 2 rows (stacked) | 2.518 | genuinely panoramic photos only |
-| 2 cols × 3 rows | 1.889 | **nothing** — 3:2 at 79%. Do not author this. |
+| 1 × 1 (whole page) | 1.284 | 4:3 (96%), 3:2 (86%) |
+| 2 × 2 | 1.284 | 4:3 — the workhorse dense cell |
+| 3 × 3 | 1.284 | 4:3, very dense |
+| 2 cols × 1 row (side by side) | 0.642 | 2:3 (96%), 3:4 (86%) |
+| 3 cols × 2 rows | 0.856 | 3:4 (88%) |
+| half-page portrait + 2 stacked | 0.642 / 1.284 | the 3-up mosaic; both halves fit |
+| 1 col × 2 rows (stacked) | 2.568 | genuinely panoramic photos only |
+| 2 cols × 3 rows | 1.926 | **nothing** — 3:2 at 78%. Do not author this. |
 
 Rule of thumb: a slot is usable when its real aspect retains **at least 80%** of the frame
 of its nearest common camera aspect (4:3, 3:2, 3:4, 2:3). Below that the slot cannot hold a
@@ -85,7 +85,7 @@ Two consequences worth internalising:
   the page height to be 4:3. If you want two landscapes on one page they must be a narrower
   centred column, which leaves wide side margins — that is the geometry, not sloppiness.
 - **Running flush TO the fold is legal and wanted**; crossing it is not — rule 2 above.
-  Keep the *subject* out of the innermost 0.197", which curls into the binding — the scorer
+  Keep the *subject* out of the innermost 0.354" (9 mm), which curls into the binding — the scorer
   enforces that for faces, but composition is the author's job.
 
 ## Look at it before you trust it
@@ -120,8 +120,8 @@ letterbox failure above is obvious on the sheet and invisible in the rect arrays
   symmetric and grid layouts often mark every slot `"support"`.
 - `bleed`: any subset of `"left"`, `"right"`, `"top"`, `"bottom"`.
 - `aspect_pref`: `[min, max]`, the real-world (inches) width/height ratio this slot suits.
-  Because the canvas itself is 2.518:1 (wide), a slot's *normalised* w/h ratio is not its
-  real aspect — multiply by 2.518 (canvas width ÷ height) to convert. A tall portrait slot
+  Because the canvas itself is 2.568:1 (wide), a slot's *normalised* w/h ratio is not its
+  real aspect — multiply by 2.568 (canvas width ÷ height) to convert. A tall portrait slot
   reads as roughly `[0.6, 0.95]`; a wide panorama slot as `[2.5, 5.0]`. This is enforced by
   `tests/templates.test.ts`: every slot's own real-world aspect ratio must fall inside its
   declared `aspect_pref`, so an accidentally-normalised range fails the build.

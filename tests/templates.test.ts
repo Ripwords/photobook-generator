@@ -98,33 +98,37 @@ function isTemplate(value: unknown): value is Template {
 
 // ---------------------------------------------------------------------------
 // Geometry constants — the spread canvas, normalised [0,1], origin top-left.
-// Derived in docs/superpowers/specs/2026-08-12-photobook-generator-design.md
-// section 3. Do not round these differently than the design doc; the values
-// below are exact to 6 decimal places, matching the constants in the task.
+// The reference canvas is `PrintSpec::pixajoy()` (src-tauri/src/print_spec.rs):
+// Pixajoy's IHL8511 page as its `project/load` reports it, in Taopix units of
+// inches x 1e14. Derived here rather than retyped, so the two cannot drift.
 // ---------------------------------------------------------------------------
 
-const SAFE_X0 = 0.008797;
-const SAFE_X1 = 0.991203;
-const SAFE_Y0 = 0.02215;
-const SAFE_Y1 = 0.97785;
-const GUTTER_X0 = 0.491203;
-const GUTTER_X1 = 0.508797;
+const TAOPIX = 1e14;
+const PAGE_WIDTH_IN = 1122047244094486 / TAOPIX;
+const BLEED_IN = 19685039370078 / TAOPIX;
+/** Half of Taopix's `gutterwidth`, which is centred on the fold. */
+const GUTTER_IN = 70866141732283 / TAOPIX / 2;
 
-/** The fold, normalised on the spread canvas: 11.197" of 22.394". */
+// The spread canvas in inches: two pages, about 22.441 x 8.740, a 2.568:1 ratio.
+// `rect` is normalised to the canvas ([0,1] on each axis), but `aspect_pref` is a
+// real-world (inches) width/height ratio — the thing a photo's own aspect ratio is
+// measured in. Converting a slot's normalised w/h into a real aspect requires
+// multiplying by (CANVAS_WIDTH_IN / CANVAS_HEIGHT_IN), because the canvas itself is
+// wide, not square. Do not "simplify" this away by comparing aspect_pref against the
+// raw normalised rect ratio — that silently mis-scores every slot once Phase 2's
+// scoring engine compares aspect_pref against a photo's real aspect ratio.
+const CANVAS_WIDTH_IN = 2 * PAGE_WIDTH_IN;
+const CANVAS_HEIGHT_IN = 874015748031494 / TAOPIX;
+
+const SAFE_X0 = BLEED_IN / CANVAS_WIDTH_IN;
+const SAFE_X1 = 1 - SAFE_X0;
+const SAFE_Y0 = BLEED_IN / CANVAS_HEIGHT_IN;
+const SAFE_Y1 = 1 - SAFE_Y0;
+const GUTTER_X0 = 0.5 - GUTTER_IN / CANVAS_WIDTH_IN;
+const GUTTER_X1 = 0.5 + GUTTER_IN / CANVAS_WIDTH_IN;
+
+/** The fold, normalised on the spread canvas. */
 const FOLD_X = 0.5;
-
-// The spread canvas in inches (section 3 of the design doc): 22.394 x 8.894, a
-// 2.518:1 ratio. `rect` is normalised to the canvas ([0,1] on each axis), but
-// `aspect_pref` is a real-world (inches) width/height ratio — the thing a photo's
-// own aspect ratio is measured in. Converting a slot's normalised w/h into a real
-// aspect requires multiplying by (CANVAS_WIDTH_IN / CANVAS_HEIGHT_IN), because the
-// canvas itself is wide, not square: a slot that is "half as tall as it is wide" in
-// normalised units is not 2:1 in real inches, it's 2.518x that. Do not "simplify"
-// this away by comparing aspect_pref against the raw normalised rect ratio — that
-// silently mis-scores every slot once Phase 2's scoring engine compares aspect_pref
-// against a photo's real aspect ratio.
-const CANVAS_WIDTH_IN = 22.394;
-const CANVAS_HEIGHT_IN = 8.894;
 
 /** Tolerance for float rounding in authored JSON. Not a design allowance. */
 const EPS = 0.0005;

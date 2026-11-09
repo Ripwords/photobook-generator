@@ -43,7 +43,7 @@ const name = ref(initialName);
 const selected = ref<number | null>(shape.value.boxes.length > 0 ? 0 : null);
 const problems = ref<Problem[]>([]);
 
-const pageAspect = computed(() => (spec ? spec.pageWIn / spec.pageHIn : 11.197 / 8.894));
+const pageAspect = computed(() => (spec ? spec.pageWIn / spec.pageHIn : 11.22047244094486 / 8.74015748031494));
 const aspect = computed(() => canvasAspect(shape.value.kind, pageAspect.value));
 
 const printGuides = computed<Guides>(() => {

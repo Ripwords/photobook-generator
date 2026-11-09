@@ -361,7 +361,7 @@ const titleJustify = { left: "justify-start", center: "justify-center", right: "
 <template>
   <!--
     The page box carries the PRINTED page's real aspect (the book's own spec,
-    11.197" x 8.894" by default),
+    11.220" x 8.740" by default),
     so every normalised rect inside it is a straight percentage. At the
     ~700px per page this renders at, that is 1/9.6 of print resolution.
   -->

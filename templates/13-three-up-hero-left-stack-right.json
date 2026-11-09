@@ -2,7 +2,7 @@
   "id": "13-three-up-hero-left-stack-right",
   "slots": [
     {
-      "rect": [0, 0, 0.491203, 1],
+      "rect": [0, 0, 0.48421, 1],
       "role": "hero",
       "bleed": ["left", "top", "bottom"],
       "aspect_pref": [1.064, 1.41]

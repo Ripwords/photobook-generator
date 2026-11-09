@@ -43,10 +43,14 @@ keyring = "4"
 
 # Outbound model requests (`agent::request`). rustls with the platform
 # verifier, so no OpenSSL and trust comes from the macOS keychain roots.
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "native-tls", "http2", "json", "form", "multipart"] }
 # `select!` races a request against its cancellation, which arrives over a
-# `sync::watch`. Unifies with tauri's own tokio.
-tokio = { version = "1", features = ["macros", "rt", "sync"] }
+# `sync::watch`. Unifies with tauri's own tokio. `time` paces the Pixajoy
+# upload poll (`providers::pixajoy::client`).
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+
+# The `designerId` a Pixajoy editor session is opened with.
+uuid = { version = "1", features = ["v4"] }
 
 # Decodes the sidecar's base64 feature print (`book::cull::decode_feature_print`).
 base64 = "0.22"

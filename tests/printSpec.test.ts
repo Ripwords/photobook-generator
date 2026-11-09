@@ -361,7 +361,7 @@ describe("specDiagram", () => {
     expect(d.width).toBe(2 * pixajoy.pageWIn);
     expect(d.height).toBe(pixajoy.pageHIn);
     expect(d.exaggerated).toBe(true);
-    // 0.197" of a 22.394" spread is under 3px in a 320px panel.
+    // 0.197" of a 22.441" spread is under 3px in a 320px panel.
     expect(d.left.trim.x).toBeGreaterThan(pixajoy.bleedIn);
     expect(d.left.safe.x - d.left.trim.x).toBeGreaterThan(pixajoy.safeMarginIn);
     expect(d.left.fold.w).toBeGreaterThan(pixajoy.gutterIn);

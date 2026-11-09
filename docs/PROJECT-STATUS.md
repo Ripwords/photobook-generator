@@ -1,6 +1,6 @@
 # PhotobookGen — Project Status
 
-**Last updated:** 2026-11-07
+**Last updated:** 2026-11-09
 **Branch:** `feat/story` (not yet merged to `master`)
 
 This document exists so a new agent can pick the project up without re-deriving what
@@ -21,6 +21,81 @@ are long but they are where the reasoning lives.
 
 **If you read only one section, read "Phase 2 open items" — every entry there is a real,
 deliberately-parked decision that this file is the only surviving record of.**
+
+---
+
+## What changed on 2026-11-09: Send to Pixajoy
+
+**What was built.** **Send to Pixajoy** in the editor's top bar creates a new project in the
+user's Pixajoy account and fills it from the book. Plan: `docs/superpowers/plans/2026-11-09-print-providers.md`.
+API: `docs/providers/pixajoy.md`. Manual: "3. Editing the book".
+
+- `src-tauri/src/providers/` holds the provider-neutral `PrintJob` (`mod.rs`), the job
+  builder (`job.rs`), the Tauri commands (`commands.rs`), and `pixajoy/` with `auth`
+  (Keychain token, sign-in window), `client` (HTTP), and `plan` (the pure `project/save`
+  diff, page count and crop maths).
+- The export reuses `run_export` through the new `commands::export_items`, with the sidecar's
+  new `outputFormat: "jpeg"`. Files go to a temporary directory that a drop guard removes.
+- The UI is `SendToPixajoyDialog.vue` and `useProviders.ts`. Pure parts sit in
+  `app/types/providers.ts`.
+
+**Verified live, from the test only.** `providers::pixajoy::live` (ignored by default; needs
+`PIXAJOY_TOKEN`) passed on 2026-11-09. It created a project, uploaded two photos, saved the
+diff, reloaded the project and checked every box and a chapter title. The title
+`Kyoto, März <3 & >` came back byte for byte. Three test projects exist in that account
+("PhotobookGen test 2026-11-09 …"): one left empty by the pageData bug below, two filled.
+**Not verified:** how the title renders in Pixajoy's editor, the sign-in window, and the
+in-app send in the packaged app.
+
+The two earlier failures, and their fixes:
+
+- **TLS.** `service.pixajoy.com` speaks only TLS 1.2 with CBC suites. rustls has no CBC
+  suites, so the handshake was reset. The Pixajoy client is built on native-tls
+  (`tls_backend_native()`). Every other client stays on rustls (`tls_backend_rustls()`),
+  because enabling reqwest's `native-tls` feature makes it the default.
+- **pageData.** The reply body is the axios `.data`, so `pageItems` is top level. A slice
+  whose boxes were all deleted comes back as `pageItems: []` (PHP's empty map).
+
+**Things that will bite you:**
+
+- **Images now leave the Mac, on Send only.** This is the one exception to "images never
+  leave the machine". It applies only to the exported JPEGs of a book the user sends to their
+  own Pixajoy account. Analysis stays on-device. Settings → About and the manual say so.
+- **Never call `/api/project/order`, a cart endpoint, or `editProject`.** Each send creates
+  a project. Nothing reopens one, and nothing orders.
+- **The token never leaves Rust.** It is read from the Keychain (service
+  `KEYCHAIN_SERVICE`, account `pixajoy`), never logged, never returned to the webview. HTTP
+  errors go through `without_url()`, and bodies are cut to 200 characters.
+- **Pages load lazily.** `project/load` returns items only for records with
+  `pagenumber < 10`. Later records come back with `itemstate` 0 and `items: []`.
+  `plan::parse_load` lists those slices and `Session::page_data` fetches
+  `editor/api/project/pageData/<slice>`. The live test reloads through it. If it returns
+  something else, the send fails rather than leaving default boxes on pages 10 and up.
+- **Every default interior picture box is deleted, then the job's boxes are added.** Cover
+  text boxes (`type` 1, some holding "Back Cover" guide text) are never touched. The cover
+  front is the cover picture box with the larger `boxleft`.
+- **Page geometry comes from the load, not `PrintSpec`.** Rects are normalised, so boxes
+  scale to Pixajoy's page. `check_size` refuses a book whose aspect is more than 5 % off.
+  The 5 % is for books saved under the old 11.197 × 8.894 default, which are 2 % off.
+- **Page count is fixed at creation.** It is `max(pages, 20)` rounded up to even, at most
+  150. Padding pages are left blank.
+- **Chapter titles go as cloned cover text boxes.** `plan.rs` copies the cover's
+  unprotected text box, puts it on the title's page above the photos, and replaces only
+  `styledtext.data`. The length in that string counts UTF-16 units, so "🗻" is 2. A project
+  with no such cover box fails the send. Titles are black Arial; the app has no font or
+  colour for them yet.
+- **`PrintSpec::pixajoy()` is now Taopix's IHL8511 page**, taken from `load`'s `layout`:
+  11.22047 × 8.74016 in, bleed 5 mm, `gutter_in` 9 mm (half the 18 mm `gutterwidth`, since
+  the band is measured from each page's fold). Stored books keep their old spec. PrintSpec
+  has no fold bleed, so `trim_w_in` reads 0.197 in wider than Taopix's paper (11.024 against
+  10.827). The gutter band covers that strip; the cover crop aspect is slightly off. Six
+  templates' fold edges and fourteen templates' 0.2 in gaps moved to fit (no `aspect_pref`
+  changed). The goldens `book-20.json` and `tests/fixtures/wire/book-layout.json` were
+  regenerated for it.
+- **The sign-in window reads the `mbtk` cookie from an incognito webview** via
+  `cookies_for_url`. That path is untested against the real login page.
+- **My Projects opens with `/usr/bin/open`**, since the app has no opener plugin.
+- **⌘E does nothing while the Send dialog is open**, so Export cannot stack on top of it.
 
 ---
 
@@ -2167,18 +2242,20 @@ simply not discriminate smiling from neutral at this landmark resolution.
 geometry.** Each book carries its own `PrintSpec`, and every normalised value below is
 derived from it per book. Templates are still authored against this reference canvas.
 
-Derived by pixel-measuring the guide lines in Pixajoy editor screenshots. The saved
-editor HTML is a Konva canvas snapshot; the layout config is fetched from their API at
-runtime and is not in the files.
+Since 2026-11-09 these come from Taopix's own `layout` for product IHL8511, which
+`project/load` returns (inches × 1e14). They replaced 11.197" × 8.894", which was measured
+off editor screenshots and was about 2 % off. Books saved before keep their stored spec.
 
 | | Value |
 |---|---|
-| Trim, per page | 11.000" × 8.500" |
-| Bleed, outer edges | 0.197" (5 mm) |
-| **Spread canvas** | **22.394" × 8.894"** = 6718 × 2668 px @ 300 DPI |
-| Fold centre | x = 11.197" (normalised 0.5) |
-| Gutter dead band | x 11.000"–11.394" (normalised 0.491203–0.508797) |
-| Safe area | x 0.008797–0.991203, y 0.022150–0.977850 (normalised) |
+| Page, with bleed | 11.22047" × 8.74016" (Taopix `width` × `height`) |
+| Paper, per page | 10.82677" × 8.34646" (Taopix `paperwidth` × `paperheight`) |
+| Bleed, outer edges | 0.19685" (5 mm) |
+| **Spread canvas** | **22.44094" × 8.74016"** = 6732 × 2622 px @ 300 DPI |
+| Fold centre | x = 11.22047" (normalised 0.5) |
+| Gutter dead band | 18 mm across the fold: x 10.86614"–11.57480" (normalised 0.484211–0.515789). `gutter_in` is half of it, 9 mm, measured from each page's fold. |
+| Safe area | x 0.008772–0.991228, y 0.022523–0.977477 (normalised) |
+| Known gap | Taopix bleeds the fold too (`insidebleeds`); PrintSpec does not, so its trim is 11.024" wide, not 10.827". The gutter band covers the difference. |
 | **Minimum print DPI** | **200** (Pixajoy's published minimum; 300 is their recommended target, treated as a warn band, not a second floor). `PrintSpec::min_dpi` / `warn_dpi`. |
 | **Safe margin** | **0.125"** (1/8") — Pixajoy's published guidance: keep anything important clear of the edge by this much, on top of the trim inset. `PrintSpec::safe_margin_in` / `in_safe_margin`. **Do not confuse with the "Safe area" row above** — that row is the TRIM rectangle (the bleed inset alone); the safe margin is trim inset by a FURTHER 0.125" on every edge except the fold, where the gutter dead band already governs. |
 
