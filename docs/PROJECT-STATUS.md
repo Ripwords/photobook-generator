@@ -24,6 +24,31 @@ deliberately-parked decision that this file is the only surviving record of.**
 
 ---
 
+## What changed on 2026-11-09: send records and the upload cache
+
+- **Whole-photo uploads.** Each photo the book shows is exported once, whole and upright
+  (`job::upload_items`, files `photo-<hash>`), and the box's crop is sent as Pixajoy's
+  `magnification`/scroll (`plan::crop_fit`). Recropping a box never needs a new upload.
+- **Upload cache.** `provider_assets` in the DB maps (provider, account, content hash,
+  `pixajoy::RENDITION`) to Pixajoy's asset id and the upload's size. No image is stored.
+  Before uploading, the send calls `assets/add` with every cached id; ids missing from its
+  `success` are forgotten and those photos uploaded again. `assets/status` cannot do this
+  check: for another project's asset it only answers `unableToCheck`.
+- **Send record.** `provider_sends` keeps one `SendRecord` per successful send (project ref,
+  page count, and every photo box with its real Pixajoy ref, slot, hash, asset id and crop).
+  `purge_project` deletes them.
+- **Send flow** (`providers/commands.rs`): pre-flight → read the cache → export only uncached
+  photos → create the project → `assets/add` the cached ids → export and upload the rest →
+  lay out → cache the new assets and record the send. `pixajoy::{open, Opened::reuse,
+  Opened::upload, Opened::lay_out}` are the phases.
+- **Verified live, from the test only.** `providers::pixajoy::live` sent a book, then sent it
+  again as a second project with zero uploads, every box naming the earlier asset ids. A
+  quadrant crop reloaded as magnification 233.684, scroll (−0.9449, 0). **Not verified:** how
+  the reused-asset project and the cropped box look in Pixajoy's editor.
+- **Not built:** updating a sent project in place (a three-way merge against the send record).
+  It needs a project reopened from Pixajoy's own Edit Project, which has not been tried.
+- Assets/status and assets/add take **integer** ids; a string id is a 422.
+
 ## What changed on 2026-11-09: Send to Pixajoy
 
 **What was built.** **Send to Pixajoy** in the editor's top bar creates a new project in the
@@ -59,8 +84,8 @@ The two earlier failures, and their fixes:
 **Things that will bite you:**
 
 - **Images now leave the Mac, on Send only.** This is the one exception to "images never
-  leave the machine". It applies only to the exported JPEGs of a book the user sends to their
-  own Pixajoy account. Analysis stays on-device. Settings → About and the manual say so.
+  leave the machine". It applies only to the whole, upright JPEGs of the photos a book shows,
+  sent to the user's own Pixajoy account, each once. Analysis stays on-device. Settings → About and the manual say so.
 - **Never call `/api/project/order`, a cart endpoint, or `editProject`.** Each send creates
   a project. Nothing reopens one, and nothing orders.
 - **The token never leaves Rust.** It is read from the Keychain (service

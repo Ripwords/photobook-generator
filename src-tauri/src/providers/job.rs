@@ -1,39 +1,77 @@
-//! Builds a [`PrintJob`] from a book and the files its export wrote.
+//! Builds a [`PrintJob`] from a book, and the whole-photo exports a
+//! provider uploads.
 
-use super::{JobBox, JobCover, JobImage, JobPage, JobText, PrintJob};
+use super::{JobBox, JobCover, JobPage, JobPhoto, JobText, PrintJob, Upload};
 use crate::book::cull::Photo;
 use crate::book::pace::Book;
 use crate::book::titles::Chapter;
-use crate::export::{cover_filename, output_filename};
-use crate::geometry::CoverSide;
+use crate::geometry::{CoverSide, Rect};
+use crate::protocol::ExportItem;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// The sidecar's export records keyed by the item filename they answer (the
-/// written path's stem). Any failed record fails the whole job: a provider
-/// project with a silently missing photo is worse than no project.
-pub fn exported_files(records: &[serde_json::Value]) -> Result<HashMap<String, JobImage>, String> {
-    records.iter().map(exported_file).collect()
+const UPLOAD_PREFIX: &str = "photo-";
+const WHOLE: Rect = Rect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 };
+
+/// Every photo the book shows, pages then cover, each once by content hash.
+pub fn book_hashes(book: &Book, photos: &[Photo]) -> Vec<String> {
+    let pages = book.pages.iter().flat_map(|p| p.placements.iter().map(|pl| pl.photo_index));
+    let cover = [CoverSide::Front, CoverSide::Back].into_iter().filter_map(|s| book.cover.side(s).map(|c| c.photo_index));
+    let mut hashes: Vec<String> = Vec::new();
+    for i in pages.chain(cover) {
+        let hash = &photos[i].hash;
+        if !hashes.contains(hash) {
+            hashes.push(hash.clone());
+        }
+    }
+    hashes
 }
 
-fn exported_file(r: &serde_json::Value) -> Result<(String, JobImage), String> {
+/// One export per hash: the whole photo, upright, named by its hash so the
+/// record maps back to it.
+pub fn upload_items(photos: &[Photo], hashes: &[String]) -> Result<Vec<ExportItem>, String> {
+    hashes
+        .iter()
+        .map(|hash| {
+            let photo = photos.iter().find(|p| &p.hash == hash).ok_or_else(|| format!("Photo {hash} is not in the book."))?;
+            Ok(ExportItem {
+                source_path: photo.path.clone(),
+                filename: format!("{UPLOAD_PREFIX}{hash}"),
+                crop_x: WHOLE.x,
+                crop_y: WHOLE.y,
+                crop_w: WHOLE.w,
+                crop_h: WHOLE.h,
+            })
+        })
+        .collect()
+}
+
+/// The sidecar's records for [`upload_items`]. Any failed record fails the
+/// whole send: a provider project with a silently missing photo is worse
+/// than no project.
+pub fn uploads(records: &[serde_json::Value]) -> Result<Vec<Upload>, String> {
+    records.iter().map(upload).collect()
+}
+
+fn upload(r: &serde_json::Value) -> Result<Upload, String> {
     if r["type"] != "ok" {
         let name = r["filename"].as_str().unwrap_or("a photo");
         let why = r["message"].as_str().unwrap_or("export failed");
         return Err(format!("{name} could not be exported: {why}"));
     }
     let path = PathBuf::from(r["path"].as_str().ok_or("An export record has no path.")?);
-    let stem = path.file_stem().and_then(|s| s.to_str()).ok_or("An export record has no file name.")?.to_string();
+    let stem = path.file_stem().and_then(|s| s.to_str()).ok_or("An export record has no file name.")?;
+    let hash = stem.strip_prefix(UPLOAD_PREFIX).ok_or_else(|| format!("{stem} is not a photo upload."))?.to_string();
     let size = |k: &str| r[k].as_u64().map(|n| n as u32).ok_or_else(|| format!("{stem} has no {k}."));
-    let image = JobImage { width: size("width")?, height: size("height")?, path };
-    Ok((stem, image))
+    Ok(Upload { width: size("width")?, height: size("height")?, hash, path })
 }
 
+/// `sizes` holds the upright pixel size of every photo's upload, by hash.
 pub fn build_job(
     name: &str,
     book: &Book,
     photos: &[Photo],
-    files: &HashMap<String, JobImage>,
+    sizes: &HashMap<String, (u32, u32)>,
     chapters: &[Chapter],
 ) -> Result<PrintJob, String> {
     let mut texts: HashMap<usize, Vec<JobText>> = HashMap::new();
@@ -43,8 +81,10 @@ pub fn build_job(
             texts.entry(t.page).or_default().push(text);
         }
     }
-    let file = |filename: String| {
-        files.get(&filename).cloned().ok_or_else(|| format!("{filename} was not exported."))
+    let photo = |index: usize, crop: Rect| {
+        let hash = &photos[index].hash;
+        let &(width, height) = sizes.get(hash).ok_or_else(|| format!("Photo {hash} has no upload."))?;
+        Ok::<_, String>(JobPhoto { hash: hash.clone(), width, height, crop })
     };
     let pages = book
         .pages
@@ -55,17 +95,12 @@ pub fn build_job(
             placements.sort_by_key(|pl| pl.z);
             let boxes = placements
                 .into_iter()
-                .map(|pl| {
-                    let image = file(output_filename(page.number, pl.z, &photos[pl.photo_index].hash))?;
-                    Ok(JobBox { rect: pl.slot_rect, image })
-                })
+                .map(|pl| Ok(JobBox { rect: pl.slot_rect, photo: photo(pl.photo_index, pl.crop)? }))
                 .collect::<Result<_, String>>()?;
             Ok(JobPage { number: page.number, boxes, texts: texts.remove(&i).unwrap_or_default() })
         })
         .collect::<Result<_, String>>()?;
-    let side = |side: CoverSide| {
-        book.cover.side(side).map(|c| file(cover_filename(side, &photos[c.photo_index].hash))).transpose()
-    };
+    let side = |side: CoverSide| book.cover.side(side).map(|c| photo(c.photo_index, c.crop)).transpose();
     Ok(PrintJob {
         name: name.to_string(),
         page_count: book.pages.len() as u32,
@@ -141,79 +176,99 @@ mod tests {
         json!({ "type": "ok", "path": path, "width": width, "height": height, "bytes": 10 })
     }
 
-    fn image(path: &str, width: u32, height: u32) -> JobImage {
-        JobImage { path: PathBuf::from(path), width, height }
+    const FULL: Rect = Rect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 };
+
+    fn sizes(entries: &[(&str, u32, u32)]) -> HashMap<String, (u32, u32)> {
+        entries.iter().map(|&(h, w, ht)| (h.to_string(), (w, ht))).collect()
     }
 
     #[test]
-    fn exported_files_are_keyed_by_the_written_file_stem() {
-        let files = exported_files(&[ok("/tmp/x/p01-z1-aaaaaaaa.jpg", 1200, 800)]).unwrap();
-        assert_eq!(files["p01-z1-aaaaaaaa"], image("/tmp/x/p01-z1-aaaaaaaa.jpg", 1200, 800));
+    fn each_photo_is_uploaded_once_whole_however_often_the_book_shows_it() {
+        let photos = vec![photo("aa"), photo("bb"), photo("cc"), photo("dd")];
+        let half = Rect::new(0.0, 0.0, 0.5, 1.0);
+        // "aa" twice on the pages and again on the back; "dd" is never shown.
+        let mut b = book(
+            vec![page(1, vec![placement(0, 1, half)]), page(2, vec![placement(1, 1, FULL), placement(0, 2, FULL)])],
+            Some(2),
+        );
+        b.cover.back = Some(CoverPhoto { photo_index: 0, crop: half });
+        let hashes = book_hashes(&b, &photos);
+        assert_eq!(hashes, vec!["aa", "bb", "cc"]);
+
+        let items = upload_items(&photos, &hashes[1..]).unwrap();
+        assert_eq!(items.iter().map(|i| (i.source_path.as_str(), i.filename.as_str())).collect::<Vec<_>>(), vec![
+            ("/src/bb.heic", "photo-bb"),
+            ("/src/cc.heic", "photo-cc")
+        ]);
+        assert!(items.iter().all(|i| (i.crop_x, i.crop_y, i.crop_w, i.crop_h) == (0.0, 0.0, 1.0, 1.0)));
     }
 
     #[test]
-    fn a_failed_export_record_fails_the_job_and_names_the_file() {
-        let err = exported_files(&[
-            ok("/tmp/x/p01-z1-aaaaaaaa.jpg", 1200, 800),
-            json!({ "type": "failed", "filename": "p02-z1-bbbbbbbb", "message": "unreadable" }),
+    fn an_upload_is_read_back_by_the_hash_in_its_name() {
+        let got = uploads(&[ok("/tmp/x/photo-aa11.jpg", 4032, 3024)]).unwrap();
+        assert_eq!(got, vec![Upload { hash: "aa11".into(), path: "/tmp/x/photo-aa11.jpg".into(), width: 4032, height: 3024 }]);
+        assert!(uploads(&[ok("/tmp/x/p01-z1-aa.jpg", 1, 1)]).is_err(), "not an upload's name");
+    }
+
+    #[test]
+    fn a_failed_export_record_fails_the_send_and_names_the_file() {
+        let err = uploads(&[
+            ok("/tmp/x/photo-aa.jpg", 1200, 800),
+            json!({ "type": "failed", "filename": "photo-bb", "message": "unreadable" }),
         ])
         .unwrap_err();
-        assert!(err.contains("p02-z1-bbbbbbbb") && err.contains("unreadable"), "{err}");
+        assert!(err.contains("photo-bb") && err.contains("unreadable"), "{err}");
     }
 
     #[test]
-    fn each_placement_gets_its_own_exported_file_and_slot_in_z_order() {
+    fn each_placement_shows_its_photo_and_crop_in_z_order() {
         let photos = vec![photo("aaaaaaaa11"), photo("bbbbbbbb22")];
         let low = Rect::new(0.0, 0.0, 1.0, 1.0);
         let high = Rect::new(0.6, 0.6, 0.3, 0.3);
+        let crop = Rect::new(0.1, 0.2, 0.3, 0.4);
         // Stored out of z order, so a builder that keeps storage order fails.
         let b = book(
-            vec![page(1, vec![]), page(2, vec![placement(1, 2, high), placement(0, 1, low)])],
+            vec![page(1, vec![]), page(2, vec![placement(1, 2, high), Placement { crop, ..placement(0, 1, low) }])],
             None,
         );
-        let files = exported_files(&[
-            ok("/t/p02-z1-aaaaaaaa.jpg", 1200, 800),
-            ok("/t/p02-z2-bbbbbbbb.jpg", 600, 600),
-        ])
-        .unwrap();
+        let s = sizes(&[("aaaaaaaa11", 4032, 3024), ("bbbbbbbb22", 600, 600)]);
 
-        let job = build_job("Trip", &b, &photos, &files, &[]).unwrap();
+        let job = build_job("Trip", &b, &photos, &s, &[]).unwrap();
 
         assert_eq!(job.name, "Trip");
         assert_eq!(job.page_count, 2);
         assert_eq!(job.pages[0], JobPage { number: 1, boxes: vec![], texts: vec![] });
+        let photo = |hash: &str, width, height, crop| JobPhoto { hash: hash.into(), width, height, crop };
         assert_eq!(
             job.pages[1].boxes,
             vec![
-                JobBox { rect: low, image: image("/t/p02-z1-aaaaaaaa.jpg", 1200, 800) },
-                JobBox { rect: high, image: image("/t/p02-z2-bbbbbbbb.jpg", 600, 600) },
+                JobBox { rect: low, photo: photo("aaaaaaaa11", 4032, 3024, crop) },
+                JobBox { rect: high, photo: photo("bbbbbbbb22", 600, 600, FULL) },
             ]
         );
         assert_eq!(job.cover, JobCover::default());
     }
 
     #[test]
-    fn the_cover_front_comes_from_its_own_exported_file() {
+    fn the_cover_front_shows_its_own_photo_and_crop() {
         let photos = vec![photo("aaaaaaaa11"), photo("cccccccc33")];
-        let b = book(vec![page(1, vec![placement(0, 1, Rect::new(0.0, 0.0, 1.0, 1.0))])], Some(1));
-        let files = exported_files(&[
-            ok("/t/p01-z1-aaaaaaaa.jpg", 1200, 800),
-            ok("/t/cover-front-cccccccc.jpg", 900, 700),
-        ])
-        .unwrap();
+        let crop = Rect::new(0.2, 0.0, 0.6, 1.0);
+        let mut b = book(vec![page(1, vec![placement(0, 1, FULL)])], Some(1));
+        b.cover.front = Some(CoverPhoto { photo_index: 1, crop });
+        let s = sizes(&[("aaaaaaaa11", 1200, 800), ("cccccccc33", 900, 700)]);
 
-        let job = build_job("Trip", &b, &photos, &files, &[]).unwrap();
+        let job = build_job("Trip", &b, &photos, &s, &[]).unwrap();
 
-        assert_eq!(job.cover.front, Some(image("/t/cover-front-cccccccc.jpg", 900, 700)));
+        assert_eq!(job.cover.front, Some(JobPhoto { hash: "cccccccc33".into(), width: 900, height: 700, crop }));
         assert_eq!(job.cover.back, None);
     }
 
     #[test]
-    fn a_placement_with_no_exported_file_is_an_error() {
+    fn a_photo_with_no_upload_is_an_error() {
         let photos = vec![photo("aaaaaaaa11")];
-        let b = book(vec![page(1, vec![placement(0, 1, Rect::new(0.0, 0.0, 1.0, 1.0))])], None);
+        let b = book(vec![page(1, vec![placement(0, 1, FULL)])], None);
         let err = build_job("Trip", &b, &photos, &HashMap::new(), &[]).unwrap_err();
-        assert!(err.contains("p01-z1-aaaaaaaa"), "{err}");
+        assert!(err.contains("aaaaaaaa11"), "{err}");
     }
 
     fn chapter(number: usize, title: &str, title_box: Option<TitleBox>) -> Chapter {

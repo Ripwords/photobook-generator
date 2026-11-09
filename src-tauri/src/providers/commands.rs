@@ -1,16 +1,17 @@
-//! The Tauri commands behind "Send to Pixajoy". The export reuses
-//! `run_export` with JPEG output into a temporary directory that is removed
-//! when the send ends, whatever the outcome.
+//! The Tauri commands behind "Send to Pixajoy". Each photo is exported
+//! whole, as JPEG, into a temporary directory removed when the send ends,
+//! and only when Pixajoy does not already hold it from an earlier send.
 
 use super::pixajoy::{self, auth, plan, Progress, MY_PROJECTS_URL};
-use super::{job, PrintJob, ProviderId};
+use super::{job, CachedAsset, ProviderId, Upload};
 use crate::commands::{
-    book_chapters, book_library, book_photos, database_path, export_items, run_export, write_manifest_file,
+    book_chapters, book_library, book_photos, database_path, expected_photo_count, export_items, split_findings,
 };
 use crate::db::Db;
 use crate::protocol::OutputFormat;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use tauri::ipc::Channel;
 use tauri::AppHandle;
 
@@ -124,63 +125,158 @@ pub async fn send_to_provider(
     Ok(())
 }
 
-async fn send(app: AppHandle, project_id: i64, on_event: &Channel<SendEvent>) -> Result<String, pixajoy::Failure> {
-    let mbtk = auth::token()?;
-    let dir = TempDir(std::env::temp_dir().join(format!("photobookgen-send-{}", uuid::Uuid::new_v4())));
-    std::fs::create_dir_all(&dir.0).map_err(|e| e.to_string())?;
-
-    let out = dir.0.clone();
-    let channel = on_event.clone();
-    let job = tauri::async_runtime::spawn_blocking(move || {
-        export_job(&app, project_id, &out, |event| emit(&channel, event))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-
-    let client = pixajoy::client::Client::new()?;
-    let sent = pixajoy::send(&client, &mbtk, &job, |p| emit(on_event, p.into())).await?;
-    Ok(sent.project_name)
+/// A book ready to send: its photos, which of them Pixajoy already has from
+/// an earlier send, and the fresh exports of the rest.
+struct Prepared {
+    project_id: i64,
+    name: String,
+    book: crate::book::pace::Book,
+    photos: Vec<crate::book::cull::Photo>,
+    chapters: Vec<crate::book::titles::Chapter>,
+    cached: HashMap<String, CachedAsset>,
+    fresh: Vec<Upload>,
 }
 
-fn export_job(
+async fn send(app: AppHandle, project_id: i64, on_event: &Channel<SendEvent>) -> Result<String, pixajoy::Failure> {
+    let mbtk = auth::token()?;
+    let account = auth::account_of(&mbtk)?;
+    let dir = TempDir(std::env::temp_dir().join(format!("photobookgen-send-{}", uuid::Uuid::new_v4())));
+    std::fs::create_dir_all(&dir.0).map_err(|e| e.to_string())?;
+    let out = dir.0.to_string_lossy().into_owned();
+
+    let prepared = {
+        let (app, out, account, channel) = (app.clone(), out.clone(), account.clone(), on_event.clone());
+        blocking(move || prepare(&app, project_id, &out, &account, |e| emit(&channel, e))).await?
+    };
+
+    let client = pixajoy::client::Client::new()?;
+    emit(on_event, SendEvent::Creating);
+    let opened = pixajoy::open(&client, &mbtk, &prepared.name, prepared.book.pages.len() as u32).await?;
+
+    // Pixajoy may have deleted an earlier upload; those photos go up again.
+    let cached_ids: Vec<String> = prepared.cached.values().map(|a| a.asset_id.clone()).collect();
+    let live = opened.reuse(&cached_ids).await;
+    let (cached, stale): (HashMap<_, _>, HashMap<_, _>) =
+        prepared.cached.into_iter().partition(|(_, a)| live.contains(&a.asset_id));
+    let mut uploads = prepared.fresh;
+    if !stale.is_empty() {
+        let stale_ids: Vec<String> = stale.values().map(|a| a.asset_id.clone()).collect();
+        let hashes: Vec<String> = stale.into_keys().collect();
+        let photos = prepared.photos.clone();
+        let (app, out, account, channel) = (app.clone(), out.clone(), account.clone(), on_event.clone());
+        let again = blocking(move || {
+            open_db(&app)?
+                .forget_provider_assets(ProviderId::Pixajoy, &account, &stale_ids)
+                .map_err(|e| e.to_string())?;
+            export_uploads(&app, &photos, &hashes, &out, |e| emit(&channel, e))
+        })
+        .await
+        .map_err(|e| opened.fail(e))?;
+        uploads.extend(again);
+    }
+
+    let mut sizes: HashMap<String, (u32, u32)> =
+        cached.iter().map(|(h, a)| (h.clone(), (a.width, a.height))).collect();
+    sizes.extend(uploads.iter().map(|u| (u.hash.clone(), (u.width, u.height))));
+    let new_assets: Vec<(String, CachedAsset)> = {
+        let dims: HashMap<String, (u32, u32)> = uploads.iter().map(|u| (u.hash.clone(), (u.width, u.height))).collect();
+        let ids = opened.upload(uploads, |p| emit(on_event, p.into())).await?;
+        ids.into_iter()
+            .map(|(hash, asset_id)| {
+                let (width, height) = dims[&hash];
+                (hash, CachedAsset { asset_id, width, height })
+            })
+            .collect()
+    };
+    let mut assets: HashMap<String, String> = cached.into_iter().map(|(h, a)| (h, a.asset_id)).collect();
+    assets.extend(new_assets.iter().map(|(h, a)| (h.clone(), a.asset_id.clone())));
+
+    emit(on_event, SendEvent::LayingOut);
+    let job = job::build_job(&prepared.name, &prepared.book, &prepared.photos, &sizes, &prepared.chapters)
+        .map_err(|e| opened.fail(e))?;
+    let record = opened.lay_out(&job, &account, &assets).await?;
+
+    // Recorded after the save: a failed send leaves no record, and its
+    // uploads stay cached because Pixajoy keeps them in the account.
+    let project_name = record.project_name.clone();
+    let id = prepared.project_id;
+    blocking(move || {
+        let db = open_db(&app)?;
+        for (hash, asset) in &new_assets {
+            db.put_provider_asset(ProviderId::Pixajoy, &account, pixajoy::RENDITION, hash, asset)
+                .map_err(|e| e.to_string())?;
+        }
+        db.record_send(id, &record).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| opened.fail(format!("The book was sent, but recording the send failed: {e}")))?;
+    Ok(project_name)
+}
+
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
+}
+
+fn open_db(app: &AppHandle) -> Result<Db, String> {
+    Db::open(&database_path(app)?).map_err(|e| e.to_string())
+}
+
+/// Checks the book can be sent, then exports every photo Pixajoy does not
+/// already have from an earlier send to this account.
+fn prepare(
     app: &AppHandle,
     project_id: i64,
-    out: &std::path::Path,
+    out: &str,
+    account: &str,
     emit: impl Fn(SendEvent),
-) -> Result<PrintJob, String> {
-    let db = Db::open(&database_path(app)?).map_err(|e| e.to_string())?;
+) -> Result<Prepared, String> {
+    let db = open_db(app)?;
     let project = db
         .load_project(project_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("project {project_id} no longer exists"))?;
     send_plan(&project.book)?;
     let photos = book_photos(&db, &project)?;
-    let findings = crate::book::preflight::preflight(&project.book, &photos, out);
-    let output_dir = out.to_string_lossy().into_owned();
-
-    let mut records = Vec::new();
-    let result = run_export(
-        &project.book,
-        &photos,
-        project_id,
-        &output_dir,
-        findings,
-        |items| {
-            emit(SendEvent::Exporting { done: 0, total: items.len() });
-            records = export_items(app, &output_dir, OutputFormat::Jpeg, items, |done, total| {
-                emit(SendEvent::Exporting { done, total })
-            });
-            records.clone()
-        },
-        |manifest| write_manifest_file(out, manifest),
-    )?;
-    if result.blocked {
-        let first = result.blocking.first().map(|f| f.message.as_str()).unwrap_or("pre-flight failed");
-        return Err(format!("The book cannot be exported: {first}"));
+    let expected = expected_photo_count(&project.book);
+    if photos.len() != expected {
+        return Err(format!(
+            "this book was assembled from {expected} photos but {} were found; \
+             re-analyse the source folder and generate the book again",
+            photos.len()
+        ));
     }
+    let (blocking, _) = split_findings(crate::book::preflight::preflight(&project.book, &photos, Path::new(out)));
+    if let Some(first) = blocking.first() {
+        return Err(format!("The book cannot be sent: {}", first.message));
+    }
+
+    let hashes = job::book_hashes(&project.book, &photos);
+    let cached = db
+        .provider_assets(ProviderId::Pixajoy, account, pixajoy::RENDITION, &hashes)
+        .map_err(|e| e.to_string())?;
+    let missing: Vec<String> = hashes.into_iter().filter(|h| !cached.contains_key(h)).collect();
+    let fresh = export_uploads(app, &photos, &missing, out, &emit)?;
     // The same chapters, with the same cached place names, the editor shows.
     let chapters = book_chapters(&db, &project.book, &photos, &book_library(app, &db, &project.book.spec)?);
-    job::build_job(&project.name, &project.book, &photos, &job::exported_files(&records)?, &chapters)
+    Ok(Prepared { project_id, name: project.name, book: project.book, photos, chapters, cached, fresh })
+}
+
+fn export_uploads(
+    app: &AppHandle,
+    photos: &[crate::book::cull::Photo],
+    hashes: &[String],
+    out: &str,
+    emit: impl Fn(SendEvent),
+) -> Result<Vec<Upload>, String> {
+    if hashes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let items = job::upload_items(photos, hashes)?;
+    emit(SendEvent::Exporting { done: 0, total: items.len() });
+    let records = export_items(app, out, OutputFormat::Jpeg, &items, |done, total| {
+        emit(SendEvent::Exporting { done, total })
+    });
+    job::uploads(&records)
 }
 
 #[cfg(test)]

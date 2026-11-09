@@ -3,14 +3,13 @@
 //! Tokens and signed URLs never reach an error message or the log: every
 //! reqwest error is stripped of its URL, and no request is logged.
 
-use crate::providers::JobImage;
+use crate::providers::Upload;
 use base64::Engine;
 use reqwest::{RequestBuilder, Response, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::task::JoinSet;
@@ -292,9 +291,26 @@ impl Session {
         self.post("project/save", diff).await
     }
 
+    /// Adds earlier uploads to this project, the way the editor's "previous
+    /// photos" panel does, and returns the ids Pixajoy accepted. An upload
+    /// deleted since is left out, and so is every id when the call fails, so
+    /// those photos are uploaded again.
+    pub async fn reuse_assets(&self, ids: &[String]) -> HashSet<String> {
+        if ids.is_empty() {
+            return HashSet::new();
+        }
+        match self.post("assets/add", &json!({ "assets": integer_ids(ids) })).await {
+            Ok(reply) => accepted(ids, &reply),
+            Err(e) => {
+                log::warn!("reusing earlier uploads failed, uploading again: {e}");
+                HashSet::new()
+            }
+        }
+    }
+
     /// Uploads one file and waits for Pixajoy to process it. Returns the
     /// asset id a box's `hirespath` names.
-    pub async fn upload(&self, image: &JobImage) -> Result<String, String> {
+    pub async fn upload(&self, image: &Upload) -> Result<String, String> {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Asset {
@@ -380,21 +396,27 @@ impl Session {
     }
 }
 
-/// Uploads each distinct image once, `UPLOAD_CONCURRENCY` at a time, and
-/// returns the asset id per path. `on_done(done, total)` follows each upload.
+/// Pixajoy's asset calls refuse string ids (422, "should be of type
+/// integer").
+fn integer_ids(ids: &[String]) -> Vec<Value> {
+    ids.iter().map(|id| id.parse::<i64>().map_or_else(|_| json!(id), |n| json!(n))).collect()
+}
+
+/// The ids `assets/add` lists under `success`.
+fn accepted(ids: &[String], reply: &Value) -> HashSet<String> {
+    let Some(success) = reply["success"].as_array() else { return HashSet::new() };
+    success.iter().map(id_string).filter(|id| ids.contains(id)).collect()
+}
+
+/// Uploads each file, `UPLOAD_CONCURRENCY` at a time, and returns the asset
+/// id per photo hash. `on_done(done, total)` follows each upload.
 pub async fn upload_all(
     session: Arc<Session>,
-    images: Vec<JobImage>,
+    uploads: Vec<Upload>,
     mut on_done: impl FnMut(usize, usize),
-) -> Result<HashMap<PathBuf, String>, String> {
-    let mut unique: Vec<JobImage> = Vec::new();
-    for image in images {
-        if !unique.iter().any(|u| u.path == image.path) {
-            unique.push(image);
-        }
-    }
-    let total = unique.len();
-    let mut queue = unique.into_iter();
+) -> Result<HashMap<String, String>, String> {
+    let total = uploads.len();
+    let mut queue = uploads.into_iter();
     let mut running = JoinSet::new();
     let mut ids = HashMap::with_capacity(total);
     loop {
@@ -403,12 +425,12 @@ pub async fn upload_all(
             let session = Arc::clone(&session);
             running.spawn(async move {
                 let id = session.upload(&image).await?;
-                Ok::<_, String>((image.path, id))
+                Ok::<_, String>((image.hash, id))
             });
         }
         let Some(joined) = running.join_next().await else { break };
-        let (path, id) = joined.map_err(|e| e.to_string())??;
-        ids.insert(path, id);
+        let (hash, id) = joined.map_err(|e| e.to_string())??;
+        ids.insert(hash, id);
         on_done(ids.len(), total);
     }
     Ok(ids)
@@ -452,6 +474,19 @@ mod tests {
     #[test]
     fn upload_ids_are_21_characters() {
         assert_eq!(upload_id().len(), 21);
+    }
+
+    #[test]
+    fn only_the_ids_assets_add_accepted_are_reused() {
+        let ids: Vec<String> = ["10", "11", "12"].map(String::from).to_vec();
+        let reply = json!({ "success": [12, "10", 99] });
+        assert_eq!(accepted(&ids, &reply), HashSet::from(["10".to_string(), "12".to_string()]), "99 was not asked for");
+        assert!(accepted(&ids, &json!({ "error": "no" })).is_empty());
+    }
+
+    #[test]
+    fn asset_ids_are_sent_as_integers() {
+        assert_eq!(integer_ids(&["197298385".into(), "x".into()]), vec![json!(197298385), json!("x")]);
     }
 
     fn urlencode(s: &str) -> String {

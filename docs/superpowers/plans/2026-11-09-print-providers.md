@@ -15,8 +15,9 @@ and checked in Pixajoy's editor on 2026-11-09.
   the exported photos go to Pixajoy's servers. Analysis stays on-device as before.
 - The `mbtk` token lives in the macOS Keychain (the `keyring` pattern in
   `src-tauri/src/agent/keys.rs`). It is never logged, written to disk or put in the repo.
-- Never reopen an existing project (`OnlineAPI.editProject` is unreliable). Each send
-  creates a new project and fills it in the same editor session.
+- Never reopen an existing project with a scripted `OnlineAPI.editProject` (it is unreliable).
+  Each send creates a new project and fills it in the same editor session. Updating a sent
+  project in place waits on a reopen the user starts from Pixajoy's own Edit Project.
 
 ## Data shape
 
@@ -30,13 +31,22 @@ pub struct PrintJob {                      // provider-neutral, built purely fro
     pub cover: JobCover,                   // front / back: Option<JobImage>
 }
 pub struct JobPage { pub number: u32, pub boxes: Vec<JobBox>, pub texts: Vec<JobText> }
-pub struct JobBox  { pub rect: Rect /* page-normalised */, pub image: JobImage }
+pub struct JobBox  { pub rect: Rect /* page-normalised */, pub photo: JobPhoto }
 pub struct JobText { pub rect: Rect, pub text: String, pub align: Align, pub point_size: f64 }
-pub struct JobImage { pub path: PathBuf, pub width: u32, pub height: u32 }  // the exported, already-cropped file
+pub struct JobPhoto { pub hash: String, pub width: u32, pub height: u32, pub crop: Rect }
+pub struct Upload   { pub hash: String, pub path: PathBuf, pub width: u32, pub height: u32 }
+pub struct SendRecord { provider, account, projectref, project_name, page_count, boxes: Vec<SentBox> }
+pub struct SentBox  { reference: i64, slot: SentSlot /* page+rect | cover side */, hash, asset_id, crop }
 ```
 
-The job carries the **exported** files. They are already cropped, upright and RGB, so each
-box fill is a plain centred cover fit. Each chapter title with a title spot is a `JobText`
+**Superseded 2026-11-09.** The job used to carry exported, already-cropped files. Now each photo
+is uploaded once, whole and upright (`Upload`, rendition `pixajoy::RENDITION`), and each box
+carries the photo's hash, upright size and crop. `plan::crop_fit` turns the crop into
+`magnification` and scroll, so recropping never re-uploads. The upload cache
+(`provider_assets`: provider, account = the JWT `userid`, content hash, rendition → asset id
+and size) skips photos the account already has. `assets/add` confirms each cached id at send
+time. Each successful send writes a `SendRecord` to `provider_sends`, holding the real box
+refs from the save reply. That record is the base for a later three-way update. Each chapter title with a title spot is a `JobText`
 on its page. `plan.rs` clones Pixajoy's unprotected cover text box for it, sets the geometry
 and replaces the styled text's `data`. The format is in `docs/providers/pixajoy.md`.
 

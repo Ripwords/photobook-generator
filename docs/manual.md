@@ -32,7 +32,7 @@ you are. Right-click a book there for the same menu the library gives it (see be
 **Settings** has three tabs. **General** sets the appearance (System, Light or Dark) and
 the graphics level, manages storage, and lists the shortcuts above. **API keys** is where the chat's keys are saved. **About**
 shows the version and what leaves this Mac. No image does unless you press **Send** in
-**Send to Pixajoy** (see [3. Editing the book](#3-editing-the-book)), and then only the book's exported photos go, to your
+**Send to Pixajoy** (see [3. Editing the book](#3-editing-the-book)), and then only the photos the book shows go, whole, to your
 Pixajoy account. The chat sends only a
 description of the book (its layouts, page numbers and photo tags). With **Split chapters
 by place** on, each chapter's centre (a latitude and longitude, never a photo) goes to Apple
@@ -596,17 +596,24 @@ three parts:
   second window. Once you are signed in, every sign-in window closes by itself and the account section then reads "Signed in as" your
   email. The sign-in is kept in the macOS Keychain, never in a file, and lasts until Pixajoy
   ends it. **Sign out** forgets it, and signing in again can use another account.
-- **What happens.** A new project is created, the book's photos are exported and uploaded to
-  Pixajoy's servers, and nothing is ordered. Chapter titles go onto their pages as text you
+- **What happens.** A new project is created, each of the book's photos is uploaded whole to
+  Pixajoy's servers, once, and nothing is ordered. A later send reuses it. Chapter titles go onto their pages as text you
   can edit on Pixajoy.
 - **Pages.** How many pages the Pixajoy project gets. Pixajoy's landscape book needs at least
   20 pages and an even count, so a shorter or odd book gets blank pages added at the end, and
   the dialog says how many. A book over 150 pages, or one whose print size is not Pixajoy's
   landscape shape, cannot be sent, and the dialog says why.
 
-**Send** runs pre-flight, exports every photo as JPEG to a temporary folder, creates the
-project (named after the book), uploads the photos and lays out each page with the same boxes
-and crops as the book. Each chapter title becomes a text box in its title spot, in black
+**Send** runs pre-flight, exports each photo Pixajoy does not already have as a whole,
+upright JPEG to a temporary folder, creates the project (named after the book), uploads those
+photos and lays out each page with the same boxes and crops as the book. The crop is Pixajoy's
+own zoom and position in the box, not a cut file, so in Pixajoy's editor you can zoom out or
+move the photo to show the parts the book left out. A photo already sent to the same Pixajoy
+account, at any time and from any book, is not uploaded again: the app keeps which Pixajoy
+photo each of your photos became (a fingerprint of the file and Pixajoy's photo number, never
+the image), and Pixajoy adds it to the new project. If you deleted it from Pixajoy since, it
+is uploaded again. Every successful send is recorded with the book: which Pixajoy project it
+made and which photo went in which box. Deleting the book deletes that record. Each chapter title becomes a text box in its title spot, in black
 Arial at the suggested size, above the photos. Edit or move it in Pixajoy's editor like any
 other text box. The front and back cover photos go into Pixajoy's cover boxes. The
 dialog shows each step and cannot be closed while it runs; the temporary folder is deleted

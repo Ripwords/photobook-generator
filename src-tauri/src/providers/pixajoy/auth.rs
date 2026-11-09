@@ -32,7 +32,24 @@ pub struct Status {
 #[derive(Deserialize)]
 struct Claims {
     emailaddress: Option<String>,
+    userid: Option<serde_json::Value>,
     exp: Option<i64>,
+}
+
+fn claims(token: &str) -> Option<Claims> {
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// The Pixajoy user id the token belongs to. Uploaded assets belong to one
+/// account, so the upload cache is keyed by it.
+pub fn account_of(token: &str) -> Result<String, String> {
+    match claims(token).and_then(|c| c.userid) {
+        Some(serde_json::Value::String(id)) if !id.is_empty() => Ok(id),
+        Some(serde_json::Value::Number(id)) => Ok(id.to_string()),
+        _ => Err("The Pixajoy sign-in carries no user id. Sign in again.".into()),
+    }
 }
 
 /// Reads the JWT payload without checking its signature: Pixajoy checks it,
@@ -40,12 +57,7 @@ struct Claims {
 /// expired token counts as signed out.
 pub fn status_of(token: Option<&str>, now: i64) -> Status {
     let signed_out = Status { signed_in: false, email: None };
-    let Some(payload) = token.and_then(|t| t.split('.').nth(1)) else { return signed_out };
-    let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload.trim_end_matches('='))
-    else {
-        return signed_out;
-    };
-    let Ok(claims) = serde_json::from_slice::<Claims>(&bytes) else { return signed_out };
+    let Some(claims) = token.and_then(claims) else { return signed_out };
     match claims.exp {
         Some(exp) if exp > now => Status { signed_in: true, email: claims.emailaddress },
         _ => signed_out,
@@ -182,6 +194,14 @@ mod tests {
     fn a_current_token_is_signed_in_with_its_email() {
         let t = jwt(r#"{"emailaddress":"a@b.c","userid":"1","exp":2000}"#);
         assert_eq!(status_of(Some(&t), 1999), Status { signed_in: true, email: Some("a@b.c".into()) });
+    }
+
+    #[test]
+    fn the_account_is_the_tokens_user_id_whether_string_or_number() {
+        assert_eq!(account_of(&jwt(r#"{"userid":"42","exp":1}"#)), Ok("42".into()));
+        assert_eq!(account_of(&jwt(r#"{"userid":42,"exp":1}"#)), Ok("42".into()));
+        assert!(account_of(&jwt(r#"{"exp":1}"#)).is_err());
+        assert!(account_of(&jwt(r#"{"userid":"","exp":1}"#)).is_err());
     }
 
     #[test]

@@ -52,20 +52,75 @@ pub struct JobText {
 pub struct JobBox {
     /// Page-normalised, so it fits the provider's page whatever its size.
     pub rect: Rect,
-    pub image: JobImage,
+    pub photo: JobPhoto,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct JobCover {
-    pub front: Option<JobImage>,
-    pub back: Option<JobImage>,
+    pub front: Option<JobPhoto>,
+    pub back: Option<JobPhoto>,
 }
 
-/// An exported file: already cropped to its box, upright and sRGB, so a
-/// provider only has to cover-fit it.
+/// One placement of a photo. Providers get each photo once, whole, and show
+/// `crop` of it through their own zoom and pan, so recropping a box never
+/// uploads anything.
 #[derive(Debug, Clone, PartialEq)]
-pub struct JobImage {
+pub struct JobPhoto {
+    /// The source file's content hash: the upload cache's key.
+    pub hash: String,
+    /// The upright pixel size of the uploaded rendition.
+    pub width: u32,
+    pub height: u32,
+    /// Normalised to the upright photo, as `Placement::crop` is.
+    pub crop: Rect,
+}
+
+/// A photo's upload: the whole upright photo as an sRGB JPEG, uncropped.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Upload {
+    pub hash: String,
     pub path: PathBuf,
     pub width: u32,
     pub height: u32,
+}
+
+/// What a provider holds for one photo already uploaded to one account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedAsset {
+    pub asset_id: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Where a sent photo landed in the provider's project.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum SentSlot {
+    Page { number: u32, rect: Rect },
+    Cover { side: crate::geometry::CoverSide },
+}
+
+/// One photo box as it was sent: the base a later sync compares the book and
+/// the provider's project against.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SentBox {
+    /// The provider's id for the box.
+    pub reference: i64,
+    pub slot: SentSlot,
+    pub hash: String,
+    pub asset_id: String,
+    pub crop: Rect,
+}
+
+/// One send of one book.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendRecord {
+    pub provider: ProviderId,
+    pub account: String,
+    pub projectref: String,
+    pub project_name: String,
+    pub page_count: u32,
+    pub boxes: Vec<SentBox>,
 }

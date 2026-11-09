@@ -5,7 +5,8 @@ use crate::book::pace::Book;
 use crate::place_names::PlaceKey;
 use crate::project::{self, ExportRecord, Project, ProjectSummary};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
-use std::collections::HashSet;
+use crate::providers::{CachedAsset, ProviderId, SendRecord};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// Bump this whenever the Swift analyzer's output changes shape or semantics.
@@ -70,6 +71,12 @@ impl FileStamp {
             size: i64::try_from(meta.len()).ok()?,
             modified_ns: i64::try_from(modified.as_nanos()).ok()?,
         })
+    }
+}
+
+fn provider_key(provider: ProviderId) -> &'static str {
+    match provider {
+        ProviderId::Pixajoy => "pixajoy",
     }
 }
 
@@ -206,6 +213,25 @@ impl Db {
                  name   TEXT NOT NULL,
                  PRIMARY KEY (lat_e2, lon_e2)
              );
+             CREATE TABLE IF NOT EXISTS provider_assets (
+                 provider   TEXT NOT NULL,
+                 account    TEXT NOT NULL,
+                 hash       TEXT NOT NULL,
+                 rendition  INTEGER NOT NULL,
+                 asset_id   TEXT NOT NULL,
+                 width      INTEGER NOT NULL,
+                 height     INTEGER NOT NULL,
+                 created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                 PRIMARY KEY (provider, account, hash, rendition)
+             );
+             CREATE TABLE IF NOT EXISTS provider_sends (
+                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                 project_id  INTEGER NOT NULL REFERENCES projects(id),
+                 record_json TEXT NOT NULL,
+                 sent_at     INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE INDEX IF NOT EXISTS idx_provider_sends_project_id
+                 ON provider_sends (project_id);
              CREATE TABLE IF NOT EXISTS custom_layouts (
                  id         TEXT PRIMARY KEY,
                  name       TEXT NOT NULL,
@@ -248,6 +274,83 @@ impl Db {
             )?;
         }
         Ok(())
+    }
+
+    /// The assets `account` already holds at `provider` for `hashes`, in the
+    /// given rendition. Holds ids and sizes only, never pixels.
+    pub fn provider_assets(
+        &self,
+        provider: ProviderId,
+        account: &str,
+        rendition: u32,
+        hashes: &[String],
+    ) -> rusqlite::Result<HashMap<String, CachedAsset>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT asset_id, width, height FROM provider_assets
+             WHERE provider = ?1 AND account = ?2 AND rendition = ?3 AND hash = ?4",
+        )?;
+        let mut found = HashMap::new();
+        for hash in hashes {
+            let row = stmt
+                .query_row(rusqlite::params![provider_key(provider), account, rendition, hash], |r| {
+                    Ok(CachedAsset { asset_id: r.get(0)?, width: r.get(1)?, height: r.get(2)? })
+                })
+                .optional()?;
+            if let Some(asset) = row {
+                found.insert(hash.clone(), asset);
+            }
+        }
+        Ok(found)
+    }
+
+    pub fn put_provider_asset(
+        &self,
+        provider: ProviderId,
+        account: &str,
+        rendition: u32,
+        hash: &str,
+        asset: &CachedAsset,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO provider_assets (provider, account, hash, rendition, asset_id, width, height)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(provider, account, hash, rendition) DO UPDATE SET
+                 asset_id = excluded.asset_id, width = excluded.width, height = excluded.height,
+                 created_at = unixepoch()",
+            rusqlite::params![provider_key(provider), account, hash, rendition, asset.asset_id, asset.width, asset.height],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets assets the provider no longer has, so they upload again.
+    pub fn forget_provider_assets(&self, provider: ProviderId, account: &str, asset_ids: &[String]) -> rusqlite::Result<()> {
+        let mut stmt =
+            self.conn.prepare("DELETE FROM provider_assets WHERE provider = ?1 AND account = ?2 AND asset_id = ?3")?;
+        for id in asset_ids {
+            stmt.execute(rusqlite::params![provider_key(provider), account, id])?;
+        }
+        Ok(())
+    }
+
+    pub fn record_send(&self, project_id: i64, record: &SendRecord) -> rusqlite::Result<()> {
+        let json = serde_json::to_string(record).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        self.conn.execute(
+            "INSERT INTO provider_sends (project_id, record_json) VALUES (?1, ?2)",
+            rusqlite::params![project_id, json],
+        )?;
+        Ok(())
+    }
+
+    /// A project's sends, newest first.
+    pub fn sends(&self, project_id: i64) -> rusqlite::Result<Vec<SendRecord>> {
+        let mut stmt =
+            self.conn.prepare("SELECT record_json FROM provider_sends WHERE project_id = ?1 ORDER BY id DESC")?;
+        let rows = stmt.query_map([project_id], |r| r.get::<_, String>(0))?;
+        rows.map(|json| {
+            serde_json::from_str(&json?)
+                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))
+        })
+        .collect()
     }
 
     pub fn get_features(&self, hash: &str) -> rusqlite::Result<Option<String>> {
@@ -969,7 +1072,7 @@ impl Db {
 
     /// Removes a project for good, with every export row recorded against
     /// it, its photo list, its folder list, the user's overrides for it and
-    /// its event tier choices. The child rows go first: `migrate()` turns
+    /// its event tier choices and its provider sends. The child rows go first: `migrate()` turns
     /// `PRAGMA foreign_keys` on, and no child table declares `ON DELETE
     /// CASCADE`.
     pub(crate) fn purge_project(&self, id: i64) -> rusqlite::Result<()> {
@@ -985,6 +1088,7 @@ impl Db {
         )?;
         self.conn.execute("DELETE FROM project_folders WHERE project_id = ?1", rusqlite::params![id])?;
         self.conn.execute("DELETE FROM book_history WHERE project_id = ?1", rusqlite::params![id])?;
+        self.conn.execute("DELETE FROM provider_sends WHERE project_id = ?1", rusqlite::params![id])?;
         self.conn.execute("DELETE FROM projects WHERE id = ?1", rusqlite::params![id])?;
         Ok(())
     }
@@ -2454,5 +2558,65 @@ mod tests {
         assert_eq!(db.graphics_mode().unwrap(), Some(GraphicsMode::Low));
         db.set_graphics_mode(GraphicsMode::Maximum).unwrap();
         assert_eq!(db.graphics_mode().unwrap(), Some(GraphicsMode::Maximum));
+    }
+
+    fn asset(id: &str) -> CachedAsset {
+        CachedAsset { asset_id: id.into(), width: 4032, height: 3024 }
+    }
+
+    #[test]
+    fn provider_assets_are_per_account_and_rendition_and_can_be_forgotten() {
+        let db = Db::open_in_memory().unwrap();
+        let p = ProviderId::Pixajoy;
+        db.put_provider_asset(p, "me", 1, "aa", &asset("10")).unwrap();
+        db.put_provider_asset(p, "me", 1, "bb", &asset("11")).unwrap();
+        db.put_provider_asset(p, "other", 1, "cc", &asset("12")).unwrap();
+        db.put_provider_asset(p, "me", 2, "cc", &asset("13")).unwrap();
+        let hashes: Vec<String> = ["aa", "bb", "cc"].map(String::from).to_vec();
+
+        let mine = db.provider_assets(p, "me", 1, &hashes).unwrap();
+        assert_eq!(mine, HashMap::from([("aa".to_string(), asset("10")), ("bb".to_string(), asset("11"))]));
+
+        db.put_provider_asset(p, "me", 1, "aa", &asset("20")).unwrap();
+        db.forget_provider_assets(p, "me", &["11".to_string()]).unwrap();
+        assert_eq!(db.provider_assets(p, "me", 1, &hashes).unwrap(), HashMap::from([("aa".to_string(), asset("20"))]));
+        assert_eq!(db.provider_assets(p, "other", 1, &hashes).unwrap().len(), 1, "another account's assets stay");
+    }
+
+    #[test]
+    fn sends_are_recorded_per_project_newest_first_and_purged_with_it() {
+        use crate::geometry::{CoverSide, Rect};
+        use crate::providers::{SentBox, SentSlot};
+        let db = Db::open_in_memory().unwrap();
+        let id = db.save_project("Book", "/tmp/book", &fixture_book(), &fixture_hashes(), &Overrides::new()).unwrap();
+        let record = |projectref: &str| SendRecord {
+            provider: ProviderId::Pixajoy,
+            account: "me".into(),
+            projectref: projectref.into(),
+            project_name: "Book".into(),
+            page_count: 20,
+            boxes: vec![
+                SentBox {
+                    reference: 500,
+                    slot: SentSlot::Page { number: 3, rect: Rect::new(0.1, 0.2, 0.3, 0.4) },
+                    hash: "aa".into(),
+                    asset_id: "10".into(),
+                    crop: Rect::new(0.0, 0.1, 0.9, 0.8),
+                },
+                SentBox {
+                    reference: 82448,
+                    slot: SentSlot::Cover { side: CoverSide::Front },
+                    hash: "bb".into(),
+                    asset_id: "11".into(),
+                    crop: Rect::new(0.0, 0.0, 1.0, 1.0),
+                },
+            ],
+        };
+        db.record_send(id, &record("P1")).unwrap();
+        db.record_send(id, &record("P2")).unwrap();
+        assert_eq!(db.sends(id).unwrap(), vec![record("P2"), record("P1")]);
+
+        db.purge_project(id).unwrap();
+        assert!(db.sends(id).unwrap().is_empty());
     }
 }

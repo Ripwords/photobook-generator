@@ -20,6 +20,14 @@ cart.
 
 Each of these was rendered in Pixajoy's editor and the positions and crops matched.
 
+Also verified on 2026-11-09, from the live test only (not yet looked at in the editor):
+
+- A box shows a crop of a whole uploaded photo through `magnification` and the scroll fields.
+  The top-left quarter of a 1200 × 800 photo in a full page saved and reloaded as
+  magnification 233.684 and scroll (−0.9449, 0), as the formula below gives.
+- An asset uploaded for one project fills boxes in another after `assets/add` (step 5b).
+- The save reply's `pageItems` maps each added box's negative ref to its real one.
+
 ## Not yet known
 
 - Any `styledtext` code beyond the font, size, colour and alignment ones below.
@@ -126,7 +134,20 @@ then `GET project/initialise`, then `GET project/load`. A token is refreshed wit
 3. `POST /api/assets/queue` with
    `{ asset: { assetId, jobType: "1", uploadDuration, fileSizeBytes, vid: volumeId, volumeType: 1, assetType: 106, scaled: false }, queue: "process" }`.
 4. Poll `POST /api/assets/status` with `{ assets: [id] }`.
-   - Status 6 means processed. Status 7 or 8 means it failed.
+   - Ids must be JSON integers. A string id is refused with 422, "This value should be of
+     type integer."
+   - The reply is `{ assets: [{ id, status }] }`. Status 6 means processed. Status 7 or 8
+     means it failed.
+   - It reports only on assets uploaded in this session. An id from an earlier project comes
+     back as `{ unableToCheck: [ids] }`, before and after the save that uses it.
+
+## 5b. Reuse an earlier upload
+
+The editor's "previous photos" panel lists the account's uploads with `GET /api/assets/previous`
+and adds chosen ones to the open project with `POST /api/assets/add`, body
+`{ assets: [<integer id>, ...] }`. The reply is `{ success: [ids] }`. An id the account does
+not have is left out of `success`. PhotobookGen calls `assets/add` with every cached id and
+uploads again only the photos whose id is missing from `success`.
 
 ## 6. Save
 
@@ -145,8 +166,8 @@ The diff takes these operations:
 
 - **Delete a box.** Add `"<ref>": <ref>` to `items.deleted`.
 - **Add a box.** Copy an existing box object and drop `ref`, `recordid` and `boxtype`. Give it
-  a negative `ref`, and key it by that ref in `items.added`. The response's `pageItems` maps
-  each `oldRef` to its `newRef`.
+  a negative `ref`, and key it by that ref in `items.added`. The response's `pageItems` is an
+  array of `{ oldRef, newRef, id }`, one per added box.
 - **Move or resize a box.** Send `boxleft`, `boxtop`, `boxwidth` and `boxheight` in
   `items.changed`. Send `boxlinex1`, `boxliney1`, `boxlinex2` and `boxliney2` as the same
   rectangle.
@@ -168,7 +189,19 @@ The diff takes these operations:
 
 ## Crop maths
 
-For a photo of `pw × ph` pixels in a box of `bw × bh` inches:
+PhotobookGen uploads each photo whole and upright, and shows the book's crop through the box's
+zoom and position. A crop is `(cx, cy, cw, ch)`, normalised to the upright photo.
+
+- `scale = max(bw / (cw × pw), bh / (ch × ph))`, the inches per pixel that make the crop
+  cover the box.
+- `magnification = 100 × scale / fit`, with `fit` as below.
+- `boxscrollleft = bw/2 − (cx + cw/2) × pw × scale`, and `boxscrolltop` the same vertically,
+  so the crop's centre sits at the box's centre.
+- The whole photo, `(0, 0, 1, 1)`, gives the centred cover fit below.
+
+No clamp is applied; Pixajoy's upper limit on `magnification`, if it has one, is not known.
+
+The centred cover fit, for a photo of `pw × ph` pixels in a box of `bw × bh` inches:
 
 - `fit = min(bw/pw, bh/ph)` is the scale that shows the whole photo. That scale is
   magnification 100.

@@ -4,11 +4,11 @@
 
 use crate::geometry::Rect;
 use crate::print_spec::PrintSpec;
-use crate::providers::{JobImage, PrintJob};
+use crate::geometry::CoverSide;
+use crate::providers::{JobPhoto, PrintJob, SentBox, SentSlot};
 use crate::templates::Align;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
 
 /// IHL8511's page limits. Fixed before the project exists, because the page
 /// count is sent with `createProject2` and cannot change afterwards.
@@ -197,6 +197,22 @@ pub fn cover_fit(pw: u32, ph: u32, bw: f64, bh: f64) -> Fit {
     }
 }
 
+/// The `crop` window of a `pw × ph` pixel photo shown in a `bw × bh` inch
+/// box. The window is scaled to cover the box and centred in it; when its
+/// shape matches the box, as the book's crops do, it fills the box exactly.
+/// The whole photo (`crop` of the unit square) is [`cover_fit`].
+pub fn crop_fit(pw: u32, ph: u32, crop: Rect, bw: f64, bh: f64) -> Fit {
+    let (pw, ph) = (pw as f64, ph as f64);
+    let fit = (bw / pw).min(bh / ph);
+    let scale = (bw / (crop.w * pw)).max(bh / (crop.h * ph));
+    let centre = |start: f64, len: f64, px: f64, b: f64| b / 2.0 - (start + len / 2.0) * px * scale;
+    Fit {
+        magnification: 100.0 * scale / fit,
+        scroll_left: centre(crop.x, crop.w, pw, bw),
+        scroll_top: centre(crop.y, crop.h, ph, bh),
+    }
+}
+
 /// A Taopix `styledtext.data` string: Arial at `point_size`, `colour` as
 /// 0xRRGGBB, aligned, then the text prefixed by its length. The length is in
 /// UTF-16 code units because the editor that reads it is JavaScript.
@@ -211,14 +227,23 @@ pub fn styled_text_data(text: &str, align: Align, point_size: f64, colour: u32) 
     format!("{FONT}<ts{ts}><tc{colour}><pa{pa}>{len} <..>{text}")
 }
 
-/// The `project/save` body. `assets` maps each job image's path to its
-/// uploaded asset id.
+/// A `project/save` body and the photo boxes it places. Added boxes carry
+/// their temporary negative refs until [`resolve_refs`] reads the real ones
+/// from the save's reply.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Diff {
+    pub body: Value,
+    pub boxes: Vec<SentBox>,
+}
+
+/// The `project/save` diff. `assets` maps each photo's hash to its uploaded
+/// asset id.
 pub fn save_diff(
     layout: &Layout,
     job: &PrintJob,
     page_count: u32,
-    assets: &HashMap<PathBuf, String>,
-) -> Result<Value, String> {
+    assets: &HashMap<String, String>,
+) -> Result<Diff, String> {
     let interior = |b: &&LoadBox| b.picture && b.page < COVER_PAGE;
     let deleted: Map<String, Value> =
         layout.boxes.iter().filter(interior).map(|b| (b.reference.to_string(), json!(b.reference))).collect();
@@ -240,6 +265,7 @@ pub fn save_diff(
         .map(clone);
     let top = layout.boxes.iter().map(|b| b.zindex).max().unwrap_or(0);
     let mut added = Map::new();
+    let mut sent = Vec::new();
     let mut k = 0i64;
     for page in &job.pages {
         if page.number < 1 || page.number > page_count {
@@ -260,8 +286,11 @@ pub fn save_diff(
         for b in &page.boxes {
             let item = template.clone().ok_or("Pixajoy's project has no picture box to copy.")?;
             let (r, mut item, w, h) = place(item, &b.rect);
-            item.extend(fill(&b.image, w, h, assets)?);
+            let (fields, asset_id) = fill(&b.photo, w, h, assets)?;
+            item.extend(fields);
             added.insert(r.to_string(), Value::Object(item));
+            let slot = SentSlot::Page { number: page.number, rect: b.rect };
+            sent.push(SentBox { reference: r, slot, hash: b.photo.hash.clone(), asset_id, crop: b.photo.crop });
         }
         for t in &page.texts {
             let item = text_template.clone().ok_or("Pixajoy's project has no cover text box to copy.")?;
@@ -282,26 +311,55 @@ pub fn save_diff(
     // The template's two cover boxes (a framed front, a small square back)
     // become full panels, the shape the book's cover was cropped to.
     let mut changed = Map::new();
-    for (image, slot, front) in [(&job.cover.back, cover.first(), false), (&job.cover.front, cover.last(), true)] {
-        let Some(image) = image else { continue };
-        let side = if front { "front" } else { "back" };
-        let slot = slot.filter(|_| cover.len() == 2).ok_or(format!("Pixajoy's cover has no {side} picture box."))?;
+    for (photo, slot, side) in
+        [(&job.cover.back, cover.first(), CoverSide::Back), (&job.cover.front, cover.last(), CoverSide::Front)]
+    {
+        let Some(photo) = photo else { continue };
+        let front = side == CoverSide::Front;
+        let name = if front { "front" } else { "back" };
+        let slot = slot.filter(|_| cover.len() == 2).ok_or(format!("Pixajoy's cover has no {name} picture box."))?;
         let canvas = layout.cover.ok_or("Pixajoy's layout has no cover size.")?;
         let (x, y, w, h) = canvas.panel(front);
         let mut item = geometry(x, y, w, h);
-        item.extend(fill(image, w, h, assets)?);
+        let (fields, asset_id) = fill(photo, w, h, assets)?;
+        item.extend(fields);
         changed.insert(slot.reference.to_string(), Value::Object(item));
+        let place = SentSlot::Cover { side };
+        sent.push(SentBox { reference: slot.reference, slot: place, hash: photo.hash.clone(), asset_id, crop: photo.crop });
     }
 
     let empty = json!({ "deleted": {}, "added": {}, "changed": {} });
-    Ok(json!({
+    let body = json!({
         "pages": empty,
         "items": { "deleted": deleted, "added": added, "changed": changed },
         "events": empty,
         "itemsToPages": {},
         "projectName": job.name,
         "autoSave": false,
-    }))
+    });
+    Ok(Diff { body, boxes: sent })
+}
+
+/// Swaps each added box's temporary ref for the one Pixajoy gave it. The
+/// save's reply lists them as `pageItems: [{ oldRef, newRef, id }]`.
+pub fn resolve_refs(boxes: Vec<SentBox>, reply: &Value) -> Result<Vec<SentBox>, String> {
+    let renamed: HashMap<i64, i64> = reply["pageItems"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| Some((p["oldRef"].as_i64()?, p["newRef"].as_i64()?)))
+        .collect();
+    boxes
+        .into_iter()
+        .map(|mut b| {
+            if b.reference < 0 {
+                b.reference = *renamed
+                    .get(&b.reference)
+                    .ok_or_else(|| format!("Pixajoy's save gave no id for new box {}.", b.reference))?;
+            }
+            Ok(b)
+        })
+        .collect()
 }
 
 /// A box's position and size, with its line coordinates set to the same
@@ -323,30 +381,30 @@ fn geometry(x: f64, y: f64, w: f64, h: f64) -> Map<String, Value> {
     .collect()
 }
 
-/// The fields that put `image` into a `bw × bh` inch box, centred to cover it.
-fn fill(image: &JobImage, bw: f64, bh: f64, assets: &HashMap<PathBuf, String>) -> Result<Map<String, Value>, String> {
-    let asset = assets
-        .get(&image.path)
-        .ok_or_else(|| format!("{} was not uploaded to Pixajoy.", image.path.display()))?;
-    let fit = cover_fit(image.width, image.height, bw, bh);
-    Ok(Map::from_iter([
+/// The fields that show `photo`'s crop in a `bw × bh` inch box, and the
+/// asset they name.
+fn fill(photo: &JobPhoto, bw: f64, bh: f64, assets: &HashMap<String, String>) -> Result<(Map<String, Value>, String), String> {
+    let asset = assets.get(&photo.hash).ok_or_else(|| format!("Photo {} was not uploaded to Pixajoy.", photo.hash))?;
+    let fit = crop_fit(photo.width, photo.height, photo.crop, bw, bh);
+    let fields = Map::from_iter([
         ("hiresfiletype".into(), json!(106)),
         ("hirespath".into(), json!(asset)),
-        ("hireswidth".into(), json!(image.width)),
-        ("hiresheight".into(), json!(image.height)),
-        ("rotatedhireswidth".into(), json!(image.width)),
-        ("rotatedhiresheight".into(), json!(image.height)),
+        ("hireswidth".into(), json!(photo.width)),
+        ("hiresheight".into(), json!(photo.height)),
+        ("rotatedhireswidth".into(), json!(photo.width)),
+        ("rotatedhiresheight".into(), json!(photo.height)),
         ("magnification".into(), json!(fit.magnification)),
         ("boxscrollleft".into(), json!(fit.scroll_left)),
         ("boxscrolltop".into(), json!(fit.scroll_top)),
-    ]))
+    ]);
+    Ok((fields, asset.clone()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::print_spec::pixajoy_spec;
-    use crate::providers::{JobBox, JobCover, JobPage, JobText};
+    use crate::providers::{JobBox, JobCover, JobPage, JobPhoto, JobText};
 
     /// The cover's one unprotected text box in the fixture.
     const TEXT_TEMPLATE: i64 = 82447;
@@ -367,7 +425,7 @@ mod tests {
     }
 
     fn titled(text: JobText) -> PrintJob {
-        let photo = JobBox { rect: Rect::new(0.0, 0.0, 1.0, 1.0), image: image("/t/a.jpg", 1200, 800) };
+        let photo = JobBox { rect: Rect::new(0.0, 0.0, 1.0, 1.0), photo: image("/t/a.jpg", 1200, 800) };
         job(vec![JobPage { number: 2, boxes: vec![photo], texts: vec![text] }], JobCover::default())
     }
 
@@ -378,7 +436,7 @@ mod tests {
     #[test]
     fn a_title_is_the_cover_text_box_cloned_onto_its_page_above_its_photos() {
         let l = layout();
-        let diff = save_diff(&l, &titled(kyoto()), 20, &assets(&["/t/a.jpg"])).unwrap();
+        let diff = save_diff(&l, &titled(kyoto()), 20, &assets(&["/t/a.jpg"])).unwrap().body;
         let added = diff["items"]["added"].as_object().unwrap();
         assert_eq!(added.len(), 2);
         let (photo, t) = (&added["-1"], &added["-2"]);
@@ -425,16 +483,18 @@ mod tests {
         v.as_str().unwrap().parse::<f64>().unwrap() / UNIT
     }
 
-    fn image(path: &str, width: u32, height: u32) -> JobImage {
-        JobImage { path: PathBuf::from(path), width, height }
+    const FULL: Rect = Rect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 };
+
+    fn image(hash: &str, width: u32, height: u32) -> JobPhoto {
+        JobPhoto { hash: hash.into(), width, height, crop: FULL }
     }
 
     fn job(pages: Vec<JobPage>, cover: JobCover) -> PrintJob {
         PrintJob { name: "Trip".into(), page_count: pages.len() as u32, pages, cover }
     }
 
-    fn assets(paths: &[&str]) -> HashMap<PathBuf, String> {
-        paths.iter().enumerate().map(|(i, p)| (PathBuf::from(p), format!("{}", 900 + i))).collect()
+    fn assets(hashes: &[&str]) -> HashMap<String, String> {
+        hashes.iter().enumerate().map(|(i, h)| (h.to_string(), format!("{}", 900 + i))).collect()
     }
 
     fn close(a: f64, b: f64, tol: f64) -> bool {
@@ -545,7 +605,7 @@ mod tests {
         late.page = 15;
         l.boxes.push(late);
 
-        let diff = save_diff(&l, &job(vec![], JobCover::default()), 20, &HashMap::new()).unwrap();
+        let diff = save_diff(&l, &job(vec![], JobCover::default()), 20, &HashMap::new()).unwrap().body;
 
         let deleted = diff["items"]["deleted"].as_object().unwrap();
         let interior: BTreeSet<i64> = l
@@ -567,7 +627,7 @@ mod tests {
         let l = layout();
         let photos = ["/t/front.jpg", "/t/back.jpg"];
         let cover = JobCover { front: Some(image(photos[0], 900, 700)), back: Some(image(photos[1], 700, 700)) };
-        let diff = save_diff(&l, &job(vec![], cover), 20, &assets(&photos)).unwrap();
+        let diff = save_diff(&l, &job(vec![], cover), 20, &assets(&photos)).unwrap().body;
 
         let text: BTreeSet<String> = l
             .boxes
@@ -588,11 +648,11 @@ mod tests {
         let l = layout();
         let rect = Rect::new(0.1, 0.2, 0.5, 0.25);
         let pages = vec![
-            JobPage { number: 1, boxes: vec![JobBox { rect, image: image("/t/a.jpg", 1200, 800) }], texts: vec![] },
-            JobPage { number: 2, boxes: vec![JobBox { rect, image: image("/t/a.jpg", 1200, 800) }], texts: vec![] },
-            JobPage { number: 3, boxes: vec![JobBox { rect, image: image("/t/a.jpg", 1200, 800) }], texts: vec![] },
+            JobPage { number: 1, boxes: vec![JobBox { rect, photo: image("/t/a.jpg", 1200, 800) }], texts: vec![] },
+            JobPage { number: 2, boxes: vec![JobBox { rect, photo: image("/t/a.jpg", 1200, 800) }], texts: vec![] },
+            JobPage { number: 3, boxes: vec![JobBox { rect, photo: image("/t/a.jpg", 1200, 800) }], texts: vec![] },
         ];
-        let diff = save_diff(&l, &job(pages, JobCover::default()), 20, &assets(&["/t/a.jpg"])).unwrap();
+        let diff = save_diff(&l, &job(pages, JobCover::default()), 20, &assets(&["/t/a.jpg"])).unwrap().body;
         let added = diff["items"]["added"].as_object().unwrap();
         assert_eq!(added.len(), 3);
 
@@ -620,15 +680,15 @@ mod tests {
             JobPage {
                 number: 2,
                 boxes: vec![
-                    JobBox { rect: full, image: image("/t/a.jpg", 1200, 800) },
-                    JobBox { rect: Rect::new(0.5, 0.5, 0.25, 0.25), image: image("/t/b.jpg", 600, 600) },
+                    JobBox { rect: full, photo: image("/t/a.jpg", 1200, 800) },
+                    JobBox { rect: Rect::new(0.5, 0.5, 0.25, 0.25), photo: image("/t/b.jpg", 600, 600) },
                 ],
                 texts: vec![],
             },
-            JobPage { number: 3, boxes: vec![JobBox { rect: full, image: image("/t/a.jpg", 1200, 800) }], texts: vec![] },
+            JobPage { number: 3, boxes: vec![JobBox { rect: full, photo: image("/t/a.jpg", 1200, 800) }], texts: vec![] },
         ];
         let ids = assets(&["/t/a.jpg", "/t/b.jpg"]);
-        let diff = save_diff(&l, &job(pages, JobCover::default()), 20, &ids).unwrap();
+        let diff = save_diff(&l, &job(pages, JobCover::default()), 20, &ids).unwrap().body;
         let added = diff["items"]["added"].as_object().unwrap();
 
         let refs: BTreeSet<i64> = added.values().map(|b| b["ref"].as_i64().unwrap()).collect();
@@ -645,7 +705,7 @@ mod tests {
         assert!(z("-1") > max_z && z("-2") > z("-1"));
 
         let b = &added["-2"];
-        assert_eq!(b["hirespath"], json!(ids[&PathBuf::from("/t/b.jpg")]));
+        assert_eq!(b["hirespath"], json!(ids["/t/b.jpg"]));
         assert_eq!((b["hireswidth"].clone(), b["hiresheight"].clone()), (json!(600), json!(600)));
         assert_eq!(b["rotatedhireswidth"], json!(600));
         let fit = cover_fit(600, 600, 0.25 * PAGE_W, 0.25 * PAGE_H);
@@ -679,13 +739,13 @@ mod tests {
         let photos = ["/t/front.jpg", "/t/back.jpg"];
         let ids = assets(&photos);
         let cover = JobCover { front: Some(image(photos[0], 1200, 1040)), back: Some(image(photos[1], 700, 700)) };
-        let diff = save_diff(&l, &job(vec![], cover), 20, &ids).unwrap();
+        let diff = save_diff(&l, &job(vec![], cover), 20, &ids).unwrap().body;
         let changed = diff["items"]["changed"].as_object().unwrap();
         assert_eq!(changed.len(), 2);
 
         // The rightmost template box is the front; it moves onto the right panel.
         let front = &changed["82448"];
-        assert_eq!(front["hirespath"], json!(ids[&PathBuf::from(photos[0])]));
+        assert_eq!(front["hirespath"], json!(ids[photos[0]]));
         let want = [COVER_W - PANEL_W, 0.0, PANEL_W, COVER_H];
         for (got, want) in rect_of(front).iter().zip(want) {
             assert!(close(*got, want, 1e-9), "front {:?} != {want:?}", rect_of(front));
@@ -696,7 +756,7 @@ mod tests {
         assert!(close(front["boxscrollleft"].as_f64().unwrap(), fit.scroll_left, 1e-9));
 
         let back = &changed["82449"];
-        assert_eq!(back["hirespath"], json!(ids[&PathBuf::from(photos[1])]));
+        assert_eq!(back["hirespath"], json!(ids[photos[1]]));
         for (got, want) in rect_of(back).iter().zip([0.0, 0.0, PANEL_W, COVER_H]) {
             assert!(close(*got, want, 1e-9), "back {:?}", rect_of(back));
         }
@@ -715,7 +775,7 @@ mod tests {
     fn an_empty_cover_side_leaves_its_box_alone() {
         let l = layout();
         let cover = JobCover { front: None, back: Some(image("/t/back.jpg", 700, 700)) };
-        let diff = save_diff(&l, &job(vec![], cover), 20, &assets(&["/t/back.jpg"])).unwrap();
+        let diff = save_diff(&l, &job(vec![], cover), 20, &assets(&["/t/back.jpg"])).unwrap().body;
         let changed = diff["items"]["changed"].as_object().unwrap();
         assert_eq!(changed.keys().collect::<Vec<_>>(), vec!["82449"]);
     }
@@ -725,7 +785,7 @@ mod tests {
         let l = layout();
         let pages = vec![JobPage {
             number: 21,
-            boxes: vec![JobBox { rect: Rect::new(0.0, 0.0, 1.0, 1.0), image: image("/t/a.jpg", 10, 10) }],
+            boxes: vec![JobBox { rect: Rect::new(0.0, 0.0, 1.0, 1.0), photo: image("/t/a.jpg", 10, 10) }],
             texts: vec![],
         }];
         assert!(save_diff(&l, &job(pages, JobCover::default()), 20, &assets(&["/t/a.jpg"])).is_err());
@@ -736,7 +796,7 @@ mod tests {
         let l = layout();
         let pages = vec![JobPage {
             number: 1,
-            boxes: vec![JobBox { rect: Rect::new(0.0, 0.0, 1.0, 1.0), image: image("/t/a.jpg", 10, 10) }],
+            boxes: vec![JobBox { rect: Rect::new(0.0, 0.0, 1.0, 1.0), photo: image("/t/a.jpg", 10, 10) }],
             texts: vec![],
         }];
         assert!(save_diff(&l, &job(pages, JobCover::default()), 20, &HashMap::new()).is_err());
@@ -744,12 +804,83 @@ mod tests {
 
     #[test]
     fn the_diff_has_the_save_envelope() {
-        let diff = save_diff(&layout(), &job(vec![], JobCover::default()), 20, &HashMap::new()).unwrap();
+        let diff = save_diff(&layout(), &job(vec![], JobCover::default()), 20, &HashMap::new()).unwrap().body;
         assert_eq!(diff["autoSave"], json!(false));
         assert_eq!(diff["projectName"], json!("Trip"));
         for k in ["pages", "events"] {
             assert_eq!(diff[k], json!({ "deleted": {}, "added": {}, "changed": {} }));
         }
         assert_eq!(diff["itemsToPages"], json!({}));
+    }
+
+    #[test]
+    fn the_whole_photo_is_the_centred_cover_fit() {
+        let (a, b) = (crop_fit(1200, 800, FULL, PAGE_W, PAGE_H), cover_fit(1200, 800, PAGE_W, PAGE_H));
+        assert!(close(a.magnification, 116.842, 0.001), "{a:?}");
+        for (x, y) in [(a.magnification, b.magnification), (a.scroll_left, b.scroll_left), (a.scroll_top, b.scroll_top)] {
+            assert!(close(x, y, 1e-9), "{a:?} != {b:?}");
+        }
+    }
+
+    #[test]
+    fn a_crop_zooms_in_and_pans_to_its_window() {
+        // Each half of a 2:1 photo fills a square box at twice the fit scale.
+        let left = crop_fit(2000, 1000, Rect::new(0.0, 0.0, 0.5, 1.0), 5.0, 5.0);
+        assert!(close(left.magnification, 200.0, 1e-9), "{left:?}");
+        assert!(close(left.scroll_left, 0.0, 1e-9) && close(left.scroll_top, 0.0, 1e-9), "{left:?}");
+        let right = crop_fit(2000, 1000, Rect::new(0.5, 0.0, 0.5, 1.0), 5.0, 5.0);
+        assert!(close(right.scroll_left, -5.0, 1e-9), "{right:?}");
+        // The middle quarter of a square photo: 2x, panned a quarter in each way.
+        let middle = crop_fit(1000, 1000, Rect::new(0.25, 0.25, 0.5, 0.5), 4.0, 4.0);
+        assert!(close(middle.magnification, 200.0, 1e-9), "{middle:?}");
+        assert!(close(middle.scroll_left, -2.0, 1e-9) && close(middle.scroll_top, -2.0, 1e-9), "{middle:?}");
+    }
+
+    #[test]
+    fn a_box_shows_its_photos_crop_and_the_send_records_every_photo_box() {
+        let l = layout();
+        let crop = Rect::new(0.5, 0.0, 0.5, 1.0);
+        let rect = Rect::new(0.1, 0.1, 0.4, 0.4);
+        let cropped = JobPhoto { hash: "a".into(), width: 2000, height: 1000, crop };
+        let pages = vec![JobPage { number: 2, boxes: vec![JobBox { rect, photo: cropped }], texts: vec![kyoto()] }];
+        let cover = JobCover { front: Some(image("f", 1200, 1040)), back: None };
+        let ids = assets(&["a", "f"]);
+        let diff = save_diff(&l, &job(pages, cover), 20, &ids).unwrap();
+
+        let b = &diff.body["items"]["added"]["-1"];
+        let fit = crop_fit(2000, 1000, crop, 0.4 * PAGE_W, 0.4 * PAGE_H);
+        assert!(close(b["magnification"].as_f64().unwrap(), fit.magnification, 1e-9));
+        assert!(close(b["boxscrollleft"].as_f64().unwrap(), fit.scroll_left, 1e-9));
+        assert_ne!(fit, crop_fit(2000, 1000, FULL, 0.4 * PAGE_W, 0.4 * PAGE_H), "the crop must matter");
+
+        // The title is not a photo box, so it is not recorded.
+        assert_eq!(
+            diff.boxes,
+            vec![
+                SentBox { reference: -1, slot: SentSlot::Page { number: 2, rect }, hash: "a".into(), asset_id: ids["a"].clone(), crop },
+                SentBox {
+                    reference: 82448,
+                    slot: SentSlot::Cover { side: CoverSide::Front },
+                    hash: "f".into(),
+                    asset_id: ids["f"].clone(),
+                    crop: FULL,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn new_boxes_take_the_refs_the_save_gave_them() {
+        let sent = |reference: i64| SentBox {
+            reference,
+            slot: SentSlot::Cover { side: CoverSide::Back },
+            hash: "h".into(),
+            asset_id: "1".into(),
+            crop: FULL,
+        };
+        let reply = json!({ "pageItems": [{ "oldRef": -2, "newRef": 501, "id": 9 }, { "oldRef": -1, "newRef": 500, "id": 8 }] });
+        let resolved = resolve_refs(vec![sent(-1), sent(-2), sent(82448)], &reply).unwrap();
+        assert_eq!(resolved.iter().map(|b| b.reference).collect::<Vec<_>>(), vec![500, 501, 82448]);
+        assert!(resolve_refs(vec![sent(-3)], &reply).is_err());
     }
 }
