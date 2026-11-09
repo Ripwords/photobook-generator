@@ -32,6 +32,8 @@ import {
   SLOT_DRAG_THRESHOLD_PX,
   DRAG_THRESHOLD_PX,
   pickAspect,
+  cropWindowStyle,
+  slotHolder,
   pickBlock,
   pickEdit,
   setCoverCropEdit,
@@ -1688,5 +1690,42 @@ describe("escapeDeselects", () => {
 
   it("lets a text field take the Esc, so renaming a chapter can be cancelled", () => {
     expect(escapeDeselects({ ...key, inField: true })).toBe(false);
+  });
+});
+
+describe("cropWindowStyle", () => {
+  it("places the crop window on the whole photo, in percent of it", () => {
+    expect(cropWindowStyle({ x: 0.1, y: 0.25, w: 0.5, h: 0.6 })).toEqual({
+      left: "10%",
+      top: "25%",
+      width: "50%",
+      height: "60%",
+    });
+  });
+
+  it("keeps the window inside the photo when the crop overruns it", () => {
+    expect(cropWindowStyle({ x: 0.8, y: -0.1, w: 0.5, h: 1.3 })).toEqual({
+      left: "80%",
+      top: "0%",
+      width: "20%",
+      height: "100%",
+    });
+  });
+});
+
+describe("slotHolder", () => {
+  it("is the photo a slot holds now, with its crop", () => {
+    const now = slotHolder(layout, { kind: "slot", placement: { page: 2, z: 2 } });
+    expect(now?.photo).toBe(layout.photos[0]);
+    expect(now?.crop).toEqual(layout.pages[1]!.placements.find((p) => p.z === 2)!.crop);
+  });
+
+  it("is the cover's photo for a cover side, and nothing for an empty one", () => {
+    expect(slotHolder(layout, { kind: "cover", side: "front" })?.photo).toBe(layout.photos[4]);
+    expect(slotHolder(layout, { kind: "cover", side: "back" })).toBeNull();
+  });
+
+  it("is nothing for a blank page, which holds no photo yet", () => {
+    expect(slotHolder(layout, { kind: "opening", opening: 0, page: 3 })).toBeNull();
   });
 });

@@ -3,10 +3,12 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open as pickFile } from "@tauri-apps/plugin-dialog";
 import {
   cropStyle,
+  cropWindowStyle,
   pickAspect,
   pickBlock,
   pickEdit,
   replaceCandidates,
+  slotHolder,
   withImportedPhotos,
   type BookEdit,
   type BookLayout,
@@ -241,6 +243,24 @@ function name(path: string): string {
 }
 
 const scroller = useTemplateRef<HTMLElement>("scroller");
+
+/**
+ * The preview pane: the picked photo large, cut as the target would print
+ * it, and whole with that cut outlined -- a 140px tile was too small to judge
+ * a photo by before replacing. The sharper editor preview when one exists,
+ * else the thumbnail. Beside it, what the target holds now.
+ */
+const graphics = useGraphics();
+const holder = computed(() => slotHolder(shown.value, target));
+const holderLabel = computed(() => {
+  if (target.kind === "cover") return `Now on the ${target.side} cover`;
+  if (target.kind === "slot") return `Now on page ${target.placement.page}`;
+  return "";
+});
+const takenFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+function taken(seconds: number | null): string | null {
+  return seconds === null ? null : takenFormat.format(new Date(seconds * 1000));
+}
 </script>
 
 <template>
@@ -249,140 +269,226 @@ const scroller = useTemplateRef<HTMLElement>("scroller");
     :title="copy.title"
     :description="copy.description"
     :ui="{
-      content: 'sm:max-w-4xl',
+      content: 'sm:max-w-5xl',
       body: 'flex min-h-0 flex-col overflow-hidden p-0 sm:p-0',
       footer: 'justify-between',
     }"
   >
     <template #body>
-      <div class="flex shrink-0 flex-wrap items-center gap-3 border-b border-default px-4 py-3 sm:px-6">
-        <UFieldGroup aria-label="Which photos to show">
-          <UButton
-            v-for="option in FILTERS"
-            :key="option.value"
-            color="neutral"
-            :variant="filter === option.value ? 'solid' : 'outline'"
-            :aria-pressed="filter === option.value"
-            @click="filter = option.value"
-          >
-            {{ option.label }}
-            <span class="tabular-nums opacity-70">{{ counts[option.value] }}</span>
-          </UButton>
-        </UFieldGroup>
-        <UButton
-          color="neutral"
-          variant="outline"
-          icon="i-lucide-hard-drive-upload"
-          :loading="importing"
-          :disabled="importing"
-          @click="addFromDisk"
-        >
-          Add from disk…
-        </UButton>
-        <USelect v-model="sort" :items="SORTS" class="ml-auto w-36" aria-label="Sort photos" />
-      </div>
-
-      <div
-        ref="scroller"
-        class="h-[560px] min-h-0 shrink overflow-y-auto px-4 py-4 sm:px-6"
-        @keydown.enter.prevent="confirm"
-      >
-        <div v-if="loadError" role="alert" class="flex h-full flex-col items-center justify-center gap-3 text-center">
-          <p class="text-sm text-highlighted">These photos could not be loaded.</p>
-          <p class="max-w-md text-sm text-muted">{{ loadError }}</p>
-          <UButton color="neutral" variant="outline" icon="i-lucide-rotate-cw" @click="load">
-            Try again
-          </UButton>
-        </div>
-
-        <div
-          v-else-if="!candidates"
-          class="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3"
-          aria-busy="true"
-          aria-label="Loading photos"
-        >
-          <USkeleton v-for="n in 12" :key="n" class="aspect-square rounded-md" />
-        </div>
-
-        <div
-          v-else-if="tiles.length === 0"
-          class="flex h-full flex-col items-center justify-center gap-3 text-center"
-        >
-          <p class="text-sm text-highlighted">
-            {{ filter === "leftOut" ? "Every photo is already in the book." : "No photos to show." }}
-          </p>
-          <UButton
-            v-if="filter === 'leftOut'"
-            color="neutral"
-            variant="outline"
-            @click="filter = 'inBook'"
-          >
-            Show photos in the book
-          </UButton>
-        </div>
-
-        <ContactSheet
-          v-else
-          :groups="[{ eventCluster: 0, photos: tiles }]"
-          :tile-size="140"
-          :scroll-element="scroller"
-          :headers="false"
-        >
-          <template #tile="{ photo: tile }">
-            <button
-              type="button"
-              class="group relative flex aspect-square flex-col overflow-hidden rounded-md bg-elevated text-left ring-offset-2 ring-offset-default outline-none focus-visible:ring-2 focus-visible:ring-inverted"
-              :class="[
-                tile.index === chosen ? 'ring-2 ring-inverted' : 'ring-1 ring-default',
-                tile.blocked ? 'cursor-not-allowed' : 'cursor-pointer',
-              ]"
-              :aria-pressed="tile.index === chosen"
-              :aria-disabled="tile.blocked !== null"
-              :aria-label="`${name(tile.photo.path)}${tile.placedAt ? `, on page ${tile.placedAt.page}` : ''}${tile.blocked ? `. ${tile.blocked}` : ''}`"
-              :title="tile.blocked ?? tile.photo.path"
-              @click="choose(tile)"
-              @dblclick="choose(tile), confirm()"
-            >
-              <div class="flex min-h-0 flex-1 items-center justify-center p-2">
-                <div
-                  class="relative max-h-full max-w-full overflow-hidden bg-default"
-                  :class="aspect >= 1 ? 'w-full' : 'h-full'"
-                  :style="{ aspectRatio: aspect }"
-                >
-                  <img
-                    v-if="tile.src"
-                    :src="tile.src"
-                    alt=""
-                    loading="lazy"
-                    class="absolute top-0 left-0"
-                    :class="{ 'opacity-40 grayscale': tile.blocked }"
-                    :style="tile.style"
-                  />
-                  <div v-else class="flex size-full items-center justify-center">
-                    <UIcon name="i-lucide-image-off" class="size-4 text-muted" />
-                  </div>
-                </div>
-              </div>
-              <div class="flex h-7 shrink-0 items-center gap-1.5 px-2 text-sm">
-                <template v-if="tile.blocked">
-                  <UIcon name="i-lucide-ban" class="size-3.5 shrink-0 text-muted" />
-                  <span class="truncate text-muted">{{ tile.blocked }}</span>
-                </template>
-                <template v-else-if="tile.placedAt">
-                  <UIcon name="i-lucide-book-open" class="size-3.5 shrink-0 text-muted" />
-                  <span class="truncate text-toned">On page {{ tile.placedAt.page }}</span>
-                </template>
-                <span v-else class="truncate text-muted">{{ name(tile.photo.path) }}</span>
-              </div>
-              <span
-                v-if="tile.index === chosen"
-                class="absolute top-1.5 right-1.5 flex size-5 items-center justify-center rounded-full bg-inverted text-inverted"
+      <div class="flex min-h-0 flex-1">
+        <div class="flex min-w-0 flex-1 flex-col">
+          <div class="flex shrink-0 flex-wrap items-center gap-3 border-b border-default px-4 py-3 sm:px-6">
+            <UFieldGroup aria-label="Which photos to show">
+              <UButton
+                v-for="option in FILTERS"
+                :key="option.value"
+                color="neutral"
+                :variant="filter === option.value ? 'solid' : 'outline'"
+                :aria-pressed="filter === option.value"
+                @click="filter = option.value"
               >
-                <UIcon name="i-lucide-check" class="size-3.5" />
-              </span>
-            </button>
+                {{ option.label }}
+                <span class="tabular-nums opacity-70">{{ counts[option.value] }}</span>
+              </UButton>
+            </UFieldGroup>
+            <UButton
+              color="neutral"
+              variant="outline"
+              icon="i-lucide-hard-drive-upload"
+              :loading="importing"
+              :disabled="importing"
+              @click="addFromDisk"
+            >
+              Add from disk…
+            </UButton>
+            <USelect v-model="sort" :items="SORTS" class="ml-auto w-36" aria-label="Sort photos" />
+          </div>
+
+          <div
+            ref="scroller"
+            class="h-[560px] min-h-0 shrink overflow-y-auto px-4 py-4 sm:px-6"
+            @keydown.enter.prevent="confirm"
+          >
+            <div v-if="loadError" role="alert" class="flex h-full flex-col items-center justify-center gap-3 text-center">
+              <p class="text-sm text-highlighted">These photos could not be loaded.</p>
+              <p class="max-w-md text-sm text-muted">{{ loadError }}</p>
+              <UButton color="neutral" variant="outline" icon="i-lucide-rotate-cw" @click="load">
+                Try again
+              </UButton>
+            </div>
+
+            <div
+              v-else-if="!candidates"
+              class="grid grid-cols-[repeat(auto-fill,minmax(140px,1fr))] gap-3"
+              aria-busy="true"
+              aria-label="Loading photos"
+            >
+              <USkeleton v-for="n in 12" :key="n" class="aspect-square rounded-md" />
+            </div>
+
+            <div
+              v-else-if="tiles.length === 0"
+              class="flex h-full flex-col items-center justify-center gap-3 text-center"
+            >
+              <p class="text-sm text-highlighted">
+                {{ filter === "leftOut" ? "Every photo is already in the book." : "No photos to show." }}
+              </p>
+              <UButton
+                v-if="filter === 'leftOut'"
+                color="neutral"
+                variant="outline"
+                @click="filter = 'inBook'"
+              >
+                Show photos in the book
+              </UButton>
+            </div>
+
+            <ContactSheet
+              v-else
+              :groups="[{ eventCluster: 0, photos: tiles }]"
+              :tile-size="140"
+              :scroll-element="scroller"
+              :headers="false"
+            >
+              <template #tile="{ photo: tile }">
+                <button
+                  type="button"
+                  class="group relative flex aspect-square flex-col overflow-hidden rounded-md bg-elevated text-left ring-offset-2 ring-offset-default outline-none focus-visible:ring-2 focus-visible:ring-inverted"
+                  :class="[
+                    tile.index === chosen ? 'ring-2 ring-inverted' : 'ring-1 ring-default',
+                    tile.blocked ? 'cursor-not-allowed' : 'cursor-pointer',
+                  ]"
+                  :aria-pressed="tile.index === chosen"
+                  :aria-disabled="tile.blocked !== null"
+                  :aria-label="`${name(tile.photo.path)}${tile.placedAt ? `, on page ${tile.placedAt.page}` : ''}${tile.blocked ? `. ${tile.blocked}` : ''}`"
+                  :title="tile.blocked ?? tile.photo.path"
+                  @click="choose(tile)"
+                  @dblclick="choose(tile), confirm()"
+                >
+                  <div class="flex min-h-0 flex-1 items-center justify-center p-2">
+                    <div
+                      class="relative max-h-full max-w-full overflow-hidden bg-default"
+                      :class="aspect >= 1 ? 'w-full' : 'h-full'"
+                      :style="{ aspectRatio: aspect }"
+                    >
+                      <img
+                        v-if="tile.src"
+                        :src="tile.src"
+                        alt=""
+                        loading="lazy"
+                        class="absolute top-0 left-0"
+                        :class="{ 'opacity-40 grayscale': tile.blocked }"
+                        :style="tile.style"
+                      />
+                      <div v-else class="flex size-full items-center justify-center">
+                        <UIcon name="i-lucide-image-off" class="size-4 text-muted" />
+                      </div>
+                    </div>
+                  </div>
+                  <div class="flex h-7 shrink-0 items-center gap-1.5 px-2 text-sm">
+                    <template v-if="tile.blocked">
+                      <UIcon name="i-lucide-ban" class="size-3.5 shrink-0 text-muted" />
+                      <span class="truncate text-muted">{{ tile.blocked }}</span>
+                    </template>
+                    <template v-else-if="tile.placedAt">
+                      <UIcon name="i-lucide-book-open" class="size-3.5 shrink-0 text-muted" />
+                      <span class="truncate text-toned">On page {{ tile.placedAt.page }}</span>
+                    </template>
+                    <span v-else class="truncate text-muted">{{ name(tile.photo.path) }}</span>
+                  </div>
+                  <span
+                    v-if="tile.index === chosen"
+                    class="absolute top-1.5 right-1.5 flex size-5 items-center justify-center rounded-full bg-inverted text-inverted"
+                  >
+                    <UIcon name="i-lucide-check" class="size-3.5" />
+                  </span>
+                </button>
+              </template>
+            </ContactSheet>
+          </div>
+        </div>
+
+        <aside
+          aria-label="Preview"
+          class="hidden w-72 shrink-0 flex-col gap-6 overflow-y-auto border-l border-default p-4 text-sm sm:flex"
+        >
+          <!-- What is there now, small and first: the larger preview below is the one being considered. -->
+          <section v-if="holder" class="flex items-center gap-3 border-b border-default pb-4">
+            <div class="relative w-14 shrink-0 overflow-hidden rounded-sm bg-elevated" :style="{ aspectRatio: aspect }">
+              <img
+                v-if="graphics.src(holder.photo)"
+                :src="graphics.src(holder.photo)!"
+                alt=""
+                class="absolute top-0 left-0"
+                :style="cropStyle(holder.crop)"
+              />
+            </div>
+            <div class="min-w-0">
+              <h3 class="text-muted">{{ holderLabel }}</h3>
+              <p class="truncate text-default" :title="holder.photo.path">{{ name(holder.photo.path) }}</p>
+            </div>
+          </section>
+          <template v-if="selection">
+            <section class="space-y-2">
+              <h3 class="font-semibold text-highlighted">As it would print</h3>
+              <!-- Capped in height, through the width so the box keeps the slot's shape: a tall slot would otherwise push everything else out of view. -->
+              <div
+                class="relative mx-auto overflow-hidden rounded-sm bg-elevated"
+                :style="{ aspectRatio: aspect, width: `min(100%, ${18 * aspect}rem)` }"
+              >
+                <img
+                  v-if="graphics.src(selection.photo)"
+                  :src="graphics.src(selection.photo)!"
+                  alt=""
+                  class="absolute top-0 left-0"
+                  :style="selection.style"
+                />
+              </div>
+            </section>
+
+            <section class="space-y-2">
+              <h3 class="font-semibold text-highlighted">Whole photo</h3>
+              <div
+                class="relative mx-auto overflow-hidden rounded-sm bg-elevated"
+                :style="{
+                  aspectRatio: selection.photo.width / selection.photo.height,
+                  width: `min(100%, ${14 * (selection.photo.width / selection.photo.height)}rem)`,
+                }"
+              >
+                <img
+                  v-if="graphics.src(selection.photo)"
+                  :src="graphics.src(selection.photo)!"
+                  alt=""
+                  class="size-full object-cover"
+                />
+                <!-- Over a photo, so fixed black and white rather than theme tokens: the outline reads on any image in either theme. -->
+                <div
+                  class="absolute rounded-[1px] shadow-[0_0_0_9999px_rgb(0_0_0/0.55)] ring-2 ring-white"
+                  :style="cropWindowStyle(selection.crop)"
+                />
+              </div>
+              <p class="text-muted">The outlined part is what prints.</p>
+            </section>
+
+            <dl class="space-y-1">
+              <dt class="sr-only">File</dt>
+              <dd class="truncate text-default" :title="selection.photo.path">{{ name(selection.photo.path) }}</dd>
+              <template v-if="taken(selection.photo.capturedAt)">
+                <dt class="sr-only">Taken</dt>
+                <dd class="text-muted tabular-nums">{{ taken(selection.photo.capturedAt) }}</dd>
+              </template>
+              <template v-if="selection.placedAt">
+                <dt class="sr-only">In the book</dt>
+                <dd class="text-muted">On page {{ selection.placedAt.page }}, so the two swap</dd>
+              </template>
+            </dl>
           </template>
-        </ContactSheet>
+          <div v-else class="flex flex-1 flex-col items-center justify-center gap-2 text-center text-muted">
+            <UIcon name="i-lucide-mouse-pointer-click" class="size-5" />
+            <p>Click a photo to see it larger here before you use it.</p>
+          </div>
+
+        </aside>
       </div>
     </template>
     <template #footer>

@@ -1318,6 +1318,37 @@ export function pickAspect(layout: BookLayout, target: PickTarget): number {
   return (rect.w * layout.geometry.pageWIn) / (rect.h * layout.geometry.pageHIn);
 }
 
+/**
+ * The crop window drawn over the WHOLE photo, as percents of it: the replace
+ * dialog's preview shows what the slot keeps and what it cuts. Clamped to the
+ * photo so an outline never hangs off its edge.
+ */
+export function cropWindowStyle(crop: PreviewRect): { left: string; top: string; width: string; height: string } {
+  const x = clamp(crop.x, 0, 1);
+  const y = clamp(crop.y, 0, 1);
+  const w = clamp(crop.x + crop.w, 0, 1) - x;
+  const h = clamp(crop.y + crop.h, 0, 1) - y;
+  const percent = (n: number) => `${pct(n * 100)}%`;
+  return { left: percent(x), top: percent(y), width: percent(w), height: percent(h) };
+}
+
+/**
+ * The photo a pick target holds now, with its crop, so the replace dialog
+ * can set it beside the one about to take its place. `null` for an empty
+ * cover side or a blank page.
+ */
+export function slotHolder(layout: BookLayout, target: PickTarget): { photo: PreviewPhoto; crop: PreviewRect } | null {
+  if (target.kind === "opening") return null;
+  const held =
+    target.kind === "cover"
+      ? layout.cover[target.side].photo
+      : layout.pages
+          .find((page) => page.number === target.placement.page)
+          ?.placements.find((placement) => placement.z === target.placement.z);
+  const photo = held ? layout.photos[held.photoIndex] : undefined;
+  return held && photo ? { photo, crop: held.crop } : null;
+}
+
 /** The edit that puts photo `photo` on the target. */
 export function pickEdit(target: PickTarget, photo: number): BookEdit {
   switch (target.kind) {

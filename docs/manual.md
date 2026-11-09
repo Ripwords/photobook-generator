@@ -428,6 +428,15 @@ with page N** and exchanges the two. A photo that would cut a face, put one in t
 the trim margin, or print too small is dimmed with the reason and cannot be picked, and so
 are photos on a locked spread.
 
+The panel on the right of the dialog shows a photo before you use it. At the top is the
+photo the slot holds now (**Now on page N**, or **Now on the front cover**). Click any photo
+in the grid and the panel shows it larger: **As it would print**, cropped to the slot, and
+**Whole photo**, the uncropped picture with the part that prints outlined and the rest
+dimmed. Under those are the file name, when it was taken and, for a photo already in the
+book, the page it would swap with. Clicking a photo only previews it; nothing changes until
+you press **Replace** (or **Swap with page N**). The panel is hidden when the window is
+too narrow for it.
+
 To **fill a page that prints blank**, press **Add a photo…** in the middle of that page.
 The same dialog opens, titled **Add a photo to page N**, on the photos no page uses, each
 shown at the page's shape. Pick one and press **Add to page N**. The page is then laid out
